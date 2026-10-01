@@ -1,0 +1,14 @@
+[Unit]
+Description=Firewall for second official MTProxy backend
+Before=mtproxy-ru.service
+After=network-pre.target
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/tproxy-server-ru/firewall.nft
+ExecStop=/usr/sbin/nft delete table inet tproxy_backend_ru
+
+[Install]
+WantedBy=multi-user.target

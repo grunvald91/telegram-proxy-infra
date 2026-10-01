@@ -1,0 +1,31 @@
+[Unit]
+Description=Second official Telegram MTProxy backend for RU-WireGuard WEB proxy
+After=network-online.target tproxy-firewall-ru.service
+Wants=network-online.target
+Requires=tproxy-firewall-ru.service
+
+[Service]
+Type=simple
+User=mtproxy
+Group=mtproxy
+EnvironmentFile=/etc/mtproxy-ru/mtproxy.env
+WorkingDirectory=/opt/MTProxy
+ExecStart=/bin/sh -c 'exec /opt/MTProxy/objs/bin/mtproto-proxy -u mtproxy -p 8889 -H 2399 -S <REDACTED> $MTPROXY_NAT_ARGS --aes-pwd /etc/mtproxy/proxy-secret <REDACTED> -M "$MTPROXY_WORKERS" -C "$MTPROXY_MAX_CONNECTIONS"'
+Restart=on-failure
+RestartSec=3s
+LimitNOFILE=1048576
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectHome=true
+ProtectProc=invisible
+ProtectSystem=strict
+ProcSubset=pid
+ReadOnlyPaths=/etc/mtproxy /etc/mtproxy-ru
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,10 @@
+{
+  "public_hostname": "bandbook.site",
+  "base_path": "6omdaevzovf3lisy",
+  "listen": "127.0.0.1:8084",
+  "admin_listen": "127.0.0.1:8085",
+  "public_upstream": "http://127.0.0.1:3002",
+  "token_key_file": <REDACTED>
+  "static_routes": "exact",
+  "profiles_file": "/run/credentials/tproxy-server-ru.service/profiles.json"
+}

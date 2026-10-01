@@ -1,0 +1,44 @@
+[Unit]
+Description=Telegram WEB proxy relay reached through RU edge and WireGuard
+After=network-online.target mtproxy-ru.service tproxy-firewall-ru.service
+Wants=network-online.target mtproxy-ru.service
+Requires=tproxy-firewall-ru.service
+
+[Service]
+Type=simple
+User=tproxy
+Group=tproxy
+LoadCredential=<REDACTED>
+ExecStart=/usr/local/bin/tproxy-server -config /etc/tproxy-server-ru/config.json
+Restart=on-failure
+RestartSec=3s
+TimeoutStopSec=20s
+LimitNOFILE=1048576
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectProc=invisible
+ProtectSystem=strict
+ProcSubset=pid
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+IPAddressDeny=any
+IPAddressAllow=localhost
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

@@ -1,5 +1,5 @@
 ===== DATE =====
-2026-10-01T13:11:00+00:00
+2026-10-01T13:40:48+00:00
 ===== HOST =====
  Static hostname: First030526
        Icon name: computer-vm
@@ -11,7 +11,7 @@ Operating System: Ubuntu 22.04.2 LTS
           Kernel: Linux 5.15.0-73-generic
     Architecture: x86-64
 Linux First030526 5.15.0-73-generic #80-Ubuntu SMP Mon May 15 15:18:26 UTC 2023 x86_64 x86_64 x86_64 GNU/Linux
- 13:11:00 up 150 days, 22:17,  0 users,  load average: 0.20, 0.30, 0.17
+ 13:40:48 up 150 days, 22:47,  0 users,  load average: 0.22, 0.17, 0.13
 ===== ADDRESSES =====
 lo               UNKNOWN        127.0.0.1/8 ::1/128 
 eth0             UP             89.125.90.101/24 fe80::216:3cff:fe56:c849/64 
@@ -31,18 +31,19 @@ udp   UNCONN 0      0            0.0.0.0:51820      0.0.0.0:*
 udp   UNCONN 0      0               [::]:51820         [::]:*                                                                                 
 tcp   LISTEN 0      8192         0.0.0.0:2398       0.0.0.0:*    users:(("mtproto-proxy",pid=2577012,fd=3),("mtproto-proxy",pid=2577009,fd=3))
 tcp   LISTEN 0      1024       127.0.0.1:9470       0.0.0.0:*    users:(("telemt",pid=4193769,fd=10))                                         
+tcp   LISTEN 0      8192         0.0.0.0:2399       0.0.0.0:*    users:(("mtproto-proxy",pid=2580831,fd=3),("mtproto-proxy",pid=2580829,fd=3))
 tcp   LISTEN 0      1024       127.0.0.1:9471       0.0.0.0:*    users:(("telemt",pid=4194105,fd=9))                                          
 tcp   LISTEN 0      1024       127.0.0.1:9472       0.0.0.0:*    users:(("telemt",pid=4194251,fd=12))                                         
 tcp   LISTEN 0      1024       127.0.0.1:9473       0.0.0.0:*    users:(("telemt",pid=4194053,fd=12))                                         
 tcp   LISTEN 0      1024       127.0.0.1:9474       0.0.0.0:*    users:(("telemt",pid=4194205,fd=12))                                         
-tcp   LISTEN 0      511        127.0.0.1:5443       0.0.0.0:*    users:(("nginx",pid=2577445,fd=10),("nginx",pid=938780,fd=10))               
+tcp   LISTEN 0      511        127.0.0.1:5443       0.0.0.0:*    users:(("nginx",pid=2580907,fd=10),("nginx",pid=938780,fd=10))               
 tcp   LISTEN 0      1024       127.0.0.1:9443       0.0.0.0:*    users:(("telemt",pid=413,fd=13))                                             
 tcp   LISTEN 0      128        127.0.0.1:9091       0.0.0.0:*    users:(("telemt",pid=413,fd=9))                                              
 tcp   LISTEN 0      1024       127.0.0.1:9475       0.0.0.0:*    users:(("telemt",pid=4194151,fd=12))                                         
-tcp   LISTEN 0      511        127.0.0.1:5444       0.0.0.0:*    users:(("nginx",pid=2577445,fd=9),("nginx",pid=938780,fd=9))                 
+tcp   LISTEN 0      511        127.0.0.1:5444       0.0.0.0:*    users:(("nginx",pid=2580907,fd=9),("nginx",pid=938780,fd=9))                 
 tcp   LISTEN 0      1024       127.0.0.1:9444       0.0.0.0:*    users:(("telemt",pid=466,fd=13))                                             
 tcp   LISTEN 0      128        127.0.0.1:9092       0.0.0.0:*    users:(("telemt",pid=466,fd=9))                                              
-tcp   LISTEN 0      511        127.0.0.1:4453       0.0.0.0:*    users:(("nginx",pid=2577445,fd=8),("nginx",pid=938780,fd=8))                 
+tcp   LISTEN 0      511        127.0.0.1:4453       0.0.0.0:*    users:(("nginx",pid=2580907,fd=8),("nginx",pid=938780,fd=8))                 
 tcp   LISTEN 0      1024       127.0.0.1:9445       0.0.0.0:*    users:(("telemt",pid=4194302,fd=10))                                         
 tcp   LISTEN 0      128        127.0.0.1:9093       0.0.0.0:*    users:(("telemt",pid=4194302,fd=9))                                          
 tcp   LISTEN 0      1024         0.0.0.0:9446       0.0.0.0:*    users:(("telemt",pid=350,fd=10))                                             
@@ -54,15 +55,19 @@ tcp   LISTEN 0      8192       127.0.0.1:9449       0.0.0.0:*    users:(("mtg",p
 tcp   LISTEN 0      8192       127.0.0.1:9450       0.0.0.0:*    users:(("mtg",pid=2410378,fd=4))                                             
 tcp   LISTEN 0      8192       127.0.0.1:9451       0.0.0.0:*    users:(("mtg",pid=2414668,fd=4))                                             
 tcp   LISTEN 0      128        127.0.0.1:8080       0.0.0.0:*    users:(("tproxy-server",pid=2576888,fd=3))                                   
-tcp   LISTEN 0      511          0.0.0.0:80         0.0.0.0:*    users:(("nginx",pid=2577445,fd=6),("nginx",pid=938780,fd=6))                 
+tcp   LISTEN 0      511          0.0.0.0:80         0.0.0.0:*    users:(("nginx",pid=2580907,fd=6),("nginx",pid=938780,fd=6))                 
 tcp   LISTEN 0      128        127.0.0.1:8081       0.0.0.0:*    users:(("tproxy-server",pid=2576888,fd=6))                                   
+tcp   LISTEN 0      511       10.66.77.1:8082       0.0.0.0:*    users:(("nginx",pid=2580907,fd=22),("nginx",pid=938780,fd=22))               
+tcp   LISTEN 0      128        127.0.0.1:8084       0.0.0.0:*    users:(("tproxy-server",pid=2580900,fd=3))                                   
+tcp   LISTEN 0      128        127.0.0.1:8085       0.0.0.0:*    users:(("tproxy-server",pid=2580900,fd=6))                                   
 tcp   LISTEN 0      128          0.0.0.0:22         0.0.0.0:*    users:(("sshd",pid=4019739,fd=3))                                            
-tcp   LISTEN 0      511        127.0.0.1:3000       0.0.0.0:*    users:(("nginx",pid=2577445,fd=16),("nginx",pid=938780,fd=16))               
-tcp   LISTEN 0      511          0.0.0.0:443        0.0.0.0:*    users:(("nginx",pid=2577445,fd=11),("nginx",pid=938780,fd=11))               
+tcp   LISTEN 0      511        127.0.0.1:3000       0.0.0.0:*    users:(("nginx",pid=2580907,fd=16),("nginx",pid=938780,fd=16))               
+tcp   LISTEN 0      511        127.0.0.1:3002       0.0.0.0:*    users:(("nginx",pid=2580907,fd=21),("nginx",pid=938780,fd=21))               
+tcp   LISTEN 0      511          0.0.0.0:443        0.0.0.0:*    users:(("nginx",pid=2580907,fd=11),("nginx",pid=938780,fd=11))               
 tcp   LISTEN 0      8192       127.0.0.1:8443       0.0.0.0:*    users:(("xray",pid=480200,fd=3))                                             
-tcp   LISTEN 0      511             [::]:80            [::]:*    users:(("nginx",pid=2577445,fd=7),("nginx",pid=938780,fd=7))                 
+tcp   LISTEN 0      511             [::]:80            [::]:*    users:(("nginx",pid=2580907,fd=7),("nginx",pid=938780,fd=7))                 
 tcp   LISTEN 0      128             [::]:22            [::]:*    users:(("sshd",pid=4019739,fd=4))                                            
-tcp   LISTEN 0      511             [::]:443           [::]:*    users:(("nginx",pid=2577445,fd=12),("nginx",pid=938780,fd=12))               
+tcp   LISTEN 0      511             [::]:443           [::]:*    users:(("nginx",pid=2580907,fd=12),("nginx",pid=938780,fd=12))               
 ===== PROXY PROCESSES =====
     350       1 telemt   telemt          /usr/bin/telemt --silent /etc/telemt/direct-ozon.toml
     413       1 telemt   telemt          /usr/bin/telemt --silent /etc/telemt/direct-sber.toml
@@ -77,7 +82,10 @@ tcp   LISTEN 0      511             [::]:443           [::]:*    users:(("nginx"
 2414668       1 mtg      mtg             /usr/local/bin/mtg run /etc/mtg/disk-yandex.toml
 2577009       1 mtproxy  mtproto-proxy   /opt/MTProxy/objs/bin/mtproto-proxy -u mtproxy -p 8888 -H 2398 -S <REDACTED> --aes-pwd /etc/mtproxy/proxy-secret <REDACTED> -M 1 -C 4096
 2577012 2577009 mtproxy  mtproto-proxy   /opt/MTProxy/objs/bin/mtproto-proxy -u mtproxy -p 8888 -H 2398 -S <REDACTED> --aes-pwd /etc/mtproxy/proxy-secret <REDACTED> -M 1 -C 4096
-2577445  938780 www-data nginx           nginx: worker process
+2577445  938780 www-data nginx           nginx: worker process is shutting down
+2580829       1 mtproxy  mtproto-proxy   /opt/MTProxy/objs/bin/mtproto-proxy -u mtproxy -p 8889 -H 2399 -S <REDACTED> --aes-pwd /etc/mtproxy/proxy-secret <REDACTED> -M 1 -C 4096
+2580831 2580829 mtproxy  mtproto-proxy   /opt/MTProxy/objs/bin/mtproto-proxy -u mtproxy -p 8889 -H 2399 -S <REDACTED> --aes-pwd /etc/mtproxy/proxy-secret <REDACTED> -M 1 -C 4096
+2580907  938780 www-data nginx           nginx: worker process
 3910103       1 2147483+ nfqws2          /opt/zapret2/nfqws2 @/etc/zapret2/telegram-nfqws.conf
 4193769       1 telemt   telemt          /usr/bin/telemt --silent /etc/telemt/rf-media.toml
 4194053       1 telemt   telemt          /usr/bin/telemt --silent /etc/telemt/bandbook-assets.toml
@@ -93,6 +101,7 @@ mtg-disk-yandex.service                    enabled         enabled
 mtg-kinopoisk.service                      enabled         enabled
 mtg-mail-cloud.service                     enabled         enabled
 mtg.service                                enabled         enabled
+mtproxy-ru.service                         enabled         enabled
 mtproxy.service                            enabled         enabled
 nginx.service                              enabled         enabled
 refresh-mtproxy-config.service             static          -
@@ -122,6 +131,7 @@ refresh-mtproxy-config.timer               enabled         enabled
   mtg-kinopoisk.service            loaded active running mtg MTProxy (www.kinopoisk.ru mask)
   mtg-mail-cloud.service           loaded active running mtg MTProxy (cloud.mail.ru mask)
   mtg.service                      loaded active running mtg MTProxy (xapi.ozon.ru mask)
+  mtproxy-ru.service               loaded active running Second official Telegram MTProxy backend for RU-WireGuard WEB proxy
   mtproxy.service                  loaded active running Official Telegram MTProxy backend
   multipathd.service               loaded active running Device-Mapper Multipath Device Controller
   nginx.service                    loaded active running A high performance web server and a reverse proxy server
@@ -147,6 +157,7 @@ refresh-mtproxy-config.timer               enabled         enabled
   telemt-direct-sber.service       loaded active running Telemt direct Sber mask
   telemt-direct-yandex.service     loaded active running Telemt direct Yandex mask
   telemt-rf-media.service          loaded active running Telemt RF ingress with real media.bandbook.site mask
+  tproxy-server-ru.service         loaded active running Telegram WEB proxy relay reached through RU edge and WireGuard
   tproxy-server.service            loaded active running Browser HTTPS transport relay
   udisks2.service                  loaded active running Disk Manager
   unattended-upgrades.service      loaded active running Unattended Upgrades Shutdown
@@ -157,26 +168,26 @@ refresh-mtproxy-config.timer               enabled         enabled
 LOAD   = Reflects whether the unit definition was properly loaded.
 ACTIVE = The high-level unit activation state, i.e. generalization of SUB.
 SUB    = The low-level unit activation state, values depend on unit type.
-41 loaded units listed.
+43 loaded units listed.
 ===== TIMERS =====
-NEXT                        LEFT          LAST                        PASSED       UNIT                           ACTIVATES
-Thu 2026-10-01 15:23:49 UTC 2h 12min left Wed 2026-09-30 15:23:49 UTC 21h ago      update-notifier-download.timer update-notifier-download.service
-Thu 2026-10-01 15:36:49 UTC 2h 25min left Wed 2026-09-30 15:36:49 UTC 21h ago      systemd-tmpfiles-clean.timer   systemd-tmpfiles-clean.service
-Thu 2026-10-01 18:01:51 UTC 4h 50min left Thu 2026-10-01 06:00:32 UTC 7h ago       fwupd-refresh.timer            fwupd-refresh.service
-Thu 2026-10-01 19:41:09 UTC 6h left       Thu 2026-10-01 13:02:27 UTC 8min ago     ua-timer.timer                 ua-timer.service
-Thu 2026-10-01 23:23:41 UTC 10h left      Thu 2026-10-01 01:32:52 UTC 11h ago      certbot.timer                  certbot.service
-Fri 2026-10-02 00:00:00 UTC 10h left      Thu 2026-10-01 00:00:01 UTC 13h ago      dpkg-db-backup.timer           dpkg-db-backup.service
-Fri 2026-10-02 00:00:00 UTC 10h left      Thu 2026-10-01 00:00:01 UTC 13h ago      logrotate.timer                logrotate.service
-Fri 2026-10-02 04:59:43 UTC 15h left      Thu 2026-10-01 13:07:12 UTC 3min 49s ago motd-news.timer                motd-news.service
-Fri 2026-10-02 05:01:31 UTC 15h left      Thu 2026-10-01 13:07:11 UTC 3min 50s ago apt-daily.timer                apt-daily.service
-Fri 2026-10-02 05:27:53 UTC 16h left      Thu 2026-10-01 02:10:22 UTC 11h ago      man-db.timer                   man-db.service
-Fri 2026-10-02 06:13:24 UTC 17h left      Thu 2026-10-01 06:19:33 UTC 6h ago       apt-daily-upgrade.timer        apt-daily-upgrade.service
-Fri 2026-10-02 13:38:43 UTC 24h left      Thu 2026-10-01 13:07:13 UTC 3min 48s ago refresh-mtproxy-config.timer   refresh-mtproxy-config.service
-Sun 2026-10-04 03:10:32 UTC 2 days left   Sun 2026-09-27 03:10:49 UTC 4 days ago   e2scrub_all.timer              e2scrub_all.service
-Mon 2026-10-05 00:56:07 UTC 3 days left   Mon 2026-09-28 00:12:52 UTC 3 days ago   fstrim.timer                   fstrim.service
-Mon 2026-10-05 07:00:56 UTC 3 days left   Wed 2026-09-30 14:42:13 UTC 22h ago      update-notifier-motd.timer     update-notifier-motd.service
-n/a                         n/a           n/a                         n/a          apport-autoreport.timer        apport-autoreport.service
-n/a                         n/a           n/a                         n/a          snapd.snap-repair.timer        snapd.snap-repair.service
+NEXT                        LEFT          LAST                        PASSED     UNIT                           ACTIVATES
+Thu 2026-10-01 15:23:49 UTC 1h 42min left Wed 2026-09-30 15:23:49 UTC 22h ago    update-notifier-download.timer update-notifier-download.service
+Thu 2026-10-01 15:36:49 UTC 1h 55min left Wed 2026-09-30 15:36:49 UTC 22h ago    systemd-tmpfiles-clean.timer   systemd-tmpfiles-clean.service
+Thu 2026-10-01 18:10:32 UTC 4h 29min left Thu 2026-10-01 06:00:32 UTC 7h ago     fwupd-refresh.timer            fwupd-refresh.service
+Thu 2026-10-01 19:18:58 UTC 5h 38min left Thu 2026-10-01 13:02:27 UTC 38min ago  ua-timer.timer                 ua-timer.service
+Fri 2026-10-02 00:00:00 UTC 10h left      Thu 2026-10-01 00:00:01 UTC 13h ago    dpkg-db-backup.timer           dpkg-db-backup.service
+Fri 2026-10-02 00:00:00 UTC 10h left      Thu 2026-10-01 00:00:01 UTC 13h ago    logrotate.timer                logrotate.service
+Fri 2026-10-02 00:09:33 UTC 10h left      Thu 2026-10-01 13:07:11 UTC 33min ago  apt-daily.timer                apt-daily.service
+Fri 2026-10-02 05:18:07 UTC 15h left      Thu 2026-10-01 13:07:12 UTC 33min ago  motd-news.timer                motd-news.service
+Fri 2026-10-02 06:46:26 UTC 17h left      Thu 2026-10-01 06:19:33 UTC 7h ago     apt-daily-upgrade.timer        apt-daily-upgrade.service
+Fri 2026-10-02 10:23:09 UTC 20h left      Thu 2026-10-01 02:10:22 UTC 11h ago    man-db.timer                   man-db.service
+Fri 2026-10-02 10:42:29 UTC 21h left      Thu 2026-10-01 13:32:57 UTC 7min ago   certbot.timer                  certbot.service
+Fri 2026-10-02 13:35:51 UTC 23h left      Thu 2026-10-01 13:07:13 UTC 33min ago  refresh-mtproxy-config.timer   refresh-mtproxy-config.service
+Sun 2026-10-04 03:10:19 UTC 2 days left   Sun 2026-09-27 03:10:49 UTC 4 days ago e2scrub_all.timer              e2scrub_all.service
+Mon 2026-10-05 01:14:22 UTC 3 days left   Mon 2026-09-28 00:12:52 UTC 3 days ago fstrim.timer                   fstrim.service
+Tue 2026-10-06 04:13:09 UTC 4 days left   Wed 2026-09-30 14:42:13 UTC 22h ago    update-notifier-motd.timer     update-notifier-motd.service
+n/a                         n/a           n/a                         n/a        apport-autoreport.timer        apport-autoreport.service
+n/a                         n/a           n/a                         n/a        snapd.snap-repair.timer        snapd.snap-repair.service
 
 17 timers listed.
 ===== ROOT CRONTAB =====
@@ -191,8 +202,8 @@ Status: inactive
 table ip filter {
 	chain FORWARD {
 		type filter hook forward priority filter; policy accept;
-		iifname "eth0" oifname "tg-relay" ct state related,established counter packets 772526603 bytes 76442982280 accept
-		iifname "tg-relay" oifname "eth0" counter packets 889346474 bytes 65562355738 accept
+		iifname "eth0" oifname "tg-relay" ct state related,established counter packets 772631472 bytes 76451667635 accept
+		iifname "tg-relay" oifname "eth0" counter packets 889469255 bytes 65571250675 accept
 	}
 
 	chain INPUT {
@@ -204,7 +215,7 @@ table ip filter {
 		iifname "tg-relay" meta l4proto tcp ip saddr 10.66.77.2 ip daddr 10.66.77.1 tcp dport 9464 counter packets 40916 bytes 6564121 accept
 		iifname "eth0" meta l4proto tcp tcp dport 9091-9093 counter packets 4421 bytes 233016 drop
 		iifname "eth0" meta l4proto tcp tcp dport 9443-9445 counter packets 5130 bytes 261448 drop
-		meta l4proto udp ip saddr 188.120.254.223 udp dport 51820 counter packets 950514248 bytes 144836935692 accept
+		meta l4proto udp ip saddr 188.120.254.223 udp dport 51820 counter packets 950649063 bytes 144856948024 accept
 		meta l4proto udp udp dport 51820 counter packets 4 bytes 612 drop
 		meta l4proto tcp tcp dport 9464 counter packets 122 bytes 6252 drop
 	}
@@ -221,7 +232,7 @@ table ip6 filter {
 table ip nat {
 	chain POSTROUTING {
 		type nat hook postrouting priority srcnat; policy accept;
-		oifname "eth0" ip saddr 10.66.77.0/24 counter packets 43785177 bytes 2627113644 masquerade 
+		oifname "eth0" ip saddr 10.66.77.0/24 counter packets 43791317 bytes 2627482044 masquerade 
 	}
 
 	chain PREROUTING {
@@ -231,18 +242,18 @@ table ip nat {
 table ip mangle {
 	chain FORWARD {
 		type filter hook forward priority mangle; policy accept;
-		oifname "tg-relay" meta l4proto tcp tcp flags & (syn|rst) == syn counter packets 34322916 bytes 2059374960 tcp option maxseg size set rt mtu
+		oifname "tg-relay" meta l4proto tcp tcp flags & (syn|rst) == syn counter packets 34329062 bytes 2059743720 tcp option maxseg size set rt mtu
 	}
 
 	chain OUTPUT {
 		type route hook output priority mangle; policy accept;
-		oifname "tg-relay" meta l4proto tcp tcp flags & (syn|rst) == syn counter packets 806424 bytes 48385440 tcp option maxseg size set rt mtu
+		oifname "tg-relay" meta l4proto tcp tcp flags & (syn|rst) == syn counter packets 806771 bytes 48406260 tcp option maxseg size set rt mtu
 	}
 }
 table inet telegram_nfqws {
 	chain post {
 		type filter hook postrouting priority srcnat + 1; policy accept;
-		oifname "eth0" tcp sport 443 ct reply packets 1-20 meta mark & 0x40000000 == 0x00000000 counter packets 10071335 bytes 4686378348 queue flags bypass to 210 comment "telegram-nfqws"
+		oifname "eth0" tcp sport 443 ct reply packets 1-20 meta mark & 0x40000000 == 0x00000000 counter packets 10074107 bytes 4688092656 queue flags bypass to 210 comment "telegram-nfqws"
 	}
 
 	chain predefrag {
@@ -256,8 +267,14 @@ table inet tproxy_backend {
 		iifname != "lo" tcp dport { 2398, 8888 } drop
 	}
 }
+table inet tproxy_backend_ru {
+	chain local_backend {
+		type filter hook input priority filter - 9; policy accept;
+		iifname != "lo" tcp dport { 2399, 8889 } drop
+	}
+}
 ===== IPTABLES =====
-# Generated by iptables-save v1.8.7 on Thu Oct  1 13:11:01 2026
+# Generated by iptables-save v1.8.7 on Thu Oct  1 13:40:49 2026
 *mangle
 :PREROUTING ACCEPT [0:0]
 :INPUT ACCEPT [0:0]
@@ -267,8 +284,8 @@ table inet tproxy_backend {
 -A FORWARD -o tg-relay -p tcp -m tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
 -A OUTPUT -o tg-relay -p tcp -m tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
 COMMIT
-# Completed on Thu Oct  1 13:11:01 2026
-# Generated by iptables-save v1.8.7 on Thu Oct  1 13:11:01 2026
+# Completed on Thu Oct  1 13:40:49 2026
+# Generated by iptables-save v1.8.7 on Thu Oct  1 13:40:49 2026
 *filter
 :INPUT ACCEPT [0:0]
 :FORWARD ACCEPT [0:0]
@@ -286,8 +303,8 @@ COMMIT
 -A FORWARD -i eth0 -o tg-relay -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 -A FORWARD -i tg-relay -o eth0 -j ACCEPT
 COMMIT
-# Completed on Thu Oct  1 13:11:01 2026
-# Generated by iptables-save v1.8.7 on Thu Oct  1 13:11:01 2026
+# Completed on Thu Oct  1 13:40:49 2026
+# Generated by iptables-save v1.8.7 on Thu Oct  1 13:40:49 2026
 *nat
 :PREROUTING ACCEPT [0:0]
 :INPUT ACCEPT [0:0]
@@ -295,8 +312,8 @@ COMMIT
 :POSTROUTING ACCEPT [0:0]
 -A POSTROUTING -s <REDACTED> -o eth0 -j MASQUERADE
 COMMIT
-# Completed on Thu Oct  1 13:11:01 2026
-# Generated by ip6tables-save v1.8.7 on Thu Oct  1 13:11:01 2026
+# Completed on Thu Oct  1 13:40:49 2026
+# Generated by ip6tables-save v1.8.7 on Thu Oct  1 13:40:49 2026
 *filter
 :INPUT ACCEPT [0:0]
 :FORWARD ACCEPT [0:0]
@@ -306,7 +323,7 @@ COMMIT
 -A INPUT -p udp -m udp --dport 51820 -j DROP
 -A INPUT -p tcp -m tcp --dport 9464 -j DROP
 COMMIT
-# Completed on Thu Oct  1 13:11:01 2026
+# Completed on Thu Oct  1 13:40:49 2026
 ===== WIREGUARD =====
 interface: tg-relay
   public key: <B64_REDACTED>
@@ -316,8 +333,8 @@ interface: tg-relay
 peer: <B64_REDACTED>
   endpoint: 188.120.254.223:35168
   allowed ips: 10.66.77.2/32
-  latest handshake: 8 seconds ago
-  transfer: 110.10 GiB received, 244.20 GiB sent
+  latest handshake: 1 minute, 56 seconds ago
+  transfer: 110.12 GiB received, 244.23 GiB sent
 ===== DOCKER =====
 ===== DOCKER COMPOSE =====
 ===== PACKAGES =====
@@ -476,6 +493,7 @@ f 644 root:root 2837 /etc/nginx/koi-utf
 f 644 root:root 636 /etc/nginx/scgi_params
 d 755 root:root 4096 /etc/nginx/conf.d
 f 600 root:root 353 /etc/nginx/conf.d/tproxy-web.conf
+f 600 root:root 884 /etc/nginx/conf.d/tproxy-web-ru-bridge.conf
 f 644 root:root 180 /etc/nginx/proxy_params
 f 644 root:root 2292 /etc/nginx/nginx.conf.bak-20260601-143006
 d 755 root:root 4096 /etc/nginx/snippets
