@@ -1,0 +1,114 @@
+name: Inspect relay89 proxy chain
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      TARGET_HOST: "89.125.90.101"
+      TARGET_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+
+    steps:
+      - name: Guard credential
+        run: |
+          set -euo pipefail
+          [ -n "$TARGET_PASSWORD" ] || { echo "::error::RELAY89_SSH_PASSWORD is not configured"; exit 1; }
+
+      - name: Install sshpass
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+
+      - name: Inspect active proxy chain without changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$TARGET_PASSWORD"
+          OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+          sshpass -e ssh $OPTS "root@$TARGET_HOST" 'python3 -' <<'PY'
+          import hashlib, pathlib, re, subprocess
+
+          def run(args):
+              p=subprocess.run(args,capture_output=True,text=True,timeout=15)
+              return p.stdout + (("\nSTDERR:\n"+p.stderr) if p.stderr else "")
+
+          def red(s):
+              pats=[
+                (r'(?i)(password|passwd|secret|token|api[_-]?key|privatekey|presharedkey|uuid)\s*([=:]\s*|\s+)\S+', r'\1=<REDACTED>'),
+                (r'(?i)(-S|--secret)\s+\S+', r'\1 <REDACTED>'),
+                (r'\b[0-9a-fA-F]{32,}\b','<HEX_REDACTED>'),
+              ]
+              for p,r in pats:
+                  s=re.sub(p,r,s)
+              return s
+
+          print("===== RELEVANT SYSTEMD UNITS =====")
+          units=run(['systemctl','list-unit-files','--type=service','--no-pager'])
+          names=[]
+          for line in units.splitlines():
+              n=line.split()[0] if line.split() else ''
+              if re.search(r'(?i)telemt|mtg|mtproxy|telegram|xray|nginx|wireguard|wg-quick|nfqws',n):
+                  names.append(n)
+                  print(line)
+
+          print("\n===== ACTIVE UNIT DETAILS (SANITIZED) =====")
+          for n in names:
+              out=run(['systemctl','show',n,'-p','Id,LoadState,ActiveState,SubState,UnitFileState,FragmentPath,DropInPaths,ExecStart'])
+              print("\n--",n,"--")
+              print(red(out))
+
+          print("\n===== NGINX CONFIG MAP (SANITIZED) =====")
+          for root in [pathlib.Path('/etc/nginx/streams.d'), pathlib.Path('/etc/nginx/conf.d'), pathlib.Path('/etc/nginx/sites-enabled')]:
+              if not root.exists(): continue
+              for f in sorted(root.glob('*')):
+                  if not f.is_file(): continue
+                  print("\nFILE",f)
+                  try: print(red(f.read_text(errors='replace')[:20000]))
+                  except Exception as e: print('READ_ERROR',type(e).__name__)
+
+          print("\n===== TELEMT CONFIG PATHS / HASHES =====")
+          for f in sorted(pathlib.Path('/etc/telemt').glob('*.toml')) if pathlib.Path('/etc/telemt').exists() else []:
+              b=f.read_bytes()
+              print(f'{f}|size={len(b)}|sha256={hashlib.sha256(b).hexdigest()}')
+
+          print("\n===== MTG UNIT CONFIG PATHS =====")
+          for f in sorted(pathlib.Path('/etc/systemd/system').glob('mtg*.service')):
+              print(f)
+
+          print("\n===== WIREGUARD SUMMARY =====")
+          # Public interface state only; wg showconf is intentionally NOT used.
+          print(run(['ip','-brief','address']))
+          try:
+              print(run(['wg','show','interfaces']))
+              print(run(['wg','show','all','listen-port']))
+              print(run(['wg','show','all','endpoints']))
+              print(run(['wg','show','all','latest-handshakes']))
+          except Exception:
+              pass
+
+          print("\n===== Xray summary =====")
+          p=pathlib.Path('/etc/xray/config.json')
+          if p.is_file():
+              b=p.read_bytes()
+              print(f'{p}|size={len(b)}|sha256={hashlib.sha256(b).hexdigest()}')
+          print(run(['systemctl','show','xray.service','-p','ActiveState,SubState,FragmentPath,ExecStart']))
+
+          print("\n===== SAFE CONFIG HASHES =====")
+          for raw in [
+              '/etc/systemd/system/direct-mtproxy-hardening.service',
+              '/usr/local/sbin/direct-mtproxy-hardening.sh',
+              '/etc/zapret2/telegram-nfqws.conf',
+              '/etc/sysctl.d/99-telegram-proxy-keepalive.conf',
+              '/etc/sysctl.d/99-mtproxy-tuning.conf',
+          ]:
+              p=pathlib.Path(raw)
+              if p.is_file():
+                  b=p.read_bytes()
+                  print(f'{raw}|size={len(b)}|sha256={hashlib.sha256(b).hexdigest()}')
+
+          print("\nread_only=yes")
+          PY
