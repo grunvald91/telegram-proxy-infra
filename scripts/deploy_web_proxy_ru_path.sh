@@ -19,13 +19,27 @@ case "$ROLE" in
     [ -f /etc/nginx/sites-enabled/bandbook ] || die "BandBook nginx site missing"
     nginx -t >/dev/null 2>&1 || die "existing nginx invalid"
 
-    if ss -lntH "sport = :3001" | grep -q .; then
-      if [ -f "$CONF" ]; then
-        log "mirror already active"
-        exit 0
-      fi
-      die "port 3001 already busy"
+    if ss -lntH "sport = :3001" | grep -q . && [ ! -f "$CONF" ]; then
+      die "port 3001 already busy by an unknown config"
     fi
+
+    cat > /etc/systemd/system/tproxy-web-ru-edge-firewall.service <<'EOF'
+[Unit]
+Description=Allow WEB proxy decoy mirror only from foreign WireGuard peer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c '/usr/sbin/iptables -C INPUT -i tg-relay -s 10.66.77.1 -d 10.66.77.2 -p tcp --dport 3001 -j ACCEPT 2>/dev/null || /usr/sbin/iptables -I INPUT 1 -i tg-relay -s 10.66.77.1 -d 10.66.77.2 -p tcp --dport 3001 -j ACCEPT'
+ExecStop=/bin/sh -c '/usr/sbin/iptables -D INPUT -i tg-relay -s 10.66.77.1 -d 10.66.77.2 -p tcp --dport 3001 -j ACCEPT 2>/dev/null || true'
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl enable --now tproxy-web-ru-edge-firewall.service
 
     cat > "$CONF" <<'EOF'
 server {
@@ -412,4 +426,4 @@ EOF
     ;;
 esac
 
-# deploy-trigger: ru-web-v5
+# deploy-trigger: ru-web-v6
