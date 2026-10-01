@@ -1,5 +1,5 @@
 ===== DATE =====
-2026-10-01T11:39:45+00:00
+2026-10-01T11:42:14+00:00
 ===== HOST =====
  Static hostname: First030526
        Icon name: computer-vm
@@ -11,7 +11,7 @@ Operating System: Ubuntu 22.04.2 LTS
           Kernel: Linux 5.15.0-73-generic
     Architecture: x86-64
 Linux First030526 5.15.0-73-generic #80-Ubuntu SMP Mon May 15 15:18:26 UTC 2023 x86_64 x86_64 x86_64 GNU/Linux
- 11:39:45 up 150 days, 20:46,  0 users,  load average: 0.11, 0.06, 0.01
+ 11:42:14 up 150 days, 20:48,  0 users,  load average: 0.08, 0.04, 0.00
 ===== ADDRESSES =====
 lo               UNKNOWN        127.0.0.1/8 ::1/128 
 eth0             UP             89.125.90.101/24 fe80::216:3cff:fe56:c849/64 
@@ -148,20 +148,20 @@ SUB    = The low-level unit activation state, values depend on unit type.
 39 loaded units listed.
 ===== TIMERS =====
 NEXT                        LEFT              LAST                        PASSED       UNIT                           ACTIVATES
-Thu 2026-10-01 13:02:25 UTC 1h 22min left     Thu 2026-10-01 06:38:49 UTC 5h 0min ago  ua-timer.timer                 ua-timer.service
-Thu 2026-10-01 13:54:05 UTC 2h 14min left     Thu 2026-10-01 01:32:52 UTC 10h ago      certbot.timer                  certbot.service
-Thu 2026-10-01 15:08:12 UTC 3h 28min left     Thu 2026-10-01 03:27:24 UTC 8h ago       motd-news.timer                motd-news.service
-Thu 2026-10-01 15:08:45 UTC 3h 28min left     Wed 2026-09-30 18:36:41 UTC 17h ago      apt-daily.timer                apt-daily.service
-Thu 2026-10-01 15:23:49 UTC 3h 44min left     Wed 2026-09-30 15:23:49 UTC 20h ago      update-notifier-download.timer update-notifier-download.service
-Thu 2026-10-01 15:36:49 UTC 3h 57min left     Wed 2026-09-30 15:36:49 UTC 20h ago      systemd-tmpfiles-clean.timer   systemd-tmpfiles-clean.service
-Thu 2026-10-01 20:35:43 UTC 8h left           Thu 2026-10-01 06:00:32 UTC 5h 39min ago fwupd-refresh.timer            fwupd-refresh.service
+Thu 2026-10-01 13:02:25 UTC 1h 20min left     Thu 2026-10-01 06:38:49 UTC 5h 3min ago  ua-timer.timer                 ua-timer.service
+Thu 2026-10-01 13:54:05 UTC 2h 11min left     Thu 2026-10-01 01:32:52 UTC 10h ago      certbot.timer                  certbot.service
+Thu 2026-10-01 15:08:12 UTC 3h 25min left     Thu 2026-10-01 03:27:24 UTC 8h ago       motd-news.timer                motd-news.service
+Thu 2026-10-01 15:08:45 UTC 3h 26min left     Wed 2026-09-30 18:36:41 UTC 17h ago      apt-daily.timer                apt-daily.service
+Thu 2026-10-01 15:23:49 UTC 3h 41min left     Wed 2026-09-30 15:23:49 UTC 20h ago      update-notifier-download.timer update-notifier-download.service
+Thu 2026-10-01 15:36:49 UTC 3h 54min left     Wed 2026-09-30 15:36:49 UTC 20h ago      systemd-tmpfiles-clean.timer   systemd-tmpfiles-clean.service
+Thu 2026-10-01 20:35:43 UTC 8h left           Thu 2026-10-01 06:00:32 UTC 5h 41min ago fwupd-refresh.timer            fwupd-refresh.service
 Fri 2026-10-02 00:00:00 UTC 12h left          Thu 2026-10-01 00:00:01 UTC 11h ago      dpkg-db-backup.timer           dpkg-db-backup.service
 Fri 2026-10-02 00:00:00 UTC 12h left          Thu 2026-10-01 00:00:01 UTC 11h ago      logrotate.timer                logrotate.service
 Fri 2026-10-02 00:25:14 UTC 12h left          Thu 2026-10-01 02:10:22 UTC 9h ago       man-db.timer                   man-db.service
-Fri 2026-10-02 06:12:45 UTC 18h left          Thu 2026-10-01 06:19:33 UTC 5h 20min ago apt-daily-upgrade.timer        apt-daily-upgrade.service
+Fri 2026-10-02 06:12:45 UTC 18h left          Thu 2026-10-01 06:19:33 UTC 5h 22min ago apt-daily-upgrade.timer        apt-daily-upgrade.service
 Sun 2026-10-04 03:10:43 UTC 2 days left       Sun 2026-09-27 03:10:49 UTC 4 days ago   e2scrub_all.timer              e2scrub_all.service
 Mon 2026-10-05 00:49:53 UTC 3 days left       Mon 2026-09-28 00:12:52 UTC 3 days ago   fstrim.timer                   fstrim.service
-Fri 2026-10-09 15:16:55 UTC 1 week 1 day left Wed 2026-09-30 14:42:13 UTC 20h ago      update-notifier-motd.timer     update-notifier-motd.service
+Fri 2026-10-09 15:16:55 UTC 1 week 1 day left Wed 2026-09-30 14:42:13 UTC 21h ago      update-notifier-motd.timer     update-notifier-motd.service
 n/a                         n/a               n/a                         n/a          apport-autoreport.timer        apport-autoreport.service
 n/a                         n/a               n/a                         n/a          snapd.snap-repair.timer        snapd.snap-repair.service
 
@@ -178,8 +178,8 @@ Status: inactive
 table ip filter {
 	chain FORWARD {
 		type filter hook forward priority filter; policy accept;
-		iifname "eth0" oifname "tg-relay" ct state related,established counter packets 772211800 bytes 76416785388 accept
-		iifname "tg-relay" oifname "eth0" counter packets 888977200 bytes 65535568980 accept
+		iifname "eth0" oifname "tg-relay" ct state related,established counter packets 772220305 bytes 76417451846 accept
+		iifname "tg-relay" oifname "eth0" counter packets 888987144 bytes 65536288870 accept
 	}
 
 	chain INPUT {
@@ -191,7 +191,7 @@ table ip filter {
 		iifname "tg-relay" meta l4proto tcp ip saddr 10.66.77.2 ip daddr 10.66.77.1 tcp dport 9464 counter packets 40916 bytes 6564121 accept
 		iifname "eth0" meta l4proto tcp tcp dport 9091-9093 counter packets 4421 bytes 233016 drop
 		iifname "eth0" meta l4proto tcp tcp dport 9443-9445 counter packets 5128 bytes 261352 drop
-		meta l4proto udp ip saddr 188.120.254.223 udp dport 51820 counter packets 950080073 bytes 144772056336 accept
+		meta l4proto udp ip saddr 188.120.254.223 udp dport 51820 counter packets 950090274 bytes 144773540864 accept
 		meta l4proto udp udp dport 51820 counter packets 4 bytes 612 drop
 		meta l4proto tcp tcp dport 9464 counter packets 122 bytes 6252 drop
 	}
@@ -208,7 +208,7 @@ table ip6 filter {
 table ip nat {
 	chain POSTROUTING {
 		type nat hook postrouting priority srcnat; policy accept;
-		oifname "eth0" ip saddr 10.66.77.0/24 counter packets 43766638 bytes 2626001304 masquerade 
+		oifname "eth0" ip saddr 10.66.77.0/24 counter packets 43767131 bytes 2626030884 masquerade 
 	}
 
 	chain PREROUTING {
@@ -218,18 +218,18 @@ table ip nat {
 table ip mangle {
 	chain FORWARD {
 		type filter hook forward priority mangle; policy accept;
-		oifname "tg-relay" meta l4proto tcp tcp flags & (syn|rst) == syn counter packets 34304368 bytes 2058262080 tcp option maxseg size set rt mtu
+		oifname "tg-relay" meta l4proto tcp tcp flags & (syn|rst) == syn counter packets 34304865 bytes 2058291900 tcp option maxseg size set rt mtu
 	}
 
 	chain OUTPUT {
 		type route hook output priority mangle; policy accept;
-		oifname "tg-relay" meta l4proto tcp tcp flags & (syn|rst) == syn counter packets 805336 bytes 48320160 tcp option maxseg size set rt mtu
+		oifname "tg-relay" meta l4proto tcp tcp flags & (syn|rst) == syn counter packets 805339 bytes 48320340 tcp option maxseg size set rt mtu
 	}
 }
 table inet telegram_nfqws {
 	chain post {
 		type filter hook postrouting priority srcnat + 1; policy accept;
-		oifname "eth0" tcp sport 443 ct reply packets 1-20 meta mark & 0x40000000 == 0x00000000 counter packets 10064345 bytes 4680396127 queue flags bypass to 210 comment "telegram-nfqws"
+		oifname "eth0" tcp sport 443 ct reply packets 1-20 meta mark & 0x40000000 == 0x00000000 counter packets 10064716 bytes 4680940272 queue flags bypass to 210 comment "telegram-nfqws"
 	}
 
 	chain predefrag {
@@ -238,7 +238,7 @@ table inet telegram_nfqws {
 	}
 }
 ===== IPTABLES =====
-# Generated by iptables-save v1.8.7 on Thu Oct  1 11:39:46 2026
+# Generated by iptables-save v1.8.7 on Thu Oct  1 11:42:15 2026
 *mangle
 :PREROUTING ACCEPT [0:0]
 :INPUT ACCEPT [0:0]
@@ -248,8 +248,8 @@ table inet telegram_nfqws {
 -A FORWARD -o tg-relay -p tcp -m tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
 -A OUTPUT -o tg-relay -p tcp -m tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
 COMMIT
-# Completed on Thu Oct  1 11:39:46 2026
-# Generated by iptables-save v1.8.7 on Thu Oct  1 11:39:46 2026
+# Completed on Thu Oct  1 11:42:15 2026
+# Generated by iptables-save v1.8.7 on Thu Oct  1 11:42:15 2026
 *filter
 :INPUT ACCEPT [0:0]
 :FORWARD ACCEPT [0:0]
@@ -267,8 +267,8 @@ COMMIT
 -A FORWARD -i eth0 -o tg-relay -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 -A FORWARD -i tg-relay -o eth0 -j ACCEPT
 COMMIT
-# Completed on Thu Oct  1 11:39:46 2026
-# Generated by iptables-save v1.8.7 on Thu Oct  1 11:39:46 2026
+# Completed on Thu Oct  1 11:42:15 2026
+# Generated by iptables-save v1.8.7 on Thu Oct  1 11:42:15 2026
 *nat
 :PREROUTING ACCEPT [0:0]
 :INPUT ACCEPT [0:0]
@@ -276,8 +276,8 @@ COMMIT
 :POSTROUTING ACCEPT [0:0]
 -A POSTROUTING -s <REDACTED> -o eth0 -j MASQUERADE
 COMMIT
-# Completed on Thu Oct  1 11:39:46 2026
-# Generated by ip6tables-save v1.8.7 on Thu Oct  1 11:39:46 2026
+# Completed on Thu Oct  1 11:42:15 2026
+# Generated by ip6tables-save v1.8.7 on Thu Oct  1 11:42:15 2026
 *filter
 :INPUT ACCEPT [0:0]
 :FORWARD ACCEPT [0:0]
@@ -287,7 +287,7 @@ COMMIT
 -A INPUT -p udp -m udp --dport 51820 -j DROP
 -A INPUT -p tcp -m tcp --dport 9464 -j DROP
 COMMIT
-# Completed on Thu Oct  1 11:39:46 2026
+# Completed on Thu Oct  1 11:42:15 2026
 ===== WIREGUARD =====
 interface: tg-relay
   public key: <B64_REDACTED>
@@ -297,8 +297,8 @@ interface: tg-relay
 peer: <B64_REDACTED>
   endpoint: 188.120.254.223:35168
   allowed ips: 10.66.77.2/32
-  latest handshake: 56 seconds ago
-  transfer: 110.05 GiB received, 244.04 GiB sent
+  latest handshake: 1 minute, 25 seconds ago
+  transfer: 110.05 GiB received, 244.05 GiB sent
 ===== DOCKER =====
 ===== DOCKER COMPOSE =====
 ===== PACKAGES =====

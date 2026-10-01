@@ -1,0 +1,19 @@
+[Unit]
+Description=Telemt Yandex mask
+Wants=network-online.target wg-quick@tg-relay.service
+After=network-online.target wg-quick@tg-relay.service
+
+[Service]
+Type=simple
+User=telemt
+Group=telemt
+WorkingDirectory=/opt/telemt-yandex
+ExecStart=/usr/bin/telemt /etc/telemt/telemt-yandex.toml
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_ADMIN
+
+[Install]
+WantedBy=multi-user.target

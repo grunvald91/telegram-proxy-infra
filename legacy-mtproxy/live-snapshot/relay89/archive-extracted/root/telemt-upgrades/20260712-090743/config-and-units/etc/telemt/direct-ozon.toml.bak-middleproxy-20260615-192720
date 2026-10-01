@@ -1,0 +1,45 @@
+[general]
+use_middle_proxy = true
+middle_proxy_nat_ip = "89.125.90.101"
+data_path = "/var/lib/telemt/direct-ozon"
+
+[general.links]
+public_host = "cdn.servgo.ru"
+public_port = 443
+
+[general.modes]
+classic = false
+secure = false
+tls = true
+
+[server]
+port = 9446
+
+[[server.listeners]]
+ip = "127.0.0.1"
+
+[server.api]
+enabled = true
+listen = "127.0.0.1:9096"
+whitelist = ["127.0.0.1/32"]
+
+[censorship]
+tls_domain = "xapi.ozon.ru"
+mask = true
+mask_host = "xapi.ozon.ru"
+mask_port = 443
+tls_emulation = true
+unknown_sni_action = "mask"
+mask_shape_hardening = true
+mask_shape_hardening_aggressive_mode = true
+mask_relay_idle_timeout_ms = 3600000
+
+[timeouts]
+relay_idle_policy_v2_enabled = true
+relay_client_idle_soft_secs = 900
+relay_client_idle_hard_secs = 3600
+<B64_REDACTED> = 120
+
+[access.users]
+artur_ozon1 = "<HEX_REDACTED>"
+artur_ozon2 = "<HEX_REDACTED>"
