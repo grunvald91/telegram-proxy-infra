@@ -165,7 +165,7 @@ copy_binary "$RELAY89_HOST" "$RELAY89_PASSWORD" "$ROOT/relay89" /opt/xray/xray x
 
 python3 - <<'PY'
 from pathlib import Path
-import hashlib, re, shutil
+import hashlib, re, shutil, tarfile, os
 
 srcroot=Path('/tmp/proxy-snapshot')
 dstroot=Path('legacy-mtproxy/live-snapshot')
@@ -205,6 +205,48 @@ def sanitize(text):
         out.append(line)
     return '\n'.join(out)+'\n'
 
+# Expand small historical tar.gz bundles into a safe temporary subtree so their
+# recoverable config contents can be sanitized and committed without storing the
+# opaque archive itself.
+for server in ('server188','relay89'):
+    root=srcroot/server
+    archives=list(root.rglob('*.tar.gz'))
+    for archive in archives:
+        try:
+            if archive.stat().st_size > 20_000_000:
+                continue
+            rel_archive=archive.relative_to(root)
+            name=str(rel_archive)
+            if name.endswith('.tar.gz'):
+                name=name[:-7]
+            outbase=root/'archive-extracted'/name
+            with tarfile.open(archive, 'r:gz') as tf:
+                total=0
+                for member in tf.getmembers():
+                    if not member.isfile():
+                        continue
+                    if member.size < 0 or member.size > 20_000_000:
+                        continue
+                    total += member.size
+                    if total > 50_000_000:
+                        break
+                    parts=Path(member.name).parts
+                    if member.name.startswith('/') or '..' in parts:
+                        continue
+                    src=tf.extractfile(member)
+                    if src is None:
+                        continue
+                    data=src.read()
+                    dest=outbase/Path(member.name)
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    dest.write_bytes(data)
+                    try:
+                        os.chmod(dest, member.mode & 0o777)
+                    except OSError:
+                        pass
+        except (tarfile.TarError, OSError):
+            pass
+
 manifest=[]
 for server in ('server188','relay89'):
     root=srcroot/server
@@ -215,9 +257,10 @@ for server in ('server188','relay89'):
         raw=p.read_bytes()
         dest=dstroot/server/rel
         lname=p.name.lower()
+        public_cert = lname in ('fullchain.pem','cert.pem','chain.pem')
         forbidden=(
-            lname.endswith(('.key','.pem','.p12','.pfx','.jks','.kdbx')) or
-            lname in ('id_rsa','id_ed25519','shadow','gshadow') or
+            lname.endswith(('.key','.p12','.pfx','.jks','.kdbx')) or
+            lname in ('id_rsa','id_ed25519','shadow','gshadow','privkey.pem') or
             'privatekey' in lname
         )
         if forbidden:
@@ -227,6 +270,19 @@ for server in ('server188','relay89'):
             dest.parent.mkdir(parents=True,exist_ok=True)
             dest.write_bytes(raw)
             manifest.append(f'{server}/{rel}|binary_saved|sha256={hashlib.sha256(raw).hexdigest()}|size={len(raw)}')
+            continue
+        if public_cert:
+            try:
+                cert_text=raw.decode('ascii')
+            except UnicodeDecodeError:
+                manifest.append(f'{server}/{rel}|public_cert_skipped|sha256={hashlib.sha256(raw).hexdigest()}|size={len(raw)}')
+                continue
+            if 'PRIVATE KEY' in cert_text:
+                manifest.append(f'{server}/{rel}|SECRET_FILE_SKIPPED|sha256={hashlib.sha256(raw).hexdigest()}|size={len(raw)}')
+                continue
+            dest.parent.mkdir(parents=True,exist_ok=True)
+            dest.write_bytes(raw)
+            manifest.append(f'{server}/{rel}|public_cert_saved|sha256={hashlib.sha256(raw).hexdigest()}|size={len(raw)}')
             continue
         try:
             text=raw.decode('utf-8')
@@ -301,4 +357,4 @@ if bad:
     sys.exit(1)
 PY
 
-# snapshot-trigger: v7
+# snapshot-trigger: v8
