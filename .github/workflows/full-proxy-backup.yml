@@ -2,6 +2,11 @@ name: Full Proxy Backup v2
 
 "on":
   workflow_dispatch: {}
+  push:
+    branches:
+      - main
+    paths:
+      - scripts/full_snapshot.sh
 
 permissions:
   contents: write
@@ -52,4 +57,5 @@ jobs:
             exit 0
           fi
           git commit -m "backup: full sanitized proxy infrastructure snapshot"
+          git pull --rebase origin main
           git push origin HEAD:main
