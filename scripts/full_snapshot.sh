@@ -233,15 +233,47 @@ dstroot.mkdir(parents=True,exist_ok=True)
 PY
 
 # Fail closed if obvious secret material remains.
-found=0
-while IFS= read -r -d '' f; do
-  if grep -Iq . "$f"; then
-    if grep -nEi       'BEGIN (OPENSSH|RSA|EC|DSA|PRIVATE) PRIVATE KEY|PrivateKey[[:space:]]*=[[:space:]]*[^<]|PresharedKey[[:space:]]*=[[:space:]]*[^<]|password[[:space:]]*=[[:space:]]*[^<[:space:]]|secret[[:space:]]*=[[:space:]]*[0-9A-Za-z]'       "$f" >/dev/null; then
-      echo "Possible unredacted secret in $f" >&2
-      found=1
-    fi
-  fi
-done < <(find "$OUT" -type f -print0)
-[ "$found" -eq 0 ]
+python3 - <<'PY'
+from pathlib import Path
+import re, sys
 
-# snapshot-trigger: v2
+root = Path('legacy-mtproxy/live-snapshot')
+bad = []
+
+private_marker = re.compile(r'-----BEGIN (?:OPENSSH|RSA|EC|DSA|PRIVATE) PRIVATE KEY-----', re.I)
+assignment = re.compile(
+    r'(?i)^\s*([^#\n]*(?:private[_-]?key|preshared[_-]?key|password|passwd|secret|token|api[_-]?key|credential|uuid)[^=:\n]*)\s*[=:]\s*(.*?)\s*$'
+)
+allowed_prefixes = (
+    '<REDACTED>',
+    '<B64_REDACTED>',
+    '<HEX_REDACTED>',
+    '<PRIVATE_KEY_BLOCK_REDACTED>',
+)
+
+for p in root.rglob('*'):
+    if not p.is_file() or p.name == 'MANIFEST.sha256.txt':
+        continue
+    try:
+        text = p.read_text(errors='strict')
+    except (UnicodeDecodeError, OSError):
+        continue
+    if private_marker.search(text):
+        bad.append((p, 'private-key block'))
+        continue
+    for lineno, line in enumerate(text.splitlines(), 1):
+        m = assignment.match(line)
+        if not m:
+            continue
+        value = m.group(2).strip().strip('"\'')
+        if value and not value.startswith(allowed_prefixes):
+            bad.append((p, f'credential-like assignment at line {lineno}'))
+            break
+
+if bad:
+    for p, why in bad:
+        print(f'Possible unredacted secret in {p}: {why}', file=sys.stderr)
+    sys.exit(1)
+PY
+
+# snapshot-trigger: v3
