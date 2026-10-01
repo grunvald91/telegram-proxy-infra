@@ -1,0 +1,110 @@
+name: Verify and Export RU WEB Proxy
+
+"on":
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/verify-export-web-proxy-ru.yml
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      SERVER188_HOST: "188.120.254.223"
+      RELAY89_HOST: "89.125.90.101"
+      SERVER188_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      RELAY89_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+
+    steps:
+      - name: Install SSH helper
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+
+      - name: Read deployed client values from relay89
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$RELAY89_PASSWORD"
+          OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10"
+
+          BASE_PATH="$(sshpass -e ssh $OPTS "root@$RELAY89_HOST" "python3 -c 'import json; print(json.load(open("/etc/tproxy-server-ru/config.json"))["base_path"])'")"
+          WEB_SECRET="$(sshpass -e ssh $OPTS "root@$RELAY89_HOST" "python3 -c 'import json; print(json.load(open("/etc/tproxy-server-ru/profiles.json"))["profiles"][0]["secret"])'")"
+
+          test -n "$BASE_PATH"
+          test -n "$WEB_SECRET"
+          echo "::add-mask::$BASE_PATH"
+          echo "::add-mask::$WEB_SECRET"
+          echo "BASE_PATH=$BASE_PATH" >> "$GITHUB_ENV"
+          echo "WEB_SECRET=$WEB_SECRET" >> "$GITHUB_ENV"
+
+      - name: Verify foreign relay services
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$RELAY89_PASSWORD"
+          OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10"
+          sshpass -e ssh $OPTS "root@$RELAY89_HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          systemctl is-active --quiet tproxy-server-ru.service
+          systemctl is-active --quiet mtproxy-ru.service
+          systemctl is-active --quiet tproxy-firewall-ru.service
+          curl --fail --silent --output /dev/null http://127.0.0.1:8085/readyz
+          ss -lntp | grep -q '127.0.0.1:8084'
+          ss -lntp | grep -q '10.66.77.1:8082'
+          ss -lntp | grep -q '127.0.0.1:3002'
+          ss -lntp | grep -q ':2399'
+          D="$(journalctl -u mtproxy-ru.service --since -5min --no-pager | grep -c 'Disconnected from RPC Middle-End' || true)"
+          test "$D" -lt 10
+          echo "relay89_checks=ok"
+          REMOTE
+
+      - name: Verify complete path from RU edge through WireGuard
+        shell: bash
+        run: |
+          set -euo pipefail
+          BRIDGE="$(python3 -c 'import base64,hashlib,hmac,os; b=os.environ["BASE_PATH"]; s=bytes.fromhex(os.environ["WEB_SECRET"]); c=("tdesktop-web-proxy-bridge-v2\nbandbook.site\n"+b).encode(); print(base64.urlsafe_b64encode(hmac.new(s,c,hashlib.sha256).digest()).decode().rstrip("="))')"
+          echo "::add-mask::$BRIDGE"
+
+          export SSHPASS="$SERVER188_PASSWORD"
+          OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10"
+
+          sshpass -e ssh $OPTS "root@$SERVER188_HOST"             "BASE_PATH='$BASE_PATH' BRIDGE='$BRIDGE' bash -s" <<'REMOTE'
+          set -euo pipefail
+
+          systemctl is-active --quiet tproxy-web-ru-edge-firewall.service
+          ss -lntp | grep -q '10.66.77.2:3001'
+
+          ROOT_CODE="$(curl --silent --show-error --max-time 15 --resolve bandbook.site:443:127.0.0.1             --output /tmp/ru-root.html --write-out '%{http_code}' https://bandbook.site/)"
+          DECOY_CODE="$(curl --silent --show-error --max-time 15 --resolve bandbook.site:443:127.0.0.1             --output /tmp/ru-decoy.html --write-out '%{http_code}' "https://bandbook.site/$BASE_PATH/not-a-real-route")"
+          test "$ROOT_CODE" = "$DECOY_CODE"
+
+          BRIDGE_CODE="$(curl --silent --show-error --max-time 20 --resolve bandbook.site:443:127.0.0.1             --output /tmp/ru-bridge.html --write-out '%{http_code}' "https://bandbook.site/$BASE_PATH/?bridge=$BRIDGE")"
+          test "$BRIDGE_CODE" = "200"
+          grep -q 'Telegram' /tmp/ru-bridge.html
+
+          rm -f /tmp/ru-root.html /tmp/ru-decoy.html /tmp/ru-bridge.html
+          echo "edge_to_wireguard_to_relay_bridge=ok"
+          REMOTE
+
+      - name: Create client configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p client-output
+          MARKED="$(python3 -c 'import base64,os; print(base64.urlsafe_b64encode(b"\x70"+bytes.fromhex(os.environ["WEB_SECRET"])).decode().rstrip("="))')"
+          echo "::add-mask::$MARKED"
+          printf '%s\n'             "Telegram WEB proxy via RU edge -> WireGuard -> foreign relay"             "Server for manual entry: bandbook.site/$BASE_PATH"             "Secret for manual entry: $WEB_SECRET"             "Direct link: tg://webproxy?server=bandbook.site%2F$BASE_PATH&secret=$MARKED"             "HTTPS link: https://t.me/webproxy?server=bandbook.site%2F$BASE_PATH&secret=$MARKED"             "Path: client -> 188.120.254.223 -> WireGuard -> 89.125.90.101 -> tproxy-server-ru -> mtproxy-ru -> Telegram"             > client-output/web-proxy-ru-client.txt
+          chmod 0600 client-output/web-proxy-ru-client.txt
+
+      - name: Upload client artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-proxy-ru-client
+          path: client-output/web-proxy-ru-client.txt
+          retention-days: 7
+          if-no-files-found: error
