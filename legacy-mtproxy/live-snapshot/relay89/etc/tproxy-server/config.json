@@ -1,0 +1,10 @@
+{
+  "public_hostname": "cdn.servgo.ru",
+  "base_path": "c3hhpzagkvw7oo3o",
+  "listen": "127.0.0.1:8080",
+  "admin_listen": "127.0.0.1:8081",
+  "public_upstream": "http://127.0.0.1:3000",
+  "token_key_file": <REDACTED>
+  "static_routes": "exact",
+  "profiles_file": "/run/credentials/tproxy-server.service/profiles.json"
+}

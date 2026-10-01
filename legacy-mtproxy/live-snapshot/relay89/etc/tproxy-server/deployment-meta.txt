@@ -1,0 +1,5 @@
+hostname=cdn.servgo.ru
+base_path=c3hhpzagkvw7oo3o
+tproxy_commit=<HEX_REDACTED>
+deployed_utc=2026-10-01T13:07:15Z
+public_site_sha256=<HEX_REDACTED>
