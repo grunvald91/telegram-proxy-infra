@@ -103,6 +103,8 @@ jobs:
             /usr/local/sbin/telegram*
             /root/start-mtproxy.sh
             /root/mtproxy-info.txt
+            /root/mtproxy-relay-links.txt
+            /etc/wireguard
             /root/proxy-backups
             /root/telemt-upgrades
             /root/proxy-hotfix-*
@@ -126,6 +128,8 @@ jobs:
             /etc/telemt
             /etc/mtg
             /etc/zapret2
+            /etc/xray/config.json
+            /etc/wireguard
             /etc/sysctl.d/99-telegram-proxy-keepalive.conf
             /etc/sysctl.d/99-mtproxy-tuning.conf
             /usr/local/sbin/direct-mtproxy*
@@ -215,8 +219,7 @@ jobs:
                   forbidden=(
                       lname.endswith(('.key','.pem','.p12','.pfx','.jks','.kdbx')) or
                       lname in ('id_rsa','id_ed25519','shadow','gshadow') or
-                      'privatekey' in lname or
-                      str(rel).startswith('etc/wireguard/')
+                      'privatekey' in lname
                   )
                   if forbidden:
                       manifest.append(f'{server}/{rel}|SECRET_FILE_SKIPPED|sha256={hashlib.sha256(raw).hexdigest()}|size={len(raw)}')
@@ -249,8 +252,8 @@ jobs:
               'This snapshot intentionally keeps as much of the recoverable proxy infrastructure as practical.\n\n'
               'Included: active configs, systemd units, scripts, historical proxy backups, nginx/telemt/mtg/zapret files, '
               'runtime state, firewall/routing information, package/service inventories and selected binaries.\n\n'
-              'Excluded/redacted: SSH passwords/keys, TLS private keys, WireGuard private keys, API tokens, proxy secrets, '
-              'UUIDs/credentials and other obvious secret values. Xray config contents are not collected.\n'
+              'Excluded/redacted: SSH passwords/keys, TLS private keys, WireGuard PrivateKey/PresharedKey values, API tokens, '
+              'proxy secrets, UUIDs/credentials and other obvious secret values. Xray and WireGuard configuration structure is preserved after redaction.\n'
           )
           (dstroot/'MANIFEST.sha256.txt').write_text('\n'.join(manifest)+'\n')
           PY
