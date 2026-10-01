@@ -1,11 +1,6 @@
 name: Verify and Export RU WEB Proxy
 
 "on":
-  push:
-    branches:
-      - main
-    paths:
-      - .github/workflows/verify-export-web-proxy-ru.yml
   workflow_dispatch: {}
 
 permissions:
