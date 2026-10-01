@@ -2,11 +2,6 @@ name: Export WEB Proxy Client Config
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths:
-      - .github/workflows/export-web-proxy-client.yml
 
 permissions:
   contents: read
