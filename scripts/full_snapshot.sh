@@ -67,10 +67,17 @@ copy_binary() {
   local host="$1" pass="$2" target="$3" remote="$4" name="$5"
   export SSHPASS="$pass"
   mkdir -p "$target/binaries"
+  echo "Trying binary $name from $host..."
   local size
-  size="$(sshpass -e ssh "${ssh_opts[@]}" "root@$host"     "test -f '$remote' && stat -c %s '$remote' || echo 0")"
+  size="$(timeout 20s sshpass -e ssh "${ssh_opts[@]}" "root@$host" \
+    "test -f '$remote' && stat -c %s '$remote' || echo 0" 2>/dev/null || echo 0)"
   if [[ "$size" =~ ^[0-9]+$ ]] && [ "$size" -gt 0 ] && [ "$size" -le 25000000 ]; then
-    sshpass -e scp -q "${ssh_opts[@]}" "root@$host:$remote" "$target/binaries/$name"
+    if ! timeout 90s sshpass -e scp -q "${ssh_opts[@]}" "root@$host:$remote" "$target/binaries/$name"; then
+      echo "Binary $name skipped after copy timeout/failure"
+      rm -f "$target/binaries/$name"
+    fi
+  else
+    echo "Binary $name absent or too large; skipped"
   fi
 }
 
@@ -131,10 +138,14 @@ read -r -d '' FILES_89 <<'EOF' || true
 /root/nginx-backup-*
 EOF
 
+echo "Collecting files from server188..."
 collect_files "$SERVER188_HOST" "$SERVER188_PASSWORD" "$ROOT/server188" "$FILES_188"
+echo "Collecting runtime state from server188..."
 collect_state "$SERVER188_HOST" "$SERVER188_PASSWORD" "$ROOT/server188"
 
+echo "Collecting files from relay89..."
 collect_files "$RELAY89_HOST" "$RELAY89_PASSWORD" "$ROOT/relay89" "$FILES_89"
+echo "Collecting runtime state from relay89..."
 collect_state "$RELAY89_HOST" "$RELAY89_PASSWORD" "$ROOT/relay89"
 
 copy_binary "$SERVER188_HOST" "$SERVER188_PASSWORD" "$ROOT/server188" /usr/bin/telemt telemt
@@ -276,4 +287,4 @@ if bad:
     sys.exit(1)
 PY
 
-# snapshot-trigger: v3
+# snapshot-trigger: v4
