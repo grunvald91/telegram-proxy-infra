@@ -380,3 +380,5 @@ PY
 # post-web-proxy-backup-trigger
 
 # snapshot-trigger: ru-edge-web-v1
+
+# snapshot-run: ru-edge-web-final
