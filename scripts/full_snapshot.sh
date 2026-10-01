@@ -243,3 +243,5 @@ while IFS= read -r -d '' f; do
   fi
 done < <(find "$OUT" -type f -print0)
 [ "$found" -eq 0 ]
+
+# snapshot-trigger: v2
