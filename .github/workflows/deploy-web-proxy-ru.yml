@@ -2,6 +2,11 @@ name: Deploy WEB Proxy via RU Edge
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - scripts/deploy_web_proxy_ru_path.sh
 
 permissions:
   contents: read
