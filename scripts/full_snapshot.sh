@@ -301,4 +301,4 @@ if bad:
     sys.exit(1)
 PY
 
-# snapshot-trigger: v6
+# snapshot-trigger: v7
