@@ -1,0 +1,131 @@
+name: Deploy WEB Proxy via RU Edge
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SERVER188_HOST: "188.120.254.223"
+      RELAY89_HOST: "89.125.90.101"
+      SERVER188_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      RELAY89_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate credentials
+        run: |
+          set -euo pipefail
+          test -n "$SERVER188_PASSWORD"
+          test -n "$RELAY89_PASSWORD"
+
+      - name: Install SSH helper
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+
+      - name: Generate private deployment credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          BASE_PATH="$(head -c 10 /dev/urandom | base32 | tr 'A-Z' 'a-z')"
+          SECRET="$(openssl rand -hex 16)"
+          echo "::add-mask::$BASE_PATH"
+          echo "::add-mask::$SECRET"
+          echo "BASE_PATH=$BASE_PATH" >> "$GITHUB_ENV"
+          echo "WEB_SECRET=$SECRET" >> "$GITHUB_ENV"
+
+      - name: Prepare BandBook mirror on RU edge
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$SERVER188_PASSWORD"
+          OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10"
+          sshpass -e scp $OPTS scripts/deploy_web_proxy_ru_path.sh "root@$SERVER188_HOST:/tmp/deploy_web_proxy_ru_path.sh"
+
+          # Only install the WG mirror first, without exposing the public prefix yet.
+          sshpass -e ssh $OPTS "root@$SERVER188_HOST" 'bash -s' <<REMOTE
+          set -euo pipefail
+          test -f /etc/nginx/sites-enabled/bandbook
+          if ss -lntH "sport = :3001" | grep -q .; then
+            echo "port 3001 already busy" >&2; exit 1
+          fi
+          cat > /etc/nginx/conf.d/tproxy-web-ru-mirror-only.conf <<'EOF'
+          server {
+              listen 10.66.77.2:3001;
+              server_name _;
+              root /var/www/bandbook;
+              index index.html;
+              client_max_body_size 64M;
+              location /assets/ { expires 1y; add_header Cache-Control "public, immutable"; try_files \$uri =404; }
+              location / { try_files \$uri \$uri/ /index.html; }
+          }
+          EOF
+          nginx -t
+          systemctl reload nginx
+REMOTE
+
+      - name: Deploy independent relay on foreign server
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$RELAY89_PASSWORD"
+          OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10"
+          sshpass -e scp $OPTS scripts/deploy_web_proxy_ru_path.sh "root@$RELAY89_HOST:/tmp/deploy_web_proxy_ru_path.sh"
+          sshpass -e ssh $OPTS "root@$RELAY89_HOST"             "/tmp/deploy_web_proxy_ru_path.sh relay89 '$BASE_PATH' '$WEB_SECRET'"
+
+      - name: Activate public hidden path on RU edge
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$SERVER188_PASSWORD"
+          OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10"
+          # Remove temporary mirror-only include; edge role recreates mirror plus public route atomically.
+          sshpass -e ssh $OPTS "root@$SERVER188_HOST"             "rm -f /etc/nginx/conf.d/tproxy-web-ru-mirror-only.conf && /tmp/deploy_web_proxy_ru_path.sh edge188 '$BASE_PATH' '$WEB_SECRET'"
+
+      - name: Verify public route enters RU edge
+        shell: bash
+        run: |
+          set -euo pipefail
+          # bandbook.site must resolve publicly and the hidden prefix must return a normal site response.
+          IP="$(getent ahostsv4 bandbook.site | awk 'NR==1{print $1}')"
+          echo "bandbook.site resolves to $IP"
+          test "$IP" = "$SERVER188_HOST"
+
+          ROOT_CODE="$(curl --silent --output /tmp/root.html --write-out '%{http_code}' https://bandbook.site/)"
+          HIDDEN_CODE="$(curl --silent --output /tmp/hidden.html --write-out '%{http_code}' "https://bandbook.site/$BASE_PATH/not-a-real-route")"
+          test "$ROOT_CODE" = "$HIDDEN_CODE"
+
+      - name: Create private client configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p client-output
+          MARKED="$(python3 - <<'PY'
+          import base64, os
+          raw=bytes.fromhex(os.environ['WEB_SECRET'])
+          print(base64.urlsafe_b64encode(b'\x70'+raw).decode().rstrip('='))
+          PY
+          )"
+          cat > client-output/web-proxy-ru-client.txt <<EOF
+          Telegram WEB proxy via RU edge -> WireGuard -> foreign relay
+          Server for manual entry: bandbook.site/$BASE_PATH
+          Secret for manual entry: $WEB_SECRET
+          Direct link: tg://webproxy?server=bandbook.site%2F$BASE_PATH&secret=$MARKED
+          HTTPS link: https://t.me/webproxy?server=bandbook.site%2F$BASE_PATH&secret=$MARKED
+          Path: client -> 188.120.254.223 -> WireGuard -> 89.125.90.101 -> tproxy-server -> official MTProxy -> Telegram
+          EOF
+          chmod 0600 client-output/web-proxy-ru-client.txt
+
+      - name: Upload private client artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-proxy-ru-client
+          path: client-output/web-proxy-ru-client.txt
+          retention-days: 7
+          if-no-files-found: error
