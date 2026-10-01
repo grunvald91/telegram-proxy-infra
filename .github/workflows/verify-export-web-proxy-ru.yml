@@ -59,10 +59,10 @@ jobs:
           systemctl is-active --quiet mtproxy-ru.service
           systemctl is-active --quiet tproxy-firewall-ru.service
           curl --fail --silent --output /dev/null http://127.0.0.1:8085/readyz
-          ss -lntp | grep -q '127.0.0.1:8084'
-          ss -lntp | grep -q '10.66.77.1:8082'
-          ss -lntp | grep -q '127.0.0.1:3002'
-          ss -lntp | grep -q ':2399'
+          ss -lntp | grep '127.0.0.1:8084' >/dev/null
+          ss -lntp | grep '10.66.77.1:8082' >/dev/null
+          ss -lntp | grep '127.0.0.1:3002' >/dev/null
+          ss -lntp | grep ':2399' >/dev/null
           D="$(journalctl -u mtproxy-ru.service --since -5min --no-pager | grep -c 'Disconnected from RPC Middle-End' || true)"
           test "$D" -lt 10
           echo "relay89_checks=ok"
@@ -80,7 +80,7 @@ jobs:
           set -euo pipefail
 
           systemctl is-active --quiet tproxy-web-ru-edge-firewall.service
-          ss -lntp | grep -q '10.66.77.2:3001'
+          ss -lntp | grep '10.66.77.2:3001' >/dev/null
 
           ROOT_CODE="$(curl --silent --show-error --max-time 15             --resolve bandbook.site:443:127.0.0.1             --output /tmp/ru-root.html             --write-out '%{http_code}'             https://bandbook.site/)"
 
