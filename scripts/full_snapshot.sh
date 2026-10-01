@@ -59,6 +59,7 @@ echo "===== RELEVANT FILE TREE ====="
 find /etc/nginx /etc/telemt /etc/mtg /etc/zapret2 /etc/tinyproxy /etc/xray /etc/wireguard /opt/mtproto-canary \
      /root/proxy-backups /root/telemt-upgrades /root/proxy-hotfix-* /root/nginx-backup-* \
      -maxdepth 6 -printf '%y %m %u:%g %s %p\n' 2>/dev/null
+exit 0
 REMOTE
 }
 
