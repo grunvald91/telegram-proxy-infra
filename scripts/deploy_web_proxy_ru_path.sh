@@ -362,3 +362,5 @@ EOF
     die "unknown role: $ROLE"
     ;;
 esac
+
+# deploy-trigger: ru-web-v1
