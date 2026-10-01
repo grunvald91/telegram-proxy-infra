@@ -1,0 +1,51 @@
+name: WEB Proxy deploy progress
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/web-proxy-progress.yml
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      TARGET_HOST: "89.125.90.101"
+      TARGET_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+
+    steps:
+      - name: Install SSH helper
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+
+      - name: Inspect deploy progress
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$TARGET_PASSWORD"
+          OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10"
+          sshpass -e ssh $OPTS "root@$TARGET_HOST" 'bash -s' <<'REMOTE'
+          set +e
+          echo "===== TIME ====="; date -Is
+          echo "===== BUILD/DEPLOY PROCESSES ====="
+          ps -eo pid,etime,comm,args | grep -E 'deploy_web_proxy|make|gcc|cc1|go test|go build|git clone|curl.*go1|apt-get|dpkg' | grep -v grep
+          echo "===== FILES ====="
+          for p in /opt/tproxy-server-src /opt/MTProxy /usr/local/bin/tproxy-server /etc/tproxy-server /etc/mtproxy; do
+            if [ -e "$p" ]; then
+              du -sh "$p" 2>/dev/null || ls -ld "$p"
+            else
+              echo "ABSENT $p"
+            fi
+          done
+          echo "===== PORTS ====="
+          ss -lntp | grep -E ':(2398|3000|8080|8081|8888)[[:space:]]' || true
+          echo "===== NEW UNITS ====="
+          for u in mtproxy.service tproxy-server.service tproxy-firewall.service refresh-mtproxy-config.timer; do
+            printf '%s: ' "$u"; systemctl is-active "$u" 2>/dev/null || true
+          done
+          echo "===== DISK ====="; df -h /
+          REMOTE
