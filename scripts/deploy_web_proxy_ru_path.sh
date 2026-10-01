@@ -248,8 +248,8 @@ EOF
     chmod 0400 "$STATE/profiles.json"
 
     head -c 32 /dev/urandom > "$STATE/token.key"
-    chown root:tproxy "$STATE/token.key"
-    chmod 0440 "$STATE/token.key"
+    chown tproxy:tproxy "$STATE/token.key"
+    chmod 0400 "$STATE/token.key"
 
     cat > "$MTPSTATE/mtproxy.env" <<EOF
 MTPROXY_SECRET=$SECRET
@@ -441,4 +441,4 @@ EOF
     ;;
 esac
 
-# deploy-trigger: ru-web-v7
+# deploy-trigger: ru-web-v8
