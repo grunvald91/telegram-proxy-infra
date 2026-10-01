@@ -72,7 +72,7 @@ copy_binary() {
   size="$(timeout 20s sshpass -e ssh "${ssh_opts[@]}" "root@$host" \
     "test -f '$remote' && stat -c %s '$remote' || echo 0" 2>/dev/null || echo 0)"
   if [[ "$size" =~ ^[0-9]+$ ]] && [ "$size" -gt 0 ] && [ "$size" -le 25000000 ]; then
-    if ! timeout 90s sshpass -e scp -q "${ssh_opts[@]}" "root@$host:$remote" "$target/binaries/$name"; then
+    if ! timeout 30s sshpass -e scp -q "${ssh_opts[@]}" "root@$host:$remote" "$target/binaries/$name"; then
       echo "Binary $name skipped after copy timeout/failure"
       rm -f "$target/binaries/$name"
     fi
@@ -287,4 +287,4 @@ if bad:
     sys.exit(1)
 PY
 
-# snapshot-trigger: v4
+# snapshot-trigger: v5
