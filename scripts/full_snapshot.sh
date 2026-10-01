@@ -91,6 +91,7 @@ read -r -d '' FILES_188 <<'EOF' || true
 /etc/systemd/system/mtproxy*.service
 /etc/systemd/system/telegram*.service
 /etc/systemd/system/caddy*.service
+/etc/systemd/system/tproxy-web-ru-edge-firewall.service
 /etc/systemd/system/nginx.service.d
 /etc/telemt
 /etc/telegram-redsocks.conf
@@ -114,6 +115,7 @@ read -r -d '' FILES_188 <<'EOF' || true
 /root/proxy-hotfix-*
 /root/nginx-backup-*
 /root/tproxy-predeploy-*
+/root/tproxy-ru-edge-predeploy-*
 EOF
 
 read -r -d '' FILES_89 <<'EOF' || true
@@ -129,6 +131,9 @@ read -r -d '' FILES_89 <<'EOF' || true
 /etc/systemd/system/xray.service
 /etc/systemd/system/tproxy-server.service
 /etc/systemd/system/tproxy-firewall.service
+/etc/systemd/system/tproxy-server-ru.service
+/etc/systemd/system/tproxy-firewall-ru.service
+/etc/systemd/system/mtproxy-ru.service
 /etc/systemd/system/refresh-mtproxy-config.service
 /etc/systemd/system/refresh-mtproxy-config.timer
 /etc/systemd/system/mtproxy.service
@@ -138,7 +143,9 @@ read -r -d '' FILES_89 <<'EOF' || true
 /etc/zapret2
 /etc/xray/config.json
 /etc/tproxy-server
+/etc/tproxy-server-ru
 /etc/mtproxy
+/etc/mtproxy-ru
 /etc/wireguard
 /etc/sysctl.d/99-telegram-proxy-keepalive.conf
 /etc/sysctl.d/99-mtproxy-tuning.conf
@@ -371,3 +378,5 @@ PY
 # snapshot-trigger: web-v1
 
 # post-web-proxy-backup-trigger
+
+# snapshot-trigger: ru-edge-web-v1
