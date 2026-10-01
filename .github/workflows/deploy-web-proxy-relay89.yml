@@ -1,0 +1,80 @@
+name: Deploy WEB Proxy Pilot
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: web-proxy-relay89
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      TARGET_HOST: "89.125.90.101"
+      TARGET_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      WEB_PROXY_SECRET: ${{ secrets.WEB_PROXY_SECRET }}
+      TPROXY_HOSTNAME: "cdn.servgo.ru"
+      WEB_PROXY_BASE_PATH: "53wcvyyqhqse3u45"
+      TPROXY_COMMIT: "c8adb8b7c6b7fc46c12ae3acb68be9070c26a8e8"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate required secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -n "$TARGET_PASSWORD" ] || { echo "::error::RELAY89_SSH_PASSWORD is not configured"; exit 1; }
+          [ -n "$WEB_PROXY_SECRET" ] || { echo "::error::WEB_PROXY_SECRET is not configured"; exit 1; }
+          [[ "$WEB_PROXY_SECRET" =~ ^([0-9a-f]{32}|dd[0-9a-f]{32})$ ]] || {
+            echo "::error::WEB_PROXY_SECRET must be 32 lowercase hex chars, optionally prefixed with dd"
+            exit 1
+          }
+
+      - name: Install SSH helper
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+
+      - name: Upload deployer
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$TARGET_PASSWORD"
+          OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10"
+          sshpass -e scp $OPTS web-proxy/deploy-relay89.sh "root@$TARGET_HOST:/tmp/grunvald-webproxy-deploy.sh"
+          sshpass -e ssh $OPTS "root@$TARGET_HOST" 'chmod 700 /tmp/grunvald-webproxy-deploy.sh'
+
+      - name: Deploy isolated WEB proxy pilot
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$TARGET_PASSWORD"
+          OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10"
+          printf '%s\n' "$WEB_PROXY_SECRET" | sshpass -e ssh $OPTS "root@$TARGET_HOST" \
+            "IFS= read -r WEB_PROXY_SECRET; export WEB_PROXY_SECRET; \
+             export TPROXY_HOSTNAME='$TPROXY_HOSTNAME'; \
+             export WEB_PROXY_BASE_PATH='$WEB_PROXY_BASE_PATH'; \
+             export TPROXY_COMMIT='$TPROXY_COMMIT'; \
+             bash /tmp/grunvald-webproxy-deploy.sh"
+
+      - name: Verify public site and local services
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$TARGET_PASSWORD"
+          OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10"
+          sshpass -e ssh $OPTS "root@$TARGET_HOST" 'bash -se' <<'REMOTE'
+          set -euo pipefail
+          systemctl is-active --quiet nginx
+          systemctl is-active --quiet tproxy-server
+          systemctl is-active --quiet mtproxy
+          curl --fail --silent --output /dev/null http://127.0.0.1:8081/healthz
+          curl --fail --silent --output /dev/null http://127.0.0.1:8081/readyz
+          curl --fail --silent --show-error --location --max-time 15 --output /dev/null https://cdn.servgo.ru/
+          echo "verification_success=yes"
+          REMOTE
