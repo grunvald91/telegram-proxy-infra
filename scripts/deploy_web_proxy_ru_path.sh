@@ -404,4 +404,4 @@ EOF
     ;;
 esac
 
-# deploy-trigger: ru-web-v2
+# deploy-trigger: ru-web-v3
