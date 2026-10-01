@@ -1,0 +1,74 @@
+name: Export WEB Proxy Client Config
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/export-web-proxy-client.yml
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      TARGET_HOST: "89.125.90.101"
+      TARGET_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+
+    steps:
+      - name: Install SSH helper
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+
+      - name: Build client file on server without logging secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$TARGET_PASSWORD"
+          OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10"
+          sshpass -e ssh $OPTS "root@$TARGET_HOST" 'python3 -' <<'PY'
+          import base64, json
+          from pathlib import Path
+
+          cfg=json.loads(Path('/etc/tproxy-server/config.json').read_text())
+          profiles=json.loads(Path('/etc/tproxy-server/profiles.json').read_text())
+          profile=profiles['profiles'][0]
+          secret=profile['secret']
+          raw=bytes.fromhex(secret[2:] if secret.startswith('dd') and len(secret)==34 else secret)
+          marked=base64.urlsafe_b64encode(b'\x70'+raw).decode().rstrip('=')
+          host=cfg['public_hostname']
+          base=cfg.get('base_path','')
+          server=host + (('/'+base) if base else '')
+          encoded_server=server.replace('/', '%2F')
+          out=(
+              'Telegram WEB proxy pilot\n'
+              f'Server for manual entry: {server}\n'
+              f'Secret for manual entry: {secret}\n'
+              f'Direct link: tg://webproxy?server={encoded_server}&secret={marked}\n'
+              f'HTTPS link (frontend route may not be registered yet): https://t.me/webproxy?server={encoded_server}&secret={marked}\n'
+          )
+          p=Path('/root/tproxy-web-client-correct.txt')
+          p.write_text(out)
+          p.chmod(0o600)
+          PY
+
+      - name: Retrieve private client file
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$TARGET_PASSWORD"
+          OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10"
+          mkdir -p client-output
+          sshpass -e scp $OPTS "root@$TARGET_HOST:/root/tproxy-web-client-correct.txt" client-output/web-proxy-client.txt
+          chmod 0600 client-output/web-proxy-client.txt
+
+      - name: Upload private client artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-proxy-client-correct
+          path: client-output/web-proxy-client.txt
+          if-no-files-found: error
+          retention-days: 7
