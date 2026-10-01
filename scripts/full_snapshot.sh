@@ -113,6 +113,7 @@ read -r -d '' FILES_188 <<'EOF' || true
 /root/telemt-upgrades
 /root/proxy-hotfix-*
 /root/nginx-backup-*
+/root/tproxy-predeploy-*
 EOF
 
 read -r -d '' FILES_89 <<'EOF' || true
@@ -126,11 +127,18 @@ read -r -d '' FILES_89 <<'EOF' || true
 /etc/systemd/system/direct-mtproxy*.service
 /etc/systemd/system/telegram*.service
 /etc/systemd/system/xray.service
+/etc/systemd/system/tproxy-server.service
+/etc/systemd/system/tproxy-firewall.service
+/etc/systemd/system/refresh-mtproxy-config.service
+/etc/systemd/system/refresh-mtproxy-config.timer
+/etc/systemd/system/mtproxy.service
 /etc/systemd/system/nginx.service.d
 /etc/telemt
 /etc/mtg
 /etc/zapret2
 /etc/xray/config.json
+/etc/tproxy-server
+/etc/mtproxy
 /etc/wireguard
 /etc/sysctl.d/99-telegram-proxy-keepalive.conf
 /etc/sysctl.d/99-mtproxy-tuning.conf
@@ -138,6 +146,9 @@ read -r -d '' FILES_89 <<'EOF' || true
 /usr/local/bin/mtg
 /opt/zapret2/nfqws2
 /opt/xray/xray
+/opt/MTProxy/objs/bin/mtproto-proxy
+/usr/local/bin/tproxy-server
+/usr/local/sbin/refresh-mtproxy-config
 /usr/local/sbin/direct-mtproxy*
 /usr/local/sbin/telegram*
 /root/telemt-upgrades
@@ -357,4 +368,4 @@ if bad:
     sys.exit(1)
 PY
 
-# snapshot-trigger: v8
+# snapshot-trigger: web-v1
