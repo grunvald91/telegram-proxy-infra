@@ -88,3 +88,33 @@ Use:
 `Actions -> Full Proxy Backup v2 -> Run workflow`
 
 The workflow is manual-only after stabilization.
+
+
+## Post-WEB-proxy snapshot — 2026-10-01
+
+After the WEB proxy pilot was deployed, a new full sanitized snapshot completed successfully.
+
+- backup commit: `6153067cb44f338b4ebd011d1fa42ad9ae09ef06`
+- total snapshot files: **321**
+- total snapshot size: **227,062,935 bytes (~227.1 MB)**
+- server188: **176 files**, 108,669,384 bytes
+- relay89: **143 files**, 118,316,289 bytes
+- Git tree result: complete (`truncated=false`)
+
+The new snapshot includes sanitized WEB proxy state:
+- `/etc/tproxy-server/config.json`
+- sanitized `/etc/tproxy-server/profiles.json`
+- `tproxy-server.service`
+- `tproxy-firewall.service`
+- official `mtproxy.service`
+- refresh service/timer
+- official MTProxy runtime config with secret redacted
+- `/usr/local/bin/tproxy-server`
+- official `mtproto-proxy` binary
+- nginx configuration after Mode-B integration
+- pre-deployment recovery snapshots
+
+Secret material remains excluded:
+- `/etc/tproxy-server/token.key` is hash-recorded but not committed;
+- official MTProxy `proxy-secret` is hash-recorded but not committed;
+- WEB profile secret is redacted from committed configuration.
