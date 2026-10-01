@@ -1,0 +1,42 @@
+[Unit]
+Description=PQ TLS masking backend for MTProto canary
+Documentation=https://caddyserver.com/docs/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+User=caddycanary
+Group=caddycanary
+WorkingDirectory=/opt/mtproto-canary
+Environment=XDG_DATA_HOME=/var/lib/caddy-pq-canary/data
+Environment=XDG_CONFIG_HOME=/var/lib/caddy-pq-canary/config
+StateDirectory=caddy-pq-canary
+ExecStart=/opt/caddy-pq/caddy run --environ --config /opt/mtproto-canary/Caddyfile --adapter caddyfile
+ExecReload=/opt/caddy-pq/caddy reload --config /opt/mtproto-canary/Caddyfile --adapter caddyfile --force
+TimeoutStopSec=5s
+LimitNOFILE=1048576
+Restart=on-failure
+RestartSec=3
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

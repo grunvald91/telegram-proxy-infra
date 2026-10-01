@@ -1,0 +1,13 @@
+[Unit]
+Description=Firewall rules for Telegram RF media ingress
+After=network-online.target wg-quick@tg-relay.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/telegram-rf-media-rules start
+ExecStop=/usr/local/sbin/telegram-rf-media-rules stop
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

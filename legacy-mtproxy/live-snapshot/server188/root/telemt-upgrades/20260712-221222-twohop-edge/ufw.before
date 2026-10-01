@@ -1,0 +1,27 @@
+Status: active
+
+     To                         Action      From
+     --                         ------      ----
+[ 1] 80/tcp                     ALLOW IN    Anywhere                  
+[ 2] 443                        ALLOW IN    Anywhere                  
+[ 3] 22/tcp                     ALLOW IN    Anywhere                  
+[ 4] ispmanager                 ALLOW IN    Anywhere                  
+[ 5] 443/tcp                    ALLOW IN    Anywhere                  
+[ 6] 8787/tcp                   ALLOW IN    Anywhere                  
+[ 7] 8888/tcp                   ALLOW IN    155.212.162.47            
+[ 8] 8443/tcp                   ALLOW IN    Anywhere                   # MTProxy relay -> S1
+[ 9] 8888/tcp                   ALLOW IN    157.22.203.28             
+[10] 2052/tcp                   ALLOW IN    Anywhere                  
+[11] 2086/tcp                   ALLOW IN    Anywhere                  
+[12] 8089/tcp                   ALLOW IN    Anywhere                  
+[13] 80/tcp (v6)                ALLOW IN    Anywhere (v6)             
+[14] 443 (v6)                   ALLOW IN    Anywhere (v6)             
+[15] 22/tcp (v6)                ALLOW IN    Anywhere (v6)             
+[16] ispmanager (v6)            ALLOW IN    Anywhere (v6)             
+[17] 443/tcp (v6)               ALLOW IN    Anywhere (v6)             
+[18] 8787/tcp (v6)              ALLOW IN    Anywhere (v6)             
+[19] 8443/tcp (v6)              ALLOW IN    Anywhere (v6)              # MTProxy relay -> S1
+[20] 2052/tcp (v6)              ALLOW IN    Anywhere (v6)             
+[21] 2086/tcp (v6)              ALLOW IN    Anywhere (v6)             
+[22] 8089/tcp (v6)              ALLOW IN    Anywhere (v6)             
+

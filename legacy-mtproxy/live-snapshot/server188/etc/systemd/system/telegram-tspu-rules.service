@@ -1,0 +1,14 @@
+[Unit]
+Description=Persistent Telegram TSPU mitigations for the confirmed client subnet
+After=network-online.target ufw.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/telegram-tspu-rules apply
+ExecReload=/usr/local/sbin/telegram-tspu-rules apply
+ExecStop=/usr/local/sbin/telegram-tspu-rules remove
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

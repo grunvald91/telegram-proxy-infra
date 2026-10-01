@@ -1,0 +1,12 @@
+[Unit]
+Description=Firewall hardening for direct MTProxy
+After=network-online.target nginx.service telemt-direct-sber.service telemt-direct-yandex.service telemt-direct-gosuslugi.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/direct-mtproxy-hardening.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

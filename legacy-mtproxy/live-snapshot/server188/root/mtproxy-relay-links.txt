@@ -1,0 +1,19 @@
+# РАБОЧИЕ ссылки MTProxy (проверено 2026-06-16). Домен bandbook.site -> S2 (188.120.254.223, Москва) -> WG -> S1 (Германия) -> Telegram.
+# Порт прокси 8443 (НЕ 443 — на 443 сайты). Запасные порты: 2052 / 2086 / 8089.
+#
+# ===== ОСНОВНЫЕ: telemt (direct + анти-DPI, держатся под ТСПУ) =====
+yandex     : tg://proxy?server=bandbook.site&port=8443&secret=<REDACTED>
+yandex#2   : tg://proxy?server=bandbook.site&port=8443&secret=<REDACTED>
+sber       : tg://proxy?server=bandbook.site&port=8443&secret=<REDACTED>
+sber#2     : tg://proxy?server=bandbook.site&port=8443&secret=<REDACTED>
+gosuslugi  : tg://proxy?server=bandbook.site&port=8443&secret=<REDACTED>
+gosuslugi#2: tg://proxy?server=bandbook.site&port=8443&secret=<REDACTED>
+ozon       : tg://proxy?server=bandbook.site&port=8443&secret=<REDACTED>
+ozon#2     : tg://proxy?server=bandbook.site&port=8443&secret=<REDACTED>
+#
+# ===== РЕЗЕРВ: mtg (релеит, но без анти-DPI; РКН рвёт ~30с) =====
+disk.yandex: tg://proxy?server=bandbook.site&port=8443&secret=<REDACTED>
+avito      : tg://proxy?server=bandbook.site&port=8443&secret=<REDACTED>
+kinopoisk  : tg://proxy?server=bandbook.site&port=8443&secret=<REDACTED>
+cloud.mail : tg://proxy?server=bandbook.site&port=8443&secret=<REDACTED>
+m.ozon     : tg://proxy?server=bandbook.site&port=8443&secret=<REDACTED>

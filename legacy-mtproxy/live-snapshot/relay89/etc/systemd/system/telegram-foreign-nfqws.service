@@ -1,0 +1,17 @@
+[Unit]
+Description=Telegram server-side DPI desync on every direct route
+Wants=network-online.target
+After=network-online.target nginx.service telegram-foreign-mss-rules.service
+
+[Service]
+Type=simple
+ExecStartPre=/usr/local/sbin/telegram-foreign-nfqws-rules remove
+ExecStart=/opt/zapret2/nfqws2 @/etc/zapret2/telegram-nfqws.conf
+ExecStartPost=/usr/local/sbin/telegram-foreign-nfqws-rules apply
+ExecStopPost=/usr/local/sbin/telegram-foreign-nfqws-rules remove
+Restart=always
+RestartSec=1
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

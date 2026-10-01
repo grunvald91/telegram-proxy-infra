@@ -1,0 +1,27 @@
+#!/bin/sh
+set -eu
+
+IPT=/usr/sbin/iptables
+SUBNET=37.77.0.0/16
+PUBLIC_IP=89.125.90.101
+FAST_PORT=9446
+
+remove_rule() {
+    table=$1
+    shift
+    while "$IPT" -t "$table" -D "$@" 2>/dev/null; do :; done
+}
+
+remove_all() {
+    for mss in 92 128 188 256 512; do
+        remove_rule mangle OUTPUT -p tcp --sport 443 -d "$SUBNET" --tcp-flags SYN,ACK SYN,ACK -j TCPMSS --set-mss "$mss"
+        remove_rule mangle OUTPUT -p tcp --sport "$FAST_PORT" -d "$SUBNET" --tcp-flags SYN,ACK SYN,ACK -j TCPMSS --set-mss "$mss"
+    done
+    remove_rule nat PREROUTING -p tcp -s <REDACTED> -d "$PUBLIC_IP" --dport 443 -j REDIRECT --to-ports "$FAST_PORT"
+    remove_rule filter INPUT -i eth0 -p tcp -s <REDACTED> --dport "$FAST_PORT" -j ACCEPT
+}
+
+case "${1:-start}" in
+    start|restart|stop) remove_all ;;
+    *) echo "usage: $0 {start|stop|restart}" >&2; exit 2 ;;
+esac

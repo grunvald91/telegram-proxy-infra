@@ -1,0 +1,13 @@
+server {
+    listen 80;
+    listen [::]:80;
+    server_name artur1.grunvald1991.fvds.ru;
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+    }
+
+    location / {
+        return 302 /dating/;
+    }
+}

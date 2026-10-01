@@ -1,0 +1,28 @@
+server {
+    listen 80;
+    server_name redesign.elitles-sochi.ru;
+
+    root /var/www/elitles-redesign;
+    index index.html;
+    charset utf-8;
+
+    access_log /var/log/nginx/elitles-redesign.access.log;
+    error_log /var/log/nginx/elitles-redesign.error.log;
+
+    location / {
+        if ($request_uri ~ ^(.+)\.html$) {
+            return 301 $1;
+        }
+        try_files $uri $uri.html $uri/ =404;
+    }
+
+    location /img/ {
+        expires 30d;
+        add_header Cache-Control "public, immutable";
+    }
+
+    location ~* \.(css|js|png|jpg|jpeg|gif|ico|svg|webp|woff2|xlsx)$ {
+        expires 30d;
+        add_header Cache-Control "public, immutable";
+    }
+}

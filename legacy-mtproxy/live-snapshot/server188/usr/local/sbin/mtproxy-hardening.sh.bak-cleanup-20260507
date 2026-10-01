@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# Block direct public access to Docker-published MTProxy ports. Keep localhost/internal access intact.
+for port in 8088 8443; do
+  iptables -C INPUT -i ens3 -p tcp --dport "$port" -j DROP 2>/dev/null || iptables -I INPUT 1 -i ens3 -p tcp --dport "$port" -j DROP
+done
+container_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' mtproto-proxy 2>/dev/null || true)
+[ -n "$container_ip" ] || exit 0
+iptables -C DOCKER-USER -i ens3 -p tcp -d "$container_ip" --dport 3128 -j DROP 2>/dev/null || iptables -I DOCKER-USER -i ens3 -p tcp -d "$container_ip" --dport 3128 -j DROP

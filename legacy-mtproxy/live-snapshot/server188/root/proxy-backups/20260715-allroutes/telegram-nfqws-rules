@@ -1,0 +1,42 @@
+#!/bin/sh
+set -eu
+
+IPT=/usr/sbin/iptables
+WAN_IF=ens3
+CLIENT_IP=37.77.110.29
+PUBLIC_IP=188.120.254.223
+FAST_PORT=10443
+QUEUE=210
+
+remove_iptables_rule() {
+    table=$1
+    shift
+    while "$IPT" -t "$table" -D "$@" 2>/dev/null; do :; done
+}
+
+remove_all() {
+    remove_iptables_rule mangle PREROUTING -i "$WAN_IF" -s <REDACTED> -d "$PUBLIC_IP" -p tcp --dport 443 --tcp-flags SYN,RST SYN -m comment --comment telegram-nfqws-mss-bypass -j RETURN
+    remove_iptables_rule mangle OUTPUT -p tcp -d "$CLIENT_IP" --sport "$FAST_PORT" --tcp-flags SYN,RST SYN -m comment --comment telegram-nfqws-mss-bypass -j RETURN
+    nft delete table inet telegram_nfqws 2>/dev/null || true
+}
+
+case "${1:-apply}" in
+    apply)
+        remove_all
+        "$IPT" -t mangle -I PREROUTING 1 -i "$WAN_IF" -s <REDACTED> -d "$PUBLIC_IP" -p tcp --dport 443 --tcp-flags SYN,RST SYN -m comment --comment telegram-nfqws-mss-bypass -j RETURN
+        "$IPT" -t mangle -I OUTPUT 1 -p tcp -d "$CLIENT_IP" --sport "$FAST_PORT" --tcp-flags SYN,RST SYN -m comment --comment telegram-nfqws-mss-bypass -j RETURN
+
+        nft add table inet telegram_nfqws
+        nft 'add chain inet telegram_nfqws post { type filter hook postrouting priority 101; policy accept; }'
+        nft add rule inet telegram_nfqws post ip daddr "$CLIENT_IP" tcp sport 443 ct reply packets 1-20 meta mark and 0x40000000 == 0 counter queue num "$QUEUE" bypass comment telegram-nfqws
+        nft 'add chain inet telegram_nfqws predefrag { type filter hook output priority -401; policy accept; }'
+        nft add rule inet telegram_nfqws predefrag meta mark and 0x40000000 != 0 notrack
+        ;;
+    remove)
+        remove_all
+        ;;
+    *)
+        echo "usage: $0 [apply|remove]" >&2
+        exit 2
+        ;;
+esac

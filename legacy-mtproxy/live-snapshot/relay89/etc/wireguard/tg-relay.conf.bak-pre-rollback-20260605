@@ -1,0 +1,11 @@
+[Interface]
+Address = 10.66.77.1/24
+ListenPort = 51820
+PrivateKey = <REDACTED>
+MTU = 1380
+PostUp = sysctl -w net.ipv4.ip_forward=1; iptables -C INPUT -p udp -s <REDACTED> --dport 51820 -j ACCEPT || iptables -I INPUT 1 -p udp -s <REDACTED> --dport 51820 -j ACCEPT; iptables -C INPUT -p udp --dport 51820 -j DROP || iptables -I INPUT 2 -p udp --dport 51820 -j DROP; ip6tables -C INPUT -p udp --dport 51820 -j DROP || ip6tables -I INPUT 1 -p udp --dport 51820 -j DROP; iptables -C FORWARD -i %i -o eth0 -j ACCEPT || iptables -I FORWARD -i %i -o eth0 -j ACCEPT; iptables -C FORWARD -i eth0 -o %i -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT || iptables -I FORWARD -i eth0 -o %i -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT; iptables -t nat -C POSTROUTING -s <REDACTED> -o eth0 -j MASQUERADE || iptables -t nat -I POSTROUTING -s <REDACTED> -o eth0 -j MASQUERADE; iptables -t mangle -C FORWARD -o %i -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu || iptables -t mangle -A FORWARD -o %i -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu; iptables -t mangle -C OUTPUT -o %i -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu || iptables -t mangle -A OUTPUT -o %i -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+PostDown = iptables -t mangle -D FORWARD -o %i -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu || true; iptables -t mangle -D OUTPUT -o %i -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu || true; iptables -D INPUT -p udp -s <REDACTED> --dport 51820 -j ACCEPT || true; iptables -D INPUT -p udp --dport 51820 -j DROP || true; ip6tables -D INPUT -p udp --dport 51820 -j DROP || true; iptables -D FORWARD -i %i -o eth0 -j ACCEPT || true; iptables -D FORWARD -i eth0 -o %i -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT || true; iptables -t nat -D POSTROUTING -s <REDACTED> -o eth0 -j MASQUERADE || true
+
+[Peer]
+PublicKey = <B64_REDACTED>
+AllowedIPs = 10.66.77.2/32

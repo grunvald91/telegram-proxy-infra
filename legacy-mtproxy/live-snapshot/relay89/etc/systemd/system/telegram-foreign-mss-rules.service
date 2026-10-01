@@ -1,0 +1,13 @@
+[Unit]
+Description=Telegram foreign ingress MSS workaround for Krasnodar ISP
+After=network-online.target nginx.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/telegram-foreign-mss-rules start
+ExecStop=/usr/local/sbin/telegram-foreign-mss-rules stop
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

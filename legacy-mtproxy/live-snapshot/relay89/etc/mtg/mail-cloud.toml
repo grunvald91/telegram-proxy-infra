@@ -1,0 +1,4 @@
+secret = <REDACTED>
+bind-to = "127.0.0.1:9448"
+concurrency = 2048
+prefer-ip = "only-ipv4"

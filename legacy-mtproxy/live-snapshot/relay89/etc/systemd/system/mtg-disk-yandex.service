@@ -1,0 +1,16 @@
+[Unit]
+Description=mtg MTProxy (disk.yandex.ru mask)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=mtg
+Group=mtg
+ExecStart=/usr/local/bin/mtg run /etc/mtg/disk-yandex.toml
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

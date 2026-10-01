@@ -1,0 +1,14 @@
+[Unit]
+Description=Telegram Redsocks Redirector
+After=network-online.target tinyproxy.service
+Wants=network-online.target tinyproxy.service
+
+[Service]
+Type=forking
+ExecStartPre=/usr/sbin/redsocks -t -c /etc/telegram-redsocks.conf
+ExecStart=/usr/sbin/redsocks -c /etc/telegram-redsocks.conf
+ExecStop=/bin/kill -TERM $MAINPID
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

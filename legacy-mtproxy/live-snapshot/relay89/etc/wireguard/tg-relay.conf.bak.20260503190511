@@ -1,0 +1,11 @@
+[Interface]
+Address = 10.66.77.1/24
+ListenPort = 51820
+PrivateKey = <REDACTED>
+MTU = 1420
+PostUp = sysctl -w net.ipv4.ip_forward=1; iptables -C FORWARD -i %i -o eth0 -j ACCEPT || iptables -I FORWARD -i %i -o eth0 -j ACCEPT; iptables -C FORWARD -i eth0 -o %i -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT || iptables -I FORWARD -i eth0 -o %i -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT; iptables -t nat -C POSTROUTING -s <REDACTED> -o eth0 -j MASQUERADE || iptables -t nat -I POSTROUTING -s <REDACTED> -o eth0 -j MASQUERADE
+PostDown = iptables -D FORWARD -i %i -o eth0 -j ACCEPT || true; iptables -D FORWARD -i eth0 -o %i -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT || true; iptables -t nat -D POSTROUTING -s <REDACTED> -o eth0 -j MASQUERADE || true
+
+[Peer]
+PublicKey = <B64_REDACTED>
+AllowedIPs = 10.66.77.2/32

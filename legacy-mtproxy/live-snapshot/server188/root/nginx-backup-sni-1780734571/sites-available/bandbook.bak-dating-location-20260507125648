@@ -1,0 +1,92 @@
+server {
+    server_name bandbook.site www.bandbook.site;
+
+    root /var/www/bandbook;
+    index index.html;
+    client_max_body_size 64M;
+    gzip on;
+    gzip_vary on;
+    gzip_proxied any;
+    gzip_comp_level 9;
+    gzip_min_length 512;
+    gzip_types application/json application/javascript text/css text/plain;
+
+    location = /sync/pull-chunk {
+        gzip off;
+        proxy_pass http://127.0.0.1:8787;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 60s;
+    }
+
+    # FastAPI sync API — same-origin proxy
+    location /sync/ {
+        proxy_pass http://127.0.0.1:8787;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 60s;
+    }
+    location /audio/ {
+        proxy_pass http://127.0.0.1:8787;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 60s;
+    }
+
+    location = /sw.js {
+        add_header Cache-Control "no-cache, no-store, must-revalidate";
+        try_files $uri =404;
+    }
+
+    location = /manifest.webmanifest {
+        add_header Cache-Control "no-cache";
+        default_type application/manifest+json;
+        try_files $uri =404;
+    }
+
+    location = /assets/range-loader.js {
+        add_header Cache-Control "no-cache, no-store, must-revalidate";
+        try_files $uri =404;
+    }
+
+    location = /assets/parts/manifest.json {
+        add_header Cache-Control "no-cache, no-store, must-revalidate";
+        default_type application/json;
+        try_files $uri =404;
+    }
+
+    location /assets/ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+        try_files $uri =404;
+    }
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    ssl_certificate /etc/letsencrypt/live/bandbook.site/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/bandbook.site/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+}
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name bandbook.site www.bandbook.site;
+    if ($host = www.bandbook.site) { return 301 https://bandbook.site$request_uri; }
+    if ($host = bandbook.site) { return 301 https://$host$request_uri; }
+    return 404;
+}

@@ -1,0 +1,18 @@
+[Unit]
+Description=Xray Service (VLESS+Reality on 127.0.0.1:8443)
+Documentation=https://github.com/XTLS/Xray-core
+After=network-online.target nginx.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/opt/xray/xray run -c /etc/xray/config.json
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

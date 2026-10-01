@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+
+src=/etc/letsencrypt/live/proxy.bandbook.site
+dst=/opt/mtproto-canary/tls
+
+[ -r "$src/fullchain.pem" ]
+[ -r "$src/privkey.pem" ]
+
+install -d -o root -g caddycanary -m 0750 "$dst"
+install -o root -g caddycanary -m 0640 "$src/fullchain.pem" "$dst/fullchain.pem"
+install -o root -g caddycanary -m 0640 "$src/privkey.pem" "$dst/privkey.pem"
+
+systemctl try-restart caddy-pq-canary.service

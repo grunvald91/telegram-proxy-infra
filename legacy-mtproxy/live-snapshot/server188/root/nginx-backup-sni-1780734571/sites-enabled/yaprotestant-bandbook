@@ -1,0 +1,66 @@
+server {
+    server_name yaprotestant.bandbook.site;
+    gzip on;
+    gzip_vary on;
+    gzip_proxied any;
+    gzip_comp_level 6;
+    gzip_min_length 512;
+    gzip_types application/json application/javascript text/css text/plain;
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+    }
+
+    location = /dating {
+        return 301 /dating/;
+    }
+
+    location /dating/static/ {
+        expires 7d;
+        add_header Cache-Control "public, max-age=604800";
+        proxy_pass http://127.0.0.1:8081;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_read_timeout 60s;
+    }
+
+    location /dating/ {
+        proxy_pass http://127.0.0.1:8081;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_read_timeout 60s;
+    }
+
+    location / {
+        return 302 /dating/;
+    }
+
+    listen [::]:443 ssl ipv6only=on; # managed by Certbot
+    listen 443 ssl; # managed by Certbot
+    ssl_certificate /etc/letsencrypt/live/yaprotestant.bandbook.site/fullchain.pem; # managed by Certbot
+    ssl_certificate_key /etc/letsencrypt/live/yaprotestant.bandbook.site/privkey.pem; # managed by Certbot
+    include /etc/letsencrypt/options-ssl-nginx.conf; # managed by Certbot
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem; # managed by Certbot
+
+}
+server {
+    if ($host = yaprotestant.bandbook.site) {
+        return 301 https://$host$request_uri;
+    } # managed by Certbot
+
+
+    listen 80;
+    listen [::]:80;
+    server_name yaprotestant.bandbook.site;
+    return 404; # managed by Certbot
+
+
+}

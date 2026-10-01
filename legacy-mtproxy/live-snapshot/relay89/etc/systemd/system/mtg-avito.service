@@ -1,0 +1,16 @@
+[Unit]
+Description=mtg MTProxy (www.avito.ru mask)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=mtg
+Group=mtg
+ExecStart=/usr/local/bin/mtg run /etc/mtg/avito.toml
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

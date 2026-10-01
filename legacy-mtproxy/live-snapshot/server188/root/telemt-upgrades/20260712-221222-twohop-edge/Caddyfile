@@ -1,0 +1,24 @@
+{
+	admin off
+	auto_https off
+	default_bind 127.0.0.1
+
+	servers 127.0.0.1:9442 {
+		protocols h1 h2
+	}
+}
+
+https://cdn.bandbook.site:9442, https://media.bandbook.site:9442, https://static.bandbook.site:9442, https://assets.bandbook.site:9442 {
+	bind 127.0.0.1
+	tls /opt/mtproto-canary/tls/fullchain.pem /opt/mtproto-canary/tls/privkey.pem {
+		curves x25519mlkem768 x25519
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Cache-Control "no-store"
+	}
+
+	respond "Not Found" 404
+}

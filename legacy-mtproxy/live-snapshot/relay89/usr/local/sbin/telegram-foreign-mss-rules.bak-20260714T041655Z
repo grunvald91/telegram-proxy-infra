@@ -1,0 +1,28 @@
+#!/bin/sh
+set -eu
+
+IPTABLES=/usr/sbin/iptables
+SUBNET=37.77.0.0/16
+MSS=92
+
+add_rule() {
+    "$IPTABLES" -t mangle -C OUTPUT -p tcp --sport 443 -d "$SUBNET" \
+        --tcp-flags SYN,ACK SYN,ACK -j TCPMSS --set-mss "$MSS" 2>/dev/null || \
+    "$IPTABLES" -t mangle -I OUTPUT 1 -p tcp --sport 443 -d "$SUBNET" \
+        --tcp-flags SYN,ACK SYN,ACK -j TCPMSS --set-mss "$MSS"
+}
+
+remove_rule() {
+    while "$IPTABLES" -t mangle -C OUTPUT -p tcp --sport 443 -d "$SUBNET" \
+        --tcp-flags SYN,ACK SYN,ACK -j TCPMSS --set-mss "$MSS" 2>/dev/null; do
+        "$IPTABLES" -t mangle -D OUTPUT -p tcp --sport 443 -d "$SUBNET" \
+            --tcp-flags SYN,ACK SYN,ACK -j TCPMSS --set-mss "$MSS"
+    done
+}
+
+case "${1:-start}" in
+    start) add_rule ;;
+    stop) remove_rule ;;
+    restart) remove_rule; add_rule ;;
+    *) echo "Usage: $0 {start|stop|restart}" >&2; exit 2 ;;
+esac

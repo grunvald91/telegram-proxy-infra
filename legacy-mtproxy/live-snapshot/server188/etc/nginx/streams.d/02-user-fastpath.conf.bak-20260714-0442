@@ -1,0 +1,11 @@
+# Fixed Ozon path for the confirmed client subnet. iptables redirects only that
+# subnet from public :443 to this internal listener, bypassing both SNI routers.
+server {
+    listen 10443;
+    listen [::]:10443;
+    proxy_pass 10.66.77.1:9446;
+    proxy_connect_timeout 5s;
+    proxy_timeout 1h;
+    proxy_socket_keepalive on;
+    tcp_nodelay on;
+}

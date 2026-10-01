@@ -1,0 +1,42 @@
+[Unit]
+Description=MTProto Zig owned-domain canary
+Documentation=https://github.com/sleep3r/mtproto.zig
+After=network-online.target wg-quick@tg-relay.service caddy-pq-canary.service
+Wants=network-online.target wg-quick@tg-relay.service caddy-pq-canary.service
+
+[Service]
+Type=simple
+User=telemt
+Group=telemt
+WorkingDirectory=/opt/mtproto-canary
+ExecStart=/opt/mtproto-canary/mtproto-proxy /opt/mtproto-canary/config.toml
+ExecReload=/bin/kill -HUP $MAINPID
+KillSignal=SIGTERM
+TimeoutStopSec=25
+Restart=always
+RestartSec=3
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+LimitNOFILE=131582
+TasksMax=65535
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,44 @@
+[Unit]
+Description=Telemt MTProxy - Telegram MTProto Proxy
+Documentation=https://github.com/telemt/telemt
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/telemt --foreground --pid-file /var/run/telemt.pid /tmp/tinit/config.toml
+ExecReload=/bin/kill -HUP $MAINPID
+PIDFile=/var/run/telemt.pid
+Restart=always
+RestartSec=5
+
+
+WorkingDirectory=/var/lib/telemt
+
+# Resource limits
+LimitNOFILE=65535
+LimitNPROC=4096
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+MemoryDenyWriteExecute=true
+LockPersonality=true
+
+# Allow binding to privileged ports and writing to specific paths
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_ADMIN
+ReadWritePaths=/etc/telemt /var/run /var/lib/telemt
+
+[Install]
+WantedBy=multi-user.target

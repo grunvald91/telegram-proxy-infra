@@ -1,0 +1,566 @@
+===== DATE =====
+2026-10-01T11:32:10+00:00
+===== HOST =====
+ Static hostname: First030526
+       Icon name: computer-vm
+         Chassis: vm
+      Machine ID: <HEX_REDACTED>
+         Boot ID: <HEX_REDACTED>
+  Virtualization: kvm
+Operating System: Ubuntu 22.04.2 LTS
+          Kernel: Linux 5.15.0-73-generic
+    Architecture: x86-64
+Linux First030526 5.15.0-73-generic #80-Ubuntu SMP Mon May 15 15:18:26 UTC 2023 x86_64 x86_64 x86_64 GNU/Linux
+ 11:32:11 up 150 days, 20:38,  0 users,  load average: 0.08, 0.03, 0.01
+===== ADDRESSES =====
+lo               UNKNOWN        127.0.0.1/8 ::1/128 
+eth0             UP             89.125.90.101/24 fe80::216:3cff:fe56:c849/64 
+tg-relay         UNKNOWN        10.66.77.1/24 
+===== ROUTES =====
+default via 89.125.90.1 dev eth0 onlink 
+10.66.77.0/24 dev tg-relay proto kernel scope link src 10.66.77.1 
+89.125.90.0/24 dev eth0 proto kernel scope link src 89.125.90.101 
+::1 dev lo proto kernel metric 256 pref medium
+fe80::/64 dev eth0 proto kernel metric 256 pref medium
+0:	from all lookup local
+32766:	from all lookup main
+32767:	from all lookup default
+===== LISTENERS =====
+Netid State  Recv-Q Send-Q Local Address:Port  Peer Address:PortProcess                                                       
+udp   UNCONN 0      0            0.0.0.0:51820      0.0.0.0:*                                                                 
+udp   UNCONN 0      0               [::]:51820         [::]:*                                                                 
+tcp   LISTEN 0      1024       127.0.0.1:9470       0.0.0.0:*    users:(("telemt",pid=4193769,fd=10))                         
+tcp   LISTEN 0      1024       127.0.0.1:9471       0.0.0.0:*    users:(("telemt",pid=4194105,fd=9))                          
+tcp   LISTEN 0      1024       127.0.0.1:9472       0.0.0.0:*    users:(("telemt",pid=4194251,fd=12))                         
+tcp   LISTEN 0      1024       127.0.0.1:9473       0.0.0.0:*    users:(("telemt",pid=4194053,fd=12))                         
+tcp   LISTEN 0      1024       127.0.0.1:9474       0.0.0.0:*    users:(("telemt",pid=4194205,fd=12))                         
+tcp   LISTEN 0      511        127.0.0.1:5443       0.0.0.0:*    users:(("nginx",pid=938783,fd=10),("nginx",pid=938780,fd=10))
+tcp   LISTEN 0      1024       127.0.0.1:9443       0.0.0.0:*    users:(("telemt",pid=413,fd=13))                             
+tcp   LISTEN 0      128        127.0.0.1:9091       0.0.0.0:*    users:(("telemt",pid=413,fd=9))                              
+tcp   LISTEN 0      1024       127.0.0.1:9475       0.0.0.0:*    users:(("telemt",pid=4194151,fd=12))                         
+tcp   LISTEN 0      511        127.0.0.1:5444       0.0.0.0:*    users:(("nginx",pid=938783,fd=9),("nginx",pid=938780,fd=9))  
+tcp   LISTEN 0      1024       127.0.0.1:9444       0.0.0.0:*    users:(("telemt",pid=466,fd=13))                             
+tcp   LISTEN 0      128        127.0.0.1:9092       0.0.0.0:*    users:(("telemt",pid=466,fd=9))                              
+tcp   LISTEN 0      511        127.0.0.1:4453       0.0.0.0:*    users:(("nginx",pid=938783,fd=8),("nginx",pid=938780,fd=8))  
+tcp   LISTEN 0      1024       127.0.0.1:9445       0.0.0.0:*    users:(("telemt",pid=4194302,fd=10))                         
+tcp   LISTEN 0      128        127.0.0.1:9093       0.0.0.0:*    users:(("telemt",pid=4194302,fd=9))                          
+tcp   LISTEN 0      1024         0.0.0.0:9446       0.0.0.0:*    users:(("telemt",pid=350,fd=10))                             
+tcp   LISTEN 0      8192       127.0.0.1:9447       0.0.0.0:*    users:(("mtg",pid=2410363,fd=4))                             
+tcp   LISTEN 0      128        127.0.0.1:9096       0.0.0.0:*    users:(("telemt",pid=350,fd=9))                              
+tcp   LISTEN 0      8192       127.0.0.1:9448       0.0.0.0:*    users:(("mtg",pid=2410368,fd=4))                             
+tcp   LISTEN 0      128        127.0.0.1:9097       0.0.0.0:*    users:(("telemt",pid=4193769,fd=9))                          
+tcp   LISTEN 0      8192       127.0.0.1:9449       0.0.0.0:*    users:(("mtg",pid=2410372,fd=4))                             
+tcp   LISTEN 0      8192       127.0.0.1:9450       0.0.0.0:*    users:(("mtg",pid=2410378,fd=4))                             
+tcp   LISTEN 0      8192       127.0.0.1:9451       0.0.0.0:*    users:(("mtg",pid=2414668,fd=4))                             
+tcp   LISTEN 0      511          0.0.0.0:80         0.0.0.0:*    users:(("nginx",pid=938783,fd=6),("nginx",pid=938780,fd=6))  
+tcp   LISTEN 0      128          0.0.0.0:22         0.0.0.0:*    users:(("sshd",pid=4019739,fd=3))                            
+tcp   LISTEN 0      511          0.0.0.0:443        0.0.0.0:*    users:(("nginx",pid=938783,fd=11),("nginx",pid=938780,fd=11))
+tcp   LISTEN 0      8192       127.0.0.1:8443       0.0.0.0:*    users:(("xray",pid=480200,fd=3))                             
+tcp   LISTEN 0      511             [::]:80            [::]:*    users:(("nginx",pid=938783,fd=7),("nginx",pid=938780,fd=7))  
+tcp   LISTEN 0      128             [::]:22            [::]:*    users:(("sshd",pid=4019739,fd=4))                            
+tcp   LISTEN 0      511             [::]:443           [::]:*    users:(("nginx",pid=938783,fd=12),("nginx",pid=938780,fd=12))
+===== PROXY PROCESSES =====
+    350       1 telemt   telemt          /usr/bin/telemt --silent /etc/telemt/direct-ozon.toml
+    413       1 telemt   telemt          /usr/bin/telemt --silent /etc/telemt/direct-sber.toml
+    466       1 telemt   telemt          /usr/bin/telemt --silent /etc/telemt/direct-yandex.toml
+ 480200       1 root     xray            /opt/xray/xray run -c /etc/xray/config.json
+ 938780       1 root     nginx           nginx: master process /usr/sbin/nginx -g daemon on; master_process on;
+ 938783  938780 www-data nginx           nginx: worker process
+2410363       1 mtg      mtg             /usr/local/bin/mtg run /etc/mtg/config.toml
+2410368       1 mtg      mtg             /usr/local/bin/mtg run /etc/mtg/mail-cloud.toml
+2410372       1 mtg      mtg             /usr/local/bin/mtg run /etc/mtg/kinopoisk.toml
+2410378       1 mtg      mtg             /usr/local/bin/mtg run /etc/mtg/avito.toml
+2414668       1 mtg      mtg             /usr/local/bin/mtg run /etc/mtg/disk-yandex.toml
+3910103       1 2147483+ nfqws2          /opt/zapret2/nfqws2 @/etc/zapret2/telegram-nfqws.conf
+4193769       1 telemt   telemt          /usr/bin/telemt --silent /etc/telemt/rf-media.toml
+4194053       1 telemt   telemt          /usr/bin/telemt --silent /etc/telemt/bandbook-assets.toml
+4194105       1 telemt   telemt          /usr/bin/telemt --silent /etc/telemt/bandbook-cdn.toml
+4194151       1 telemt   telemt          /usr/bin/telemt --silent /etc/telemt/bandbook-edge.toml
+4194205       1 telemt   telemt          /usr/bin/telemt --silent /etc/telemt/bandbook-sberbank.toml
+4194251       1 telemt   telemt          /usr/bin/telemt --silent /etc/telemt/bandbook-static.toml
+4194302       1 telemt   telemt          /usr/bin/telemt --silent /etc/telemt/direct-gosuslugi.toml
+===== SYSTEMD UNITS =====
+direct-mtproxy-hardening.service           enabled         enabled
+mtg-avito.service                          enabled         enabled
+mtg-disk-yandex.service                    enabled         enabled
+mtg-kinopoisk.service                      enabled         enabled
+mtg-mail-cloud.service                     enabled         enabled
+mtg.service                                enabled         enabled
+nginx.service                              enabled         enabled
+telegram-foreign-mss-rules.service         enabled         enabled
+telegram-foreign-nfqws.service             enabled         enabled
+telegram-rf-media-rules.service            enabled         enabled
+telemt-bandbook@.service                   indirect        enabled
+telemt-direct-gosuslugi.service            enabled         enabled
+telemt-direct-ozon.service                 enabled         enabled
+telemt-direct-sber.service                 enabled         enabled
+telemt-direct-yandex.service               enabled         enabled
+telemt-rf-media.service                    enabled         enabled
+telemt.service                             enabled         enabled
+wg-quick@.service                          indirect        enabled
+xray.service                               enabled         enabled
+wg-quick.target                            static          -
+===== ACTIVE SERVICES =====
+  UNIT                             LOAD   ACTIVE SUB     DESCRIPTION
+  cron.service                     loaded active running Regular background program processing daemon
+  dbus.service                     loaded active running D-Bus System Message Bus
+  flibusta-search-bot.service      loaded active running Flibusta Telegram Search Bot
+  getty@tty1.service               loaded active running Getty on tty1
+  ModemManager.service             loaded active running Modem Manager
+  mtg-avito.service                loaded active running mtg MTProxy (www.avito.ru mask)
+  mtg-disk-yandex.service          loaded active running mtg MTProxy (disk.yandex.ru mask)
+  mtg-kinopoisk.service            loaded active running mtg MTProxy (www.kinopoisk.ru mask)
+  mtg-mail-cloud.service           loaded active running mtg MTProxy (cloud.mail.ru mask)
+  mtg.service                      loaded active running mtg MTProxy (xapi.ozon.ru mask)
+  multipathd.service               loaded active running Device-Mapper Multipath Device Controller
+  nginx.service                    loaded active running A high performance web server and a reverse proxy server
+  packagekit.service               loaded active running PackageKit Daemon
+  polkit.service                   loaded active running Authorization Manager
+  qemu-guest-agent.service         loaded active running QEMU Guest Agent
+  rsyslog.service                  loaded active running System Logging Service
+  snapd.service                    loaded active running Snap Daemon
+  ssh.service                      loaded active running OpenBSD Secure Shell server
+  systemd-hostnamed.service        loaded active running Hostname Service
+  systemd-journald.service         loaded active running Journal Service
+  systemd-logind.service           loaded active running User Login Management
+  systemd-timesyncd.service        loaded active running Network Time Synchronization
+  systemd-udevd.service            loaded active running Rule-based Manager for Device Events and Files
+  telegram-foreign-nfqws.service   loaded active running Telegram server-side DPI desync on every direct route
+  telemt-bandbook@assets.service   loaded active running Telemt Bandbook route (assets)
+  telemt-bandbook@cdn.service      loaded active running Telemt Bandbook route (cdn)
+  telemt-bandbook@edge.service     loaded active running Telemt Bandbook route (edge)
+  telemt-bandbook@sberbank.service loaded active running Telemt Bandbook route (sberbank)
+  telemt-bandbook@static.service   loaded active running Telemt Bandbook route (static)
+  telemt-direct-gosuslugi.service  loaded active running Telemt direct Gosuslugi mask
+  telemt-direct-ozon.service       loaded active running Telemt direct Ozon mask
+  telemt-direct-sber.service       loaded active running Telemt direct Sber mask
+  telemt-direct-yandex.service     loaded active running Telemt direct Yandex mask
+  telemt-rf-media.service          loaded active running Telemt RF ingress with real media.bandbook.site mask
+  udisks2.service                  loaded active running Disk Manager
+  unattended-upgrades.service      loaded active running Unattended Upgrades Shutdown
+  upower.service                   loaded active running Daemon for power management
+  user@0.service                   loaded active running User Manager for UID 0
+  xray.service                     loaded active running Xray Service (VLESS+Reality on 127.0.0.1:8443)
+
+LOAD   = Reflects whether the unit definition was properly loaded.
+ACTIVE = The high-level unit activation state, i.e. generalization of SUB.
+SUB    = The low-level unit activation state, values depend on unit type.
+39 loaded units listed.
+===== TIMERS =====
+NEXT                        LEFT              LAST                        PASSED       UNIT                           ACTIVATES
+Thu 2026-10-01 13:02:25 UTC 1h 30min left     Thu 2026-10-01 06:38:49 UTC 4h 53min ago ua-timer.timer                 ua-timer.service
+Thu 2026-10-01 13:54:05 UTC 2h 21min left     Thu 2026-10-01 01:32:52 UTC 9h ago       certbot.timer                  certbot.service
+Thu 2026-10-01 15:08:12 UTC 3h 36min left     Thu 2026-10-01 03:27:24 UTC 8h ago       motd-news.timer                motd-news.service
+Thu 2026-10-01 15:08:45 UTC 3h 36min left     Wed 2026-09-30 18:36:41 UTC 16h ago      apt-daily.timer                apt-daily.service
+Thu 2026-10-01 15:23:49 UTC 3h 51min left     Wed 2026-09-30 15:23:49 UTC 20h ago      update-notifier-download.timer update-notifier-download.service
+Thu 2026-10-01 15:36:49 UTC 4h 4min left      Wed 2026-09-30 15:36:49 UTC 19h ago      systemd-tmpfiles-clean.timer   systemd-tmpfiles-clean.service
+Thu 2026-10-01 20:35:43 UTC 9h left           Thu 2026-10-01 06:00:32 UTC 5h 31min ago fwupd-refresh.timer            fwupd-refresh.service
+Fri 2026-10-02 00:00:00 UTC 12h left          Thu 2026-10-01 00:00:01 UTC 11h ago      dpkg-db-backup.timer           dpkg-db-backup.service
+Fri 2026-10-02 00:00:00 UTC 12h left          Thu 2026-10-01 00:00:01 UTC 11h ago      logrotate.timer                logrotate.service
+Fri 2026-10-02 00:25:14 UTC 12h left          Thu 2026-10-01 02:10:22 UTC 9h ago       man-db.timer                   man-db.service
+Fri 2026-10-02 06:12:45 UTC 18h left          Thu 2026-10-01 06:19:33 UTC 5h 12min ago apt-daily-upgrade.timer        apt-daily-upgrade.service
+Sun 2026-10-04 03:10:43 UTC 2 days left       Sun 2026-09-27 03:10:49 UTC 4 days ago   e2scrub_all.timer              e2scrub_all.service
+Mon 2026-10-05 00:49:53 UTC 3 days left       Mon 2026-09-28 00:12:52 UTC 3 days ago   fstrim.timer                   fstrim.service
+Fri 2026-10-09 15:16:55 UTC 1 week 1 day left Wed 2026-09-30 14:42:13 UTC 20h ago      update-notifier-motd.timer     update-notifier-motd.service
+n/a                         n/a               n/a                         n/a          apport-autoreport.timer        apport-autoreport.service
+n/a                         n/a               n/a                         n/a          snapd.snap-repair.timer        snapd.snap-repair.service
+
+16 timers listed.
+===== ROOT CRONTAB =====
+===== CRON.D FILES =====
+/etc/cron.d/proxy-monitor
+/etc/cron.d/certbot
+/etc/cron.d/e2scrub_all
+/etc/cron.d/.placeholder
+===== UFW =====
+Status: inactive
+===== NFTABLES =====
+table ip filter {
+	chain FORWARD {
+		type filter hook forward priority filter; policy accept;
+		iifname "eth0" oifname "tg-relay" ct state related,established counter packets 772186584 bytes 76414623791 accept
+		iifname "tg-relay" oifname "eth0" counter packets 888947507 bytes 65533406933 accept
+	}
+
+	chain INPUT {
+		type filter hook input priority filter; policy accept;
+		iifname "tg-relay" meta l4proto tcp ip saddr 10.66.77.2 tcp dport 9470 counter packets 169252 bytes 32191568 accept
+		iifname "eth0" meta l4proto tcp tcp dport 9470 counter packets 102 bytes 5116 drop
+		iifname "tg-relay" meta l4proto tcp ip saddr 10.66.77.2 tcp dport 9446 counter packets 3881 bytes 804881 accept
+		iifname "eth0" meta l4proto tcp tcp dport 9446 counter packets 347 bytes 19380 drop
+		iifname "tg-relay" meta l4proto tcp ip saddr 10.66.77.2 ip daddr 10.66.77.1 tcp dport 9464 counter packets 40916 bytes 6564121 accept
+		iifname "eth0" meta l4proto tcp tcp dport 9091-9093 counter packets 4421 bytes 233016 drop
+		iifname "eth0" meta l4proto tcp tcp dport 9443-9445 counter packets 5127 bytes 261300 drop
+		meta l4proto udp ip saddr 188.120.254.223 udp dport 51820 counter packets 950050119 bytes 144767730840 accept
+		meta l4proto udp udp dport 51820 counter packets 4 bytes 612 drop
+		meta l4proto tcp tcp dport 9464 counter packets 122 bytes 6252 drop
+	}
+}
+table ip6 filter {
+	chain INPUT {
+		type filter hook input priority filter; policy accept;
+		iifname "eth0" meta l4proto tcp tcp dport 9091-9093 counter packets 0 bytes 0 drop
+		iifname "eth0" meta l4proto tcp tcp dport 9443-9445 counter packets 0 bytes 0 drop
+		meta l4proto udp udp dport 51820 counter packets 0 bytes 0 drop
+		meta l4proto tcp tcp dport 9464 counter packets 0 bytes 0 drop
+	}
+}
+table ip nat {
+	chain POSTROUTING {
+		type nat hook postrouting priority srcnat; policy accept;
+		oifname "eth0" ip saddr 10.66.77.0/24 counter packets 43765164 bytes 2625912864 masquerade 
+	}
+
+	chain PREROUTING {
+		type nat hook prerouting priority dstnat; policy accept;
+	}
+}
+table ip mangle {
+	chain FORWARD {
+		type filter hook forward priority mangle; policy accept;
+		oifname "tg-relay" meta l4proto tcp tcp flags & (syn|rst) == syn counter packets 34302892 bytes 2058173520 tcp option maxseg size set rt mtu
+	}
+
+	chain OUTPUT {
+		type route hook output priority mangle; policy accept;
+		oifname "tg-relay" meta l4proto tcp tcp flags & (syn|rst) == syn counter packets 805336 bytes 48320160 tcp option maxseg size set rt mtu
+	}
+}
+table inet telegram_nfqws {
+	chain post {
+		type filter hook postrouting priority srcnat + 1; policy accept;
+		oifname "eth0" tcp sport 443 ct reply packets 1-20 meta mark & 0x40000000 == 0x00000000 counter packets 10064345 bytes 4680396127 queue flags bypass to 210 comment "telegram-nfqws"
+	}
+
+	chain predefrag {
+		type filter hook output priority -401; policy accept;
+		meta mark & 0x40000000 != 0x00000000 notrack
+	}
+}
+===== IPTABLES =====
+# Generated by iptables-save v1.8.7 on Thu Oct  1 11:32:11 2026
+*mangle
+:PREROUTING ACCEPT [0:0]
+:INPUT ACCEPT [0:0]
+:FORWARD ACCEPT [0:0]
+:OUTPUT ACCEPT [0:0]
+:POSTROUTING ACCEPT [0:0]
+-A FORWARD -o tg-relay -p tcp -m tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+-A OUTPUT -o tg-relay -p tcp -m tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+COMMIT
+# Completed on Thu Oct  1 11:32:11 2026
+# Generated by iptables-save v1.8.7 on Thu Oct  1 11:32:11 2026
+*filter
+:INPUT ACCEPT [0:0]
+:FORWARD ACCEPT [0:0]
+:OUTPUT ACCEPT [0:0]
+-A INPUT -s <REDACTED> -i tg-relay -p tcp -m tcp --dport 9470 -j ACCEPT
+-A INPUT -i eth0 -p tcp -m tcp --dport 9470 -j DROP
+-A INPUT -s <REDACTED> -i tg-relay -p tcp -m tcp --dport 9446 -j ACCEPT
+-A INPUT -i eth0 -p tcp -m tcp --dport 9446 -j DROP
+-A INPUT -s <REDACTED> -d 10.66.77.1/32 -i tg-relay -p tcp -m tcp --dport 9464 -j ACCEPT
+-A INPUT -i eth0 -p tcp -m multiport --dports 9091:9093 -j DROP
+-A INPUT -i eth0 -p tcp -m multiport --dports 9443:9445 -j DROP
+-A INPUT -s <REDACTED> -p udp -m udp --dport 51820 -j ACCEPT
+-A INPUT -p udp -m udp --dport 51820 -j DROP
+-A INPUT -p tcp -m tcp --dport 9464 -j DROP
+-A FORWARD -i eth0 -o tg-relay -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+-A FORWARD -i tg-relay -o eth0 -j ACCEPT
+COMMIT
+# Completed on Thu Oct  1 11:32:11 2026
+# Generated by iptables-save v1.8.7 on Thu Oct  1 11:32:11 2026
+*nat
+:PREROUTING ACCEPT [0:0]
+:INPUT ACCEPT [0:0]
+:OUTPUT ACCEPT [0:0]
+:POSTROUTING ACCEPT [0:0]
+-A POSTROUTING -s <REDACTED> -o eth0 -j MASQUERADE
+COMMIT
+# Completed on Thu Oct  1 11:32:11 2026
+# Generated by ip6tables-save v1.8.7 on Thu Oct  1 11:32:11 2026
+*filter
+:INPUT ACCEPT [0:0]
+:FORWARD ACCEPT [0:0]
+:OUTPUT ACCEPT [0:0]
+-A INPUT -i eth0 -p tcp -m multiport --dports 9091:9093 -j DROP
+-A INPUT -i eth0 -p tcp -m multiport --dports 9443:9445 -j DROP
+-A INPUT -p udp -m udp --dport 51820 -j DROP
+-A INPUT -p tcp -m tcp --dport 9464 -j DROP
+COMMIT
+# Completed on Thu Oct  1 11:32:11 2026
+===== WIREGUARD =====
+interface: tg-relay
+  public key: <B64_REDACTED>
+  private key: (hidden)
+  listening port: 51820
+
+peer: <B64_REDACTED>
+  endpoint: 188.120.254.223:35168
+  allowed ips: 10.66.77.2/32
+  latest handshake: 1 minute, 21 seconds ago
+  transfer: 110.05 GiB received, 244.04 GiB sent
+===== DOCKER =====
+===== DOCKER COMPOSE =====
+===== PACKAGES =====
+$iptables	$1.8.7-1ubuntu5.2
+$libnftables1:amd64	$1.0.2-1ubuntu3
+$libnginx-mod-http-geoip2	$1.18.0-6ubuntu14.21
+$libnginx-mod-http-image-filter	$1.18.0-6ubuntu14.21
+$libnginx-mod-http-xslt-filter	$1.18.0-6ubuntu14.21
+$libnginx-mod-mail	$1.18.0-6ubuntu14.21
+$libnginx-mod-stream	$1.18.0-6ubuntu14.21
+$libnginx-mod-stream-geoip2	$1.18.0-6ubuntu14.21
+$libpython3-stdlib:amd64	$3.10.6-1~22.04
+$libpython3.10:amd64	$3.10.12-1~22.04.18
+$libpython3.10-minimal:amd64	$3.10.12-1~22.04.18
+$libpython3.10-stdlib:amd64	$3.10.12-1~22.04.18
+$libxmlsec1-openssl:amd64	$1.2.33-1build2
+$nftables	$1.0.2-1ubuntu3
+$nginx	$1.18.0-6ubuntu14.21
+$nginx-common	$1.18.0-6ubuntu14.21
+$nginx-core	$1.18.0-6ubuntu14.21
+$openssl	$3.0.2-0ubuntu1.30
+$python-apt-common	$2.4.0ubuntu4.1
+$python-babel-localedata	$2.8.0+dfsg.1-7
+$python3	$3.10.6-1~22.04
+$python3-acme	$1.21.0-1ubuntu0.1
+$python3-apport	$2.20.11-0ubuntu82.10
+$python3-apt	$2.4.0ubuntu4.1
+$python3-attr	$21.2.0-1
+$python3-automat	$20.2.0-1
+$python3-babel	$2.8.0+dfsg.1-7
+$python3-bcrypt	$3.2.0-1build1
+$python3-blinker	$1.4+dfsg1-0.4
+$python3-certbot	$1.21.0-1build1
+$python3-certifi	$2020.6.20-1
+$python3-cffi-backend:amd64	$1.15.0-1build2
+$python3-chardet	$4.0.0-1
+$python3-click	$8.0.3-1
+$python3-colorama	$0.4.4-1
+$python3-commandnotfound	$22.04.0
+$python3-configargparse	$1.5.3-1
+$python3-configobj	$5.0.6-5ubuntu0.1
+$python3-constantly	$15.1.0-2
+$python3-cryptography	$3.4.8-1ubuntu2.4
+$python3-dbus	$1.2.18-3build1
+$python3-debconf	$1.5.79ubuntu1
+$python3-debian	$0.1.43ubuntu1
+$python3-distro	$1.7.0-1
+$python3-distro-info	$1.1build1
+$python3-distupgrade	$1:22.04.16
+$python3-distutils	$3.10.8-1~22.04
+$python3-gdbm:amd64	$3.10.8-1~22.04
+$python3-gi	$3.42.1-0ubuntu1
+$python3-hamcrest	$2.0.2-2
+$python3-httplib2	$0.20.2-2ubuntu0.1
+$python3-hyperlink	$21.0.0-3
+$python3-icu	$2.8.1-0ubuntu2
+$python3-idna	$3.3-1ubuntu0.2
+$python3-importlib-metadata	$4.6.4-1
+$python3-incremental	$21.3.0-1
+$python3-jeepney	$0.7.1-3
+$python3-jinja2	$3.0.3-1ubuntu0.4
+$python3-josepy	$1.10.0-1
+$python3-json-pointer	$2.0-0ubuntu1
+$python3-jsonpatch	$1.32-2
+$python3-jsonschema	$3.2.0-0ubuntu2
+$python3-jwt	$2.3.0-1ubuntu0.4
+$python3-keyring	$23.5.0-1
+$python3-launchpadlib	$1.10.16-1
+$python3-lazr.restfulclient	$0.14.4-1
+$python3-lazr.uri	$1.0.6-2
+$python3-lib2to3	$3.10.8-1~22.04
+$python3-magic	$2:0.4.24-2
+$python3-markupsafe	$2.0.1-2build1
+$python3-minimal	$3.10.6-1~22.04
+$python3-more-itertools	$8.10.0-2
+$python3-netifaces:amd64	$0.11.0-1build2
+$python3-newt:amd64	$0.52.21-5ubuntu2
+$python3-oauthlib	$3.2.0-1ubuntu0.1
+$python3-openssl	$21.0.0-1ubuntu0.1
+$python3-parsedatetime	$2.6-2
+$python3-pexpect	$4.8.0-2ubuntu1
+$python3-pip-whl	$22.0.2+dfsg-1ubuntu0.7
+$python3-pkg-resources	$59.6.0-1.2ubuntu0.22.04.3
+$python3-problem-report	$2.20.11-0ubuntu82.10
+$python3-ptyprocess	$0.7.0-3
+$python3-pyasn1	$0.4.8-1ubuntu0.3
+$python3-pyasn1-modules	$0.2.1-1
+$python3-pyparsing	$2.4.7-1
+$python3-pyrsistent:amd64	$0.18.1-1build1
+$python3-requests	$2.25.1+dfsg-2ubuntu0.4
+$python3-requests-toolbelt	$0.9.1-1
+$python3-rfc3339	$1.1-3
+$python3-secretstorage	$3.3.1-1
+$python3-serial	$3.5-1
+$python3-service-identity	$18.1.0-6
+$python3-setuptools	$59.6.0-1.2ubuntu0.22.04.3
+$python3-setuptools-whl	$59.6.0-1.2ubuntu0.22.04.3
+$python3-six	$1.16.0-3ubuntu1
+$python3-software-properties	$0.99.22.7
+$python3-systemd	$234-3ubuntu2
+$python3-twisted	$22.1.0-2ubuntu2.7
+$python3-tz	$2022.1-1ubuntu0.22.04.1
+$python3-update-manager	$1:22.04.10
+$python3-urllib3	$1.26.5-1~exp1ubuntu0.7
+$python3-wadllib	$1.3.6-1
+$python3-xkit	$0.5.0ubuntu5
+$python3-yaml	$5.4.1-1ubuntu1
+$python3-zipp	$1.0.0-3ubuntu0.1
+$python3-zope.component	$4.3.0-3
+$python3-zope.event	$4.4-3
+$python3-zope.hookable	$5.1.0-1build1
+$python3-zope.interface	$5.4.0-1build1
+$python3.10	$3.10.12-1~22.04.18
+$python3.10-minimal	$3.10.12-1~22.04.18
+$python3.10-venv	$3.10.12-1~22.04.18
+$wireguard-tools	$1.0.20210914-1ubuntu2
+===== BINARY LOCATIONS =====
+/usr/bin/telemt
+/usr/local/bin/mtg
+/usr/sbin/nginx
+/usr/bin/wg
+/usr/sbin/iptables
+/usr/sbin/nft
+===== BINARY HASHES =====
+<HEX_REDACTED>  /usr/bin/telemt
+<HEX_REDACTED>  /usr/local/bin/mtg
+<HEX_REDACTED>  /opt/xray/xray
+<HEX_REDACTED>  /opt/zapret2/nfqws2
+<HEX_REDACTED>  /usr/sbin/nginx
+===== RELEVANT FILE TREE =====
+d 755 root:root 4096 /etc/nginx
+d 755 root:root 4096 /etc/nginx/modules-available
+f 644 root:root 2178 /etc/nginx/nginx.conf.bak_20260508_055339
+d 755 root:root 4096 /etc/nginx/modules-enabled
+l 777 root:root 55 <B64_REDACTED>.conf
+l 777 root:root 57 <B64_REDACTED>.conf
+l 777 root:root 48 /etc/nginx/modules-enabled/50-mod-mail.conf
+l 777 root:root 60 <B64_REDACTED>.conf
+l 777 root:root 50 /etc/nginx/modules-enabled/50-mod-stream.conf
+l 777 root:root 61 <B64_REDACTED>.conf
+f 644 root:root 1055 /etc/nginx/fastcgi_params
+f 644 root:root 2121 /etc/nginx/nginx.conf.bak-direct-mtproxy-20260504-083128
+d 755 root:root 4096 /etc/nginx/sites-available
+f 644 root:root 2901 /etc/nginx/sites-available/tg-servgo.bak_20260508_111044
+f 644 root:root 807 /etc/nginx/sites-available/cdn-servgo.bak.20260504124736
+f 644 root:root 2412 /etc/nginx/sites-available/default
+f 644 root:root 3695 /etc/nginx/sites-available/tg-servgo.bak_20260508_121418
+f 644 root:root 4222 /etc/nginx/sites-available/tg-servgo
+f 644 root:root 992 /etc/nginx/sites-available/cdn-servgo
+f 644 root:root 992 /etc/nginx/sites-available/cdn-servgo.bak-20260504-145012-pre-ocsp
+f 644 root:root 2176 /etc/nginx/sites-available/tg-servgo.bak_20260508_060641
+f 644 root:root 992 /etc/nginx/sites-available/cdn-servgo.bak-20260504-145012-pre-ocsp-check
+f 644 root:root 217 /etc/nginx/sites-available/tg-servgo-acme
+f 644 root:root 3744 /etc/nginx/sites-available/tg-eunoia
+f 644 root:root 2837 /etc/nginx/koi-utf
+f 644 root:root 636 /etc/nginx/scgi_params
+d 755 root:root 4096 /etc/nginx/conf.d
+f 644 root:root 180 /etc/nginx/proxy_params
+f 644 root:root 2292 /etc/nginx/nginx.conf.bak-20260601-143006
+d 755 root:root 4096 /etc/nginx/snippets
+f 644 root:root 423 /etc/nginx/snippets/fastcgi-php.conf
+f 644 root:root 217 /etc/nginx/snippets/snakeoil.conf
+f 644 root:root 2292 /etc/nginx/nginx.conf.bak-ozon-add-1780653579
+f 644 root:root 664 /etc/nginx/uwsgi_params
+f 644 root:root 2159 /etc/nginx/nginx.conf.bak-20260504-145012-pre-tls
+f 644 root:root 2114 /etc/nginx/nginx.conf.bak-perf-20260507T102535Z
+f 644 root:root 2223 /etc/nginx/koi-win
+f 644 root:root 2115 /etc/nginx/nginx.conf.bak-20260506T112400Z
+f 644 root:root 3071 /etc/nginx/win-utf
+f 644 root:root 3957 /etc/nginx/mime.types
+d 755 root:root 4096 /etc/nginx/sites-enabled
+l 777 root:root 36 /etc/nginx/sites-enabled/tg-servgo
+l 777 root:root 37 /etc/nginx/sites-enabled/cdn-servgo
+l 777 root:root 36 /etc/nginx/sites-enabled/tg-eunoia
+f 644 root:root 2159 /etc/nginx/nginx.conf.bak-20260504-145012-pre-tls-edit
+f 644 root:root 2925 /etc/nginx/nginx.conf
+f 644 root:root 1447 /etc/nginx/nginx.conf.bak-direct-mtproxy-20260504-083112
+f 644 root:root 1125 /etc/nginx/fastcgi.conf
+d 755 root:root 4096 /etc/telemt
+f 640 root:telemt 971 /etc/telemt/direct-sber.toml.pre-speedopt
+f 640 root:telemt 988 /etc/telemt/direct-gosuslugi.toml.bak-20260713T205659Z
+f 640 telemt:telemt 971 /etc/telemt/direct-ozon.toml.bak-20260713T205659Z
+f 640 root:telemt 933 /etc/telemt/rf-media.toml.bak-20260714-0521
+f 640 root:telemt 864 /etc/telemt/bandbook-edge.toml.bak-hotfix-20260906T062759
+f 640 root:telemt 977 /etc/telemt/rf-media.toml.bak-hotfix-20260906T062554
+f 640 root:telemt 958 /etc/telemt/bandbook-sberbank.toml
+f 640 telemt:telemt 924 /etc/telemt/direct-ozon.toml.bak-ipv6fix-20260616-123711
+f 640 root:telemt 941 /etc/telemt/direct-gosuslugi.toml.bak-ipv6fix-20260616-123711
+f 640 root:telemt 859 /etc/telemt/bandbook-cdn.toml
+f 640 root:telemt 959 /etc/telemt/bandbook-sberbank.toml.bak-hotfix-20260906T062759
+f 640 root:telemt 925 /etc/telemt/direct-yandex.toml.bak-middleproxy-20260615-192420
+f 640 root:telemt 973 /etc/telemt/direct-yandex.toml.bak-20260713T205659Z
+f 640 root:telemt 969 /etc/telemt/direct-ozon.toml.bak-hotfix-20260906T062759
+f 640 root:telemt 860 /etc/telemt/bandbook-cdn.toml.bak-hotfix-20260906T062759
+f 640 root:telemt 1090 /etc/telemt/direct-gosuslugi.toml.bak-hotfix-20260906T062759
+f 640 root:telemt 975 /etc/telemt/direct-sber.toml.bak-20260713T205659Z
+f 640 root:telemt 1069 /etc/telemt/direct-yandex.toml.bak-hotfix-20260906T062759
+f 640 root:telemt 1017 /etc/telemt/direct-sber.toml
+f 640 root:telemt 924 /etc/telemt/direct-sber.toml.bak-ipv6fix-20260616-123711
+f 640 root:telemt 976 /etc/telemt/rf-media.toml
+f 640 root:telemt 1068 /etc/telemt/direct-yandex.toml
+f 640 root:telemt 926 /etc/telemt/direct-yandex.toml.bak-ipv6fix-20260616-123711
+f 640 root:telemt 968 /etc/telemt/direct-ozon.toml
+f 640 root:telemt 871 /etc/telemt/bandbook-assets.toml
+f 640 root:telemt 971 /etc/telemt/direct-ozon.toml.bak-fastpath-20260714T041655Z
+f 640 root:telemt 872 /etc/telemt/bandbook-static.toml.bak-hotfix-20260906T062759
+f 640 root:telemt 940 /etc/telemt/direct-gosuslugi.toml.bak-middleproxy-20260615-192720
+f 640 root:telemt 923 /etc/telemt/direct-sber.toml.bak-middleproxy-20260615-192720
+f 640 root:telemt 872 /etc/telemt/bandbook-assets.toml.bak-hotfix-20260906T062759
+f 640 root:telemt 1089 /etc/telemt/direct-gosuslugi.toml
+f 640 root:telemt 863 /etc/telemt/bandbook-edge.toml
+f 640 telemt:telemt 923 /etc/telemt/direct-ozon.toml.bak-middleproxy-20260615-192720
+f 640 root:telemt 1018 /etc/telemt/direct-sber.toml.bak-hotfix-20260906T062759
+f 640 root:telemt 871 /etc/telemt/bandbook-static.toml
+d 755 mtg:mtg 4096 /etc/mtg
+f 640 mtg:mtg 142 /etc/mtg/mail-cloud.toml
+f 640 mtg:mtg 134 /etc/mtg/config.toml
+f 640 mtg:mtg 148 /etc/mtg/kinopoisk.toml
+f 640 mtg:mtg 144 /etc/mtg/disk-yandex.toml
+f 640 mtg:mtg 146 /etc/mtg/disk-yandex.toml.bak-ipv6fix-20260615-192855
+f 640 mtg:mtg 142 /etc/mtg/avito.toml.bak-ipv6fix-20260615-192855
+f 640 mtg:mtg 144 /etc/mtg/mail-cloud.toml.bak-ipv6fix-20260615-192855
+f 640 mtg:mtg 150 /etc/mtg/kinopoisk.toml.bak-ipv6fix-20260615-192855
+f 640 mtg:mtg 136 /etc/mtg/config.toml.bak-ipv6fix-20260615-192855
+f 640 mtg:mtg 140 /etc/mtg/avito.toml
+d 755 root:root 4096 /etc/zapret2
+f 644 root:root 327 /etc/zapret2/telegram-nfqws.conf
+d 755 root:root 4096 /etc/xray
+f 600 root:root 1347 /etc/xray/config.json
+f 600 root:root 634 /etc/xray/CREDENTIALS.txt
+d 700 root:root 4096 /etc/wireguard
+f 600 root:root 45 /etc/wireguard/tg-relay.private
+f 644 root:root 2048 /etc/wireguard/tg-relay.conf.bak-pre-rollback-20260605
+f 600 root:root 909 /etc/wireguard/tg-relay.conf.bak.20260503190511
+f 600 root:root 1443 /etc/wireguard/tg-relay.conf.bak-mtu-20260605-093139
+f 600 root:root 1837 /etc/wireguard/tg-relay.conf
+f 644 root:root 45 /etc/wireguard/tg-relay.public
+f 644 root:root 1443 /etc/wireguard/tg-relay.conf.bak-mtu1360-1780670392
+d 755 root:root 4096 /root/proxy-backups
+d 755 root:root 4096 /root/proxy-backups/20260715-allroutes
+f 644 root:root 2879 <B64_REDACTED>.conf.before-sberbank
+f 755 root:root 3348 <B64_REDACTED>
+f 640 root:telemt 973 <B64_REDACTED>.toml
+f 640 root:telemt 933 <B64_REDACTED>.toml
+f 640 root:telemt 973 <B64_REDACTED>.toml
+f 644 root:root 2659 <B64_REDACTED>.conf
+f 640 root:telemt 988 <B64_REDACTED>.toml
+d 755 root:root 4096 /root/telemt-upgrades
+d 755 root:root 4096 /root/telemt-upgrades/20260712-105505
+f 640 root:telemt 1002 <B64_REDACTED>.toml.before-relay-links
+d 755 root:root 4096 /root/telemt-upgrades/20260712-090743
+f 644 root:root 1925 <B64_REDACTED>.tar.gz
+f 755 root:root 14909960 <B64_REDACTED>.4.13
+f 644 root:root 2622 <B64_REDACTED>.conf.before-petrovich
+f 640 root:telemt 971 <B64_REDACTED>.toml.before-petrovich
+d 755 root:root 4096 /root/telemt-upgrades/20260712-111715
+f 640 root:telemt 1004 <B64_REDACTED>.toml.before-primary-petrovich
+d 700 root:root 4096 <B64_REDACTED>
+f 644 root:root 3354 <B64_REDACTED>.before
+f 644 root:root 351 <B64_REDACTED>.service.before
+f 755 root:root 881 <B64_REDACTED>.sh.before
+f 644 root:root 1225 <B64_REDACTED>.before
+f 644 root:root 23603 <B64_REDACTED>.before
+d 755 root:root 4096 /root/proxy-hotfix-20260906T090144Z
+f 644 root:root 2878 /root/proxy-hotfix-20260906T090144Z/nginx.conf

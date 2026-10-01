@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh Telegram API routing rules
+After=network-online.target telegram-redsocks.service
+Wants=network-online.target telegram-redsocks.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/telegram-route-refresh.sh
+
+[Install]
+WantedBy=multi-user.target

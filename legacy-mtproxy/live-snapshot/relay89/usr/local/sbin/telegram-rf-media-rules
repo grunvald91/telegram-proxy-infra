@@ -1,0 +1,35 @@
+#!/bin/sh
+set -eu
+
+IPTABLES=/usr/sbin/iptables
+RF_IP=10.66.77.2
+PORT=9470
+
+add_rule() {
+    "$IPTABLES" -C INPUT -i tg-relay -p tcp -s <REDACTED> --dport "$PORT" \
+        -j ACCEPT 2>/dev/null || \
+    "$IPTABLES" -I INPUT 1 -i tg-relay -p tcp -s <REDACTED> --dport "$PORT" \
+        -j ACCEPT
+
+    "$IPTABLES" -C INPUT -i eth0 -p tcp --dport "$PORT" -j DROP 2>/dev/null || \
+    "$IPTABLES" -I INPUT 2 -i eth0 -p tcp --dport "$PORT" -j DROP
+}
+
+remove_rule() {
+    while "$IPTABLES" -C INPUT -i tg-relay -p tcp -s <REDACTED> --dport "$PORT" \
+        -j ACCEPT 2>/dev/null; do
+        "$IPTABLES" -D INPUT -i tg-relay -p tcp -s <REDACTED> --dport "$PORT" \
+            -j ACCEPT
+    done
+
+    while "$IPTABLES" -C INPUT -i eth0 -p tcp --dport "$PORT" -j DROP 2>/dev/null; do
+        "$IPTABLES" -D INPUT -i eth0 -p tcp --dport "$PORT" -j DROP
+    done
+}
+
+case "${1:-start}" in
+    start) add_rule ;;
+    stop) remove_rule ;;
+    restart) remove_rule; add_rule ;;
+    *) echo "Usage: $0 {start|stop|restart}" >&2; exit 2 ;;
+esac

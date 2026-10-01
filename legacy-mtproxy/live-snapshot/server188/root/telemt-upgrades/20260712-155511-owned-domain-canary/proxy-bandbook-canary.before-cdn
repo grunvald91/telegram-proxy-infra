@@ -1,0 +1,15 @@
+server {
+    listen 80;
+    listen [::]:80;
+    server_name proxy.bandbook.site;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/proxy-bandbook;
+        default_type "text/plain";
+        try_files $uri =404;
+    }
+
+    location / {
+        return 301 https://proxy.bandbook.site$request_uri;
+    }
+}

@@ -1,0 +1,43 @@
+[general]
+use_middle_proxy = true
+
+middle_proxy_nat_ip = "89.125.90.101"
+[general.links]
+public_host = "188.120.254.223"
+public_port = 443
+
+[general.modes]
+classic = false
+secure = false
+tls = true
+
+[server]
+port = 9443
+
+[[server.listeners]]
+ip = "127.0.0.1"
+
+[server.api]
+enabled = true
+listen = "127.0.0.1:9091"
+whitelist = ["127.0.0.1/32"]
+
+[censorship]
+tls_domain = "sberbank.ru"
+
+mask = true
+mask_host = "sberbank.ru"
+mask_port = 443
+tls_emulation = true
+unknown_sni_action = "mask"
+mask_shape_hardening = true
+mask_shape_hardening_aggressive_mode = true
+mask_relay_idle_timeout_ms = 3600000
+[access.users]
+hello = "<HEX_REDACTED>"
+
+[timeouts]
+relay_idle_policy_v2_enabled = true
+relay_client_idle_soft_secs = 900
+relay_client_idle_hard_secs = 3600
+<B64_REDACTED> = 120

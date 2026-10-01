@@ -1,0 +1,17 @@
+[Unit]
+Description=Telegram server-side DPI desync on every RF route
+Wants=network-online.target
+After=network-online.target telegram-tspu-rules.service nginx.service
+
+[Service]
+Type=simple
+ExecStartPre=/usr/local/sbin/telegram-nfqws-rules remove
+ExecStart=/opt/zapret2/nfqws2 @/etc/zapret2/telegram-nfqws.conf
+ExecStartPost=/usr/local/sbin/telegram-nfqws-rules apply
+ExecStopPost=/usr/local/sbin/telegram-nfqws-rules remove
+Restart=always
+RestartSec=1
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

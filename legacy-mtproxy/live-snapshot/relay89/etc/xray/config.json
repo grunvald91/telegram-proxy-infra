@@ -1,0 +1,44 @@
+{
+  "log": {"loglevel": "info"},
+  "dns": {
+    "servers": ["1.1.1.1", "8.8.8.8", "1.0.0.1"],
+    "queryStrategy": "UseIPv4"
+  },
+  "inbounds": [
+    {
+      "listen": "127.0.0.1",
+      "port": 8443,
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {"id": "f2d7a91d-7df8-41df-9a82-e387116d62ae", "flow": "xtls-rprx-vision"},
+          {"id": "a8e2c641-3b9d-4f8b-9c1e-7a5f2d8b6c3e", "flow": ""}
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "show": false, "dest": "www.google.com:443", "xver": 0,
+          "serverNames": ["www.google.com"],
+          "privateKey": <REDACTED>
+          "shortIds": ["40f986f7"]
+        }
+      },
+      "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"], "routeOnly": false}
+    }
+  ],
+  "outbounds": [
+    {"protocol": "freedom", "tag": "direct", "settings": {"domainStrategy": "UseIPv4"}},
+    {"protocol": "dns", "tag": "dns-out"},
+    {"protocol": "blackhole", "tag": "block"}
+  ],
+  "routing": {
+    "domainStrategy": "IPIfNonMatch",
+    "rules": [
+      {"type": "field", "port": "53", "outboundTag": "dns-out"},
+      {"type": "field", "ip": ["geoip:private"], "outboundTag": "block"}
+    ]
+  }
+}

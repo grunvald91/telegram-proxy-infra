@@ -1,0 +1,6 @@
+MTProto proxy
+Host: 188.120.254.223
+Port: 443
+Secret: <REDACTED>
+Mask domain: yandex.ru
+Telegram link: https://t.me/proxy?server=188.120.254.223&port=443&secret=<REDACTED>
