@@ -1,0 +1,59 @@
+name: Deploy WEB Proxy Pilot relay89
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - scripts/deploy_web_proxy_relay89.sh
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      TARGET_HOST: "89.125.90.101"
+      TARGET_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate credential
+        run: |
+          set -euo pipefail
+          [ -n "$TARGET_PASSWORD" ] || { echo "::error::RELAY89_SSH_PASSWORD missing"; exit 1; }
+
+      - name: Install SSH helper
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+
+      - name: Deploy with server-side rollback
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$TARGET_PASSWORD"
+          OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10"
+          sshpass -e scp $OPTS scripts/deploy_web_proxy_relay89.sh "root@$TARGET_HOST:/tmp/deploy_web_proxy_relay89.sh"
+          sshpass -e ssh $OPTS "root@$TARGET_HOST" 'chmod 0700 /tmp/deploy_web_proxy_relay89.sh && /tmp/deploy_web_proxy_relay89.sh'
+
+      - name: Retrieve private client configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$TARGET_PASSWORD"
+          OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10"
+          mkdir -p client-output
+          sshpass -e scp $OPTS "root@$TARGET_HOST:/root/tproxy-web-client.txt" client-output/web-proxy-client.txt
+          chmod 0600 client-output/web-proxy-client.txt
+
+      - name: Upload private client configuration
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-proxy-client
+          path: client-output/web-proxy-client.txt
+          if-no-files-found: error
+          retention-days: 7
