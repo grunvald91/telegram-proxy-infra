@@ -1,0 +1,88 @@
+name: WEB Proxy preflight relay89
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/web-proxy-preflight.yml
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      TARGET_HOST: "89.125.90.101"
+      TARGET_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+
+    steps:
+      - name: Validate relay credential
+        run: |
+          set -euo pipefail
+          [ -n "$TARGET_PASSWORD" ] || { echo "::error::RELAY89_SSH_PASSWORD is not configured"; exit 1; }
+
+      - name: Install SSH helper
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+
+      - name: Read-only WEB proxy preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$TARGET_PASSWORD"
+          OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10"
+          sshpass -e ssh $OPTS "root@$TARGET_HOST" 'bash -se' <<'REMOTE'
+          set -euo pipefail
+
+          echo "===== HOST ====="
+          hostname
+          . /etc/os-release
+          echo "$PRETTY_NAME"
+          uname -m
+
+          echo "===== RESOURCES ====="
+          df -h /
+          free -h
+
+          echo "===== REQUIRED PORTS ====="
+          for port in 2398 8080 8081 8888; do
+            if ss -lntH "sport = :$port" | grep -q .; then
+              echo "PORT $port BUSY"
+              ss -lntp "sport = :$port" || true
+            else
+              echo "PORT $port FREE"
+            fi
+          done
+
+          echo "===== EXISTING UNITS ====="
+          for unit in tproxy-server.service mtproxy.service tproxy-firewall.service refresh-mtproxy-config.timer; do
+            if systemctl cat "$unit" >/dev/null 2>&1; then
+              echo "$unit PRESENT"
+              systemctl is-active "$unit" 2>/dev/null || true
+            else
+              echo "$unit ABSENT"
+            fi
+          done
+
+          echo "===== NGINX ====="
+          nginx -t
+          grep -R --line-number --fixed-strings 'server_name cdn.servgo.ru;' /etc/nginx/sites-enabled /etc/nginx/conf.d 2>/dev/null || true
+          grep -R --line-number --fixed-strings 'listen 127.0.0.1:4453 ssl http2;' /etc/nginx/sites-enabled /etc/nginx/conf.d 2>/dev/null || true
+
+          echo "===== PUBLIC SITE ====="
+          getent ahostsv4 cdn.servgo.ru | head -5 || true
+          curl --fail --silent --show-error --location --max-time 15             --output /tmp/cdn-servgo-preflight.html             --write-out 'status=%{http_code} bytes=%{size_download} type=%{content_type}\n'             https://cdn.servgo.ru/
+          sha256sum /tmp/cdn-servgo-preflight.html
+          rm -f /tmp/cdn-servgo-preflight.html
+
+          echo "===== PACKAGE/TOOLS ====="
+          command -v curl
+          command -v nft || true
+          command -v git || true
+          command -v go || true
+
+          echo "preflight_read_only=yes"
+          REMOTE
