@@ -200,7 +200,7 @@ PY
     BACKUP="/root/tproxy-ru-relay-predeploy-$(date -u +%Y%m%dT%H%M%SZ)"
     mkdir -p "$BACKUP"
 
-    for p in 2399 8082 8084 8085 8889; do
+    for p in 2399 3002 8082 8084 8085 8889; do
       if ss -lntH "sport = :$p" | grep -q .; then die "port $p busy"; fi
     done
 
@@ -233,7 +233,7 @@ PY
   "base_path": "$BASE_PATH",
   "listen": "127.0.0.1:8084",
   "admin_listen": "127.0.0.1:8085",
-  "public_upstream": "http://10.66.77.2:3001",
+  "public_upstream": "http://127.0.0.1:3002",
   "token_key_file": "$STATE/token.key",
   "static_routes": "exact",
   "profiles_file": "/run/credentials/tproxy-server-ru.service/profiles.json"
@@ -365,7 +365,6 @@ MemoryDenyWriteExecute=true
 CapabilityBoundingSet=
 IPAddressDeny=any
 IPAddressAllow=localhost
-IPAddressAllow=10.66.77.2/32
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 UMask=0077
@@ -375,6 +374,22 @@ WantedBy=multi-user.target
 EOF
 
     cat > /etc/nginx/conf.d/tproxy-web-ru-bridge.conf <<'EOF'
+server {
+    listen 127.0.0.1:3002;
+    server_name _;
+
+    location / {
+        proxy_pass http://10.66.77.2:3001;
+        proxy_http_version 1.1;
+        proxy_set_header Host bandbook.site;
+        proxy_set_header X-Forwarded-For 127.0.0.1;
+        proxy_read_timeout 30s;
+        proxy_send_timeout 30s;
+        proxy_buffering off;
+        access_log off;
+    }
+}
+
 server {
     listen 10.66.77.1:8082;
     server_name _;
@@ -426,4 +441,4 @@ EOF
     ;;
 esac
 
-# deploy-trigger: ru-web-v6
+# deploy-trigger: ru-web-v7
