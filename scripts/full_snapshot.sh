@@ -100,6 +100,10 @@ read -r -d '' FILES_188 <<'EOF' || true
 /etc/sysctl.d/99-telegram-proxy-keepalive.conf
 /etc/sysctl.d/99-mtproxy-tuning.conf
 /opt/mtproto-canary
+/opt/caddy-pq/caddy
+/usr/bin/telemt
+/usr/bin/tinyproxy
+/usr/sbin/redsocks
 /usr/local/sbin/mtproxy*
 /usr/local/sbin/telegram*
 /root/start-mtproxy.sh
@@ -130,6 +134,10 @@ read -r -d '' FILES_89 <<'EOF' || true
 /etc/wireguard
 /etc/sysctl.d/99-telegram-proxy-keepalive.conf
 /etc/sysctl.d/99-mtproxy-tuning.conf
+/usr/bin/telemt
+/usr/local/bin/mtg
+/opt/zapret2/nfqws2
+/opt/xray/xray
 /usr/local/sbin/direct-mtproxy*
 /usr/local/sbin/telegram*
 /root/telemt-upgrades
@@ -223,7 +231,13 @@ for server in ('server188','relay89'):
         try:
             text=raw.decode('utf-8')
         except UnicodeDecodeError:
-            manifest.append(f'{server}/{rel}|binary_skipped|sha256={hashlib.sha256(raw).hexdigest()}|size={len(raw)}')
+            is_executable = bool(p.stat().st_mode & 0o111)
+            if is_executable and len(raw) <= 90_000_000:
+                dest.parent.mkdir(parents=True,exist_ok=True)
+                dest.write_bytes(raw)
+                manifest.append(f'{server}/{rel}|binary_saved|sha256={hashlib.sha256(raw).hexdigest()}|size={len(raw)}')
+            else:
+                manifest.append(f'{server}/{rel}|binary_skipped|sha256={hashlib.sha256(raw).hexdigest()}|size={len(raw)}')
             continue
         clean=sanitize(text)
         dest.parent.mkdir(parents=True,exist_ok=True)
@@ -287,4 +301,4 @@ if bad:
     sys.exit(1)
 PY
 
-# snapshot-trigger: v5
+# snapshot-trigger: v6
