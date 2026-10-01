@@ -32,9 +32,15 @@ jobs:
           export SSHPASS="$RELAY89_PASSWORD"
           OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10"
 
-          BASE_PATH="$(sshpass -e ssh $OPTS "root@$RELAY89_HOST" "python3 -c 'import json; print(json.load(open("/etc/tproxy-server-ru/config.json"))["base_path"])'")"
-          WEB_SECRET="$(sshpass -e ssh $OPTS "root@$RELAY89_HOST" "python3 -c 'import json; print(json.load(open("/etc/tproxy-server-ru/profiles.json"))["profiles"][0]["secret"])'")"
+          mkdir -p private-read
+          chmod 0700 private-read
+          sshpass -e scp $OPTS "root@$RELAY89_HOST:/etc/tproxy-server-ru/config.json" private-read/config.json
+          sshpass -e scp $OPTS "root@$RELAY89_HOST:/etc/tproxy-server-ru/profiles.json" private-read/profiles.json
 
+          BASE_PATH="$(python3 -c 'import json; print(json.load(open("private-read/config.json"))["base_path"])')"
+          WEB_SECRET="$(python3 -c 'import json; print(json.load(open("private-read/profiles.json"))["profiles"][0]["secret"])')"
+
+          rm -rf private-read
           test -n "$BASE_PATH"
           test -n "$WEB_SECRET"
           echo "::add-mask::$BASE_PATH"
@@ -47,8 +53,7 @@ jobs:
         run: |
           set -euo pipefail
           export SSHPASS="$RELAY89_PASSWORD"
-          OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10"
-          sshpass -e ssh $OPTS "root@$RELAY89_HOST" 'bash -s' <<'REMOTE'
+          sshpass -e ssh             -o StrictHostKeyChecking=no             -o UserKnownHostsFile=/dev/null             -o ConnectTimeout=10             "root@$RELAY89_HOST" 'bash -s' <<'REMOTE'
           set -euo pipefail
           systemctl is-active --quiet tproxy-server-ru.service
           systemctl is-active --quiet mtproxy-ru.service
@@ -71,21 +76,22 @@ jobs:
           echo "::add-mask::$BRIDGE"
 
           export SSHPASS="$SERVER188_PASSWORD"
-          OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10"
-
-          sshpass -e ssh $OPTS "root@$SERVER188_HOST"             "BASE_PATH='$BASE_PATH' BRIDGE='$BRIDGE' bash -s" <<'REMOTE'
+          sshpass -e ssh             -o StrictHostKeyChecking=no             -o UserKnownHostsFile=/dev/null             -o ConnectTimeout=10             "root@$SERVER188_HOST"             "BASE_PATH='$BASE_PATH' BRIDGE='$BRIDGE' bash -s" <<'REMOTE'
           set -euo pipefail
 
           systemctl is-active --quiet tproxy-web-ru-edge-firewall.service
           ss -lntp | grep -q '10.66.77.2:3001'
 
-          ROOT_CODE="$(curl --silent --show-error --max-time 15 --resolve bandbook.site:443:127.0.0.1             --output /tmp/ru-root.html --write-out '%{http_code}' https://bandbook.site/)"
-          DECOY_CODE="$(curl --silent --show-error --max-time 15 --resolve bandbook.site:443:127.0.0.1             --output /tmp/ru-decoy.html --write-out '%{http_code}' "https://bandbook.site/$BASE_PATH/not-a-real-route")"
+          ROOT_CODE="$(curl --silent --show-error --max-time 15             --resolve bandbook.site:443:127.0.0.1             --output /tmp/ru-root.html             --write-out '%{http_code}'             https://bandbook.site/)"
+
+          DECOY_CODE="$(curl --silent --show-error --max-time 15             --resolve bandbook.site:443:127.0.0.1             --output /tmp/ru-decoy.html             --write-out '%{http_code}'             "https://bandbook.site/$BASE_PATH/not-a-real-route")"
+
           test "$ROOT_CODE" = "$DECOY_CODE"
 
-          BRIDGE_CODE="$(curl --silent --show-error --max-time 20 --resolve bandbook.site:443:127.0.0.1             --output /tmp/ru-bridge.html --write-out '%{http_code}' "https://bandbook.site/$BASE_PATH/?bridge=$BRIDGE")"
+          BRIDGE_CODE="$(curl --silent --show-error --max-time 20             --resolve bandbook.site:443:127.0.0.1             --output /tmp/ru-bridge.html             --write-out '%{http_code}'             "https://bandbook.site/$BASE_PATH/?bridge=$BRIDGE")"
+
           test "$BRIDGE_CODE" = "200"
-          grep -q 'Telegram' /tmp/ru-bridge.html
+          grep -qi 'telegram' /tmp/ru-bridge.html
 
           rm -f /tmp/ru-root.html /tmp/ru-decoy.html /tmp/ru-bridge.html
           echo "edge_to_wireguard_to_relay_bridge=ok"
@@ -98,7 +104,9 @@ jobs:
           mkdir -p client-output
           MARKED="$(python3 -c 'import base64,os; print(base64.urlsafe_b64encode(b"\x70"+bytes.fromhex(os.environ["WEB_SECRET"])).decode().rstrip("="))')"
           echo "::add-mask::$MARKED"
+
           printf '%s\n'             "Telegram WEB proxy via RU edge -> WireGuard -> foreign relay"             "Server for manual entry: bandbook.site/$BASE_PATH"             "Secret for manual entry: $WEB_SECRET"             "Direct link: tg://webproxy?server=bandbook.site%2F$BASE_PATH&secret=$MARKED"             "HTTPS link: https://t.me/webproxy?server=bandbook.site%2F$BASE_PATH&secret=$MARKED"             "Path: client -> 188.120.254.223 -> WireGuard -> 89.125.90.101 -> tproxy-server-ru -> mtproxy-ru -> Telegram"             > client-output/web-proxy-ru-client.txt
+
           chmod 0600 client-output/web-proxy-ru-client.txt
 
       - name: Upload client artifact
