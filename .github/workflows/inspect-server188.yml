@@ -1,0 +1,111 @@
+name: Inspect server188 proxy chain
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      TARGET_HOST: "188.120.254.223"
+      TARGET_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+
+    steps:
+      - name: Guard credential
+        run: |
+          set -euo pipefail
+          [ -n "$TARGET_PASSWORD" ] || { echo "::error::SERVER188_SSH_PASSWORD is not configured"; exit 1; }
+
+      - name: Install sshpass
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+
+      - name: Inspect active proxy chain without changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$TARGET_PASSWORD"
+          OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+          sshpass -e ssh $OPTS "root@$TARGET_HOST" 'python3 -' <<'PY'
+          import hashlib, os, pathlib, re, subprocess
+
+          def run(args):
+              p=subprocess.run(args,capture_output=True,text=True,timeout=15)
+              return p.stdout + (("\nSTDERR:\n"+p.stderr) if p.stderr else "")
+
+          def red(s):
+              # Hide obvious credentials, proxy secrets, keys, tokens and long hex/base64-like values.
+              patterns=[
+                  (r'(?i)(password|passwd|secret|token|api[_-]?key)\s*([=:]\s*|\s+)\S+', r'\1=<REDACTED>'),
+                  (r'(?i)(-S|--secret)\s+\S+', r'\1 <REDACTED>'),
+                  (r'\b[0-9a-fA-F]{32,}\b','<HEX_REDACTED>'),
+              ]
+              for pat,repl in patterns:
+                  s=re.sub(pat,repl,s)
+              return s
+
+          print("===== SYSTEMD PROXY UNITS =====")
+          units=run(['systemctl','list-unit-files','--type=service','--no-pager'])
+          names=[]
+          for line in units.splitlines():
+              n=line.split()[0] if line.split() else ''
+              if re.search(r'(?i)telemt|mtproxy|proxy|redsocks|tinyproxy|caddy|nginx',n):
+                  names.append(n)
+                  print(line)
+          print("\n===== ACTIVE UNIT DETAILS (SANITIZED) =====")
+          for n in names:
+              out=run(['systemctl','show',n,'-p','Id,LoadState,ActiveState,SubState,UnitFileState,FragmentPath,DropInPaths,ExecStart'])
+              print("\n--",n,"--")
+              print(red(out))
+
+          print("\n===== BINARY PATHS / VERSIONS =====")
+          for binname in ['telemt','mtproto-proxy','caddy','nginx','tinyproxy','redsocks','docker']:
+              p=run(['bash','-lc',f'command -v {binname} || true']).strip()
+              print(f'{binname}_path={p or "absent"}')
+              if p:
+                  for args in ([p,'--version'],[p,'-version'],[p,'-v']):
+                      try:
+                          o=run(args).strip()
+                          if o:
+                              print(red(o[:500])); break
+                      except Exception:
+                          pass
+
+          print("\n===== NGINX STREAM CONFIG MAP (SANITIZED) =====")
+          for f in sorted(pathlib.Path('/etc/nginx/streams.d').glob('*.conf')):
+              print("\nFILE",f)
+              try:
+                  txt=f.read_text(errors='replace')
+                  print(red(txt))
+              except Exception as e:
+                  print('READ_ERROR',type(e).__name__)
+
+          print("\n===== CADDY CONFIG LOCATIONS =====")
+          for p in [pathlib.Path('/etc/caddy/Caddyfile'),pathlib.Path('/etc/systemd/system/caddy.service')]:
+              print(p, 'exists='+str(p.exists()))
+              if p.is_file():
+                  try: print(red(p.read_text(errors='replace')[:12000]))
+                  except Exception as e: print('READ_ERROR',type(e).__name__)
+
+          print("\n===== DOCKER PROXY CONTAINERS =====")
+          print(run(['docker','ps','--no-trunc','--format','{{.Names}}|{{.Image}}|{{.Ports}}|{{.Status}}']))
+
+          print("\n===== CONFIG FILE HASHES =====")
+          candidates=[
+              '/etc/systemd/system/mtproxy-hardening.service',
+              '/etc/sysctl.d/99-telegram-proxy-keepalive.conf',
+              '/etc/sysctl.d/99-mtproxy-tuning.conf',
+              '/usr/local/sbin/mtproxy-hardening.sh',
+              '/root/start-mtproxy.sh',
+          ]
+          for raw in candidates:
+              p=pathlib.Path(raw)
+              if p.is_file():
+                  b=p.read_bytes()
+                  print(f'{raw}|size={len(b)}|sha256={hashlib.sha256(b).hexdigest()}')
+
+          print("\nread_only=yes")
+          PY
