@@ -1,0 +1,40 @@
+name: Rollback WEB Proxy Pilot
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: web-proxy-relay89
+  cancel-in-progress: false
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TARGET_HOST: "89.125.90.101"
+      TARGET_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate relay credential
+        run: |
+          set -euo pipefail
+          [ -n "$TARGET_PASSWORD" ] || { echo "::error::RELAY89_SSH_PASSWORD is not configured"; exit 1; }
+
+      - name: Install SSH helper
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+
+      - name: Upload and run rollback
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$TARGET_PASSWORD"
+          OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10"
+          sshpass -e scp $OPTS web-proxy/rollback-relay89.sh "root@$TARGET_HOST:/tmp/grunvald-webproxy-rollback.sh"
+          sshpass -e ssh $OPTS "root@$TARGET_HOST" 'chmod 700 /tmp/grunvald-webproxy-rollback.sh && bash /tmp/grunvald-webproxy-rollback.sh'
