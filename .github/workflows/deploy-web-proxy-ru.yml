@@ -54,9 +54,11 @@ jobs:
 
           export SSHPASS="$SERVER188_PASSWORD"
           sshpass -e scp $OPTS scripts/deploy_web_proxy_ru_path.sh "root@$SERVER188_HOST:/tmp/deploy_web_proxy_ru_path.sh"
+          sshpass -e ssh $OPTS "root@$SERVER188_HOST" 'chmod 0700 /tmp/deploy_web_proxy_ru_path.sh'
 
           export SSHPASS="$RELAY89_PASSWORD"
           sshpass -e scp $OPTS scripts/deploy_web_proxy_ru_path.sh "root@$RELAY89_HOST:/tmp/deploy_web_proxy_ru_path.sh"
+          sshpass -e ssh $OPTS "root@$RELAY89_HOST" 'chmod 0700 /tmp/deploy_web_proxy_ru_path.sh'
 
       - name: Prepare BandBook mirror on RU edge
         shell: bash
