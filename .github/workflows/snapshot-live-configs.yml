@@ -1,4 +1,4 @@
-name: Snapshot sanitized live proxy configs
+name: Full sanitized proxy infrastructure snapshot
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ permissions:
 jobs:
   snapshot:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 20
     env:
       SERVER188_HOST: "188.120.254.223"
       RELAY89_HOST: "89.125.90.101"
@@ -28,62 +28,134 @@ jobs:
           [ -n "$RELAY89_PASSWORD" ] || { echo "::error::Missing RELAY89_SSH_PASSWORD"; exit 1; }
 
       - name: Install SSH helper
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass file
 
-      - name: Collect whitelisted live files
+      - name: Collect proxy infrastructure files and state
         shell: bash
         run: |
           set -euo pipefail
+          rm -rf /tmp/proxy-snapshot
           mkdir -p /tmp/proxy-snapshot/server188 /tmp/proxy-snapshot/relay89
 
-          collect() {
+          collect_files() {
             local host="$1" pass="$2" target="$3" list="$4"
             export SSHPASS="$pass"
-            # Only whitelisted files are streamed. No shell tracing and no file contents are printed.
             sshpass -e ssh               -o StrictHostKeyChecking=no               -o UserKnownHostsFile=/dev/null               "root@$host"               "tar -czf - --ignore-failed-read $list 2>/dev/null"               | tar -xzf - -C "$target"
           }
 
-          collect "$SERVER188_HOST" "$SERVER188_PASSWORD" /tmp/proxy-snapshot/server188 '
-            /etc/nginx/streams.d/*.conf
+          collect_state() {
+            local host="$1" pass="$2" target="$3"
+            export SSHPASS="$pass"
+            mkdir -p "$target/runtime"
+            sshpass -e ssh               -o StrictHostKeyChecking=no               -o UserKnownHostsFile=/dev/null               "root@$host" 'bash -s' > "$target/runtime/system-state.txt" <<'REMOTE'
+          set +e
+          echo "===== DATE ====="; date -Is
+          echo "===== HOST ====="; hostnamectl; uname -a; uptime
+          echo "===== ADDRESSES ====="; ip -brief address
+          echo "===== ROUTES ====="; ip -4 route; ip -6 route; ip rule
+          echo "===== LISTENERS ====="; ss -lntup
+          echo "===== PROXY PROCESSES ====="; ps -eo pid,ppid,user,comm,args | grep -Ei 'telemt|mtg|mtproxy|telegram|xray|wireguard|wg-quick|nfqws|zapret|nginx|caddy|redsocks|tinyproxy|docker' | grep -v grep
+          echo "===== SYSTEMD UNITS ====="; systemctl list-unit-files --no-pager | grep -Ei 'telemt|mtg|mtproxy|telegram|xray|wireguard|wg-quick|nfqws|zapret|nginx|caddy|redsocks|tinyproxy|docker'
+          echo "===== ACTIVE SERVICES ====="; systemctl --type=service --state=running --no-pager
+          echo "===== TIMERS ====="; systemctl list-timers --all --no-pager
+          echo "===== ROOT CRONTAB ====="; crontab -l 2>/dev/null
+          echo "===== /etc/cron.d ====="; find /etc/cron.d -maxdepth 1 -type f -print 2>/dev/null
+          echo "===== UFW ====="; ufw status verbose
+          echo "===== NFTABLES ====="; nft list ruleset
+          echo "===== IPTABLES ====="; iptables-save; ip6tables-save
+          echo "===== WIREGUARD ====="; wg show
+          echo "===== DOCKER ====="; docker ps -a --no-trunc --format 'table {{.Names}}	{{.Image}}	{{.Status}}	{{.Ports}}'
+          echo "===== DOCKER COMPOSE ====="; docker compose ls
+          echo "===== PACKAGES ====="; dpkg-query -W -f='${binary:Package}	${Version}
+' | grep -Ei 'telemt|wireguard|nginx|caddy|tinyproxy|redsocks|docker|iptables|nftables|xray|python|openssl'
+          echo "===== BINARY LOCATIONS ====="
+          for b in telemt mtg nginx caddy tinyproxy redsocks wg docker iptables nft; do command -v "$b" 2>/dev/null || true; done
+          echo "===== BINARY HASHES ====="
+          for b in /usr/bin/telemt /usr/local/bin/mtg /opt/xray/xray /opt/zapret2/nfqws2 /opt/caddy-pq/caddy /usr/sbin/nginx /usr/bin/tinyproxy /usr/sbin/redsocks; do
+            [ -f "$b" ] && sha256sum "$b"
+          done
+          echo "===== RELEVANT FILE TREE ====="
+          find /etc/nginx /etc/telemt /etc/mtg /etc/zapret2 /etc/tinyproxy /opt/mtproto-canary                /root/proxy-backups /root/telemt-upgrades /root/proxy-hotfix-* /root/nginx-backup-*                -maxdepth 6 -printf '%y %m %u:%g %s %p
+' 2>/dev/null
+          REMOTE
+          }
+
+          # Russian edge: active config + historical proxy work + related scripts.
+          collect_files "$SERVER188_HOST" "$SERVER188_PASSWORD" /tmp/proxy-snapshot/server188 '
+            /etc/nginx/nginx.conf
+            /etc/nginx/streams.d
+            /etc/nginx/conf.d
+            /etc/nginx/sites-enabled
             /etc/systemd/system/telemt*.service
-            /etc/systemd/system/telemt*.service.d/*.conf
-            /etc/systemd/system/mtproxy-hardening.service
-            /etc/systemd/system/telegram-redsocks.service
-            /etc/systemd/system/caddy-pq-canary.service
-            /etc/telemt/*.toml
+            /etc/systemd/system/telemt*.service.d
+            /etc/systemd/system/mtproxy*.service
+            /etc/systemd/system/telegram*.service
+            /etc/systemd/system/caddy*.service
+            /etc/systemd/system/nginx.service.d
+            /etc/telemt
             /etc/telegram-redsocks.conf
             /etc/redsocks.conf
-            /etc/tinyproxy/tinyproxy.conf
-            /opt/mtproto-canary/Caddyfile
-            /usr/local/sbin/mtproxy-hardening.sh
+            /etc/tinyproxy
             /etc/sysctl.d/99-telegram-proxy-keepalive.conf
             /etc/sysctl.d/99-mtproxy-tuning.conf
+            /opt/mtproto-canary
+            /usr/local/sbin/mtproxy*
+            /usr/local/sbin/telegram*
+            /root/start-mtproxy.sh
+            /root/mtproxy-info.txt
+            /root/proxy-backups
+            /root/telemt-upgrades
+            /root/proxy-hotfix-*
+            /root/nginx-backup-*
           '
+          collect_state "$SERVER188_HOST" "$SERVER188_PASSWORD" /tmp/proxy-snapshot/server188
 
-          collect "$RELAY89_HOST" "$RELAY89_PASSWORD" /tmp/proxy-snapshot/relay89 '
+          # Foreign relay/backend: active config + DPI/routing helpers + historical proxy work.
+          collect_files "$RELAY89_HOST" "$RELAY89_PASSWORD" /tmp/proxy-snapshot/relay89 '
             /etc/nginx/nginx.conf
-            /etc/nginx/streams.d/*.conf
-            /etc/nginx/conf.d/*.conf
-            /etc/nginx/sites-enabled/*
+            /etc/nginx/streams.d
+            /etc/nginx/conf.d
+            /etc/nginx/sites-enabled
             /etc/systemd/system/mtg*.service
             /etc/systemd/system/telemt*.service
-            /etc/systemd/system/telemt*.service.d/*.conf
-            /etc/systemd/system/direct-mtproxy-hardening.service
-            /etc/systemd/system/telegram-foreign-mss-rules.service
-            /etc/systemd/system/telegram-foreign-nfqws.service
-            /etc/systemd/system/telegram-rf-media-rules.service
+            /etc/systemd/system/telemt*.service.d
+            /etc/systemd/system/direct-mtproxy*.service
+            /etc/systemd/system/telegram*.service
             /etc/systemd/system/xray.service
-            /etc/telemt/*.toml
-            /etc/mtg/*.toml
-            /etc/zapret2/telegram-nfqws.conf
-            /usr/local/sbin/direct-mtproxy-hardening.sh
-            /usr/local/sbin/telegram-foreign-mss-rules
-            /usr/local/sbin/telegram-rf-media-rules
+            /etc/systemd/system/nginx.service.d
+            /etc/telemt
+            /etc/mtg
+            /etc/zapret2
             /etc/sysctl.d/99-telegram-proxy-keepalive.conf
             /etc/sysctl.d/99-mtproxy-tuning.conf
+            /usr/local/sbin/direct-mtproxy*
+            /usr/local/sbin/telegram*
+            /root/telemt-upgrades
+            /root/proxy-backups
+            /root/proxy-hotfix-*
+            /root/nginx-backup-*
           '
+          collect_state "$RELAY89_HOST" "$RELAY89_PASSWORD" /tmp/proxy-snapshot/relay89
 
-      - name: Sanitize and stage snapshot
+          # Copy selected reproducible binaries too. Large/nonexistent ones are skipped.
+          copy_binary() {
+            local host="$1" pass="$2" target="$3" remote="$4" name="$5"
+            export SSHPASS="$pass"
+            mkdir -p "$target/binaries"
+            size=$(sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$host"               "test -f '$remote' && stat -c %s '$remote' || echo 0")
+            if [ "$size" -gt 0 ] && [ "$size" -le 25000000 ]; then
+              sshpass -e scp -q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null                 "root@$host:$remote" "$target/binaries/$name"
+            fi
+          }
+
+          copy_binary "$SERVER188_HOST" "$SERVER188_PASSWORD" /tmp/proxy-snapshot/server188 /usr/bin/telemt telemt
+          copy_binary "$SERVER188_HOST" "$SERVER188_PASSWORD" /tmp/proxy-snapshot/server188 /opt/caddy-pq/caddy caddy-pq
+          copy_binary "$RELAY89_HOST" "$RELAY89_PASSWORD" /tmp/proxy-snapshot/relay89 /usr/bin/telemt telemt
+          copy_binary "$RELAY89_HOST" "$RELAY89_PASSWORD" /tmp/proxy-snapshot/relay89 /usr/local/bin/mtg mtg
+          copy_binary "$RELAY89_HOST" "$RELAY89_PASSWORD" /tmp/proxy-snapshot/relay89 /opt/zapret2/nfqws2 nfqws2
+          copy_binary "$RELAY89_HOST" "$RELAY89_PASSWORD" /tmp/proxy-snapshot/relay89 /opt/xray/xray xray
+
+      - name: Sanitize, preserve binaries, and stage full snapshot
         shell: bash
         run: |
           set -euo pipefail
@@ -96,20 +168,33 @@ jobs:
           if dstroot.exists():
               shutil.rmtree(dstroot)
 
-          key_assignment = re.compile(
-              r'(?i)^(\s*[^#\n]*(?:secret|password|passwd|token|private[_-]?key|preshared[_-]?key|api[_-]?key|uuid|credential)[^=:\n]*\s*[=:]\s*).*$'
+          # Secret patterns: intentionally aggressive. Better to redact too much than leak a credential.
+          assign = re.compile(
+              r'(?i)^(\s*[^#\n]*(?:secret|password|passwd|token|api[_-]?key|private[_-]?key|preshared[_-]?key|credential|uuid)[^=:\n]*\s*[=:]\s*).*$'
           )
-          cli_secret = re.compile(r'(?i)(--?secret|-S|--?password|--?token)\s+\S+')
+          cli = re.compile(r'(?i)(--?secret|-S|--?password|--?token|--?uuid)\s+\S+')
+          uri_cred = re.compile(r'(?i)(https?://)[^/@\s:]+:[^/@\s]+@')
+          private_key_marker = re.compile(r'-----BEGIN (?:OPENSSH|RSA|EC|DSA|PRIVATE) PRIVATE KEY-----')
           long_hex = re.compile(r'\b[0-9a-fA-F]{32,}\b')
           long_b64 = re.compile(r'(?<![A-Za-z0-9+/=_-])[A-Za-z0-9+/_-]{43,}={0,2}(?![A-Za-z0-9+/=_-])')
 
           def sanitize(text):
               out=[]
+              skip_private=False
               for line in text.splitlines():
-                  if key_assignment.match(line):
-                      prefix=key_assignment.match(line).group(1)
-                      line=prefix+'<REDACTED>'
-                  line=cli_secret.sub(lambda m: m.group(1)+' <REDACTED>', line)
+                  if private_key_marker.search(line):
+                      out.append('<PRIVATE_KEY_BLOCK_REDACTED>')
+                      skip_private=True
+                      continue
+                  if skip_private:
+                      if '-----END ' in line and 'PRIVATE KEY-----' in line:
+                          skip_private=False
+                      continue
+                  m=assign.match(line)
+                  if m:
+                      line=m.group(1)+'<REDACTED>'
+                  line=cli.sub(lambda m: m.group(1)+' <REDACTED>', line)
+                  line=uri_cred.sub(r'\1<REDACTED>@', line)
                   line=long_hex.sub('<HEX_REDACTED>', line)
                   line=long_b64.sub('<B64_REDACTED>', line)
                   out.append(line)
@@ -122,43 +207,70 @@ jobs:
                   if not p.is_file():
                       continue
                   rel=p.relative_to(root)
-                  # Never stage actual key/certificate material even if a future glob changes.
-                  lname=p.name.lower()
-                  if lname.endswith(('.key','.pem','.p12','.pfx','.jks')) or 'privatekey' in lname:
-                      continue
                   raw=p.read_bytes()
+                  dest=dstroot/server/rel
+
+                  # Never store known key/certificate/private credential files.
+                  lname=p.name.lower()
+                  forbidden=(
+                      lname.endswith(('.key','.pem','.p12','.pfx','.jks','.kdbx')) or
+                      lname in ('id_rsa','id_ed25519','shadow','gshadow') or
+                      'privatekey' in lname or
+                      str(rel).startswith('etc/wireguard/')
+                  )
+                  if forbidden:
+                      manifest.append(f'{server}/{rel}|SECRET_FILE_SKIPPED|sha256={hashlib.sha256(raw).hexdigest()}|size={len(raw)}')
+                      continue
+
+                  # Preserve selected binaries byte-for-byte.
+                  if str(rel).startswith('binaries/'):
+                      dest.parent.mkdir(parents=True,exist_ok=True)
+                      dest.write_bytes(raw)
+                      manifest.append(f'{server}/{rel}|binary_saved|sha256={hashlib.sha256(raw).hexdigest()}|size={len(raw)}')
+                      continue
+
                   try:
                       text=raw.decode('utf-8')
                   except UnicodeDecodeError:
-                      manifest.append(f'{server}/{rel}|binary_skipped|sha256={hashlib.sha256(raw).hexdigest()}')
+                      manifest.append(f'{server}/{rel}|binary_skipped|sha256={hashlib.sha256(raw).hexdigest()}|size={len(raw)}')
                       continue
+
                   clean=sanitize(text)
-                  dest=dstroot/server/rel.relative_to('/')
                   dest.parent.mkdir(parents=True,exist_ok=True)
                   dest.write_text(clean)
-                  manifest.append(f'{server}/{rel}|source_sha256={hashlib.sha256(raw).hexdigest()}|sanitized_sha256={hashlib.sha256(clean.encode()).hexdigest()}')
+                  manifest.append(
+                      f'{server}/{rel}|source_sha256={hashlib.sha256(raw).hexdigest()}|'
+                      f'sanitized_sha256={hashlib.sha256(clean.encode()).hexdigest()}|size={len(raw)}'
+                  )
 
-          # Sensitive configs deliberately represented only by hashes, never contents.
-          (dstroot/'README.md').parent.mkdir(parents=True,exist_ok=True)
+          dstroot.mkdir(parents=True,exist_ok=True)
           (dstroot/'README.md').write_text(
-              '# Sanitized live snapshot\n\n'
-              'Generated from the live hosts. Secret-like assignments and long credential-like values are redacted.\n'
-              'WireGuard private configuration, TLS private keys, Xray config contents, share-link files and SSH keys are not copied.\n'
+              '# Full sanitized live snapshot\n\n'
+              'This snapshot intentionally keeps as much of the recoverable proxy infrastructure as practical.\n\n'
+              'Included: active configs, systemd units, scripts, historical proxy backups, nginx/telemt/mtg/zapret files, '
+              'runtime state, firewall/routing information, package/service inventories and selected binaries.\n\n'
+              'Excluded/redacted: SSH passwords/keys, TLS private keys, WireGuard private keys, API tokens, proxy secrets, '
+              'UUIDs/credentials and other obvious secret values. Xray config contents are not collected.\n'
           )
           (dstroot/'MANIFEST.sha256.txt').write_text('\n'.join(manifest)+'\n')
           PY
 
-      - name: Reject obvious credential leakage
+      - name: Fail closed on obvious secret leakage
         shell: bash
         run: |
           set -euo pipefail
-          # Fail closed on common private-key markers or explicit unredacted credential assignments.
-          if grep -RIlE --exclude='*.md'              'BEGIN (OPENSSH|RSA|EC|PRIVATE) PRIVATE KEY|PrivateKey[[:space:]]*=|PresharedKey[[:space:]]*='              legacy-mtproxy/live-snapshot; then
-            echo "::error::Private key material marker found; refusing commit"
-            exit 1
-          fi
+          found=0
+          while IFS= read -r -d '' f; do
+            if grep -Iq . "$f"; then
+              if grep -nEi                 'BEGIN (OPENSSH|RSA|EC|DSA|PRIVATE) PRIVATE KEY|PrivateKey[[:space:]]*=|PresharedKey[[:space:]]*=|password[[:space:]]*=[[:space:]]*[^<[:space:]]|secret[[:space:]]*=[[:space:]]*[0-9A-Za-z]'                 "$f" >/dev/null; then
+                echo "::error::Possible unredacted secret in $f"
+                found=1
+              fi
+            fi
+          done < <(find legacy-mtproxy/live-snapshot -type f -print0)
+          [ "$found" -eq 0 ]
 
-      - name: Commit sanitized snapshot
+      - name: Commit full sanitized snapshot
         shell: bash
         run: |
           set -euo pipefail
@@ -169,5 +281,5 @@ jobs:
             echo "No snapshot changes"
             exit 0
           fi
-          git commit -m "backup: snapshot sanitized live proxy configuration"
+          git commit -m "backup: full sanitized proxy infrastructure snapshot"
           git push origin HEAD:main
