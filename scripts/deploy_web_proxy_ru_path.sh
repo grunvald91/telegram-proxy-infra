@@ -48,8 +48,16 @@ server {
 EOF
     nginx -t
     systemctl reload nginx
-    curl --fail --silent --show-error --max-time 10 -H 'Host: bandbook.site'       -o /tmp/bandbook-mirror-check.html http://10.66.77.2:3001/
+    READY=""
+    for _ in $(seq 1 20); do
+      if curl --fail --silent --show-error --max-time 3 -H 'Host: bandbook.site'         -o /tmp/bandbook-mirror-check.html http://10.66.77.2:3001/; then
+        READY=1
+        break
+      fi
+      sleep 1
+    done
     rm -f /tmp/bandbook-mirror-check.html
+    [ -n "$READY" ] || die "BandBook WireGuard mirror did not become ready"
     log "mirror188 SUCCESS"
     ;;
 
@@ -404,4 +412,4 @@ EOF
     ;;
 esac
 
-# deploy-trigger: ru-web-v4
+# deploy-trigger: ru-web-v5
