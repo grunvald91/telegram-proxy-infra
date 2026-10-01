@@ -14,6 +14,45 @@ log(){ echo "[web-proxy-ru] $*"; }
 [ -n "$SECRET" ] || die "secret required"
 
 case "$ROLE" in
+  mirror188)
+    CONF="/etc/nginx/conf.d/tproxy-web-ru-mirror-only.conf"
+    [ -f /etc/nginx/sites-enabled/bandbook ] || die "BandBook nginx site missing"
+    nginx -t >/dev/null 2>&1 || die "existing nginx invalid"
+
+    if ss -lntH "sport = :3001" | grep -q .; then
+      if [ -f "$CONF" ]; then
+        log "mirror already active"
+        exit 0
+      fi
+      die "port 3001 already busy"
+    fi
+
+    cat > "$CONF" <<'EOF'
+server {
+    listen 10.66.77.2:3001;
+    server_name _;
+    root /var/www/bandbook;
+    index index.html;
+    client_max_body_size 64M;
+
+    location /assets/ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+        try_files $uri =404;
+    }
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
+EOF
+    nginx -t
+    systemctl reload nginx
+    curl --fail --silent --show-error --max-time 10 -H 'Host: bandbook.site'       -o /tmp/bandbook-mirror-check.html http://10.66.77.2:3001/
+    rm -f /tmp/bandbook-mirror-check.html
+    log "mirror188 SUCCESS"
+    ;;
+
   edge188)
     NGINX_SITE="/etc/nginx/sites-enabled/bandbook"
     CONF="/etc/nginx/conf.d/tproxy-web-ru.conf"
@@ -36,6 +75,8 @@ case "$ROLE" in
       exit "$rc"
     }
     trap rollback_edge ERR
+
+    rm -f /etc/nginx/conf.d/tproxy-web-ru-mirror-only.conf
 
     cat > "$CONF" <<EOF
 map \$http_upgrade \$tproxy_ru_connection_upgrade {
@@ -363,4 +404,4 @@ EOF
     ;;
 esac
 
-# deploy-trigger: ru-web-v1
+# deploy-trigger: ru-web-v2
