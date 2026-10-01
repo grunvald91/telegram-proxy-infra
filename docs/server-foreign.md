@@ -117,3 +117,58 @@ Map:
 5. Xray's role versus Telegram proxy traffic;
 6. direct port 9446 role;
 7. sanitized active configs suitable for repository backup.
+
+
+## Focused audit details (2026-10-01)
+
+### WireGuard
+- Active interface: `tg-relay`
+- Address: `10.66.77.1/24`
+- Listen port: `51820/udp`
+- Peer endpoint observed: `188.120.254.223:35168`
+- A recent handshake was present during the audit, confirming that the tunnel is live.
+
+### Active Telemt units
+- `telemt-direct-gosuslugi.service` -> `/etc/telemt/direct-gosuslugi.toml`
+- `telemt-direct-ozon.service` -> `/etc/telemt/direct-ozon.toml`
+- `telemt-direct-sber.service` -> `/etc/telemt/direct-sber.toml`
+- `telemt-direct-yandex.service` -> `/etc/telemt/direct-yandex.toml`
+- `telemt-rf-media.service` -> `/etc/telemt/rf-media.toml`
+- templated `telemt-bandbook@.service` also exists for BandBook-related profiles.
+
+Additional Telemt config files found:
+- `/etc/telemt/bandbook-assets.toml`
+- `/etc/telemt/bandbook-cdn.toml`
+- `/etc/telemt/bandbook-edge.toml`
+- `/etc/telemt/bandbook-sberbank.toml`
+- `/etc/telemt/bandbook-static.toml`
+
+### Active MTG units
+- `mtg.service` -> `/etc/mtg/config.toml`
+- `mtg-avito.service` -> `/etc/mtg/avito.toml`
+- `mtg-disk-yandex.service` -> `/etc/mtg/disk-yandex.toml`
+- `mtg-kinopoisk.service` -> `/etc/mtg/kinopoisk.toml`
+- `mtg-mail-cloud.service` -> `/etc/mtg/mail-cloud.toml`
+
+All five were active and running during the focused audit.
+
+### Other active support services
+- `direct-mtproxy-hardening.service`
+- `telegram-foreign-mss-rules.service`
+- `telegram-foreign-nfqws.service`
+- `telegram-rf-media-rules.service`
+- `xray.service`
+
+### Xray
+- Binary: `/opt/xray/xray`
+- Config: `/etc/xray/config.json`
+- Active/running during the audit.
+- The config content itself was intentionally not printed because it can contain sensitive identifiers/keys.
+
+### nginx-hosted auxiliary Telegram web surfaces
+The foreign host also serves:
+- `tg.servgo.ru` on local TLS port 5443
+- `tg.eunoia.fun` on local TLS port 5444
+- `cdn.servgo.ru` on local TLS port 4453
+
+These are real HTTPS services sharing the machine with the proxy stack. Any WEB proxy deployment must therefore avoid disrupting existing SNI routing.
