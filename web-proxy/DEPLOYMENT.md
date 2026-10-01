@@ -44,3 +44,32 @@ Any deployment failure before the final success marker:
 - removes/restores the tproxy nginx include;
 - validates and reloads nginx;
 - leaves all legacy Telemt/MTG/WireGuard/Xray services untouched.
+
+
+## Deployment result — 2026-10-01
+
+Status: **SUCCESS**
+
+GitHub Actions run:
+- workflow: `Deploy WEB Proxy Pilot relay89`
+- run id: `36866092905`
+
+Verified after deployment:
+- official MTProxy backend active;
+- `tproxy-server` active;
+- local backend firewall unit active;
+- MTProxy config refresh timer active;
+- relay listening on `127.0.0.1:8080`;
+- admin health endpoint listening on `127.0.0.1:8081`;
+- nginx public-site mirror listening on `127.0.0.1:3000`;
+- official MTProxy listening on `:2398` with the upstream nftables protection;
+- `nginx -t` successful;
+- relay configuration validation successful;
+- `cdn.servgo.ru` public site body SHA-256 unchanged before/after deployment;
+- unauthenticated hidden-prefix traffic returns the normal site branch;
+- client configuration exported only as the private Actions artifact `web-proxy-client`.
+
+Upstream server commit:
+`c8adb8b7c6b7fc46c12ae3acb68be9070c26a8e8`
+
+The legacy Telemt/MTG/WireGuard/Xray stack remained running and was not replaced.
