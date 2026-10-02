@@ -1,0 +1,43 @@
+name: Diagnose AI Growth Telegram relay
+
+on:
+  push:
+    branches:
+      - ops/ai-growth-telegram-relay
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    env:
+      TARGET_HOST: "188.120.254.223"
+      TARGET_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Guard credential
+        run: |
+          set -euo pipefail
+          [ -n "$TARGET_PASSWORD" ] || exit 1
+      - name: Install sshpass
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read-only diagnostics
+        run: |
+          set -euo pipefail
+          export SSHPASS="$TARGET_PASSWORD"
+          OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+          sshpass -e ssh $OPTS root@$TARGET_HOST '
+            set +e
+            echo "=== STATUS ==="
+            systemctl status tinyproxy-ai-growth.service --no-pager -l
+            echo "=== JOURNAL ==="
+            journalctl -u tinyproxy-ai-growth.service -n 40 --no-pager
+            echo "=== DIRS ==="
+            ls -ld /run/tinyproxy /var/log/tinyproxy 2>&1
+            echo "=== CONFIG CHECK ==="
+            /usr/bin/tinyproxy -d -c /etc/tinyproxy/ai-growth.conf -h 2>&1 | head -n 20
+            echo "=== LISTENER ==="
+            ss -ltnp | grep 8891 || true
+            exit 0
+          '
