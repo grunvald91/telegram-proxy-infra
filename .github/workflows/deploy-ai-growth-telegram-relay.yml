@@ -98,6 +98,13 @@ jobs:
           systemctl is-active --quiet tinyproxy-ai-growth.service
           ss -ltn | awk '{print $4}' | grep -Eq "(:|^)${RELAY_PORT}$"
 
+          if command -v ufw >/dev/null 2>&1 && ufw status | head -n1 | grep -qi active; then
+            ufw allow from "${AI_GROWTH_IP}" to any port "${RELAY_PORT}" proto tcp comment "AI Growth Telegram relay"
+          else
+            iptables -C INPUT -p tcp -s "${AI_GROWTH_IP}" --dport "${RELAY_PORT}" -j ACCEPT 2>/dev/null || \
+              iptables -I INPUT 1 -p tcp -s "${AI_GROWTH_IP}" --dport "${RELAY_PORT}" -j ACCEPT
+          fi
+
           code=$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 8 --max-time 20             -x "http://127.0.0.1:${RELAY_PORT}" https://api.telegram.org || true)
           echo "LOCAL_PROXY_HTTP_STATUS=$code"
           [ "$code" != "000" ] && [ "$code" != "403" ] && [ "$code" != "407" ]
