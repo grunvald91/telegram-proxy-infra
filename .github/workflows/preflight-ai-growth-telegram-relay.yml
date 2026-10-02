@@ -1,0 +1,44 @@
+name: Preflight AI Growth Telegram relay
+
+on:
+  push:
+    branches:
+      - ops/ai-growth-telegram-relay
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    env:
+      TARGET_HOST: "188.120.254.223"
+      TARGET_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Guard credential
+        run: |
+          set -euo pipefail
+          [ -n "$TARGET_PASSWORD" ] || { echo "::error::SERVER188_SSH_PASSWORD missing"; exit 1; }
+
+      - name: Install sshpass
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+
+      - name: Read-only relay preflight
+        run: |
+          set -euo pipefail
+          export SSHPASS="$TARGET_PASSWORD"
+          OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+          sshpass -e ssh $OPTS root@$TARGET_HOST '
+            set -euo pipefail
+            echo "TINYPROXY_BIN=$(command -v tinyproxy || true)"
+            systemctl is-active tinyproxy.service || true
+            if ss -ltn | awk "{print \$4}" | grep -Eq "(:|^)8891$"; then
+              echo "PORT_8891_FREE=no"
+              exit 1
+            fi
+            echo "PORT_8891_FREE=yes"
+            id tinyproxy
+            test -d /etc/tinyproxy
+            echo "CONFIG_DIR_OK=yes"
+          '
