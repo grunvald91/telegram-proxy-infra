@@ -1,0 +1,105 @@
+name: Deploy AI Growth Telegram relay
+
+on:
+  push:
+    branches:
+      - ops/ai-growth-telegram-relay
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      TARGET_HOST: "188.120.254.223"
+      TARGET_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      AI_GROWTH_IP: "155.212.162.47"
+      RELAY_PORT: "8891"
+    steps:
+      - name: Guard credential
+        run: |
+          set -euo pipefail
+          [ -n "$TARGET_PASSWORD" ] || { echo "::error::SERVER188_SSH_PASSWORD missing"; exit 1; }
+
+      - name: Install sshpass
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+
+      - name: Deploy isolated relay
+        run: |
+          set -euo pipefail
+          export SSHPASS="$TARGET_PASSWORD"
+          OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+          sshpass -e ssh $OPTS root@$TARGET_HOST "AI_GROWTH_IP='$AI_GROWTH_IP' RELAY_PORT='$RELAY_PORT' bash -s" <<'REMOTE'
+          set -euo pipefail
+
+          command -v tinyproxy >/dev/null
+          if ss -ltn | awk '{print $4}' | grep -Eq "(:|^)${RELAY_PORT}$"; then
+            if ! systemctl is-active --quiet tinyproxy-ai-growth.service; then
+              echo "Port ${RELAY_PORT} is occupied by another service" >&2
+              exit 23
+            fi
+          fi
+
+          install -d -m 0755 /etc/tinyproxy
+          if [ -f /etc/tinyproxy/ai-growth.conf ]; then
+            cp -a /etc/tinyproxy/ai-growth.conf "/etc/tinyproxy/ai-growth.conf.bak-$(date -u +%Y%m%dT%H%M%SZ)"
+          fi
+          if [ -f /etc/systemd/system/tinyproxy-ai-growth.service ]; then
+            cp -a /etc/systemd/system/tinyproxy-ai-growth.service "/etc/systemd/system/tinyproxy-ai-growth.service.bak-$(date -u +%Y%m%dT%H%M%SZ)"
+          fi
+
+          cat > /etc/tinyproxy/ai-growth.conf <<EOF
+          User tinyproxy
+          Group tinyproxy
+          Port ${RELAY_PORT}
+          Listen 0.0.0.0
+          Timeout 120
+          LogLevel Info
+          PidFile "/run/tinyproxy/ai-growth.pid"
+          LogFile "/var/log/tinyproxy/ai-growth.log"
+          MaxClients 30
+          MinSpareServers 1
+          MaxSpareServers 5
+          StartServers 2
+          MaxRequestsPerChild 0
+          ViaProxyName "ai-growth-telegram-relay"
+          DisableViaHeader Yes
+          Allow 127.0.0.1
+          Allow ${AI_GROWTH_IP}
+          ConnectPort 443
+          EOF
+
+          cat > /etc/systemd/system/tinyproxy-ai-growth.service <<'EOF'
+          [Unit]
+          Description=Dedicated CONNECT relay for AI Growth Telegram bot
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=simple
+          ExecStart=/usr/bin/tinyproxy -d -c /etc/tinyproxy/ai-growth.conf
+          Restart=on-failure
+          RestartSec=3
+          NoNewPrivileges=true
+          PrivateTmp=true
+          ProtectSystem=strict
+          ReadWritePaths=/run/tinyproxy /var/log/tinyproxy
+          ProtectHome=true
+
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+
+          systemctl daemon-reload
+          systemctl enable --now tinyproxy-ai-growth.service
+          systemctl is-active --quiet tinyproxy-ai-growth.service
+          ss -ltn | awk '{print $4}' | grep -Eq "(:|^)${RELAY_PORT}$"
+
+          code=$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 8 --max-time 20             -x "http://127.0.0.1:${RELAY_PORT}" https://api.telegram.org || true)
+          echo "LOCAL_PROXY_HTTP_STATUS=$code"
+          [ "$code" != "000" ] && [ "$code" != "403" ] && [ "$code" != "407" ]
+          echo "AI_GROWTH_RELAY_DEPLOYED=yes"
+          REMOTE
