@@ -1,7 +1,11 @@
 name: Full Proxy Backup v2
 
 "on":
-  workflow_dispatch: {}
+  push:
+    branches: [inspect-mishkin-bot]
+    paths:
+      - scripts/full_snapshot.sh
+      - .github/workflows/full-proxy-backup.yml
 
 permissions:
   contents: write
@@ -52,5 +56,5 @@ jobs:
             exit 0
           fi
           git commit -m "backup: full sanitized proxy infrastructure snapshot"
-          git pull --rebase origin main
-          git push origin HEAD:main
+          git pull --rebase origin inspect-mishkin-bot
+          git push origin HEAD:inspect-mishkin-bot
