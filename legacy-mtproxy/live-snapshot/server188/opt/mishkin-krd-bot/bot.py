@@ -69,7 +69,7 @@ def load_env(path: pathlib.Path) -> None:
 
 
 load_env(ROOT / "settings.env")
-TOKEN = <REDACTED>
+TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "").strip()
 NOTIFICATION_USERNAMES = {
     value.strip().lstrip("@").lower()
@@ -527,7 +527,7 @@ def send_rich(
     reply_markup: dict | None = None,
 ) -> dict:
     """Send a Bot API 10.3 rich message, falling back after an API-level rejection."""
-    if not TOKEN:<REDACTED>
+    if not TOKEN:
         return send(chat_id, fallback_text, reply_markup)
     payload: dict = {"chat_id": chat_id, "rich_message": {"html": rich_html}}
     if reply_markup:
@@ -792,7 +792,7 @@ def send_flow_prompt(chat_id: int, flow: dict, text: str, reply_markup: dict) ->
 
 def delete_messages_safely(chat_id: int | str, message_ids: list[int | None]) -> None:
     identifiers = sorted({int(value) for value in message_ids if value})
-    if not identifiers or not TOKEN:<REDACTED>
+    if not identifiers or not TOKEN:
         return
     for index in range(0, len(identifiers), 100):
         try:
@@ -3435,7 +3435,7 @@ def on_callback(query: dict) -> None:
             "chat_id": chat_id,
             "city": "Краснодар",
             "kind": flow["kind"],
-            "request_code": "MKR-" + uuid.uuid4().hex[:<REDACTED>
+            "request_code": "MKR-" + uuid.uuid4().hex[:10].upper(),
             "status": "received",
             **flow["data"],
         }
@@ -3537,7 +3537,7 @@ def configure_bot() -> None:
 
 
 def run() -> None:
-    if not TOKEN:<REDACTED>
+    if not TOKEN:
         print("Не задан BOT_TOKEN. Скопируйте settings.env.example в settings.env и вставьте токен.")
         raise SystemExit(2)
     me = api("getMe")

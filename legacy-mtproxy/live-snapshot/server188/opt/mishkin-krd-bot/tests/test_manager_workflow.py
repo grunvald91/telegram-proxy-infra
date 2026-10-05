@@ -43,7 +43,7 @@ class ManagerWorkflowTests(unittest.TestCase):
     @patch.object(bot, "edit_message")
     @patch.object(bot, "callback_ack")
     @patch.object(bot, "send")
-    def <B64_REDACTED>(self, send, callback_ack, edit_message):
+    def test_manager_claims_and_other_manager_cannot_overwrite(self, send, callback_ack, edit_message):
         send.side_effect = self.fake_send
         with tempfile.TemporaryDirectory() as temp_dir, patch.object(bot, "DATA", Path(temp_dir)), patch.object(
             bot, "ADMIN_CHAT_ID", ""
@@ -111,7 +111,7 @@ class ManagerWorkflowTests(unittest.TestCase):
         self.assertEqual(cancelled["status"], "cancelled")
         self.assertEqual(history_len, 3)
 
-    def <B64_REDACTED>(self):
+    def test_manager_identity_survives_username_change(self):
         with tempfile.TemporaryDirectory() as temp_dir, patch.object(bot, "DATA", Path(temp_dir)), patch.object(
             bot, "ADMIN_CHAT_ID", ""
         ):

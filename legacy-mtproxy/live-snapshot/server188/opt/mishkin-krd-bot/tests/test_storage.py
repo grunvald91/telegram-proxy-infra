@@ -26,7 +26,7 @@ class SQLiteStorageTests(unittest.TestCase):
             "status": "received",
         }
 
-    def <B64_REDACTED>(self):
+    def test_empty_bootstrap_has_schema_and_integrity(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             repository = SQLiteStorage(Path(temp_dir))
             self.assertEqual(repository.integrity_check(), "ok")
@@ -46,7 +46,7 @@ class SQLiteStorageTests(unittest.TestCase):
                 <= tables
             )
 
-    def <B64_REDACTED>(self):
+    def test_imports_all_legacy_jsonl_once_without_modifying_sources(self):
         fixtures = {
             "bookings.jsonl": self.booking("MKR-LEGACY01"),
             "consents.jsonl": {"created_at": 1, "chat_id": 100},
@@ -101,7 +101,7 @@ class SQLiteStorageTests(unittest.TestCase):
             for name, contents in before.items():
                 self.assertEqual((root / name).read_bytes(), contents)
 
-    def <B64_REDACTED>(self):
+    def test_booking_creation_and_history_are_one_transaction(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             repository = SQLiteStorage(Path(temp_dir))
             created = repository.create_booking(self.booking())
@@ -110,7 +110,7 @@ class SQLiteStorageTests(unittest.TestCase):
             self.assertEqual(len(history), 1)
             self.assertEqual(history[0]["new_status"], "received")
 
-    def <B64_REDACTED>(self):
+    def test_pre_qr_booking_without_code_gets_stable_migration_code(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             legacy = {**self.booking(), "created_at": 50}
@@ -128,7 +128,7 @@ class SQLiteStorageTests(unittest.TestCase):
             self.assertEqual(second.counts()["bookings"], 1)
             self.assertEqual(second.records_for_legacy("bookings.jsonl")[0]["request_code"], stable_code)
 
-    def <B64_REDACTED>(self):
+    def test_history_is_database_enforced_append_only(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             repository = SQLiteStorage(Path(temp_dir))
             repository.create_booking(self.booking())
@@ -139,7 +139,7 @@ class SQLiteStorageTests(unittest.TestCase):
                 with self.assertRaises(sqlite3.IntegrityError):
                     connection.execute("DELETE FROM booking_status_history")
 
-    def <B64_REDACTED>(self):
+    def test_claim_is_atomic_and_second_manager_cannot_take_booking(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             SQLiteStorage(root).create_booking(self.booking())
@@ -163,7 +163,7 @@ class SQLiteStorageTests(unittest.TestCase):
             self.assertIn(current["assigned_manager_id"], {501, 502})
             self.assertEqual(len(SQLiteStorage(root).booking_history("MKR-STORAGE01")), 2)
 
-    def <B64_REDACTED>(self):
+    def test_stale_and_terminal_actions_do_not_add_history(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             repository = SQLiteStorage(Path(temp_dir))
             repository.create_booking(self.booking())
@@ -209,7 +209,7 @@ class SQLiteStorageTests(unittest.TestCase):
             self.assertEqual(terminal, "terminal")
             self.assertEqual(len(repository.booking_history("MKR-STORAGE01")), 3)
 
-    def <B64_REDACTED>(self):
+    def test_backup_api_produces_restorable_database(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             repository = SQLiteStorage(root / "source")

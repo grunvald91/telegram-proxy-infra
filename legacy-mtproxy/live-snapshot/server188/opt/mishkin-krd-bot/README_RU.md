@@ -34,7 +34,7 @@
 
 1. Создайте нового бота через `@BotFather` и скопируйте его токен.
 2. Сделайте копию файла `settings.env.example` и назовите её `settings.env`.
-3. Вставьте токен после `BOT_TOKEN=<REDACTED>
+3. Вставьте токен после `BOT_TOKEN=`.
 4. Дважды нажмите `start_windows.bat`.
 
 Файл запуска сначала использует Python, установленный вместе с Codex. При переносе на другой компьютер понадобится Python 3.10 или новее. Дополнительные библиотеки не требуются.
@@ -124,7 +124,7 @@
 
 ```powershell
 py -m py_compile bot.py storage.py qrmini.py
-py -m unittest discover -s <REDACTED> -v
+py -m unittest discover -s tests -v
 py bot.py --migrate-only
 ```
 

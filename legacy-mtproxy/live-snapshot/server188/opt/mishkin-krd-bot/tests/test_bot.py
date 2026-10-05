@@ -12,7 +12,7 @@ from qrmini import make_matrix, write_png
 
 class KrasnodarBotTests(unittest.TestCase):
     def setUp(self):
-        self.token_patch = <REDACTED>
+        self.token_patch = patch.object(bot, "TOKEN", "")
         self.token_patch.start()
         self.addCleanup(self.token_patch.stop)
         bot.FLOWS.clear()
@@ -38,7 +38,7 @@ class KrasnodarBotTests(unittest.TestCase):
             query["from"] = {"id": user_id, "username": username, "is_bot": False}
         return query
 
-    def <B64_REDACTED>(self):
+    def test_main_keyboard_matches_reference_structure(self):
         labels = [item["text"] for row in bot.MAIN_KB["inline_keyboard"] for item in row]
         for expected in [
             "Рестобар",
@@ -128,7 +128,7 @@ class KrasnodarBotTests(unittest.TestCase):
         self.assertIn("Проверьте заявку", self.sent[-1][1])
         self.assertIn(selected_time, bot.FLOWS[100]["data"]["datetime"])
 
-    def <B64_REDACTED>(self):
+    def test_colored_buttons_use_current_telegram_styles(self):
         styles = {
             item.get("style")
             for row in bot.MAIN_KB["inline_keyboard"]
@@ -154,7 +154,7 @@ class KrasnodarBotTests(unittest.TestCase):
         self.assertEqual(markup["keyboard"][1][0]["text"], bot.PHONE_CANCEL_TEXT)
         self.assertTrue(markup["one_time_keyboard"])
 
-    def <B64_REDACTED>(self):
+    def test_russian_mobile_phone_formats_are_normalized(self):
         for value in (
             "+7 (999) 000-00-00",
             "8 999 000 00 00",
@@ -175,7 +175,7 @@ class KrasnodarBotTests(unittest.TestCase):
 
     @patch.object(bot, "edit_message")
     @patch.object(bot, "send")
-    def <B64_REDACTED>(self, send, edit_message):
+    def test_booking_accepts_shared_contact_and_rejects_wrong_manual_phone(self, send, edit_message):
         send.side_effect = self.fake_send
         bot.start_booking(100, "Рестобар")
         bot.on_message({"chat": {"id": 100}, "from": {"id": 100}, "message_id": 10, "text": "Тест"})
@@ -195,15 +195,15 @@ class KrasnodarBotTests(unittest.TestCase):
         self.assertEqual(self.sent[-2][2], {"remove_keyboard": True})
 
     @patch.object(bot, "api")
-    def <B64_REDACTED>(self, api):
-        with patch.object(bot, "TOKEN", "test-token"):<REDACTED>
+    def test_intermediate_messages_are_deleted_in_one_batch(self, api):
+        with patch.object(bot, "TOKEN", "test-token"):
             bot.delete_messages_safely(100, [4, 2, 4, None, 3])
         method, payload = api.call_args.args
         self.assertEqual(method, "deleteMessages")
         self.assertEqual(payload["chat_id"], 100)
         self.assertEqual(payload["message_ids"], [2, 3, 4])
 
-    def <B64_REDACTED>(self):
+    def test_calendar_disables_past_dates_and_has_navigation(self):
         today = dt.date(2026, 8, 21)
         markup = bot.booking_calendar(2026, 8, today)
         buttons = [item for row in markup["inline_keyboard"] for item in row]
@@ -220,7 +220,7 @@ class KrasnodarBotTests(unittest.TestCase):
     @patch.object(bot, "api")
     def test_rich_contacts_use_bot_api_10_3_markup(self, api):
         api.return_value = {"message_id": 1}
-        with patch.object(bot, "TOKEN", "test-token"):<REDACTED>
+        with patch.object(bot, "TOKEN", "test-token"):
             bot.show_contacts(100)
         method, payload = api.call_args.args
         self.assertEqual(method, "sendRichMessage")
@@ -230,7 +230,7 @@ class KrasnodarBotTests(unittest.TestCase):
         self.assertIn('type="url"', rich_html)
         self.assertIn("reply_markup", payload)
 
-    def <B64_REDACTED>(self):
+    def test_time_picker_filters_slots_that_are_too_close(self):
         now = dt.datetime(2026, 8, 21, 18, 20)
         slots = bot.available_booking_times("Караоке-холл", now.date(), now)
         self.assertNotIn("19:00", slots)
@@ -261,7 +261,7 @@ class KrasnodarBotTests(unittest.TestCase):
         self.assertEqual(bot.FLOWS[100]["step"], "confirm")
         self.assertEqual(bot.FLOWS[100]["data"]["gender"], "Муж")
 
-    def <B64_REDACTED>(self):
+    def test_dating_keyboards_match_reference_layout(self):
         reply_markup = bot.dating_reply_keyboard()
         self.assertEqual(
             [[item["text"] for item in row] for row in reply_markup["keyboard"]],
@@ -318,7 +318,7 @@ class KrasnodarBotTests(unittest.TestCase):
 
     @patch.object(bot, "send_photo_by_id")
     @patch.object(bot, "send")
-    def <B64_REDACTED>(self, send, send_photo_by_id):
+    def test_dating_field_edit_preserves_other_data(self, send, send_photo_by_id):
         send.side_effect = self.fake_send
         send_photo_by_id.return_value = {"message_id": 901}
         with tempfile.TemporaryDirectory() as temp_dir, patch.object(bot, "DATA", Path(temp_dir)):
@@ -346,7 +346,7 @@ class KrasnodarBotTests(unittest.TestCase):
         self.assertEqual(updated["photo_file_id"], "photo-1")
 
     @patch.object(bot, "send")
-    def <B64_REDACTED>(self, send):
+    def test_dating_reactions_advance_and_exclude_seen_profiles(self, send):
         send.side_effect = self.fake_send
         with tempfile.TemporaryDirectory() as temp_dir, patch.object(bot, "DATA", Path(temp_dir)):
             for chat_id, code, created_at in ((100, "AAAAA", 1), (200, "BBBBB", 2), (300, "CCCCC", 3)):
@@ -374,7 +374,7 @@ class KrasnodarBotTests(unittest.TestCase):
             self.assertEqual(bot.available_dating_profiles(100), [])
 
     @patch.object(bot, "send")
-    def <B64_REDACTED>(self, send):
+    def test_mutual_like_notifies_both_without_early_contact_disclosure(self, send):
         send.side_effect = self.fake_send
         with tempfile.TemporaryDirectory() as temp_dir, patch.object(bot, "DATA", Path(temp_dir)):
             first = {
@@ -417,7 +417,7 @@ class KrasnodarBotTests(unittest.TestCase):
         self.assertEqual({item[0] for item in match_messages}, {100, 200})
         self.assertTrue(all("tg://user?id=" in item[2]["inline_keyboard"][0][0]["url"] for item in match_messages))
 
-    def <B64_REDACTED>(self):
+    def test_legacy_dating_profile_is_not_published_automatically(self):
         with tempfile.TemporaryDirectory() as temp_dir, patch.object(bot, "DATA", Path(temp_dir)):
             bot.append_jsonl(
                 Path(temp_dir) / "dating_profiles.jsonl",
@@ -456,7 +456,7 @@ class KrasnodarBotTests(unittest.TestCase):
 
     @patch.object(bot, "callback_ack")
     @patch.object(bot, "send")
-    def <B64_REDACTED>(self, send, callback_ack):
+    def test_dating_flow_callbacks_require_current_form_message(self, send, callback_ack):
         send.side_effect = self.fake_send
         bot.FLOWS[100] = {
             "type": "dating",
@@ -476,7 +476,7 @@ class KrasnodarBotTests(unittest.TestCase):
 
     @patch.object(bot, "callback_ack")
     @patch.object(bot, "send")
-    def <B64_REDACTED>(self, send, callback_ack):
+    def test_stale_confirmation_cannot_replace_profile(self, send, callback_ack):
         send.side_effect = self.fake_send
         with tempfile.TemporaryDirectory() as temp_dir, patch.object(bot, "DATA", Path(temp_dir)):
             path = Path(temp_dir) / "dating_profiles.jsonl"
@@ -517,7 +517,7 @@ class KrasnodarBotTests(unittest.TestCase):
 
     @patch.object(bot, "callback_ack")
     @patch.object(bot, "send")
-    def <B64_REDACTED>(self, send, callback_ack):
+    def test_old_profile_buttons_cannot_touch_recreated_profile(self, send, callback_ack):
         send.side_effect = self.fake_send
         with tempfile.TemporaryDirectory() as temp_dir, patch.object(bot, "DATA", Path(temp_dir)):
             old_profile = {
@@ -550,7 +550,7 @@ class KrasnodarBotTests(unittest.TestCase):
         self.assertTrue(callback_ack.call_args.args[-1])
 
     @patch.object(bot, "delete_messages_safely")
-    def <B64_REDACTED>(self, delete_messages):
+    def test_delete_profile_evicts_viewers_and_preserves_unrelated_state(self, delete_messages):
         with tempfile.TemporaryDirectory() as temp_dir, patch.object(bot, "DATA", Path(temp_dir)):
             bot.append_jsonl(
                 Path(temp_dir) / "dating_profiles.jsonl",
@@ -583,7 +583,7 @@ class KrasnodarBotTests(unittest.TestCase):
 
     @patch.object(bot, "delete_messages_safely")
     @patch.object(bot, "send")
-    def <B64_REDACTED>(self, send, delete_messages):
+    def test_repeated_profile_render_cleans_previous_card_and_actions(self, send, delete_messages):
         send.side_effect = self.fake_send
         with tempfile.TemporaryDirectory() as temp_dir, patch.object(bot, "DATA", Path(temp_dir)):
             bot.append_jsonl(
@@ -607,7 +607,7 @@ class KrasnodarBotTests(unittest.TestCase):
         self.assertEqual(bot.DATING_OWN_MESSAGE_IDS[100], [3, 4])
 
     @patch.object(bot, "send")
-    def <B64_REDACTED>(self, send):
+    def test_swipe_emojis_are_not_saved_during_profile_edit(self, send):
         send.side_effect = self.fake_send
         with tempfile.TemporaryDirectory() as temp_dir, patch.object(bot, "DATA", Path(temp_dir)):
             profile = {
@@ -639,7 +639,7 @@ class KrasnodarBotTests(unittest.TestCase):
             self.assertEqual(bot.FLOWS[100]["data"]["photo_file_id"], "photo-old")
             self.assertFalse((Path(temp_dir) / "dating_reactions.jsonl").exists())
 
-    def <B64_REDACTED>(self):
+    def test_dating_card_text_stays_within_telegram_caption_limit(self):
         profile = {
             "profile_code": "ABCDE",
             "name": "<&😀" * 100,
@@ -683,7 +683,7 @@ class KrasnodarBotTests(unittest.TestCase):
     @patch.object(bot, "callback_ack")
     @patch.object(bot, "send_request_qr")
     @patch.object(bot, "send")
-    def <B64_REDACTED>(self, send, send_request_qr, callback_ack):
+    def test_recent_duplicate_booking_is_not_saved_twice(self, send, send_request_qr, callback_ack):
         send.side_effect = self.fake_send
         with tempfile.TemporaryDirectory() as temp_dir, patch.object(bot, "DATA", Path(temp_dir)):
             flow = {
@@ -708,7 +708,7 @@ class KrasnodarBotTests(unittest.TestCase):
 
     @patch.object(bot, "send_request_qr")
     @patch.object(bot, "send")
-    def <B64_REDACTED>(self, send, send_request_qr):
+    def test_my_qr_returns_only_current_users_requests(self, send, send_request_qr):
         send.side_effect = self.fake_send
         with tempfile.TemporaryDirectory() as temp_dir, patch.object(bot, "DATA", Path(temp_dir)):
             path = Path(temp_dir) / "bookings.jsonl"
@@ -722,7 +722,7 @@ class KrasnodarBotTests(unittest.TestCase):
     @patch.object(bot, "callback_ack")
     @patch.object(bot, "edit_message")
     @patch.object(bot, "send")
-    def <B64_REDACTED>(self, send, edit_message, callback_ack):
+    def test_dating_profile_can_be_replaced_and_deleted(self, send, edit_message, callback_ack):
         send.side_effect = self.fake_send
         with tempfile.TemporaryDirectory() as temp_dir, patch.object(bot, "DATA", Path(temp_dir)):
             path = Path(temp_dir) / "dating_profiles.jsonl"
@@ -760,7 +760,7 @@ class KrasnodarBotTests(unittest.TestCase):
         self.assertEqual(data[:8], b"\x89PNG\r\n\x1a\n")
         self.assertEqual(struct.unpack(">II", data[16:24]), (360, 360))
 
-    def <B64_REDACTED>(self):
+    def test_maintenance_creates_health_and_daily_backup(self):
         with tempfile.TemporaryDirectory() as temp_dir, patch.object(bot, "DATA", Path(temp_dir)):
             bot.append_jsonl(Path(temp_dir) / "bookings.jsonl", {"chat_id": 100})
             bot.perform_maintenance(force=True)
@@ -769,7 +769,7 @@ class KrasnodarBotTests(unittest.TestCase):
             health = json.loads((Path(temp_dir) / "health.json").read_text(encoding="utf-8"))
         self.assertEqual(health["status"], "ok")
 
-    def <B64_REDACTED>(self):
+    def test_only_whitelisted_notification_accounts_are_registered(self):
         with tempfile.TemporaryDirectory() as temp_dir, patch.object(bot, "DATA", Path(temp_dir)):
             self.assertTrue(
                 bot.register_notification_recipient({"id": 501, "username": "Studio_Goroda", "is_bot": False})
@@ -782,7 +782,7 @@ class KrasnodarBotTests(unittest.TestCase):
         self.assertEqual(recipients, {"grunvald": 502, "studio_goroda": 501})
 
     @patch.object(bot, "send")
-    def <B64_REDACTED>(self, send):
+    def test_booking_notification_is_sent_to_both_accounts(self, send):
         send.side_effect = self.fake_send
         with tempfile.TemporaryDirectory() as temp_dir, patch.object(bot, "DATA", Path(temp_dir)), patch.object(
             bot, "ADMIN_CHAT_ID", ""
@@ -830,7 +830,7 @@ class KrasnodarBotTests(unittest.TestCase):
         self.assertIn("подтверждена", callback_ack.call_args.args[1].lower())
 
     @patch.object(bot, "callback_ack")
-    def <B64_REDACTED>(self, callback_ack):
+    def test_non_manager_cannot_change_booking_status(self, callback_ack):
         with tempfile.TemporaryDirectory() as temp_dir, patch.object(bot, "DATA", Path(temp_dir)):
             bot.append_jsonl(
                 Path(temp_dir) / "bookings.jsonl",
@@ -841,7 +841,7 @@ class KrasnodarBotTests(unittest.TestCase):
         self.assertEqual(unchanged["status"], "received")
         self.assertTrue(callback_ack.call_args.args[2])
 
-    def <B64_REDACTED>(self):
+    def test_qr_caption_explains_storage_and_confirmation(self):
         caption = bot.request_caption(
             {
                 "request_code": "MKR-TEST",
@@ -870,7 +870,7 @@ class KrasnodarBotTests(unittest.TestCase):
         for text in texts:
             self.assertLessEqual(len(text), 4096)
 
-    def <B64_REDACTED>(self):
+    def test_pdf_menus_and_food_details_are_current(self):
         expected_files = {
             "restobar_menu.pdf",
             "kids_menu.pdf",
