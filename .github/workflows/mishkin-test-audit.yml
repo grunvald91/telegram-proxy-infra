@@ -1,0 +1,22 @@
+name: Mishkin test audit
+on:
+  push:
+    branches: [inspect-mishkin-bot]
+    paths: ['.github/workflows/mishkin-test-audit.yml']
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      TARGET_HOST: "188.120.254.223"
+      TARGET_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Run safe tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$TARGET_PASSWORD"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$TARGET_HOST" 'cd /opt/mishkin-krd-bot && echo "=== syntax ===" && python3 -m py_compile bot.py storage.py qrmini.py && echo "=== tests ===" && python3 -m unittest discover -s tests -p "test_*.py" -v'
