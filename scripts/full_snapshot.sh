@@ -116,6 +116,17 @@ read -r -d '' FILES_188 <<'EOF' || true
 /root/nginx-backup-*
 /root/tproxy-predeploy-*
 /root/tproxy-ru-edge-predeploy-*
+/opt/mishkin-krd-bot/bot.py
+/opt/mishkin-krd-bot/storage.py
+/opt/mishkin-krd-bot/qrmini.py
+/opt/mishkin-krd-bot/README_RU.md
+/opt/mishkin-krd-bot/MENU_MAP_RU.md
+/opt/mishkin-krd-bot/settings.env.example
+/opt/mishkin-krd-bot/start_windows.bat
+/opt/mishkin-krd-bot/.gitignore
+/opt/mishkin-krd-bot/tests/test_bot.py
+/opt/mishkin-krd-bot/tests/test_manager_workflow.py
+/opt/mishkin-krd-bot/tests/test_storage.py
 EOF
 
 read -r -d '' FILES_89 <<'EOF' || true
