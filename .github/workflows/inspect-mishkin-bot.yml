@@ -1,0 +1,151 @@
+name: Inspect Mishkin bot read-only
+
+on:
+  push:
+    branches:
+      - inspect-mishkin-bot
+    paths:
+      - '.github/workflows/inspect-mishkin-bot.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      TARGET_HOST: "188.120.254.223"
+      TARGET_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+
+    steps:
+      - name: Guard credential
+        run: |
+          set -euo pipefail
+          [ -n "$TARGET_PASSWORD" ] || { echo "::error::SERVER188_SSH_PASSWORD is not configured"; exit 1; }
+
+      - name: Install sshpass
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+
+      - name: Inspect Mishkin bot without changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$TARGET_PASSWORD"
+          OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+          sshpass -e ssh $OPTS "root@$TARGET_HOST" 'python3 -' <<'PY'
+          import os, pathlib, re, shlex, subprocess
+
+          SERVICE = "mishkin-krd-bot.service"
+
+          def run(args, cwd=None):
+              p = subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=20)
+              return p.returncode, p.stdout, p.stderr
+
+          def redact(s):
+              s = re.sub(r'\b\d{6,12}:[A-Za-z0-9_-]{20,}\b', '<TG_TOKEN_REDACTED>', s)
+              s = re.sub(r'(?i)(token|password|passwd|secret|api[_-]?key)\s*([=:]\s*|\s+)\S+', r'\1=<REDACTED>', s)
+              s = re.sub(r'https://[^/@\s]+@github\.com/', 'https://<REDACTED>@github.com/', s)
+              return s
+
+          print("===== SERVICE STATE =====")
+          for prop in ["Id","Description","LoadState","ActiveState","SubState","FragmentPath","WorkingDirectory","User","ExecStart"]:
+              rc,out,err=run(["systemctl","show",SERVICE,"-p",prop,"--value"])
+              print(f"{prop}={redact(out.strip())}")
+              if err.strip():
+                  print("ERR", redact(err.strip()))
+
+          rc,wd,_=run(["systemctl","show",SERVICE,"-p","WorkingDirectory","--value"])
+          wd=wd.strip()
+          rc,frag,_=run(["systemctl","show",SERVICE,"-p","FragmentPath","--value"])
+          frag=frag.strip()
+
+          print("\n===== UNIT FILE (SANITIZED) =====")
+          if frag and pathlib.Path(frag).is_file():
+              txt=pathlib.Path(frag).read_text(errors="replace")
+              safe=[]
+              for line in txt.splitlines():
+                  if re.search(r'(?i)Environment(File)?=', line):
+                      safe.append(re.sub(r'(?i)(Environment(File)?=).*', r'\1<REDACTED>', line))
+                  else:
+                      safe.append(redact(line))
+              print("\n".join(safe))
+          else:
+              print("unit_file_not_readable")
+
+          if not wd or not pathlib.Path(wd).exists():
+              print("\nWORKING_DIRECTORY_NOT_FOUND")
+              raise SystemExit(0)
+
+          root=pathlib.Path(wd)
+          print("\n===== WORKING DIRECTORY =====")
+          print(root)
+
+          print("\n===== FILE TREE (MAXDEPTH 3, SECRETS EXCLUDED) =====")
+          excluded={".env",".env.local",".env.production","credentials.json","secrets.json"}
+          count=0
+          for p in sorted(root.rglob("*")):
+              try:
+                  rel=p.relative_to(root)
+              except Exception:
+                  continue
+              if len(rel.parts)>3:
+                  continue
+              if any(part in {".git","venv",".venv","__pycache__","node_modules"} for part in rel.parts):
+                  continue
+              if p.name in excluded or re.search(r'(?i)(token|secret|password|credential|private.*key)',p.name):
+                  continue
+              kind="d" if p.is_dir() else "f"
+              try:
+                  size=p.stat().st_size if p.is_file() else 0
+              except Exception:
+                  size=-1
+              print(f"{kind} {size:>10} {rel}")
+              count+=1
+              if count>=500:
+                  print("...TRUNCATED...")
+                  break
+
+          print("\n===== GIT INFO =====")
+          if (root/".git").exists():
+              for args in [
+                  ["git","status","--short","--branch"],
+                  ["git","remote","-v"],
+                  ["git","log","-1","--date=iso","--pretty=format:%H%n%ad%n%s"],
+              ]:
+                  rc,out,err=run(args,cwd=str(root))
+                  print("$ "+" ".join(args))
+                  print(redact(out.strip()))
+                  if err.strip(): print("ERR",redact(err.strip()))
+          else:
+              print("not_a_git_worktree")
+
+          print("\n===== BOT IDENTITY FILE HITS =====")
+          patterns=re.compile(r'(?i)Mishkinkrd_bot|Mishkin|Мишкин')
+          hits=[]
+          for p in root.rglob("*"):
+              if not p.is_file():
+                  continue
+              try:
+                  rel=p.relative_to(root)
+              except Exception:
+                  continue
+              if any(part in {".git","venv",".venv","__pycache__","node_modules"} for part in rel.parts):
+                  continue
+              if p.name in excluded or re.search(r'(?i)(token|secret|password|credential|private.*key)',p.name):
+                  continue
+              try:
+                  if p.stat().st_size>2_000_000:
+                      continue
+                  data=p.read_text(errors="ignore")
+              except Exception:
+                  continue
+              if patterns.search(data):
+                  hits.append(str(rel))
+          for h in hits[:100]:
+              print(h)
+          if not hits:
+              print("no_text_hits")
+
+          print("\nread_only=yes")
+          PY
