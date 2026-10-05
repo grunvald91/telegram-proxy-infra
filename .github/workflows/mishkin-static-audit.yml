@@ -1,0 +1,62 @@
+name: Mishkin static audit
+on:
+  push:
+    branches: [inspect-mishkin-bot]
+    paths: ['.github/workflows/mishkin-static-audit.yml']
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      TARGET_HOST: "188.120.254.223"
+      TARGET_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Static read-only checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$TARGET_PASSWORD"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$TARGET_HOST" 'bash -s' <<'SH'
+          set -u
+          cd /opt/mishkin-krd-bot
+          echo "=== sizes ==="
+          wc -l bot.py storage.py qrmini.py README_RU.md MENU_MAP_RU.md tests/test_*.py
+          echo "=== todo markers ==="
+          grep -nEi 'TODO|FIXME|XXX|HACK|не реализ|заглуш' bot.py storage.py qrmini.py README_RU.md MENU_MAP_RU.md || true
+          echo "=== dangerous patterns: locations only ==="
+          for p in 'eval[[:space:]]*\(' 'exec[[:space:]]*\(' 'os\.system[[:space:]]*\(' 'shell[[:space:]]*=[[:space:]]*True' 'pickle\.' 'yaml\.load[[:space:]]*\('; do
+            echo "-- $p"
+            grep -nE "$p" bot.py storage.py qrmini.py 2>/dev/null | cut -d: -f1-2 || true
+          done
+          echo "=== env variable names referenced ==="
+          grep -rhoE 'MISHKIN_[A-Z0-9_]+|TELEGRAM_[A-Z0-9_]+|BOT_[A-Z0-9_]+' bot.py storage.py qrmini.py settings.env.example 2>/dev/null | sort -u
+          echo "=== example config keys ==="
+          sed -n 's/^\([A-Z][A-Z0-9_]*\)=.*/\1/p' settings.env.example 2>/dev/null | sort -u
+          echo "=== readme headings ==="
+          grep '^#' README_RU.md || true
+          echo "=== menu map headings ==="
+          grep '^#' MENU_MAP_RU.md || true
+          echo "=== service restart count ==="
+          systemctl show mishkin-krd-bot.service -p NRestarts -p ActiveState -p SubState
+          echo "=== runtime error counts last 7d ==="
+          journalctl -u mishkin-krd-bot.service --since '7 days ago' --no-pager -o cat 2>/dev/null | awk 'BEGIN{e=0;t=0;x=0} /[Ee][Rr][Rr][Oo][Rr]/{e++} /Traceback/{t++} /[Ee]xception/{x++} END{print "error_lines="e;print "tracebacks="t;print "exception_lines="x}'
+          echo "=== sqlite integrity and table counts ==="
+          python3 - <<'PY'
+          import sqlite3
+          p='data/bot.sqlite3'
+          c=sqlite3.connect('file:'+p+'?mode=ro', uri=True)
+          print('integrity=', c.execute('pragma integrity_check').fetchone()[0])
+          tables=[r[0] for r in c.execute("select name from sqlite_master where type='table' and name not like 'sqlite_%' order by name")]
+          print('tables=', ','.join(tables))
+          for t in tables:
+              safe=t.replace('"','""')
+              try: print(t, c.execute(f'SELECT COUNT(*) FROM "{safe}"').fetchone()[0])
+              except Exception: print(t, 'count_error')
+          c.close()
+          PY
+          echo "=== backup dirs ==="
+          find data/backups -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort | tail -10
+          SH
