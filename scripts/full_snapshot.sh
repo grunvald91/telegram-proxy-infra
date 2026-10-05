@@ -214,7 +214,25 @@ long_b64 = re.compile(r'(?<![A-Za-z0-9+/=_-])[A-Za-z0-9+/_-]{43,}={0,2}(?![A-Za-
 def sanitize_source(text):
     out=[]
     skip_private=False
-    literal_secret = re.compile(r'(?i)^(\s*(?:BOT_TOKEN|TELEGRAM_TOKEN|PASSWORD|PASSWD|SECRET|API_KEY)\s*=\s*)(["\'])([^"\']+)(["\'])(\s*)
+    tg_token = re.compile(r'\\b\\d{6,12}:[A-Za-z0-9_-]{20,}\\b')
+    for line in text.splitlines():
+        if private_key_marker.search(line):
+            out.append('<PRIVATE_KEY_BLOCK_REDACTED>')
+            skip_private=True
+            continue
+        if skip_private:
+            if '-----END ' in line and 'PRIVATE KEY-----' in line:
+                skip_private=False
+            continue
+        line=tg_token.sub('<TG_TOKEN_REDACTED>', line)
+        line=uri_cred.sub(r'\\1<REDACTED>@', line)
+        line=query_secret.sub(r'\\1<REDACTED>', line)
+        out.append(line)
+    return '\\n'.join(out)+'\\n'
+
+def sanitize(text):
+    out=[]
+    skip_private=False
     for line in text.splitlines():
         if private_key_marker.search(line):
             out.append('<PRIVATE_KEY_BLOCK_REDACTED>')
