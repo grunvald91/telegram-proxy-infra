@@ -1,5 +1,5 @@
 ===== DATE =====
-2026-10-05T19:21:28+03:00
+2026-10-05T19:23:54+03:00
 ===== HOST =====
  Static hostname: artur1.grunvald1991.fvds.ru
        Icon name: computer-vm
@@ -16,7 +16,7 @@ Firmware Version: unknown
    Firmware Date: Wed 2022-02-02
     Firmware Age: 4y 8month 2d
 Linux artur1.grunvald1991.fvds.ru 6.8.0-142-generic #142-Ubuntu SMP PREEMPT_DYNAMIC Wed Sep  2 14:24:27 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux
- 19:21:29 up 8 days,  5:37,  2 users,  load average: 0.09, 0.04, 0.06
+ 19:23:54 up 8 days,  5:40,  2 users,  load average: 0.25, 0.12, 0.08
 ===== ADDRESSES =====
 lo               UNKNOWN        127.0.0.1/8 
 ens3             UP             188.120.254.223/32 
@@ -41,7 +41,7 @@ udp   UNCONN 0      0          127.0.0.1:5300       0.0.0.0:*    users:(("redsoc
 udp   UNCONN 0      0               [::]:35168         [::]:*                                                                 
 tcp   LISTEN 0      511          0.0.0.0:2086       0.0.0.0:*    users:(("nginx",pid=171046,fd=14),("nginx",pid=151479,fd=14))
 tcp   LISTEN 0      511          0.0.0.0:2052       0.0.0.0:*    users:(("nginx",pid=171046,fd=12),("nginx",pid=151479,fd=12))
-tcp   LISTEN 0      8192         0.0.0.0:22         0.0.0.0:*    users:(("sshd",pid=151409,fd=3),("systemd",pid=1,fd=166))    
+tcp   LISTEN 0      8192         0.0.0.0:22         0.0.0.0:*    users:(("sshd",pid=151409,fd=3),("systemd",pid=1,fd=175))    
 tcp   LISTEN 0      8192       127.0.0.1:9442       0.0.0.0:*    users:(("caddy",pid=1040,fd=7))                              
 tcp   LISTEN 0      1024       127.0.0.1:9443       0.0.0.0:*    users:(("telemt",pid=1043,fd=13))                            
 tcp   LISTEN 0      1024       127.0.0.1:9444       0.0.0.0:*    users:(("telemt",pid=1042,fd=10))                            
@@ -78,7 +78,7 @@ tcp   LISTEN 0      8192      10.66.77.2:9442       0.0.0.0:*    users:(("caddy"
 tcp   LISTEN 0      511          0.0.0.0:465        0.0.0.0:*    users:(("nginx",pid=171046,fd=24),("nginx",pid=151479,fd=24))
 tcp   LISTEN 0      511             [::]:2086          [::]:*    users:(("nginx",pid=171046,fd=15),("nginx",pid=151479,fd=15))
 tcp   LISTEN 0      511             [::]:2052          [::]:*    users:(("nginx",pid=171046,fd=13),("nginx",pid=151479,fd=13))
-tcp   LISTEN 0      8192            [::]:22            [::]:*    users:(("sshd",pid=151409,fd=4),("systemd",pid=1,fd=167))    
+tcp   LISTEN 0      8192            [::]:22            [::]:*    users:(("sshd",pid=151409,fd=4),("systemd",pid=1,fd=176))    
 tcp   LISTEN 0      511             [::]:80            [::]:*    users:(("nginx",pid=171046,fd=9),("nginx",pid=151479,fd=9))  
 tcp   LISTEN 0      1024            [::]:8888          [::]:*    users:(("tinyproxy",pid=855,fd=4))                           
 tcp   LISTEN 0      511             [::]:8443          [::]:*    users:(("nginx",pid=171046,fd=11),("nginx",pid=151479,fd=11))
@@ -178,20 +178,20 @@ Legend: LOAD   → Reflects whether the unit definition was properly loaded.
 40 loaded units listed.
 ===== TIMERS =====
 NEXT                            LEFT LAST                                  PASSED UNIT                         ACTIVATES
-Mon 2026-10-05 19:24:23 MSK 2min 53s Mon 2026-10-05 19:09:23 MSK        12min ago telegram-route-refresh.timer telegram-route-refresh.service
-Mon 2026-10-05 19:30:00 MSK     8min Mon 2026-10-05 19:20:00 MSK     1min 29s ago bb-sync-1111.timer           bb-sync-1111.service
-Mon 2026-10-05 20:05:00 MSK    43min Mon 2026-10-05 19:05:07 MSK        16min ago cron-hourly-0.timer          cron-hourly-0.service
-Tue 2026-10-06 00:00:00 MSK 4h 38min Mon 2026-10-05 00:00:07 MSK          19h ago dpkg-db-backup.timer         dpkg-db-backup.service
-Tue 2026-10-06 00:00:00 MSK 4h 38min Mon 2026-10-05 00:00:07 MSK          19h ago logrotate.timer              logrotate.service
-Tue 2026-10-06 00:18:30 MSK 4h 57min Mon 2026-10-05 18:56:21 MSK        25min ago certbot.timer                certbot.service
-Tue 2026-10-06 01:49:53 MSK       6h Mon 2026-10-05 07:11:02 MSK          12h ago apt-daily.timer              apt-daily.service
-Tue 2026-10-06 06:45:31 MSK      11h Mon 2026-10-05 06:17:07 MSK          13h ago apt-daily-upgrade.timer      apt-daily-upgrade.service
-Tue 2026-10-06 07:09:34 MSK      11h Mon 2026-10-05 08:33:56 MSK          10h ago man-db.timer                 man-db.service
-Tue 2026-10-06 10:56:32 MSK      15h Mon 2026-10-05 16:31:07 MSK     2h 50min ago motd-news.timer              motd-news.service
-Tue 2026-10-06 14:00:07 MSK      18h Mon 2026-10-05 14:00:07 MSK     5h 21min ago systemd-tmpfiles-clean.timer systemd-tmpfiles-clean.service
-Sun 2026-10-11 03:10:18 MSK   5 days Sun 2026-10-04 03:10:26 MSK    1 day 16h ago e2scrub_all.timer            e2scrub_all.service
+Mon 2026-10-05 19:24:23 MSK      27s Mon 2026-10-05 19:09:23 MSK        14min ago telegram-route-refresh.timer telegram-route-refresh.service
+Mon 2026-10-05 19:30:00 MSK     6min Mon 2026-10-05 19:20:00 MSK     3min 55s ago bb-sync-1111.timer           bb-sync-1111.service
+Mon 2026-10-05 20:05:00 MSK    41min Mon 2026-10-05 19:05:07 MSK        18min ago cron-hourly-0.timer          cron-hourly-0.service
+Mon 2026-10-05 22:03:14 MSK 2h 39min Mon 2026-10-05 07:11:02 MSK          12h ago apt-daily.timer              apt-daily.service
+Tue 2026-10-06 00:00:00 MSK 4h 36min Mon 2026-10-05 00:00:07 MSK          19h ago dpkg-db-backup.timer         dpkg-db-backup.service
+Tue 2026-10-06 00:00:00 MSK 4h 36min Mon 2026-10-05 00:00:07 MSK          19h ago logrotate.timer              logrotate.service
+Tue 2026-10-06 00:25:34 MSK  5h 1min Mon 2026-10-05 18:56:21 MSK        27min ago certbot.timer                certbot.service
+Tue 2026-10-06 04:18:11 MSK       8h Mon 2026-10-05 16:31:07 MSK     2h 52min ago motd-news.timer              motd-news.service
+Tue 2026-10-06 06:39:25 MSK      11h Mon 2026-10-05 06:17:07 MSK          13h ago apt-daily-upgrade.timer      apt-daily-upgrade.service
+Tue 2026-10-06 11:18:28 MSK      15h Mon 2026-10-05 08:33:56 MSK          10h ago man-db.timer                 man-db.service
+Tue 2026-10-06 14:00:07 MSK      18h Mon 2026-10-05 14:00:07 MSK     5h 23min ago systemd-tmpfiles-clean.timer systemd-tmpfiles-clean.service
+Sun 2026-10-11 03:10:50 MSK   5 days Sun 2026-10-04 03:10:26 MSK    1 day 16h ago e2scrub_all.timer            e2scrub_all.service
 Mon 2026-10-12 00:15:00 MSK   6 days Mon 2026-10-05 00:15:07 MSK          19h ago systemd-cron-cleaner.timer   systemd-cron-cleaner.service
-Mon 2026-10-12 01:37:57 MSK   6 days Mon 2026-10-05 00:43:16 MSK          18h ago fstrim.timer                 fstrim.service
+Mon 2026-10-12 00:38:32 MSK   6 days Mon 2026-10-05 00:43:16 MSK          18h ago fstrim.timer                 fstrim.service
 -                                  - Sun 2026-09-27 13:44:56 MSK 1 week 1 day ago cron-root-root-0.timer       -
 -                                  - -                                          - snapd.snap-repair.timer      snapd.snap-repair.service
 
@@ -248,25 +248,25 @@ table ip filter {
 	}
 
 	chain ufw-before-input {
-		iifname "lo" counter packets 5137189 bytes 3895702886 accept
-		ct state related,established counter packets 86879969 bytes 24973678505 accept
-		ct state invalid counter packets 14205123 bytes 746146892 jump ufw-logging-deny
-		ct state invalid counter packets 14205123 bytes 746146892 drop
+		iifname "lo" counter packets 5138216 bytes 3895916586 accept
+		ct state related,established counter packets 86898593 bytes 24975980433 accept
+		ct state invalid counter packets 14207859 bytes 746291372 jump ufw-logging-deny
+		ct state invalid counter packets 14207859 bytes 746291372 drop
 		ip protocol icmp icmp type destination-unreachable counter packets 0 bytes 0 accept
 		ip protocol icmp icmp type time-exceeded counter packets 0 bytes 0 accept
 		ip protocol icmp icmp type parameter-problem counter packets 0 bytes 0 accept
 		ip protocol icmp icmp type echo-request counter packets 8198 bytes 605561 accept
 		udp sport 67 udp dport 68 counter packets 0 bytes 0 accept
-		counter packets 1499442 bytes 82452365 jump ufw-not-local
+		counter packets 1499598 bytes 82460639 jump ufw-not-local
 		ip daddr 224.0.0.251 udp dport 5353 counter packets 0 bytes 0 accept
 		ip daddr 239.255.255.250 udp dport 1900 counter packets 0 bytes 0 accept
-		counter packets 1499442 bytes 82452365 jump ufw-user-input
+		counter packets 1499598 bytes 82460639 jump ufw-user-input
 	}
 
 	chain ufw-before-output {
-		oifname "lo" counter packets 4522057 bytes 3752651623 accept
-		ct state related,established counter packets 111314856 bytes 19983639989 accept
-		counter packets 5595533 bytes 371155677 jump ufw-user-output
+		oifname "lo" counter packets 4522967 bytes 3752837211 accept
+		ct state related,established counter packets 111343857 bytes 20033770777 accept
+		counter packets 5596715 bytes 371230605 jump ufw-user-output
 	}
 
 	chain ufw-before-forward {
@@ -295,7 +295,7 @@ table ip filter {
 	}
 
 	chain ufw-after-logging-input {
-		limit rate 3/minute burst 10 packets counter packets 35582 bytes 1764203 log prefix "[UFW BLOCK] "
+		limit rate 3/minute burst 10 packets counter packets 35589 bytes 1764543 log prefix "[UFW BLOCK] "
 	}
 
 	chain ufw-after-logging-output {
@@ -318,8 +318,8 @@ table ip filter {
 	}
 
 	chain ufw-track-output {
-		ip protocol tcp ct state new counter packets 2519479 bytes 151264218 accept
-		ip protocol udp ct state new counter packets 1552874 bytes 109175326 accept
+		ip protocol tcp ct state new counter packets 2519964 bytes 151293318 accept
+		ip protocol udp ct state new counter packets 1553293 bytes 109204778 accept
 	}
 
 	chain ufw-track-forward {
@@ -328,22 +328,22 @@ table ip filter {
 	chain INPUT {
 		type filter hook input priority filter; policy drop;
 		ip saddr 10.66.77.1 ip daddr 10.66.77.2 iifname "tg-relay" tcp dport 3001 counter packets 36 bytes 2632 accept
-		counter packets 107729921 bytes 29698586209 jump ufw-before-logging-input
-		counter packets 107729921 bytes 29698586209 jump ufw-before-input
-		counter packets 880571 bytes 45872655 jump ufw-after-input
-		counter packets 879887 bytes 45839515 jump ufw-after-logging-input
-		counter packets 879887 bytes 45839515 jump ufw-reject-input
-		counter packets 879887 bytes 45839515 jump ufw-track-input
+		counter packets 107752464 bytes 29701254591 jump ufw-before-logging-input
+		counter packets 107752464 bytes 29701254591 jump ufw-before-input
+		counter packets 880647 bytes 45876239 jump ufw-after-input
+		counter packets 879963 bytes 45843099 jump ufw-after-logging-input
+		counter packets 879963 bytes 45843099 jump ufw-reject-input
+		counter packets 879963 bytes 45843099 jump ufw-track-input
 	}
 
 	chain OUTPUT {
 		type filter hook output priority filter; policy accept;
-		counter packets 121432446 bytes 24107447289 jump ufw-before-logging-output
-		counter packets 121432446 bytes 24107447289 jump ufw-before-output
-		counter packets 5595533 bytes 371155677 jump ufw-after-output
-		counter packets 5595533 bytes 371155677 jump ufw-after-logging-output
-		counter packets 5595533 bytes 371155677 jump ufw-reject-output
-		counter packets 5595533 bytes 371155677 jump ufw-track-output
+		counter packets 121463539 bytes 24157838593 jump ufw-before-logging-output
+		counter packets 121463539 bytes 24157838593 jump ufw-before-output
+		counter packets 5596715 bytes 371230605 jump ufw-after-output
+		counter packets 5596715 bytes 371230605 jump ufw-after-logging-output
+		counter packets 5596715 bytes 371230605 jump ufw-reject-output
+		counter packets 5596715 bytes 371230605 jump ufw-track-output
 	}
 
 	chain FORWARD {
@@ -359,8 +359,8 @@ table ip filter {
 	}
 
 	chain ufw-logging-deny {
-		ct state invalid limit rate 3/minute burst 10 packets counter packets 35582 bytes 1871759 return
-		limit rate 3/minute burst 10 packets counter packets 35582 bytes 1868826 log prefix "[UFW BLOCK] "
+		ct state invalid limit rate 3/minute burst 10 packets counter packets 35589 bytes 1872123 return
+		limit rate 3/minute burst 10 packets counter packets 35589 bytes 1869190 log prefix "[UFW BLOCK] "
 	}
 
 	chain ufw-logging-allow {
@@ -380,7 +380,7 @@ table ip filter {
 	}
 
 	chain ufw-not-local {
-		fib daddr type local counter packets 1499442 bytes 82452365 return
+		fib daddr type local counter packets 1499598 bytes 82460639 return
 		fib daddr type multicast counter packets 0 bytes 0 return
 		fib daddr type broadcast counter packets 0 bytes 0 return
 		limit rate 3/minute burst 10 packets counter packets 0 bytes 0 jump ufw-logging-deny
@@ -388,10 +388,10 @@ table ip filter {
 	}
 
 	chain ufw-user-input {
-		tcp dport 80 counter packets 458548 bytes 26808423 accept
-		tcp dport 443 counter packets 121677 bytes 7219144 accept
+		tcp dport 80 counter packets 458589 bytes 26810811 accept
+		tcp dport 443 counter packets 121702 bytes 7220626 accept
 		udp dport 443 counter packets 200 bytes 225427 accept
-		tcp dport 22 counter packets 13565 bytes 807664 accept
+		tcp dport 22 counter packets 13573 bytes 808124 accept
 		ip protocol tcp tcp dport { 1500, 1501 }  counter packets 109 bytes 5860 accept
 		tcp dport 443 counter packets 0 bytes 0 accept
 		tcp dport 8787 counter packets 275 bytes 15944 accept
@@ -402,7 +402,7 @@ table ip filter {
 		tcp dport 2086 counter packets 465 bytes 26700 accept
 		tcp dport 8089 counter packets 372 bytes 21328 accept
 		ip saddr 10.66.77.1 ip daddr 10.66.77.2 iifname "tg-relay" tcp dport 9442 counter packets 618 bytes 37080 accept
-		ip saddr 155.212.162.47 tcp dport 8891 counter packets 11569 bytes 694140 accept
+		ip saddr 155.212.162.47 tcp dport 8891 counter packets 11575 bytes 694500 accept
 	}
 
 	chain ufw-user-output {
@@ -704,8 +704,8 @@ table ip6 filter {
 table ip mangle {
 	chain OUTPUT {
 		type route hook output priority mangle; policy accept;
-		ip protocol tcp skuid 104 tcp dport 443 counter packets 1208770 bytes 356291303 meta mark set 0x77
-		ip protocol tcp skuid 999 tcp dport { 443, 8888 } counter packets 47425846 bytes 3191581986 meta mark set 0x77
+		ip protocol tcp skuid 104 tcp dport 443 counter packets 1209053 bytes 356372910 meta mark set 0x77
+		ip protocol tcp skuid 999 tcp dport { 443, 8888 } counter packets 47435010 bytes 3192199873 meta mark set 0x77
 		oifname "tg-relay" ip protocol tcp skuid != 999 tcp flags syn / syn,rst counter packets 26735 bytes 1604100 tcp option maxseg size set rt mtu
 	}
 
@@ -722,14 +722,14 @@ table ip mangle {
 table ip nat {
 	chain OUTPUT {
 		type nat hook output priority dstnat; policy accept;
-		ip protocol tcp xt match "set" tcp dport 443 skuid != 104 skuid != 999 counter packets 28842 bytes 1731568 redirect to :12346
+		ip protocol tcp xt match "set" tcp dport 443 skuid != 104 skuid != 999 counter packets 28847 bytes 1731868 redirect to :12346
 		ip daddr != 127.0.0.0/8 fib daddr type local counter packets 7 bytes 420 jump DOCKER
 	}
 
 	chain POSTROUTING {
 		type nat hook postrouting priority srcnat; policy accept;
 		ip saddr 172.17.0.0/16 oifname != "docker0" counter packets 792 bytes 53064 masquerade
-		oifname "tg-relay" meta mark 0x00000077 counter packets 2439209 bytes 146352540 masquerade
+		oifname "tg-relay" meta mark 0x00000077 counter packets 2439679 bytes 146380740 masquerade
 	}
 
 	chain DOCKER {
@@ -738,13 +738,13 @@ table ip nat {
 
 	chain PREROUTING {
 		type nat hook prerouting priority dstnat; policy accept;
-		fib daddr type local counter packets 1552117 bytes 85570330 jump DOCKER
+		fib daddr type local counter packets 1552274 bytes 85578664 jump DOCKER
 	}
 }
 table inet telegram_nfqws {
 	chain post {
 		type filter hook postrouting priority srcnat + 1; policy accept;
-		oifname "ens3" tcp sport 443 ct reply packets 1-20 meta mark & 0x40000000 == 0x00000000 counter packets 867395 bytes 171206279 queue flags bypass to 210 comment "telegram-nfqws"
+		oifname "ens3" tcp sport 443 ct reply packets 1-20 meta mark & 0x40000000 == 0x00000000 counter packets 867532 bytes 171214255 queue flags bypass to 210 comment "telegram-nfqws"
 	}
 
 	chain predefrag {
@@ -776,8 +776,8 @@ table ip raw {
 table inet f2b-table {
 	set addr-set-sshd {
 		type ipv4_addr
-		elements = { 20.235.128.111, 20.251.194.156,
-			     45.148.10.152, 220.126.8.143 }
+		elements = { 20.251.194.156, 45.148.10.152,
+			     195.178.110.26 }
 	}
 
 	chain f2b-chain {
@@ -786,12 +786,12 @@ table inet f2b-table {
 	}
 }
 ===== IPTABLES =====
-# Generated by iptables-save v1.8.10 (nf_tables) on Mon Oct  5 19:21:30 2026
+# Generated by iptables-save v1.8.10 (nf_tables) on Mon Oct  5 19:23:56 2026
 *mangle
-:PREROUTING ACCEPT [107870550:29711199124]
+:PREROUTING ACCEPT [107893110:29713868426]
 :INPUT ACCEPT [0:0]
 :FORWARD ACCEPT [59953:7233686]
-:OUTPUT ACCEPT [121432315:24107440578]
+:OUTPUT ACCEPT [121463404:24157830926]
 :POSTROUTING ACCEPT [0:0]
 -A PREROUTING -s <REDACTED> -p tcp -m tcp --dport 443 -j MARK --set-xmark 0x77/0xffffffff
 -A FORWARD -o tg-relay -p tcp -m tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
@@ -799,20 +799,20 @@ table inet f2b-table {
 -A OUTPUT -p tcp -m owner --uid-owner 999 -m multiport --dports 443,8888 -j MARK --set-xmark 0x77/0xffffffff
 -A OUTPUT -o tg-relay -p tcp -m owner ! --uid-owner 999 -m tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
 COMMIT
-# Completed on Mon Oct  5 19:21:30 2026
-# Generated by iptables-save v1.8.10 (nf_tables) on Mon Oct  5 19:21:30 2026
+# Completed on Mon Oct  5 19:23:56 2026
+# Generated by iptables-save v1.8.10 (nf_tables) on Mon Oct  5 19:23:56 2026
 *raw
-:PREROUTING ACCEPT [107868200:29710596361]
+:PREROUTING ACCEPT [107890760:29713265663]
 :OUTPUT ACCEPT [0:0]
 -A PREROUTING -d 172.17.0.2/32 ! -i docker0 -j DROP
 -A PREROUTING -d 127.0.0.1/32 ! -i lo -p tcp -m tcp --dport 3128 -j DROP
 COMMIT
-# Completed on Mon Oct  5 19:21:30 2026
-# Generated by iptables-save v1.8.10 (nf_tables) on Mon Oct  5 19:21:30 2026
+# Completed on Mon Oct  5 19:23:56 2026
+# Generated by iptables-save v1.8.10 (nf_tables) on Mon Oct  5 19:23:56 2026
 *filter
-:INPUT DROP [879887:45839515]
+:INPUT DROP [879963:45843099]
 :FORWARD DROP [0:0]
-:OUTPUT ACCEPT [1523182:110716253]
+:OUTPUT ACCEPT [1523458:110732509]
 :DOCKER - [0:0]
 :DOCKER-BRIDGE - [0:0]
 :DOCKER-CT - [0:0]
@@ -944,13 +944,13 @@ COMMIT
 -A ufw-user-limit -j REJECT --reject-with icmp-port-unreachable
 -A ufw-user-limit-accept -j ACCEPT
 COMMIT
-# Completed on Mon Oct  5 19:21:30 2026
-# Generated by iptables-save v1.8.10 (nf_tables) on Mon Oct  5 19:21:30 2026
+# Completed on Mon Oct  5 19:23:56 2026
+# Generated by iptables-save v1.8.10 (nf_tables) on Mon Oct  5 19:23:56 2026
 *nat
-:PREROUTING ACCEPT [1552910:85623454]
+:PREROUTING ACCEPT [1553066:85631728]
 :INPUT ACCEPT [0:0]
-:OUTPUT ACCEPT [4507003:293366194]
-:POSTROUTING ACCEPT [2096630:148744746]
+:OUTPUT ACCEPT [4508019:293433352]
+:POSTROUTING ACCEPT [2097181:148784004]
 :DOCKER - [0:0]
 -A PREROUTING -m addrtype --dst-type LOCAL -j DOCKER
 -A OUTPUT -p tcp -m set --match-set telegram_api dst -m tcp --dport 443 -m owner ! --uid-owner 104 -m owner ! --uid-owner 999 -j REDIRECT --to-ports 12346
@@ -959,8 +959,8 @@ COMMIT
 -A POSTROUTING -o tg-relay -m mark --mark 0x77 -j MASQUERADE
 -A DOCKER -d 127.0.0.1/32 ! -i docker0 -p tcp -m tcp --dport 3128 -j DNAT --to-destination 172.17.0.2:3128
 COMMIT
-# Completed on Mon Oct  5 19:21:30 2026
-# Generated by ip6tables-save v1.8.10 (nf_tables) on Mon Oct  5 19:21:30 2026
+# Completed on Mon Oct  5 19:23:56 2026
+# Generated by ip6tables-save v1.8.10 (nf_tables) on Mon Oct  5 19:23:56 2026
 *filter
 :INPUT DROP [0:0]
 :FORWARD DROP [0:0]
@@ -1124,8 +1124,8 @@ COMMIT
 -A ufw6-user-limit -j REJECT --reject-with icmp6-port-unreachable
 -A ufw6-user-limit-accept -j ACCEPT
 COMMIT
-# Completed on Mon Oct  5 19:21:30 2026
-# Generated by ip6tables-save v1.8.10 (nf_tables) on Mon Oct  5 19:21:30 2026
+# Completed on Mon Oct  5 19:23:56 2026
+# Generated by ip6tables-save v1.8.10 (nf_tables) on Mon Oct  5 19:23:56 2026
 *nat
 :PREROUTING ACCEPT [0:0]
 :INPUT ACCEPT [0:0]
@@ -1135,7 +1135,7 @@ COMMIT
 -A PREROUTING -m addrtype --dst-type LOCAL -j DOCKER
 -A OUTPUT ! -d ::1/128 -m addrtype --dst-type LOCAL -j DOCKER
 COMMIT
-# Completed on Mon Oct  5 19:21:30 2026
+# Completed on Mon Oct  5 19:23:56 2026
 ===== WIREGUARD =====
 interface: tg-relay
   public key: <B64_REDACTED>
@@ -1145,7 +1145,7 @@ interface: tg-relay
 peer: <B64_REDACTED>
   endpoint: 89.125.90.101:51820
   allowed ips: 0.0.0.0/0
-  latest handshake: 13 seconds ago
+  latest handshake: 39 seconds ago
   transfer: 11.73 GiB received, 5.76 GiB sent
   persistent keepalive: every 25 seconds
 ===== DOCKER =====
