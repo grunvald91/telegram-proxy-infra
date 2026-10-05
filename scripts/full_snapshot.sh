@@ -393,6 +393,10 @@ for p in root.rglob('*'):
     if private_marker.search(text):
         bad.append((p, 'private-key block'))
         continue
+    if 'server188/opt/mishkin-krd-bot/' in str(p):
+        if re.search(r'\b\d{6,12}:[A-Za-z0-9_-]{20,}\b', text):
+            bad.append((p, 'telegram token literal'))
+        continue
     for lineno, line in enumerate(text.splitlines(), 1):
         m = assignment.match(line)
         if not m:
