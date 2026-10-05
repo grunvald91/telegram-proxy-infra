@@ -211,6 +211,212 @@ private_key_marker = re.compile(r'-----BEGIN (?:OPENSSH|RSA|EC|DSA|PRIVATE) PRIV
 long_hex = re.compile(r'\b[0-9a-fA-F]{32,}\b')
 long_b64 = re.compile(r'(?<![A-Za-z0-9+/=_-])[A-Za-z0-9+/_-]{43,}={0,2}(?![A-Za-z0-9+/=_-])')
 
+def sanitize_source(text):
+    out=[]
+    skip_private=False
+    literal_secret = re.compile(r'(?i)^(\s*(?:BOT_TOKEN|TELEGRAM_TOKEN|PASSWORD|PASSWD|SECRET|API_KEY)\s*=\s*)(["\'])([^"\']+)(["\'])(\s*)
+    for line in text.splitlines():
+        if private_key_marker.search(line):
+            out.append('<PRIVATE_KEY_BLOCK_REDACTED>')
+            skip_private=True
+            continue
+        if skip_private:
+            if '-----END ' in line and 'PRIVATE KEY-----' in line:
+                skip_private=False
+            continue
+        m=assign.match(line)
+        if m:
+            line=m.group(1)+'<REDACTED>'
+        line=cli.sub(lambda m: m.group(1)+' <REDACTED>', line)
+        line=uri_cred.sub(r'\1<REDACTED>@', line)
+        line=query_secret.sub(r'\1<REDACTED>', line)
+        line=long_hex.sub('<HEX_REDACTED>', line)
+        line=long_b64.sub('<B64_REDACTED>', line)
+        out.append(line)
+    return '\n'.join(out)+'\n'
+
+# Expand small historical tar.gz bundles into a safe temporary subtree so their
+# recoverable config contents can be sanitized and committed without storing the
+# opaque archive itself.
+for server in ('server188','relay89'):
+    root=srcroot/server
+    archives=list(root.rglob('*.tar.gz'))
+    for archive in archives:
+        try:
+            if archive.stat().st_size > 20_000_000:
+                continue
+            rel_archive=archive.relative_to(root)
+            name=str(rel_archive)
+            if name.endswith('.tar.gz'):
+                name=name[:-7]
+            outbase=root/'archive-extracted'/name
+            with tarfile.open(archive, 'r:gz') as tf:
+                total=0
+                for member in tf.getmembers():
+                    if not member.isfile():
+                        continue
+                    if member.size < 0 or member.size > 20_000_000:
+                        continue
+                    total += member.size
+                    if total > 50_000_000:
+                        break
+                    parts=Path(member.name).parts
+                    if member.name.startswith('/') or '..' in parts:
+                        continue
+                    src=tf.extractfile(member)
+                    if src is None:
+                        continue
+                    data=src.read()
+                    dest=outbase/Path(member.name)
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    dest.write_bytes(data)
+                    try:
+                        os.chmod(dest, member.mode & 0o777)
+                    except OSError:
+                        pass
+        except (tarfile.TarError, OSError):
+            pass
+
+manifest=[]
+for server in ('server188','relay89'):
+    root=srcroot/server
+    for p in sorted(root.rglob('*')):
+        if not p.is_file():
+            continue
+        rel=p.relative_to(root)
+        raw=p.read_bytes()
+        dest=dstroot/server/rel
+        lname=p.name.lower()
+        public_cert = lname in ('fullchain.pem','cert.pem','chain.pem')
+        forbidden=(
+            lname.endswith(('.key','.p12','.pfx','.jks','.kdbx')) or
+            lname in ('id_rsa','id_ed25519','shadow','gshadow','privkey.pem') or
+            'privatekey' in lname
+        )
+        if forbidden:
+            manifest.append(f'{server}/{rel}|SECRET_FILE_SKIPPED|sha256={hashlib.sha256(raw).hexdigest()}|size={len(raw)}')
+            continue
+        if str(rel).startswith('binaries/'):
+            dest.parent.mkdir(parents=True,exist_ok=True)
+            dest.write_bytes(raw)
+            manifest.append(f'{server}/{rel}|binary_saved|sha256={hashlib.sha256(raw).hexdigest()}|size={len(raw)}')
+            continue
+        if public_cert:
+            try:
+                cert_text=raw.decode('ascii')
+            except UnicodeDecodeError:
+                manifest.append(f'{server}/{rel}|public_cert_skipped|sha256={hashlib.sha256(raw).hexdigest()}|size={len(raw)}')
+                continue
+            if 'PRIVATE KEY' in cert_text:
+                manifest.append(f'{server}/{rel}|SECRET_FILE_SKIPPED|sha256={hashlib.sha256(raw).hexdigest()}|size={len(raw)}')
+                continue
+            dest.parent.mkdir(parents=True,exist_ok=True)
+            dest.write_bytes(raw)
+            manifest.append(f'{server}/{rel}|public_cert_saved|sha256={hashlib.sha256(raw).hexdigest()}|size={len(raw)}')
+            continue
+        try:
+            text=raw.decode('utf-8')
+        except UnicodeDecodeError:
+            is_executable = bool(p.stat().st_mode & 0o111)
+            if is_executable and len(raw) <= 90_000_000:
+                dest.parent.mkdir(parents=True,exist_ok=True)
+                dest.write_bytes(raw)
+                manifest.append(f'{server}/{rel}|binary_saved|sha256={hashlib.sha256(raw).hexdigest()}|size={len(raw)}')
+            else:
+                manifest.append(f'{server}/{rel}|binary_skipped|sha256={hashlib.sha256(raw).hexdigest()}|size={len(raw)}')
+            continue
+        if server == 'server188' and str(rel).startswith('opt/mishkin-krd-bot/'):
+            clean=sanitize_source(text)
+        else:
+            clean=sanitize(text)
+        dest.parent.mkdir(parents=True,exist_ok=True)
+        dest.write_text(clean)
+        manifest.append(
+            f'{server}/{rel}|source_sha256={hashlib.sha256(raw).hexdigest()}|'
+            f'sanitized_sha256={hashlib.sha256(clean.encode()).hexdigest()}|size={len(raw)}'
+        )
+
+dstroot.mkdir(parents=True,exist_ok=True)
+(dstroot/'README.md').write_text(
+    '# Full sanitized live snapshot\n\n'
+    'Maximum practical backup of the Telegram/proxy infrastructure on both live hosts.\n'
+    'Active and historical configs, units, scripts, runtime/network state and selected binaries are preserved.\n'
+    'Passwords, SSH/private keys, TLS private keys, WireGuard private/preshared keys, proxy secrets, UUIDs and tokens are redacted or skipped.\n'
+)
+(dstroot/'MANIFEST.sha256.txt').write_text('\n'.join(manifest)+'\n')
+PY
+
+# Fail closed if obvious secret material remains.
+python3 - <<'PY'
+from pathlib import Path
+import re, sys
+
+root = Path('legacy-mtproxy/live-snapshot')
+bad = []
+
+private_marker = re.compile(r'-----BEGIN (?:OPENSSH|RSA|EC|DSA|PRIVATE) PRIVATE KEY-----', re.I)
+assignment = re.compile(
+    r'(?i)^\s*([^#\n]*(?:private[_-]?key|preshared[_-]?key|password|passwd|secret|token|api[_-]?key|credential|uuid)[^=:\n]*)\s*[=:]\s*(.*?)\s*$'
+)
+allowed_prefixes = (
+    '<REDACTED>',
+    '<B64_REDACTED>',
+    '<HEX_REDACTED>',
+    '<PRIVATE_KEY_BLOCK_REDACTED>',
+)
+
+for p in root.rglob('*'):
+    if not p.is_file() or p.name == 'MANIFEST.sha256.txt':
+        continue
+    try:
+        text = p.read_text(errors='strict')
+    except (UnicodeDecodeError, OSError):
+        continue
+    if private_marker.search(text):
+        bad.append((p, 'private-key block'))
+        continue
+    for lineno, line in enumerate(text.splitlines(), 1):
+        m = assignment.match(line)
+        if not m:
+            continue
+        value = m.group(2).strip().strip('"\'')
+        if value and not value.startswith(allowed_prefixes):
+            bad.append((p, f'credential-like assignment at line {lineno}'))
+            break
+
+if bad:
+    for p, why in bad:
+        print(f'Possible unredacted secret in {p}: {why}', file=sys.stderr)
+    sys.exit(1)
+PY
+
+# snapshot-trigger: web-v1
+
+# post-web-proxy-backup-trigger
+
+# snapshot-trigger: ru-edge-web-v1
+
+# snapshot-run: ru-edge-web-final
+)
+    tg_token = re.compile(r'\b\d{6,12}:[A-Za-z0-9_-]{20,}\b')
+    for line in text.splitlines():
+        if private_key_marker.search(line):
+            out.append('<PRIVATE_KEY_BLOCK_REDACTED>')
+            skip_private=True
+            continue
+        if skip_private:
+            if '-----END ' in line and 'PRIVATE KEY-----' in line:
+                skip_private=False
+            continue
+        line=tg_token.sub('<TG_TOKEN_REDACTED>', line)
+        m=literal_secret.match(line)
+        if m:
+            line=m.group(1)+m.group(2)+'<REDACTED>'+m.group(4)+m.group(5)
+        line=uri_cred.sub(r'\1<REDACTED>@', line)
+        line=query_secret.sub(r'\1<REDACTED>', line)
+        out.append(line)
+    return '\n'.join(out)+'\n'
+
 def sanitize(text):
     out=[]
     skip_private=False
