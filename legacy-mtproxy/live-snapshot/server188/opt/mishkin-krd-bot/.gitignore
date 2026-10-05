@@ -1,0 +1,4 @@
+settings.env
+data/*.jsonl
+__pycache__/
+*.pyc
