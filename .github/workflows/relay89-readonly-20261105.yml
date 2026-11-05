@@ -1,0 +1,73 @@
+name: Relay89 read-only capacity audit
+"on":
+  push:
+    branches:
+      - diag/relay89-20261105
+    paths:
+      - .github/workflows/relay89-readonly-20261105.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: relay89-readonly-diagnostic
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      TARGET_HOST: "89.125.90.101"
+      SSHPASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Check existing SSH credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SSHPASS" || { echo "::error::RELAY89_SSH_PASSWORD is not configured"; exit 1; }
+
+      - name: Install SSH helper on runner
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+
+      - name: Collect server metrics without changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          sshpass -e ssh -p 22 -o BatchMode=no -o NumberOfPasswordPrompts=1 -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$RUNNER_TEMP/relay89_known_hosts" -o LogLevel=ERROR "root@$TARGET_HOST" 'bash -s' <<'REMOTE'
+          set -u
+          echo '=== UTC_AND_SYSTEM ==='
+          date -u '+%Y-%m-%dT%H:%M:%SZ'
+          hostname
+          ( . /etc/os-release; echo "$PRETTY_NAME" ) 2>/dev/null || true
+          uname -r
+          echo '=== CPU ==='
+          nproc
+          uptime
+          echo '=== RAM_AND_SWAP ==='
+          free -h
+          swapon --show=NAME,SIZE,USED --noheadings || true
+          echo '=== DISK ==='
+          df -hT /
+          df -i /
+          echo '=== HEAVIEST_PROCESSES ==='
+          ps -eo comm,rss,%cpu --sort=-rss | head -15
+          echo '=== SERVICES ==='
+          for svc in xray nginx telemt docker wg-quick@tg-relay mtproxy caddy; do
+            printf '%s=' "$svc"
+            systemctl is-active "$svc" 2>/dev/null || true
+          done
+          echo '=== CONTAINERS ==='
+          if command -v docker >/dev/null 2>&1; then
+            docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}'
+          else
+            echo 'docker_unavailable'
+          fi
+          echo '=== LISTENERS ==='
+          ss -lntup 2>/dev/null | head -60 || true
+          echo '=== WIREGUARD_INTERFACES ==='
+          if command -v wg >/dev/null 2>&1; then wg show interfaces; fi
+          echo '=== XRAY_VERSION ==='
+          if command -v xray >/dev/null 2>&1; then xray version | head -2; else echo 'xray_not_in_path'; fi
+          echo 'read_only=yes'
+          REMOTE
