@@ -1,0 +1,73 @@
+name: server188 BandSongbook read-only auth check
+on:
+  push:
+    branches:
+      - diag/nginx-security188-20261106
+    paths:
+      - .github/workflows/diag-bandsongbook188.yml
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    env:
+      TARGET_HOST: "188.120.254.223"
+      SSHPASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Install SSH on runner only
+        run: |
+          set -euo pipefail
+          test -n "$SSHPASS" || exit 1
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Inspect service auth signals with dummy group only
+        shell: bash
+        run: |
+          set -euo pipefail
+          sshpass -e ssh -p 22 -o BatchMode=no -o NumberOfPasswordPrompts=1 \
+            -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new \
+            -o UserKnownHostsFile="$RUNNER_TEMP/server188_hosts" -o LogLevel=ERROR \
+            "root@$TARGET_HOST" 'python3 -' <<'PY'
+          import http.client,json,subprocess
+          p=subprocess.run(['systemctl','is-active','bandsongbook-sync'],capture_output=True,text=True)
+          print('sync_service_active='+str(p.stdout.strip()=='active').lower())
+          p=subprocess.run(['ss','-ltnH','sport = :8787'],capture_output=True,text=True)
+          print('sync_port_8787_listening='+str(bool(p.stdout.strip())).lower())
+          # Only status and security booleans, never response data paths, user IDs or secrets.
+          def request(method,path,payload=None):
+              conn=http.client.HTTPConnection('127.0.0.1',8787,timeout=3)
+              body=json.dumps(payload).encode() if payload is not None else None
+              conn.request(method,path,body=body,headers={'Content-Type':'application/json'})
+              resp=conn.getresponse()
+              status=resp.status
+              raw=resp.read(2048)
+              conn.close()
+              return status,raw
+          try:
+              status,raw=request('GET','/health')
+              print('health_status='+str(status))
+              if status==200:
+                  try:
+                      obj=json.loads(raw)
+                      for k in ('authMode','bearerConfigured','jwtConfigured','objectStorageMode'):
+                          value=obj.get(k)
+                          if k=='authMode':
+                              print('auth_mode='+str(value) if value in ('off','bearer','jwt','auto') else 'auth_mode=unknown')
+                          elif k=='objectStorageMode':
+                              print('object_storage_mode='+str(value) if value in ('off','local','s3') else 'object_storage_mode=unknown')
+                          elif isinstance(value,bool):
+                              print(k+'='+str(value).lower())
+                  except Exception:print('health_json_parse=failed')
+          except Exception as ex:print('health_connect_error='+type(ex).__name__)
+          # Read-only metadata request. Never touch real user groups.
+          for label,headers in (('unauthenticated',{}),):
+              try:
+                  status,raw=request('POST','/sync/meta',{'groupCode':'security-audit-not-a-real-group-20261106'})
+                  print('synthetic_group_meta_status='+str(status))
+                  print('synthetic_group_meta_auth_rejected='+str(status in (401,403)).lower())
+              except Exception as ex:print('synthetic_group_error='+type(ex).__name__)
+          print('live_data_not_accessed=true')
+          print('server_modified=false')
+          PY
