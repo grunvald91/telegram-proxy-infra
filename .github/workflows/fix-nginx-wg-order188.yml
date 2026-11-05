@@ -1,0 +1,127 @@
+name: Fix server188 nginx WireGuard boot ordering
+on:
+  push:
+    branches:
+      - diag/nginx-security188-20261106
+    paths:
+      - .github/workflows/fix-nginx-wg-order188.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: server188-nginx-wg-safe-fix
+  cancel-in-progress: false
+
+jobs:
+  fix:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    env:
+      TARGET_HOST: "188.120.254.223"
+      SSHPASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Runner SSH setup
+        run: |
+          set -euo pipefail
+          test -n "$SSHPASS" || exit 1
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+
+      - name: Apply minimal systemd ordering fix and bring nginx online
+        shell: bash
+        run: |
+          set -euo pipefail
+          sshpass -e ssh -p 22 -o BatchMode=no -o NumberOfPasswordPrompts=1 \
+            -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new \
+            -o UserKnownHostsFile="$RUNNER_TEMP/server188_hosts" -o LogLevel=ERROR \
+            "root@$TARGET_HOST" 'python3 -' <<'PY'
+          import pathlib,os,subprocess,socket,sys
+          def run(args,timeout=30):
+              p=subprocess.run(args,capture_output=True,text=True,timeout=timeout)
+              return p.returncode,p.stdout.strip(),p.stderr.strip()
+          def fail(msg):
+              print('ERROR: '+msg,flush=True);sys.exit(1)
+          def active(unit):
+              rc,out,err=run(['systemctl','is-active',unit]);return out=='active'
+          if os.geteuid()!=0:fail('must be root')
+          if not active('wg-quick@tg-relay.service'):fail('WireGuard dependency is not active')
+          if not pathlib.Path('/etc/wireguard/tg-relay.conf').is_file():fail('expected WireGuard config missing')
+          rc,out,err=run(['ip','-4','-o','addr','show','dev','tg-relay'])
+          if '10.66.77.2/' not in out:fail('expected local WireGuard bind address missing')
+          s=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+          try:s.bind(('10.66.77.2',0))
+          except Exception as e:fail('cannot bind WG address: '+str(type(e).__name__))
+          finally:s.close()
+          rc,out,err=run(['nginx','-t'])
+          if rc:fail('nginx -t failed: '+err[:350])
+          old_nginx=active('nginx')
+          monitored=['docker','telemt','telemt-yandex','telemt-gosuslugi','tinyproxy','redsocks','tinyproxy-ai-growth','bandsongbook-sync','dating_bot','wg-quick@tg-relay.service']
+          states={s:active(s) for s in monitored}
+          rc,out,err=run(['docker','inspect','-f','{{.State.Running}}','mtproto-proxy'])
+          mtproto_before=out=='true'
+          dropin=pathlib.Path('/etc/systemd/system/nginx.service.d/20-wg-tg-relay-order.conf')
+          expected='[Unit]\nWants=wg-quick@tg-relay.service\nAfter=wg-quick@tg-relay.service\n'
+          if dropin.exists() and dropin.read_text()!=expected:fail('Existing override differs: refuse overwrite')
+          created=False
+          if not dropin.exists():
+              dropin.parent.mkdir(mode=0o755,parents=True,exist_ok=True)
+              try:
+                  fd=os.open(str(dropin),os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o644)
+                  with os.fdopen(fd,'w') as f:
+                      f.write(expected);f.flush();os.fsync(f.fileno())
+                  os.chmod(dropin,0o644);created=True
+                  print('systemd_override_created=yes')
+              except Exception as e:fail('cannot create systemd override '+str(type(e).__name__))
+          else:print('systemd_override_already_present=yes')
+          try:
+              rc,out,err=run(['systemctl','daemon-reload'])
+              if rc:raise RuntimeError('daemon reload failed: '+err[:200])
+              rc,out,err=run(['systemctl','show','nginx','-p','After'])
+              if 'wg-quick@tg-relay.service' not in out:raise RuntimeError('dependency not loaded')
+              if not old_nginx:
+                  rc,out,err=run(['systemctl','reset-failed','nginx'])
+                  rc,out,err=run(['systemctl','start','nginx'],timeout=35)
+                  if rc:raise RuntimeError('nginx start failed: '+err[:350])
+              if not active('nginx'):raise RuntimeError('nginx did not become active')
+              rc,out,err=run(['nginx','-t'])
+              if rc:raise RuntimeError('nginx post-start test failed: '+err[:350])
+          except Exception as e:
+              # Drop-in can be safely removed only if this run created it.
+              if created:
+                  dropin.unlink(missing_ok=True)
+                  run(['systemctl','daemon-reload'])
+                  print('new_override_rolled_back=yes')
+              fail(str(e))
+          print('nginx_was_active_before='+str(old_nginx).lower())
+          print('nginx_active_after='+str(active('nginx')).lower())
+          print('nginx_dependency_on_wireguard=yes')
+          print('nginx_config_test=pass')
+          rc,out,err=run(['ss','-lntH'])
+          for target in ('10.66.77.2:3001',':80',':2052',':2086',':8089',':8443','127.0.0.1:8444'):
+              found=any(target in row.split()[-2] for row in out.splitlines() if len(row.split())>=5)
+              print('nginx_expected_listener_'+target+'='+str(found).lower())
+          for svc,was in states.items():
+              now=active(svc)
+              print('existing_service_'+svc+'_before='+str(was).lower()+'_after='+str(now).lower())
+              if was and not now:fail('Previously active service became inactive: '+svc)
+          rc,out,err=run(['docker','inspect','-f','{{.State.Running}}','mtproto-proxy'])
+          print('existing_mtproto_container_running='+str(out=='true').lower())
+          if mtproto_before and out!='true':fail('mtproto-proxy container stopped')
+          print('firewall_modified=no')
+          print('proxy_configs_modified=no')
+          print('nginx_ordering_repaired=yes')
+          PY
+
+      - name: Verify external listener reachability after restart
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import socket
+          for p in (22,80,443,2052,2086,8089,8443,8787,8888,8891):
+              try:
+                  c=socket.create_connection(('188.120.254.223',p),timeout=2)
+                  c.close();result='reachable'
+              except OSError:result='not_connected'
+              print('external_tcp_'+str(p)+'='+result)
+          PY
