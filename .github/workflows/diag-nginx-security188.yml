@@ -1,0 +1,150 @@
+name: server188 nginx and port security read-only audit
+on:
+  push:
+    branches:
+      - diag/nginx-security188-20261106
+    paths:
+      - .github/workflows/diag-nginx-security188.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: server188-nginx-security-readonly
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 9
+    env:
+      TARGET_HOST: "188.120.254.223"
+      SSHPASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Verify credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SSHPASS" || { echo "::error::SERVER188_SSH_PASSWORD is not set"; exit 1; }
+      - name: Install SSH helper on runner only
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Inspect nginx, listeners, firewall and services (no changes)
+        shell: bash
+        run: |
+          set -euo pipefail
+          sshpass -e ssh -p 22 -o BatchMode=no -o NumberOfPasswordPrompts=1 \
+            -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new \
+            -o UserKnownHostsFile="$RUNNER_TEMP/server188_hosts" -o LogLevel=ERROR \
+            "root@$TARGET_HOST" 'python3 -' <<'PY'
+          import subprocess, re, json, os, pathlib, datetime
+          def cmd(a, t=18):
+              try:
+                  p=subprocess.run(a,capture_output=True,text=True,timeout=t)
+                  return p.returncode,(p.stdout or ''),(p.stderr or '')
+              except Exception as exc:
+                  return -1,'',str(type(exc).__name__)
+          def clean(s):
+              s=re.sub(r'(?i)\b(password|passwd|token|secret|api_key|authorization)\s*[:=]\s*\S+',r'\1=<REDACTED>',s)
+              s=re.sub(r'(?i)(https?://)[^/\s@]+:[^@\s]+@',r'\1<REDACTED>@',s)
+              return s
+          def section(n):print('\n=== '+n+' ===',flush=True)
+          print('AUDIT_UTC='+datetime.datetime.now(datetime.timezone.utc).isoformat())
+          print('HOST='+os.uname().nodename)
+          section('NGINX STATE')
+          for arg in ['LoadState','ActiveState','SubState','Result','ExecMainStatus','UnitFileState']:
+              rc,out,err=cmd(['systemctl','show','nginx','-p',arg])
+              print(out.strip() or arg+'=unavailable')
+          rc,out,err=cmd(['nginx','-t'])
+          print('nginx_test_exit='+str(rc))
+          for line in (out+err).splitlines()[:35]: print(clean(line)[:300])
+          rc,out,err=cmd(['journalctl','--no-pager','--output=cat','-u','nginx','-n','85'])
+          section('NGINX JOURNAL HIGHLIGHTS')
+          lines=[x for x in out.splitlines() if re.search('fail|error|emerg|bind|address|listen|start|stop|duplicate|config|invalid|unknown|directive|cannot|permission|cert|key|upstream',x,re.I)]
+          for line in lines[-45:]: print(clean(line)[:450])
+          section('NGINX DECLARED LISTEN DIRECTIVES')
+          rc,out,err=cmd(['nginx','-T'],t=20)
+          print('nginx_dump_exit='+str(rc))
+          for v in re.findall(r'(?m)^\s*listen\s+([^;#\n]+);',out)[:90]:
+              v=v.strip()
+              if re.fullmatch(r'[0-9A-Za-z.:\[\]_* ]+(?:\s+(?:ssl|http2|proxy_protocol|default_server|reuseport|backlog=\d+))*',v):
+                  print('declared_listen='+v[:100])
+          section('TCP AND UDP LISTENERS')
+          rc,out,err=cmd(['ss','-lntupH'])
+          print('ss_exit='+str(rc))
+          for line in out.splitlines()[:95]:
+              parts=line.split()
+              if len(parts)>=5:
+                  proc=re.search(r'\("([^"]+)",pid=(\d+)',line)
+                  pname=proc.group(1) if proc else '?'
+                  pid=proc.group(2) if proc else ''
+                  print(' '.join([parts[0],parts[1],parts[4],pname,pid]))
+          section('INTERESTING BINDING PROCESSES')
+          for port in (22,53,80,443,8081,8787,8888,8891,9442):
+              rc,out,err=cmd(['ss','-ltnpH',f'sport = :{port}'])
+              for line in out.splitlines()[:5]:
+                  m=re.search(r'pid=(\d+)',line)
+                  if not m:continue
+                  pid=m.group(1)
+                  try: exe=os.readlink('/proc/'+pid+'/exe')
+                  except:exe='unavailable'
+                  try:
+                      cg=pathlib.Path('/proc/'+pid+'/cgroup').read_text().strip().splitlines()[-1][-110:]
+                  except:cg='unavailable'
+                  print('port='+str(port)+' exe='+exe[:130]+' cgroup='+cg)
+          section('FIREWALL UFW')
+          rc,out,err=cmd(['ufw','status','verbose'])
+          print('ufw_exit='+str(rc))
+          for line in out.splitlines()[:75]:print(clean(line)[:220])
+          section('IPTABLES INPUT FORWARD POLICIES')
+          for binary in ('iptables','ip6tables'):
+              for chain in ('INPUT','FORWARD','DOCKER-USER'):
+                  rc,out,err=cmd([binary,'-S',chain])
+                  if rc: print(binary+' '+chain+'=unavailable');continue
+                  lines=out.splitlines()
+                  if lines: print(binary+' '+lines[0][:200]+' rules='+str(len(lines)-1))
+                  for line in lines[1:50]:
+                      proto=re.search(r'-p\s+(\w+)',line)
+                      dport=re.search(r'--dports?\s+([0-9,:-]+)',line)
+                      j=re.search(r'-j\s+(\w+)',line)
+                      if dport:print(binary+' '+chain+' proto='+(proto.group(1) if proto else '?')+' dports='+dport.group(1)+' jump='+(j.group(1) if j else '?'))
+          section('NFTABLES INPUT BASE CHAINS')
+          rc,out,err=cmd(['nft','-j','list','ruleset'])
+          print('nft_exit='+str(rc))
+          if rc==0:
+              try:
+                  rules=json.loads(out).get('nftables',[])
+                  for item in rules:
+                      c=item.get('chain',{})
+                      if c and c.get('hook') in ('input','forward'):
+                          print('nft_chain family='+str(c.get('family'))+' table='+str(c.get('table'))+' chain='+str(c.get('name'))+' hook='+str(c.get('hook'))+' priority='+str(c.get('prio'))+' policy='+str(c.get('policy')))
+                  print('nft_total_entries='+str(len(rules)))
+              except Exception as e:print('nft_parse_error='+str(type(e).__name__))
+          section('CONTAINERS AND PROXY SERVICES')
+          rc,out,err=cmd(['docker','ps','--format','{{.Names}}|{{.Ports}}|{{.Status}}'])
+          print('docker_ps_exit='+str(rc))
+          for line in out.splitlines()[:25]:print(clean(line)[:220])
+          for unit in ['nginx','docker','telemt','telemt-yandex','telemt-gosuslugi','tinyproxy','redsocks','caddy','fail2ban','ssh','sshd']:
+              rc,out,err=cmd(['systemctl','is-active',unit])
+              print('service.'+unit+'='+(out.strip() or 'unavailable'))
+          section('NET SECURITY SUMMARY')
+          rc,out,err=cmd(['fail2ban-client','status'])
+          print('fail2ban_exit='+str(rc))
+          print(clean(out.strip()[:500]))
+          print('read_only=true')
+          PY
+      - name: External TCP ingress check from runner (no HTTP requests)
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import socket
+          host='188.120.254.223'
+          for port in (22,53,80,443,8081,8787,8888,8891,9442):
+              try:
+                  s=socket.create_connection((host,port),timeout=2.5)
+                  s.close()
+                  status='reachable'
+              except (OSError,TimeoutError):
+                  status='not_connected'
+              print('external_tcp_'+str(port)+'='+status)
+          PY
