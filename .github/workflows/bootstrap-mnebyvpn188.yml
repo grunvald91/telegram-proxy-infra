@@ -1,0 +1,47 @@
+name: MNEBYVPN server188 host preparation (one-time)
+on:
+  push:
+    branches:
+      - ops/mnebyvpn-188-prep-20261106
+    paths:
+      - .github/workflows/bootstrap-mnebyvpn188.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mnebyvpn-server188-bootstrap
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      TARGET_HOST: "188.120.254.223"
+      SSHPASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ensure SSH credential is configured
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SSHPASS" || { echo "::error::SERVER188_SSH_PASSWORD is missing"; exit 1; }
+
+      - name: Install SSH helper on GitHub runner only
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+
+      - name: Prepare host without touching active proxies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sshpass -e ssh -p 22 \
+            -o BatchMode=no \
+            -o NumberOfPasswordPrompts=1 \
+            -o ConnectTimeout=15 \
+            -o StrictHostKeyChecking=accept-new \
+            -o UserKnownHostsFile="$RUNNER_TEMP/mnebyvpn_server188_hosts" \
+            -o LogLevel=ERROR \
+            "root@$TARGET_HOST" 'bash -s' < scripts/bootstrap_mnebyvpn_server188.sh
