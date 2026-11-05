@@ -1,0 +1,107 @@
+name: server188 nginx dependency and proxy-auth read-only audit
+on:
+  push:
+    branches:
+      - diag/nginx-security188-20261106
+    paths:
+      - .github/workflows/diag-nginx-deps188.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    env:
+      TARGET_HOST: "188.120.254.223"
+      SSHPASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Install SSH helper on runner
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Audit dependencies without modifications
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SSHPASS" || exit 1
+          sshpass -e ssh -p 22 -o BatchMode=no -o NumberOfPasswordPrompts=1 \
+            -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new \
+            -o UserKnownHostsFile="$RUNNER_TEMP/server188_hosts" -o LogLevel=ERROR \
+            "root@$TARGET_HOST" 'python3 -' <<'PY'
+          import subprocess,re,os,glob,pathlib,socket,http.client
+          def cmd(args,t=12):
+              try:
+                  p=subprocess.run(args,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=t)
+                  return p.returncode,p.stdout,p.stderr
+              except Exception as e:return -1,'',type(e).__name__
+          def info(name,args):
+              rc,o,e=cmd(args); print(name+'_exit='+str(rc))
+              return o,e
+          print('=== WG AND NGINX DEPENDENCIES ===')
+          for u in ('nginx','wg-quick@tg-relay','wg-quick@tg-relay.service','wireguard','systemd-networkd','network-online.target'):
+              rc,o,e=cmd(['systemctl','show',u,'-p','LoadState','-p','ActiveState','-p','UnitFileState','-p','FragmentPath','-p','Result'])
+              print('unit='+u+' '+o.replace('\n',' ')[:410])
+          rc,o,e=cmd(['systemctl','show','nginx','-p','After','-p','Wants','-p','Requires'])
+          print('nginx_dep_has_wgquick='+str('wg-quick@tg-relay' in o))
+          print('nginx_dep_has_network_online='+str('network-online.target' in o))
+          rc,o,e=cmd(['ip','-4','-o','addr','show','dev','tg-relay'])
+          print('tg_relay_ipv4='+('10.66.77.2 present' if '10.66.77.2/' in o else 'no expected IP'))
+          rc,o,e=cmd(['ip','-4','route','get','10.66.77.1'])
+          print('wg_peer_route_device_tg_relay='+str('dev tg-relay' in o))
+          print('nginx_listen_3001_bind_test=',end='')
+          try:
+              s=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+              s.bind(('10.66.77.2',0));print('success');s.close()
+          except Exception as exc:print(type(exc).__name__)
+          for u in ('nginx','wg-quick@tg-relay'):
+              rc,o,e=cmd(['systemctl','cat',u])
+              print('unit='+u+' fragment_lines=')
+              for line in o.splitlines():
+                  if re.match(r'\s*(After|Before|Requires|Wants|Restart|RestartSec|ExecStartPre|ExecStart|Type|WantedBy)\s*=',line):
+                      line=re.sub(r'(https?://)\S+',r'\1<URL>',line)
+                      line=re.sub(r'(?i)(password|secret|token|key)=\S+',r'\1=<redacted>',line)
+                      print('  '+line[:220])
+          print('=== RECENT BOOT AND NGINX FAILURE ===')
+          for u in ('nginx','wg-quick@tg-relay'):
+              rc,o,e=cmd(['journalctl','--no-pager','-b','-u',u,'--output=short-iso','-n','28'])
+              for line in o.splitlines():
+                  if re.search(r'(start|fail|bind|error|exit|address|network|watchdog|link|interface)',line,re.I):
+                      print(u+': '+line[:320])
+          print('=== PORT 8787 APPLICATION ===')
+          for u in ('bandsongbook-sync','dating_bot','tinyproxy','tinyproxy-ai-growth'):
+              rc,o,e=cmd(['systemctl','show',u,'-p','FragmentPath','-p','User','-p','Group','-p','ActiveState','-p','MainPID'])
+              print(u+' '+o.replace('\n',' ')[:330])
+          # Read-only local HTTP request for safe root endpoint; no payload or body.
+          for port in (8787,8081):
+              try:
+                  c=http.client.HTTPConnection('127.0.0.1',port,timeout=2)
+                  c.request('HEAD','/')
+                  r=c.getresponse()
+                  print('local_head_'+str(port)+'_status='+str(r.status)+' auth_challenge='+str(bool(r.getheader('WWW-Authenticate'))))
+                  c.close()
+              except Exception as e:print('local_head_'+str(port)+'_error='+str(type(e).__name__))
+          print('=== PROXY CONFIG ACCESS POLICY FLAGS ===')
+          for f in glob.glob('/etc/tinyproxy/*.conf')+glob.glob('/etc/tinyproxy.conf')+glob.glob('/etc/tinyproxy*'):
+              try:
+                  p=pathlib.Path(f)
+                  if not p.is_file() or p.stat().st_size>100000:continue
+                  lines=p.read_text(errors='replace').splitlines()
+                  allows=[];denies=[];basic=False;connect=[];port=[]
+                  for s in lines:
+                      if not s.strip() or s.lstrip().startswith('#'):continue
+                      z=s.strip().split(None,1)
+                      if len(z)<2:continue
+                      k,v=z[0].lower(),z[1]
+                      if k=='allow':allows.append(v[:70])
+                      if k=='deny':denies.append(v[:70])
+                      if k=='basicauth':basic=True
+                      if k=='connectport':connect.append(v[:20])
+                      if k=='port':port.append(v[:20])
+                  print('tinyproxy_conf='+str(p)+' port='+','.join(port)+' allow='+','.join(allows[:15])+' deny_count='+str(len(denies))+' basic_auth_configured='+str(basic)+' connectports='+','.join(connect[:15]))
+              except Exception as e:print('tinyproxy_conf_error='+type(e).__name__)
+          print('=== SSH SECURITY FLAGS ===')
+          rc,o,e=cmd(['sshd','-T'])
+          for k in ['permitrootlogin','passwordauthentication','pubkeyauthentication','kbdinteractiveauthentication','allowtcpforwarding','maxauthtries']:
+              m=re.search(r'(?m)^'+k+r'\s+(\S+)',o)
+              print('sshd_'+k+'='+(m.group(1) if m else 'unavailable'))
+          print('read_only=true')
+          PY
