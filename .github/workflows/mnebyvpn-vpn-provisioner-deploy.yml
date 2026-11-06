@@ -1,0 +1,67 @@
+name: MNEBYVPN deploy real trial VPN provisioner on foreign89
+on:
+  push:
+    paths:
+      - '.github/workflows/mnebyvpn-vpn-provisioner-deploy.yml'
+      - 'scripts/mnebyvpn-vpn-provisioner.py'
+      - 'scripts/mnebyvpn-vpn-provisioner-install.sh'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebyvpn-trial-vpn-provisioner
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      FOREIGN_HOST: '89.125.90.101'
+      FOREIGN_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_HOST: '188.120.254.223'
+      RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Promote separate Xray to expiring trial agent
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$FOREIGN_PASSWORD"
+          test -n "$RU_PASSWORD"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          export SSHPASS="$FOREIGN_PASSWORD"
+          opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o LogLevel=ERROR)
+          sshpass -e scp "${opts[@]}" scripts/mnebyvpn-vpn-provisioner.py "root@$FOREIGN_HOST:/tmp/mnebyvpn-vpn-provisioner.py"
+          sshpass -e scp "${opts[@]}" scripts/mnebyvpn-vpn-provisioner-install.sh "root@$FOREIGN_HOST:/tmp/mnebyvpn-vpn-provisioner-install.sh"
+          sshpass -e ssh "${opts[@]}" "root@$FOREIGN_HOST" 'bash /tmp/mnebyvpn-vpn-provisioner-install.sh'
+      - name: Copy dedicated node key over encrypted SSH directly to the RU bot host
+        shell: bash
+        run: |
+          set -euo pipefail
+          opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o LogLevel=ERROR)
+          SSHPASS="$FOREIGN_PASSWORD" sshpass -e ssh "${opts[@]}" \
+            "root@$FOREIGN_HOST" 'cat /etc/mnebyvpn/provisioner.key' |
+            SSHPASS="$RU_PASSWORD" sshpass -e ssh "${opts[@]}" \
+              "root@$RU_HOST" 'umask 077; cat > /opt/mnebyvpn/bot/provisioner.key; chmod 600 /opt/mnebyvpn/bot/provisioner.key'
+          FOREIGN_HASH="$(SSHPASS="$FOREIGN_PASSWORD" sshpass -e ssh "${opts[@]}" \
+            "root@$FOREIGN_HOST" 'sha256sum /etc/mnebyvpn/provisioner.key | cut -d" " -f1')"
+          RU_HASH="$(SSHPASS="$RU_PASSWORD" sshpass -e ssh "${opts[@]}" \
+            "root@$RU_HOST" 'sha256sum /opt/mnebyvpn/bot/provisioner.key | cut -d" " -f1')"
+          test "$FOREIGN_HASH" = "$RU_HASH"
+          echo 'private_vpn_node_auth_key_synced_without_logging=true'
+      - name: Check node health via private WireGuard from Russian server
+        shell: bash
+        run: |
+          set -euo pipefail
+          opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o LogLevel=ERROR)
+          SSHPASS="$RU_PASSWORD" sshpass -e ssh "${opts[@]}" "root@$RU_HOST" \
+            'test "$(curl -s -o /dev/null -w "%{http_code}" --max-time 7 http://10.66.77.1:18944/healthz)" = 200 && echo foreign_vpn_node_reachable_from_bot_host=true'
+      - name: Delete only uploaded files
+        if: always()
+        shell: bash
+        run: |
+          if [ -n "$FOREIGN_PASSWORD" ]; then
+            export SSHPASS="$FOREIGN_PASSWORD"
+            sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=9 -o LogLevel=ERROR \
+              "root@$FOREIGN_HOST" 'rm -f /tmp/mnebyvpn-vpn-provisioner.py /tmp/mnebyvpn-vpn-provisioner-install.sh' || true
+          fi
