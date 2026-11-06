@@ -1,0 +1,44 @@
+name: MNEBYVPN read-only public payment webhook preflight
+on:
+  push:
+    paths: ['.github/workflows/mnebyvpn-prodamus-route-preflight.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      RELAY_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Probe public HTTPS 443 and CDN 8443 with no payment or credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          for url in \
+            https://mnebyvpn.site/ \
+            https://mnebyvpn.site/webhooks/prodamus \
+            https://cdn.servgo.ru:8443/vpn-install.js; do
+            code="$(curl --noproxy '*' --silent --show-error \
+              --connect-timeout 6 --max-time 11 -o /dev/null \
+              -w 'http=%{http_code};ip=%{remote_ip};tls=%{ssl_verify_result}' "$url" 2>&1 || true)"
+            echo "external_https_probe $url $code"
+          done
+      - name: Probe merchant webhook URL from existing foreign server 89
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$RELAY_PASSWORD"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          export SSHPASS="$RELAY_PASSWORD"
+          sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 \
+            -o LogLevel=ERROR root@89.125.90.101 'bash -se' <<'REMOTE'
+          set -euo pipefail
+          for u in https://mnebyvpn.site/ https://mnebyvpn.site/webhooks/prodamus; do
+            status="$(curl --noproxy '*' --silent --show-error \
+              --connect-timeout 6 --max-time 11 -o /dev/null \
+              -w 'http=%{http_code};ip=%{remote_ip};tls=%{ssl_verify_result}' "$u" 2>&1 || true)"
+            echo "foreign_https_probe $u $status"
+          done
+          REMOTE
