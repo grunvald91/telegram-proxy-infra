@@ -1,4 +1,5 @@
-name: Auto-deploy tested MNEBYVPN main to public website
+name: Auto-deploy tested MNEBYVPN main to public website 
+# Deploy refresh 2026-11-06: owner VPN price catalog and Prodamus secret staged.
 # Operator-triggered release refresh: 2026-11-06 signed Prodamus all-events handler PR28; payments remain disabled.
 on:
   # The SSH secret lives in this infrastructure repo, not in Mnebyvpn.
