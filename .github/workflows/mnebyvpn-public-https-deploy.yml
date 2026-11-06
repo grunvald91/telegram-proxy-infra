@@ -1,0 +1,97 @@
+name: Publish MNEBYVPN informational site with Let's Encrypt HTTPS
+on:
+  push:
+    paths: ['.github/workflows/mnebyvpn-public-https-deploy.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebyvpn-public-tls
+  cancel-in-progress: false
+jobs:
+  enable:
+    name: Issue certificate and safely route SNI to public readonly web
+    runs-on: ubuntu-latest
+    timeout-minutes: 16
+    env:
+      HOST: '188.120.254.223'
+      SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare isolated HTTP ACME challenge
+        shell: bash
+        id: acme
+        run: |
+          set -euo pipefail
+          test -n "$SSH_PASSWORD"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          export SSHPASS="$SSH_PASSWORD"
+          opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o LogLevel=ERROR)
+          sshpass -e scp "${opts[@]}" scripts/mnebyvpn-acme-http-prepare.sh "root@$HOST:/tmp/mnebyvpn-acme-http-prepare.sh"
+          sshpass -e scp "${opts[@]}" scripts/mnebyvpn-https-sni-enable.sh "root@$HOST:/tmp/mnebyvpn-https-sni-enable.sh"
+          output="$(sshpass -e ssh "${opts[@]}" "root@$HOST" 'bash /tmp/mnebyvpn-acme-http-prepare.sh')"
+          echo "$output"
+          path="$(printf '%s\n' "$output" | sed -n 's/^acme_probe_path=//p')"
+          value="$(printf '%s\n' "$output" | sed -n 's/^acme_probe_content=//p')"
+          [[ "$path" =~ ^/\.well-known/acme-challenge/mnebyvpn-[a-z0-9]+$ ]]
+          [[ "$value" =~ ^valid-mnebyvpn-challenge-[a-z0-9]+$ ]]
+          echo "path=$path" >> "$GITHUB_OUTPUT"
+          echo "content=$value" >> "$GITHUB_OUTPUT"
+      - name: Verify public HTTP challenge for both names
+        shell: bash
+        env:
+          CHALLENGE_PATH: ${{ steps.acme.outputs.path }}
+          CHALLENGE_CONTENT: ${{ steps.acme.outputs.content }}
+        run: |
+          set -euo pipefail
+          for domain in mnebyvpn.site www.mnebyvpn.site; do
+            resolved="$(dig +short A "$domain" @1.1.1.1 | tail -1)"
+            test "$resolved" = '188.120.254.223' || {
+              echo "::error::DNS record for $domain does not resolve to server188"
+              exit 2
+            }
+            response="$(curl -fsS --max-time 12 "http://$domain$CHALLENGE_PATH")"
+            test "$response" = "$CHALLENGE_CONTENT" || {
+              echo "::error::Public HTTP challenge failed for $domain"
+              exit 2
+            }
+            echo "$domain ACME HTTP challenge reachable"
+          done
+      - name: Obtain trusted Let's Encrypt webroot certificate
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$SSH_PASSWORD"
+          sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o LogLevel=ERROR "root@$HOST" \
+            "certbot certonly --webroot --webroot-path /var/www/mnebyvpn-acme --cert-name mnebyvpn.site --domains mnebyvpn.site,www.mnebyvpn.site --non-interactive --agree-tos --email Grunvaldlab@gmail.com --keep-until-expiring --deploy-hook 'systemctl reload nginx' --quiet"
+      - name: Add new domain to existing SNI map and local TLS server
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$SSH_PASSWORD"
+          sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o LogLevel=ERROR "root@$HOST" \
+            'bash /tmp/mnebyvpn-https-sni-enable.sh'
+      - name: Verify HTTPS certificate, site and fail-closed APIs externally
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --max-time 15 https://mnebyvpn.site/ -o /tmp/mnebyvpn-landing.html
+          grep -Fq 'https://t.me/MnebyVPN_bot' /tmp/mnebyvpn-landing.html
+          curl -fsSL --max-time 15 https://mnebyvpn.site/api/plans | python3 -c 'import json,sys; x=json.load(sys.stdin); assert x["checkoutEnabled"] is False and x["loginEnabled"] is False'
+          code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://mnebyvpn.site/auth/login)"
+          test "$code" = 503
+          redirect="$(curl -s -o /dev/null -w '%{redirect_url}' --max-time 10 https://www.mnebyvpn.site/)"
+          test "$redirect" = https://mnebyvpn.site/
+          echo 'public_https_verified=true'
+          echo 'bot_link_published=true'
+          echo 'new_sales_disabled=true'
+          echo 'telegram_oidc_requires_separate_BotFather_credentials=true'
+      - name: Remove only temporary upload scripts
+        if: always()
+        shell: bash
+        run: |
+          if [ -n "$SSH_PASSWORD" ]; then
+            export SSHPASS="$SSH_PASSWORD"
+            sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o LogLevel=ERROR "root@$HOST" \
+              'rm -f /tmp/mnebyvpn-acme-http-prepare.sh /tmp/mnebyvpn-https-sni-enable.sh' || true
+          fi
