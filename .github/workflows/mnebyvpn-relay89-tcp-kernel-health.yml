@@ -1,0 +1,77 @@
+name: MNEBYVPN diagnose foreign TLS SYN backlog and TCP kernel
+on:
+  push:
+    paths: ['.github/workflows/mnebyvpn-relay89-tcp-kernel-health.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      TARGET: '89.125.90.101'
+      PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Measure kernel listen failures during external 443 probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PASSWORD"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          SRC="$(curl -fsS --max-time 7 -4 https://api.ipify.org)"
+          [[ "$SRC" =~ ^[0-9.]+$ ]]
+          export SSHPASS="$PASSWORD"
+          opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" "root@$TARGET" "python3 - '$SRC'" > "$RUNNER_TEMP/status.txt" <<'PY' &
+          import sys,socket,subprocess,time,pathlib
+          def proc(cmd):
+            return subprocess.run(cmd,capture_output=True,text=True,timeout=10)
+          def stats():
+            result={}
+            lines=pathlib.Path('/proc/net/netstat').read_text().splitlines()
+            for i in range(0,len(lines)-1,2):
+              if not lines[i].startswith('TcpExt:'):continue
+              keys=lines[i].split()[1:]
+              values=lines[i+1].split()[1:]
+              if len(keys)==len(values):
+                result.update({k:int(v) for k,v in zip(keys,values)})
+            return result
+          keys=['ListenDrops','ListenOverflows','SyncookiesSent','TCPReqQFullDrop','TCPReqQFullDoCookies','TCPBacklogDrop','TCPMinTTLDrop','TCPTimeouts','TCPRcvQDrop']
+          base=stats()
+          for key in ['net.ipv4.tcp_syncookies','net.ipv4.tcp_max_syn_backlog','net.core.somaxconn',
+                      'net.ipv4.tcp_abort_on_overflow']:
+            p=proc(['sysctl','-n',key])
+            print('sysctl_'+key.replace('.','_')+'='+p.stdout.strip(),flush=True)
+          sock=proc(['ss','-H','-lntp'])
+          for line in sock.stdout.splitlines():
+            a=line.split()
+            if len(a)>4 and a[3].endswith(':443'):
+              print('listen443_rcvq='+a[1],flush=True)
+              print('listen443_backlog='+a[2],flush=True)
+              print('listen443_process_is_nginx='+str('nginx' in line).lower(),flush=True)
+          end=time.monotonic()+17
+          during=[]
+          while time.monotonic()<end:
+            q=proc(['ss','-H','-nt','state','syn-recv','sport',':443'])
+            during.append(len(q.stdout.splitlines()))
+            time.sleep(2)
+          print('max_syn_recv443='+str(max(during or [0])),flush=True)
+          new=stats()
+          for key in keys:
+            print('delta_'+key+'='+str(new.get(key,0)-base.get(key,0)),flush=True)
+          print('kernel_read_only=true')
+          PY
+          pid=$!
+          sleep 3
+          python3 - <<'PY'
+          import socket
+          for port in [443,80]:
+            try:
+              with socket.create_connection(('89.125.90.101',port),timeout=5):
+                print('client_port_'+str(port)+'=connected')
+            except Exception as e:
+              print('client_port_'+str(port)+'='+type(e).__name__)
+          PY
+          wait "$pid"
+          cat "$RUNNER_TEMP/status.txt"
