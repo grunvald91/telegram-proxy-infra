@@ -1,4 +1,5 @@
 name: MNEBYVPN deploy signed Xray worker and Telegram VPN profiles on 188
+# Explicit release after green main 454c658 and verified staging on server188.
 on:
   push:
     paths:
