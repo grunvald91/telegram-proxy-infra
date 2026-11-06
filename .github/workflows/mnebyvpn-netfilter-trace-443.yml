@@ -43,20 +43,33 @@ jobs:
             data=trace.read_text()
             print('trace_message_count='+str(len(data.splitlines())))
             events=[]
+            # NFT trace syntax: "trace id <id> inet <table> <chain> ...".
+            # Never print IP addresses, MACs, full firewall rules or payloads.
+            nodes=[]
+            results=[]
             for line in data.splitlines():
-              if ' verdict drop' in line or ' policy drop' in line or ' verdict reject' in line:
-                match=re.search(r'table\s+(\S+)\s+chain\s+(\S+)',line)
-                owner=('table:'+match.group(1)+' chain:'+match.group(2)) if match else 'unknown'
-                events.append(('DROP' if 'drop' in line else 'REJECT')+' '+owner)
-            print('drop_verdict_count='+str(len(events)))
-            for e in list(dict.fromkeys(events))[:7]:print('drop_owner='+e)
-            if not events:
-              chains=[]
-              for line in data.splitlines():
-                m=re.search(r'table\s+(\S+)\s+chain\s+(\S+)',line)
-                if m:chains.append(m.group(1)+'/'+m.group(2))
-              print('traced_chains='+str(len(set(chains))))
-              print('last_chain='+str(chains[-1] if chains else 'none'))
+              match=re.search(r'trace id \\S+ (inet|ip|ip6) (\\S+) (\\S+) (.*)',line)
+              if not match:continue
+              family,table,chain,detail=match.groups()
+              nodes.append((family,table,chain))
+              if re.search(r'\\b(drop|reject)\\b',detail):
+                results.append('denial_'+table+'/'+chain)
+              elif 'policy accept' in detail or 'verdict accept' in detail:
+                results.append('accept_'+table+'/'+chain)
+              elif 'verdict continue' in detail:
+                results.append('continue_'+table+'/'+chain)
+            print('parsed_trace_nodes='+str(len(nodes)))
+            print('trace_tables='+','.join(sorted(set(f+'-'+t for f,t,c in nodes))))
+            print('last_trace_chain='+('/'.join(nodes[-1]) if nodes else 'none'))
+            print('accept_events='+str(len([v for v in results if v.startswith('accept_')])))
+            print('denial_events='+str(len([v for v in results if v.startswith('denial_')])))
+            for v in list(dict.fromkeys(v for v in results if v.startswith('denial_')))[:7]:
+              print('denial_point='+v)
+            types={}
+            for line in data.splitlines():
+              tag='packet' if ' packet:' in line else 'rule' if ' rule ' in line else 'policy' if ' policy ' in line else 'other'
+              types[tag]=types.get(tag,0)+1
+            for kind,count in types.items():print('trace_'+kind+'_lines='+str(count))
           finally:
             if monitor and monitor.poll() is None:
               monitor.terminate()
