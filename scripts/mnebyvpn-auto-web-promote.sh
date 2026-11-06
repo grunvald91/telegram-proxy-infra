@@ -60,6 +60,7 @@ run_web() {
 public_listener() { ss -H -lnt | awk '{print $4}' | grep -Fqx '127.0.0.1:8792'; }
 healthy() {
   local port="$1"
+  local require_logo="${2:-yes}"
   local code=''
   for attempt in $(seq 1 35); do
     code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 2 "http://127.0.0.1:$port/healthz" 2>/dev/null || true)"
@@ -70,6 +71,15 @@ healthy() {
   local css
   css="$(curl -fsS --max-time 5 "http://127.0.0.1:$port/neo.css")" || return 1
   [ -n "$css" ] || return 1
+  # A successful homepage is insufficient if the Telegram logo is missing.
+  # Previous releases might predate this asset; rollback tolerates that.
+  if [ "$require_logo" = yes ]; then
+    local avatar_response
+    avatar_response="$(curl -sS --max-time 5 -o /dev/null -w '%{http_code} %{content_type}'       "http://127.0.0.1:$port/brand-avatar.webp" || true)"
+    [ "$avatar_response" = '200 image/webp' ] || {
+      echo 'Brand asset missing or wrong content-type'; return 1;
+    }
+  fi
   curl -fsS --max-time 5 "http://127.0.0.1:$port/api/plans" |
     python3 -c 'import sys,json; x=json.load(sys.stdin); assert x["checkoutEnabled"] is False and x["loginEnabled"] is False' || return 1
   [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:$port/readyz")" = 503 ] || return 1
@@ -95,7 +105,7 @@ if ! run_web "$NAME" "$IMAGE" 8792 no || ! healthy 8792 || ! public_listener; th
   docker rm -f "$NAME" >/dev/null 2>&1 || true
   if [ -n "$old_image" ]; then
     run_web "$NAME" "$old_image" 8792 no
-    healthy 8792 || { echo 'CRITICAL: previous public website image failed recovery'; exit 3; }
+    healthy 8792 no || { echo 'CRITICAL: previous public website image failed recovery'; exit 3; }
     echo 'public_rollback=restored_previous_image'
   fi
   exit 2
