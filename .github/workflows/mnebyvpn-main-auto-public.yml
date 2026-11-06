@@ -41,6 +41,12 @@ jobs:
           path: vpn
           fetch-depth: 0
           persist-credentials: false
+      - name: Lint deploy shell scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n infra/scripts/mnebyvpn-stage-install.sh
+          bash -n infra/scripts/mnebyvpn-auto-web-promote.sh
       - name: Require passing source CI for all changed website dependencies
         id: gate
         shell: bash
