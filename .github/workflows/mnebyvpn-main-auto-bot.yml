@@ -14,7 +14,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: mnebyvpn-shared-release-188
+  group: mnebyvpn-auto-public-deploy
   cancel-in-progress: false
 
 jobs:
