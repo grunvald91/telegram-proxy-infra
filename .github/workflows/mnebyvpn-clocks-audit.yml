@@ -1,0 +1,40 @@
+name: MNEBYVPN read-only NTP clock audit on 188 and 89
+on:
+  push:
+    paths: ['.github/workflows/mnebyvpn-clocks-audit.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      RU_HOST: '188.120.254.223'
+      RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      FOREIGN_HOST: '89.125.90.101'
+      FOREIGN_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Compare both hosts with CI runner without clock mutations
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$RU_PASSWORD"
+          test -n "$FOREIGN_PASSWORD"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o LogLevel=ERROR)
+          for side in ru foreign; do
+            case "$side" in
+              ru) host="$RU_HOST";password="$RU_PASSWORD";;
+              foreign)host="$FOREIGN_HOST";password="$FOREIGN_PASSWORD";;
+            esac
+            before="$(date +%s)"
+            remote="$(SSHPASS="$password" sshpass -e ssh "${opts[@]}" "root@$host" \
+              'date +%s')"
+            after="$(date +%s)"
+            [[ "$remote" =~ ^[0-9]+$ ]]
+            midpoint=$(( (before+after)/2 ))
+            echo "$side.clock_minus_runner_seconds=$(( remote-midpoint ))"
+            SSHPASS="$password" sshpass -e ssh "${opts[@]}" "root@$host" \
+              "printf '$side.ntp_sync='; timedatectl show -p NTPSynchronized --value 2>/dev/null || true; printf '$side.ntp_active='; timedatectl show -p NTP --value 2>/dev/null || true"
+          done
