@@ -1,5 +1,5 @@
 name: Auto-deploy tested MNEBYVPN main to public website
-# Operator-triggered release refresh: 2026-11-06 after confirmed 188 VPS preflight.
+# Operator-triggered release refresh: 2026-11-06 after signed Xray adapter PR18 green CI.
 on:
   # The SSH secret lives in this infrastructure repo, not in Mnebyvpn.
   # Cross-repo pushes cannot directly trigger Actions without a separate token.
