@@ -44,7 +44,6 @@ jobs:
           samples=[]
           end=time.monotonic()+20
           while time.monotonic()<end:
-            try,except_=None,None
             try: packet,meta=sock.recvfrom(4096)
             except socket.timeout:continue
             if len(packet)<54 or packet[12:14]!=bytes.fromhex('0800'):continue
