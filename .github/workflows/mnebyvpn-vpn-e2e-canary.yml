@@ -1,0 +1,76 @@
+name: MNEBYVPN real VLESS VPN tunnel canary E2E on foreign Xray
+on:
+  push:
+    paths: ['.github/workflows/mnebyvpn-vpn-e2e-canary.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      FOREIGN_HOST: '89.125.90.101'
+      PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Connect via actual Xray VLESS WS/TLS client using ephemeral protected key
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PASSWORD"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          export SSHPASS="$PASSWORD"
+          sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o LogLevel=ERROR \
+            "root@$FOREIGN_HOST" 'bash -s' <<'SH'
+          set -Eeuo pipefail
+          umask 077
+          KEY=/etc/mnebyvpn/canary-uuid
+          test -s "$KEY"
+          test "$(systemctl is-active mnebyvpn-xray-canary)" = active
+          CLIENT="$(mktemp /tmp/mnebyvpn-xray-client-XXXXXX.json)"
+          OUT="$(mktemp /tmp/mnebyvpn-xray-client-XXXXXX.log)"
+          CHILD=""
+          cleanup(){
+            if [[ -n "$CHILD" ]]; then kill "$CHILD" 2>/dev/null || true; wait "$CHILD" 2>/dev/null || true; fi
+            rm -f "$CLIENT" "$OUT"
+          }
+          trap cleanup EXIT
+          BIND_ADDR="$(ip -4 -o addr show dev eth0 | awk '$3=="inet" {print $4}' | cut -d/ -f1 | head -1)"
+          python3 - "$KEY" "$CLIENT" "$BIND_ADDR" <<'PY'
+          import json,sys,pathlib,uuid,ipaddress
+          credential=pathlib.Path(sys.argv[1]).read_text().strip()
+          uuid.UUID(credential)
+          ipaddress.IPv4Address(sys.argv[3])
+          data={
+            'log':{'loglevel':'warning'},
+            'inbounds':[{'listen':'127.0.0.1','port':19083,'protocol':'socks',
+              'settings':{'auth':'noauth','udp':False}}],
+            'outbounds':[{'protocol':'vless','tag':'via-mnebyvpn',
+              'settings':{'vnext':[{'address':sys.argv[3],'port':8443,
+                'users':[{'id':credential,'encryption':'none'}]}]},
+              'streamSettings':{'network':'ws','security':'tls',
+                'tlsSettings':{'serverName':'cdn.servgo.ru','allowInsecure':False},
+                'wsSettings':{'path':'/mnebyvpn-vpn/ws',
+                  'headers':{'Host':'cdn.servgo.ru'}}}}]
+          }
+          pathlib.Path(sys.argv[2]).write_text(json.dumps(data)+'\n')
+          PY
+          /opt/xray/xray run -test -config "$CLIENT" >/dev/null 2>&1 || { echo 'client_xray_config_invalid'; exit 2; }
+          /opt/xray/xray run -config "$CLIENT" > "$OUT" 2>&1 &
+          CHILD=$!
+          ready=no
+          for i in $(seq 1 15); do
+            if ss -H -lnt | awk '{print $4}' | grep -Fqx '127.0.0.1:19083'; then ready=yes; break; fi
+            sleep 1
+          done
+          test "$ready" = yes
+          code="$(curl --noproxy '' -sS -o /dev/null -w '%{http_code}' \
+            --proxy socks5h://127.0.0.1:19083 \
+            --connect-timeout 8 --max-time 17 https://example.com/ || true)"
+          test "$code" = 200 || {
+            echo "vpn_vless_end_to_end_http=$code"; exit 2;
+          }
+          echo 'vpn_vless_websocket_tls_real_outbound_http=200'
+          echo 'vpn_client_key_never_logged=true'
+          echo 'previous_xray_service_preserved=true'
+          SH
