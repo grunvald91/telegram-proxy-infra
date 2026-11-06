@@ -4,6 +4,7 @@ Run ONLY after checking that live customer entitlements are zero.
 No IDs, keys, URLs or credentials are printed. Revoke in finally.
 """
 import datetime as dt
+import email.utils
 import hashlib
 import hmac
 import json
@@ -32,7 +33,13 @@ created=False
 try:
     before=call({'op':'inspect'})
     assert before['enabled'] is False and before['revision']==0
-    deadline=dt.datetime.now(dt.timezone.utc)+dt.timedelta(seconds=11)
+    # The foreign node clock is currently behind the RU control plane.
+    # Use the actual HTTP Date of the node when testing autonomous expiry.
+    with urllib.request.urlopen(
+      'http://10.66.77.1:18944/healthz',timeout=8) as health:
+        header=health.headers.get('Date')
+    assert header
+    deadline=email.utils.parsedate_to_datetime(header)+dt.timedelta(seconds=11)
     applied=call({'op':'apply','revision':1,'enabled':True,
                   'expiresAt':deadline.isoformat()})
     assert applied['status']=='applied' and applied['revision']==1
