@@ -1,0 +1,78 @@
+name: MNEBYVPN add subscription/import GET routes to owned CDN 8443 gateway
+on:
+  push:
+    paths:
+      - '.github/workflows/mnebyvpn-subscription-cdn-gateway.yml'
+      - 'scripts/mnebyvpn-subscription-cdn-gateway.sh'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebyvpn-subscription-cdn-8443
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      FOREIGN_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate targeted shell and existing SSH access
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$RU_PASSWORD"
+          test -n "$FOREIGN_PASSWORD"
+          bash -n scripts/mnebyvpn-subscription-cdn-gateway.sh
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+      - name: Add subscription GET gateway to owned WireGuard Nginx vhost on 188
+        shell: bash
+        run: |
+          set -euo pipefail
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          export SSHPASS="$RU_PASSWORD"
+          sshpass -e scp "${opts[@]}" scripts/mnebyvpn-subscription-cdn-gateway.sh \
+            root@188.120.254.223:/tmp/mnebyvpn-subscription-cdn-gateway.sh
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 \
+            'bash /tmp/mnebyvpn-subscription-cdn-gateway.sh ru'
+      - name: Add subscription GET gateway to owned foreign Telegram 8443 TLS vhost
+        shell: bash
+        run: |
+          set -euo pipefail
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          export SSHPASS="$FOREIGN_PASSWORD"
+          sshpass -e scp "${opts[@]}" scripts/mnebyvpn-subscription-cdn-gateway.sh \
+            root@89.125.90.101:/tmp/mnebyvpn-subscription-cdn-gateway.sh
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
+            'bash /tmp/mnebyvpn-subscription-cdn-gateway.sh foreign'
+      - name: Independently verify public HTTPS gateway and deny invalid tokens
+        shell: bash
+        run: |
+          set -euo pipefail
+          base=https://cdn.servgo.ru:8443
+          js="$(curl --noproxy '*' -fsS --connect-timeout 7 --max-time 15 \
+            --resolve cdn.servgo.ru:8443:89.125.90.101 "$base/vpn-install.js")"
+          grep -Fq 'incy://import/' <<<"$js"
+          bogus=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+          for route in "/sub/$bogus" "/install/$bogus?client=karing"; do
+            code="$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' \
+              --connect-timeout 7 --max-time 15 \
+              --resolve cdn.servgo.ru:8443:89.125.90.101 "$base$route")"
+            test "$code" = 404
+          done
+          echo 'public_cdn8443_subscription_get_gateway=verified'
+      - name: Clean only dedicated upload files
+        if: always()
+        shell: bash
+        run: |
+          opts=(-o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          if [[ -n "$RU_PASSWORD" ]]; then
+            SSHPASS="$RU_PASSWORD" sshpass -e ssh "${opts[@]}" root@188.120.254.223 \
+              'rm -f /tmp/mnebyvpn-subscription-cdn-gateway.sh' || true
+          fi
+          if [[ -n "$FOREIGN_PASSWORD" ]]; then
+            SSHPASS="$FOREIGN_PASSWORD" sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
+              'rm -f /tmp/mnebyvpn-subscription-cdn-gateway.sh' || true
+          fi
