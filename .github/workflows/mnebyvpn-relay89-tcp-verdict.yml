@@ -75,6 +75,29 @@ jobs:
               chains.append((table,chain))
               if re.search(r'\b(drop|reject)\b',detail):
                 print('trace_drop_chain='+table+'/'+chain,flush=True)
+            ids=[m.group(1) for line in data.splitlines() if (m:=re.search(r'trace id (\\S+)',line))]
+            if ids:
+              last=ids[-1]
+              events=[line for line in data.splitlines() if line.startswith('trace id '+last+' ')]
+              for line in events[-16:]:
+                fragment=re.sub(r'^trace id \\S+ ','',line)
+                # Redact all packet and address metadata.
+                if ' packet:' in fragment:fragment=fragment.split(' packet:')[0]+' packet'
+                fragment=re.sub(r'\\b(?:[0-9]{1,3}\\.){3}[0-9]{1,3}\\b','<ip>',fragment)
+                print('trace_tail='+fragment[:220],flush=True)
+            for key in ['ip','-4','route','get',src,'from','89.125.90.101']:
+              pass
+            route=cmd('ip','-4','route','get',src,'from','89.125.90.101').stdout
+            device=re.search(r'\\bdev\\s+(\\S+)',route)
+            print('route_device='+(device.group(1) if device else 'unknown'),flush=True)
+            for table in ['INPUT','OUTPUT']:
+              policy=cmd('iptables','-S',table).stdout
+              rules=[line for line in policy.splitlines() if line.startswith('-A')]
+              verdicts=collections.Counter(
+                (re.search(r'\\s-j\\s+(\\w+)',line).group(1) if re.search(r'\\s-j\\s+(\\w+)',line) else 'NONE')
+                for line in rules)
+              print('iptables_'+table+'_rules='+str(len(rules)),flush=True)
+              print('iptables_'+table+'_verdicts='+str(dict(verdicts)),flush=True)
             print('trace_event_count='+str(len(data.splitlines())),flush=True)
             print('trace_last_chain='+('/'.join(chains[-1]) if chains else 'none'),flush=True)
             for item,count in counter.items():
