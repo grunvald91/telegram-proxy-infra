@@ -1,0 +1,64 @@
+name: MNEBYVPN Telegram webhook via existing relay89 and WireGuard
+on:
+  push:
+    paths: ['.github/workflows/mnebyvpn-telegram-via89.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebyvpn-telegram-existing-89
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 13
+    env:
+      RU_HOST: '188.120.254.223'
+      FOREIGN_HOST: '89.125.90.101'
+      RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      FOREIGN_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Use existing secure transport
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$RU_PASSWORD"
+          test -n "$FOREIGN_PASSWORD"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+      - name: Add dedicated WireGuard-only bridge on 188 without changing existing sites
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$RU_PASSWORD"
+          opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o LogLevel=ERROR)
+          sshpass -e scp "${opts[@]}" scripts/mnebyvpn-wg-webhook-ru.sh "root@$RU_HOST:/tmp/mnebyvpn-wg-webhook-ru.sh"
+          sshpass -e ssh "${opts[@]}" "root@$RU_HOST" 'bash /tmp/mnebyvpn-wg-webhook-ru.sh'
+      - name: Add exact Telegram path to current cdn.servgo.ru on 89
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$FOREIGN_PASSWORD"
+          opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o LogLevel=ERROR)
+          sshpass -e scp "${opts[@]}" scripts/mnebyvpn-wg-webhook-foreign.sh "root@$FOREIGN_HOST:/tmp/mnebyvpn-wg-webhook-foreign.sh"
+          sshpass -e ssh "${opts[@]}" "root@$FOREIGN_HOST" 'bash /tmp/mnebyvpn-wg-webhook-foreign.sh'
+      - name: Confirm foreign-origin 401 and unchanged public CDN
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$FOREIGN_PASSWORD"
+          sshpass -e ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR \
+            "root@$FOREIGN_HOST" 'test "$(curl --noproxy "*" -s -o /dev/null -w "%{http_code}" --max-time 7 --resolve cdn.servgo.ru:443:127.0.0.1 -X POST -H "Content-Type: application/json" -d "{\"update_id\":1}" https://cdn.servgo.ru/mnebyvpn-telegram/webhook)" = 401 && echo telegram_relay_foreign_https=ready'
+      - name: Remove only uploaded installers
+        if: always()
+        shell: bash
+        run: |
+          opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=8 -o LogLevel=ERROR)
+          if [ -n "$RU_PASSWORD" ]; then
+            export SSHPASS="$RU_PASSWORD"
+            sshpass -e ssh "${opts[@]}" "root@$RU_HOST" 'rm -f /tmp/mnebyvpn-wg-webhook-ru.sh' || true
+          fi
+          if [ -n "$FOREIGN_PASSWORD" ]; then
+            export SSHPASS="$FOREIGN_PASSWORD"
+            sshpass -e ssh "${opts[@]}" "root@$FOREIGN_HOST" 'rm -f /tmp/mnebyvpn-wg-webhook-foreign.sh' || true
+          fi
