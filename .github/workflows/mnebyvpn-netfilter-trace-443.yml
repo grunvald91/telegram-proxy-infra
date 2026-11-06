@@ -70,6 +70,22 @@ jobs:
               tag='packet' if ' packet:' in line else 'rule' if ' rule ' in line else 'policy' if ' policy ' in line else 'other'
               types[tag]=types.get(tag,0)+1
             for kind,count in types.items():print('trace_'+kind+'_lines='+str(count))
+            # Last trace of a matched SYN: sanitized rule names/verdicts only.
+            # Never print IP addresses, MACs, tokens or packet headers.
+            ids=[m.group(1) for line in data.splitlines()
+              if (m:=re.search(r'trace id (\\S+)',line))]
+            if ids:
+              last_id=ids[-1]
+              last=[line for line in data.splitlines()
+                if line.startswith('trace id '+last_id+' ')]
+              for line in last[-15:]:
+                t=re.sub(r'^trace id \\S+ ', '', line)
+                t=re.sub(r'\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b','<ipv4>',t)
+                t=re.sub(r'(?i)\\b(?:[0-9a-f]{2}:){5}[0-9a-f]{2}\\b','<mac>',t)
+                t=re.sub(r'\\b(?:[0-9a-f]{0,4}:){2,}[0-9a-f:]+\\b','<ipv6>',t)
+                if ' packet:' in t:t=t.split(' packet:')[0]+' packet:<redacted>'
+                print('trace_tail_event='+t[:200])
+
           finally:
             if monitor and monitor.poll() is None:
               monitor.terminate()
