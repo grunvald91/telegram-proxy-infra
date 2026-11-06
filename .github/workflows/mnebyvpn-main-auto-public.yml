@@ -100,9 +100,16 @@ jobs:
           export SSHPASS="$SSH_PASSWORD"
           opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
           active="$(sshpass -e ssh "${opts[@]}" "root@$HOST"             'cat /opt/mnebyvpn/public/active_sha 2>/dev/null || true')"
-          if [ "$active" = "${{ steps.gate.outputs.sha }}" ]; then
+          target="${{ steps.gate.outputs.sha }}"
+          if [ "$active" = "$target" ]; then
             echo 'deploy=no' >> "$GITHUB_OUTPUT"
             echo 'website_current=already_at_this_SHA' >> "$GITHUB_STEP_SUMMARY"
+          elif [[ "$active" =~ ^[a-f0-9]{40}$ ]] &&
+            git -C vpn cat-file -e "$active^{commit}" &&
+            git -C vpn merge-base --is-ancestor "$active" "$target" &&
+            git -C vpn diff --quiet "$active" "$target" -- apps/web packages db package.json tsconfig.json; then
+            echo 'deploy=no' >> "$GITHUB_OUTPUT"
+            echo 'website_runtime=unchanged_since_deployed_sha' >> "$GITHUB_STEP_SUMMARY"
           else
             echo 'deploy=yes' >> "$GITHUB_OUTPUT"
           fi
