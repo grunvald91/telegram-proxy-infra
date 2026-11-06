@@ -19,7 +19,7 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           import socket,subprocess
-          for port in [80,443]:
+          for port in [80,443,8443]:
             try:
               sock=socket.create_connection(('188.120.254.223',port),5)
               sock.close()
@@ -52,7 +52,7 @@ jobs:
           print('sni_domain_route_count='+str(config.count('mnebyvpn.site 127.0.0.1:18449;')))
           print('sni_www_route_count='+str(config.count('www.mnebyvpn.site 127.0.0.1:18449;')))
           print('https_site_present='+str('listen 127.0.0.1:18449 ssl;' in config).lower())
-          for p in [80,443,18449,8792]:
+          for p in [80,443,8443,18449,8792]:
             n=cmd(['bash','-c', "ss -H -lnt | awk '{print $4}' | grep -Ec ':"+str(p)+"$' || true"])
             print('local_listener_'+str(p)+'='+(n.stdout.strip() if n else '?'))
           for name,ip,port in [
