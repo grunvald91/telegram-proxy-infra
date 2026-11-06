@@ -33,7 +33,7 @@ jobs:
           while time.monotonic()<end:
             try:packet=s.recv(2048)
             except socket.timeout:continue
-            if len(packet)<54 or packet[12:14]!=b'\\x08\\x00':continue
+            if len(packet)<54 or packet[12:14]!=b'\x08\x00':continue
             ip=packet[14:]
             if ip[9]!=6:continue
             ihl=(ip[0]&15)*4
@@ -50,7 +50,7 @@ jobs:
           import subprocess,re
           route=subprocess.run(['ip','-4','route','get',sys.argv[1]],
             capture_output=True,text=True)
-          dev=re.search(r'\\bdev\\s+(\\S+)',route.stdout)
+          dev=re.search(r'\bdev\s+(\S+)',route.stdout)
           print('public_syn_received='+str(inbound))
           print('public_synack_sent='+str(outbound))
           print('public_rst_sent='+str(reset))
