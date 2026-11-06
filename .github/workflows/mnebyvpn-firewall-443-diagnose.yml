@@ -52,5 +52,23 @@ jobs:
             lines=[x for x in s.stdout.splitlines() if re.search(r':443\s',x)]
             print('listener_443_count='+str(len(lines)))
             print('listener_443_nginx='+str(any('nginx' in x for x in lines)).lower())
+          if u:
+            for item in u.stdout.splitlines():
+              if ('443' in item or '80/tcp' in item) and ('ALLOW' in item or 'DENY' in item or 'REJECT' in item):
+                parts=item.strip().split()
+                verdict=next((v for v in parts if v in {'ALLOW','DENY','REJECT'}),'unknown')
+                direction=next((v for v in parts if v in {'IN','OUT'}),'unknown')
+                print('ufw_rule_port='+('443' if '443' in item else '80')+
+                  '_verdict='+verdict+'_direction='+direction+
+                  '_public_scope='+str('Anywhere' in item).lower())
+          for chain in ['ufw-user-input','ufw-before-input','ufw-after-input']:
+            z=run(['iptables','-S',chain])
+            if z:
+              for line in z.stdout.splitlines():
+                if ('--dport 443' in line or '--dports' in line and '443' in line):
+                  t=re.search(r'-j\s+(\w+)',line)
+                  src=re.search(r'-s\s+([^ ]+)',line)
+                  print('chain_'+chain+'_443_action='+(t.group(1) if t else 'none')+
+                    '_source_restricted='+str(src is not None).lower())
           print('read_only=true')
           PY
