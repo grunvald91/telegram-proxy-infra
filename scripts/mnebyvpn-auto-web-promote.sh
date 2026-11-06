@@ -51,6 +51,19 @@ elif port_busy 8792; then
   echo 'Public web port belongs to an unknown service; refusing'; exit 2
 fi
 
+# Existing public website and Telegram subscription DB are separate.
+# Use a root-only env file for the bot DB; never replace public DATABASE_URL.
+test -s "$ROOT/bot/web.env"
+test -s "$ROOT/bot/worker.env"
+BOT_SUBSCRIPTION_DB="$(sed -n 's/^DATABASE_URL=//p' "$ROOT/bot/web.env")"
+[[ "$BOT_SUBSCRIPTION_DB" == postgresql://* && "$BOT_SUBSCRIPTION_DB" != *$'\n'* ]] ||
+  { echo 'Private Telegram subscription DB missing or invalid'; exit 2; }
+BRIDGE_TMP="$(mktemp "$ROOT/bot/subscription-web.env.tmp.XXXXXXXX")"
+printf 'VPN_SUBSCRIPTION_DATABASE_URL=%s\n' "$BOT_SUBSCRIPTION_DB" > "$BRIDGE_TMP"
+chmod 600 "$BRIDGE_TMP"
+mv -f "$BRIDGE_TMP" "$ROOT/bot/subscription-web.env"
+unset BOT_SUBSCRIPTION_DB
+
 run_web() {
   local name="$1" image="$2" port="$3" ephemeral="$4"
   local policy_flags=()
@@ -59,18 +72,16 @@ run_web() {
   else
     policy_flags=(--restart unless-stopped)
   fi
-  local vpn_bridge_env=()
-  if [ -s "$ROOT/bot/worker.env" ]; then
-    grep -Eq '^VPN_WORKER_PROFILE_TOKEN=[a-f0-9]{64}$' "$ROOT/bot/worker.env" ||
-      { echo 'Invalid private profile bridge token'; return 2; }
-    vpn_bridge_env=(--env-file "$ROOT/bot/worker.env")
-  fi
+  grep -Eq '^VPN_WORKER_PROFILE_TOKEN=[a-f0-9]{64}$' "$ROOT/bot/worker.env" ||
+    { echo 'Invalid private profile bridge token'; return 2; }
   docker run -d "${policy_flags[@]}" --name "$name" \
     --network host --user 1000:1000 --read-only \
     --tmpfs /tmp:rw,nosuid,nodev,size=32m \
     --cap-drop ALL --security-opt no-new-privileges --pids-limit 96 \
     --memory 300m --cpus 0.4 --env-file "$ENV_FILE" \
-    "${vpn_bridge_env[@]}" -e "WEB_PORT=$port" "$image" >/dev/null
+    --env-file "$ROOT/bot/worker.env" \
+    --env-file "$ROOT/bot/subscription-web.env" \
+    -e "WEB_PORT=$port" "$image" >/dev/null
 }
 public_listener() { ss -H -lnt | awk '{print $4}' | grep -Fqx '127.0.0.1:8792'; }
 healthy() {
