@@ -1,0 +1,166 @@
+name: Auto-deploy tested MNEBYVPN Telegram bot via existing 188 SSH
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebyvpn-main-auto-bot.yml'
+      - 'docs/mnebyvpn-auto-release.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mnebyvpn-shared-release-188
+  cancel-in-progress: false
+
+jobs:
+  bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      HOST: '188.120.254.223'
+      SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Checkout existing infrastructure scripts
+        uses: actions/checkout@v4
+        with:
+          path: infra
+          persist-credentials: false
+      - name: Checkout current MNEBYVPN main
+        uses: actions/checkout@v4
+        with:
+          repository: grunvald91/Mnebyvpn
+          ref: main
+          path: vpn
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require current green MNEBYVPN CI and lint deployment scripts
+        id: gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SSH_PASSWORD" || { echo '::error::Existing infrastructure SSH secret missing'; exit 2; }
+          bash -n infra/scripts/mnebyvpn-stage-install.sh
+          bash -n infra/scripts/mnebyvpn-main-bot-promote.sh
+          sha="$(git -C vpn rev-parse HEAD)"
+          [[ "$sha" =~ ^[a-f0-9]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          curl -fsSL --retry 2 --max-time 25 \
+            'https://api.github.com/repos/grunvald91/Mnebyvpn/actions/workflows/offline-contracts.yml/runs?branch=main&status=success&per_page=12' \
+            -o "$RUNNER_TEMP/ci.json"
+          green="$(python3 - "$RUNNER_TEMP/ci.json" <<'PY'
+          import json,sys
+          for run in json.load(open(sys.argv[1])).get('workflow_runs',[]):
+              if run.get('event')=='push' and run.get('head_branch')=='main' and run.get('conclusion')=='success':
+                  print(run['head_sha'])
+                  break
+          PY
+          )"
+          if [[ ! "$green" =~ ^[a-f0-9]{40}$ ]] ||
+             ! git -C vpn merge-base --is-ancestor "$green" "$sha" ||
+             ! git -C vpn diff --quiet "$green" "$sha" -- apps/service packages db package.json tsconfig.json; then
+            echo 'bot_release=skipped_unverified_source' >> "$GITHUB_STEP_SUMMARY"
+            echo 'deploy=no' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "source_sha=$sha" >> "$GITHUB_STEP_SUMMARY"
+          echo "source_green_ci_sha=$green" >> "$GITHUB_STEP_SUMMARY"
+          echo 'deploy=yes' >> "$GITHUB_OUTPUT"
+      - name: Check existing bot image and staging state on 188
+        id: remote
+        if: steps.gate.outputs.deploy == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          export SSHPASS="$SSH_PASSWORD"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          target="root@$HOST"
+          sha="${{ steps.gate.outputs.sha }}"
+          current="$(sshpass -e ssh "${opts[@]}" "$target" \
+            "docker inspect -f '{{.Config.Image}}' mnebyvpn-bot-info 2>/dev/null || true")"
+          status="$(sshpass -e ssh "${opts[@]}" "$target" \
+            "curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:8793/readyz || true")"
+          if [[ "$status" == 200 && "$current" == "mnebyvpn-stage-web:$sha" ]]; then
+            echo 'bot=already_current_and_ready' >> "$GITHUB_STEP_SUMMARY"
+            echo 'deploy=no' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          old_sha="${current#mnebyvpn-stage-web:}"
+          if [[ "$status" == 200 && "$current" == mnebyvpn-stage-web:* ]] &&
+             [[ "$old_sha" =~ ^[a-f0-9]{40}$ ]] &&
+             git -C vpn cat-file -e "$old_sha^{commit}" 2>/dev/null &&
+             git -C vpn merge-base --is-ancestor "$old_sha" "$sha" &&
+             git -C vpn diff --quiet "$old_sha" "$sha" -- apps/service packages/billing packages/provisioning packages/telegram-ui packages/domain db package.json tsconfig.json; then
+            echo 'bot=runtime_unchanged' >> "$GITHUB_STEP_SUMMARY"
+            echo 'deploy=no' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          stage="$(sshpass -e ssh "${opts[@]}" "$target" \
+            "cat /opt/mnebyvpn/staging/active_sha 2>/dev/null || true")"
+          if [[ "$stage" == "$sha" ]] && sshpass -e ssh "${opts[@]}" "$target" \
+             "docker image inspect 'mnebyvpn-stage-web:$sha' >/dev/null 2>&1"; then
+            echo 'needs_stage=no' >> "$GITHUB_OUTPUT"
+          else
+            echo 'needs_stage=yes' >> "$GITHUB_OUTPUT"
+          fi
+          echo 'deploy=yes' >> "$GITHUB_OUTPUT"
+      - name: Pack CI-verified source for isolated stage
+        if: steps.remote.outputs.deploy == 'yes' && steps.remote.outputs.needs_stage == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C vpn rev-parse HEAD)" = "${{ steps.gate.outputs.sha }}"
+          tar -czf "$RUNNER_TEMP/mnebyvpn-bot-stage.tgz" --exclude=.git -C vpn .
+      - name: Install isolated staging image using existing SSH
+        if: steps.remote.outputs.deploy == 'yes' && steps.remote.outputs.needs_stage == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$SSH_PASSWORD"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          sha="${{ steps.gate.outputs.sha }}"
+          sshpass -e scp "${opts[@]}" infra/scripts/mnebyvpn-stage-install.sh \
+            "root@$HOST:/tmp/mnebyvpn-bot-auto-stage-$sha.sh"
+          sshpass -e scp "${opts[@]}" "$RUNNER_TEMP/mnebyvpn-bot-stage.tgz" \
+            "root@$HOST:/tmp/mnebyvpn-bot-auto-source-$sha.tgz"
+          sshpass -e ssh "${opts[@]}" "root@$HOST" \
+            "bash /tmp/mnebyvpn-bot-auto-stage-$sha.sh /tmp/mnebyvpn-bot-auto-source-$sha.tgz '$sha'"
+      - name: Canary and atomically promote existing Telegram service with rollback
+        if: steps.remote.outputs.deploy == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$SSH_PASSWORD"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          sha="${{ steps.gate.outputs.sha }}"
+          sshpass -e scp "${opts[@]}" infra/scripts/mnebyvpn-main-bot-promote.sh \
+            "root@$HOST:/tmp/mnebyvpn-bot-auto-promote-$sha.sh"
+          sshpass -e ssh "${opts[@]}" "root@$HOST" \
+            "bash /tmp/mnebyvpn-bot-auto-promote-$sha.sh '$sha'"
+          echo "bot_release_sha=$sha" >> "$GITHUB_STEP_SUMMARY"
+      - name: Verify foreign TLS Telegram webhook remains authenticated
+        if: steps.remote.outputs.deploy == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+          code="$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --max-time 15 \
+            -X POST -H 'Content-Type: application/json' -d '{"update_id":100}' \
+            https://cdn.servgo.ru:8443/mnebyvpn-telegram/webhook || true)"
+          [[ "$code" == 401 ]] || { echo "::error::Unexpected Telegram ingress auth status $code"; exit 2; }
+          echo 'foreign_telegram_unsigned_webhook=401' >> "$GITHUB_STEP_SUMMARY"
+      - name: Clean up only release-specific temporary uploads
+        if: always() && steps.remote.outputs.deploy == 'yes'
+        shell: bash
+        run: |
+          if [[ -n "$SSH_PASSWORD" ]]; then
+            export SSHPASS="$SSH_PASSWORD"
+            sha="${{ steps.gate.outputs.sha }}"
+            sshpass -e ssh -o ConnectTimeout=9 -o StrictHostKeyChecking=accept-new \
+              -o LogLevel=ERROR "root@$HOST" \
+              "rm -f /tmp/mnebyvpn-bot-auto-stage-$sha.sh /tmp/mnebyvpn-bot-auto-source-$sha.tgz /tmp/mnebyvpn-bot-auto-promote-$sha.sh" || true
+          fi
