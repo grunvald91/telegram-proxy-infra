@@ -1,5 +1,5 @@
 name: Auto-deploy tested MNEBYVPN main to public website
-# Operator-triggered release refresh: 2026-11-06 PR24 production CDN 8443 subscriptions after green main CI.
+# Operator-triggered release refresh: 2026-11-06 PR25 one-tap native app import and CDN fallback.
 on:
   # The SSH secret lives in this infrastructure repo, not in Mnebyvpn.
   # Cross-repo pushes cannot directly trigger Actions without a separate token.
