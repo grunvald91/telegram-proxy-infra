@@ -30,7 +30,7 @@ This deploy uses the existing isolated services on server188:
 |---|---|---|
 | Test web | `127.0.0.1:8791` | Existing staging installer verifies source and schema, builds image |
 | Public web | `127.0.0.1:8792` | Replaced only after canary health/security check |
-| Temporary public canary | `127.0.0.1:8793` | Starts for validation, then removed |
+| Temporary public canary | First unused localhost port among `18793–18795`, `28793–28794` | Starts for validation, then removed |
 | PostgreSQL | `127.0.0.1:55433` | Reused; migrations handled only by existing stage installer |
 
 Only the named `mnebyvpn-stage-web` and `mnebyvpn-public-web`
@@ -45,7 +45,7 @@ migration process before main is changed.**
 The production `/opt/mnebyvpn/public/web.env` must already exist and
 explicitly keep OIDC login, trial, checkout and unverified network features
 **disabled**. Any configuration mismatch aborts before promotion.
-A new image is first tested at port 8793. On failure after switching port 8792,
+A new image is first tested on an unoccupied high localhost port. On failure after switching port 8792,
 the previous image is restarted and the active SHA is not updated.
 `/healthz` is expected to return 200 and **`/readyz` 503**; readiness 503
 is intentional until commercial release requirements are met.
