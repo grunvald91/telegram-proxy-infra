@@ -67,12 +67,12 @@ jobs:
             print('tcp_port_'+str(p)+'_listener_count='+x)
           print('existing_mnebyvpn_containers='+check("docker ps -a --format '{{.Names}}' 2>/dev/null | grep '^mnebyvpn-' | tr '\\n' ',' || true"))
           print('=== POSTDEPLOY STAGING AUDIT ===')
-          import json,urllib.request,urllib.error
+          import json,urllib.request
           sha_file=pathlib.Path('/opt/mnebyvpn/staging/active_sha')
           print('stage_active_sha='+sha_file.read_text().strip()[:40] if sha_file.exists() else 'stage_active_sha=none')
           print('stage_web_container='+check("docker inspect -f '{{.State.Status}}' mnebyvpn-stage-web 2>/dev/null || true"))
           print('stage_db_container='+check("docker inspect -f '{{.State.Status}}' mnebyvpn-stage-postgres 2>/dev/null || true"))
-          print('stage_http_200='+check("curl -s -o /dev/null -w '%{http_code}' --max-time 4 http://127.0.0.1:8791/healthz || true"))
+          print('stage_health_http='+check("curl -s -o /dev/null -w '%{http_code}' --max-time 4 http://127.0.0.1:8791/healthz || true"))
           print('stage_ready_http='+check("curl -s -o /dev/null -w '%{http_code}' --max-time 4 http://127.0.0.1:8791/readyz || true"))
           try:
             with urllib.request.urlopen('http://127.0.0.1:8791/api/plans',timeout=4) as response:
@@ -80,12 +80,8 @@ jobs:
             print('stage_checkout_enabled='+str(catalog.get('checkoutEnabled')).lower())
           except Exception as exc:print('stage_catalog_error='+type(exc).__name__)
           print('stage_migration_count='+check('docker exec mnebyvpn-stage-postgres psql -U mnebyvpn_stage -d mnebyvpn_stage -Atqc "SELECT COUNT(*) FROM deployment_schema_migrations" 2>/dev/null || true'))
-          print('stage_listen_socket='+check("ss -H -lnt | awk '{print $4}' | grep -E ':8791
-          PY
- || true"))
-          print('stage_db_listen_socket='+check("ss -H -lnt | awk '{print $4}' | grep -E ':55433
-          PY
- || true"))
+          print('stage_web_bound_on_loopback='+str('127.0.0.1:8791' in check("ss -H -lnt | awk '{print $4}' | grep -E ':8791$' || true")).lower())
+          print('stage_db_bound_on_loopback='+str('127.0.0.1:55433' in check("ss -H -lnt | awk '{print $4}' | grep -E ':55433$' || true")).lower())
           for unit in ['flight-bot.service','bandsongbook-sync.service','telemt.service','nginx.service']:
             print('unit_'+unit.replace('.service','').replace('-','_')+'='+check('systemctl is-active '+unit+' 2>/dev/null || true'))
           print('read_only_complete=yes')
