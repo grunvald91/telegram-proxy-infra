@@ -36,7 +36,12 @@ port_busy() { ss -H -lnt | awk '{print $4}' | grep -Eq ":$1$"; }
 if docker ps -a --format '{{.Names}}' | grep -qx "$CANARY"; then
   echo 'Canary name is occupied; refusing to replace unknown container'; exit 2
 fi
-if port_busy 8793; then echo 'Canary port occupied; refusing'; exit 2; fi
+# Select a presently unused high loopback port; do not reuse any occupied listener.
+CANARY_PORT=''
+for candidate in 18793 18794 18795 28793 28794; do
+  if ! port_busy "$candidate"; then CANARY_PORT="$candidate"; break; fi
+done
+[ -n "$CANARY_PORT" ] || { echo 'No spare canary port available; refusing'; exit 2; }
 has_public=no
 old_image=''
 if docker ps -a --format '{{.Names}}' | grep -qx "$NAME"; then
@@ -75,8 +80,8 @@ cleanup_canary() {
   docker stop -t 3 "$CANARY" >/dev/null 2>&1 || true
 }
 trap cleanup_canary EXIT
-run_web "$CANARY" "$IMAGE" 8793 yes
-healthy 8793 || { echo 'New website failed canary health / security checks'; exit 2; }
+run_web "$CANARY" "$IMAGE" "$CANARY_PORT" yes
+healthy "$CANARY_PORT" || { echo 'New website failed canary health / security checks'; exit 2; }
 cleanup_canary
 trap - EXIT
 
