@@ -1,0 +1,86 @@
+name: MNEBYVPN inspect TCP443 packets and local listener (read-only)
+on:
+  push:
+    paths: ['.github/workflows/mnebyvpn-tcp443-packet-metadata.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      HOST: '188.120.254.223'
+      PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Capture ephemeral header metadata only, no traffic payloads
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PASSWORD"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          SRC="$(curl -4 -fsS --max-time 6 https://api.ipify.org)"
+          [[ "$SRC" =~ ^[0-9.]+$ ]]
+          export SSHPASS="$PASSWORD"
+          opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" "root@$HOST" "python3 - '$SRC'" > "$RUNNER_TEMP/packet-meta.txt" <<'PY' &
+          import sys,subprocess,socket,time,collections,pathlib
+          source=socket.inet_aton(sys.argv[1])
+          public=socket.inet_aton('188.120.254.223')
+          p=subprocess.run(['ss','-H','-lnt'],capture_output=True,text=True)
+          listeners=[line.split()[3] for line in p.stdout.splitlines()
+            if line.split()[3].endswith(':443')]
+          print('server_tcp443_listeners='+str(len(listeners)))
+          print('listener_wildcard='+str(any(x.startswith(('0.0.0.0:','*:')) for x in listeners)).lower())
+          print('listener_on_public_addr='+str(any(x.startswith('188.120.254.223:') for x in listeners)).lower())
+          route=subprocess.run(['ip','-4','route','get',sys.argv[1],
+            'from','188.120.254.223'],capture_output=True,text=True)
+          print('return_route_valid='+str(route.returncode==0).lower())
+          for n in ['TcpExtListenDrops','TcpExtListenOverflows','TcpExtTCPReqQFullDrop']:
+            x=subprocess.run(['nstat','-az',n],capture_output=True,text=True)
+            try:val=int(x.stdout.splitlines()[-1].split()[-1])
+            except:val=-1
+            print('before_'+n+'='+str(val))
+          sock=socket.socket(socket.AF_PACKET,socket.SOCK_RAW,socket.htons(3))
+          sock.settimeout(1)
+          tally=collections.Counter()
+          end=time.monotonic()+20
+          while time.monotonic()<end:
+            try:packet,meta=sock.recvfrom(2048)
+            except socket.timeout:continue
+            if len(packet)<54 or packet[12:14]!=b'\x08\x00':continue
+            ip=packet[14:]
+            if ip[9]!=6:continue
+            ihl=(ip[0]&15)*4
+            tcp=ip[ihl:]
+            if len(tcp)<14:continue
+            incoming=ip[12:16]==source and int.from_bytes(tcp[2:4],'big')==443
+            outgoing=ip[16:20]==source and int.from_bytes(tcp[0:2],'big')==443
+            if incoming or outgoing:
+              direction='incoming' if incoming else 'outgoing'
+              dest='public' if ip[16:20]==public else 'not_public'
+              src='public' if ip[12:16]==public else 'not_public'
+              syn=bool(tcp[13]&2)
+              ack=bool(tcp[13]&16)
+              tally[(direction,'SYN' if syn and not ack else 'SYNACK' if syn and ack else 'OTHER',dest,src)]+=1
+          for (direction,flag,dest,src),count in sorted(tally.items()):
+            print('captured_'+direction+'_'+flag+'_dest_'+dest+'_src_'+src+'='+str(count))
+          for n in ['TcpExtListenDrops','TcpExtListenOverflows','TcpExtTCPReqQFullDrop']:
+            x=subprocess.run(['nstat','-az',n],capture_output=True,text=True)
+            try:val=int(x.stdout.splitlines()[-1].split()[-1])
+            except:val=-1
+            print('after_'+n+'='+str(val))
+          print('capture_stopped=true')
+          PY
+          PID=$!
+          sleep 4
+          python3 - <<'PY'
+          import socket
+          for i in range(3):
+            try:
+              with socket.create_connection(('188.120.254.223',443),timeout=4):
+                print('tcp_443_probe=connected')
+            except Exception as e:print('tcp_443_probe='+type(e).__name__)
+          PY
+          wait "$PID"
+          cat "$RUNNER_TEMP/packet-meta.txt"
