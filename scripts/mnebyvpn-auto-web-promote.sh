@@ -54,12 +54,24 @@ fi
 run_web() {
   local name="$1" image="$2" port="$3" ephemeral="$4"
   local policy_flags=()
-  if [ "$ephemeral" = yes ]; then policy_flags=(--rm); else policy_flags=(--restart unless-stopped); fi
+  if [ "$ephemeral" = yes ]; then
+    policy_flags=(--rm)
+  else
+    policy_flags=(--restart unless-stopped)
+  fi
   local vpn_bridge_env=()
   if [ -s "$ROOT/bot/worker.env" ]; then
-    # Shared only with the localhost subscription bridge; node HMAC key stays
-    # in the private worker container and is never exposed to the website.
-    grep -Eq '^VPN_WORKER_PROFILE_TOKEN=[a-f0-9]{64}
+    # Only loopback profile API token; never mount the Xray node HMAC key.
+    grep -Eq '^VPN_WORKER_PROFILE_TOKEN=[a-f0-9]{64}$' "$ROOT/bot/worker.env" ||
+      { echo 'Invalid private profile bridge token'; return 2; }
+    vpn_bridge_env=(--env-file "$ROOT/bot/worker.env")
+  fi
+  docker run -d "${policy_flags[@]}" --name "$name" \
+    --network host --user 1000:1000 --read-only \
+    --tmpfs /tmp:rw,nosuid,nodev,size=32m \
+    --cap-drop ALL --security-opt no-new-privileges --pids-limit 96 \
+    --memory 300m --cpus 0.4 --env-file "$ENV_FILE" \
+    "${vpn_bridge_env[@]}" -e "WEB_PORT=$port" "$image" >/dev/null
 }
 public_listener() { ss -H -lnt | awk '{print $4}' | grep -Fqx '127.0.0.1:8792'; }
 healthy() {
