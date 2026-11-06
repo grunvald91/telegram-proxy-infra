@@ -1,0 +1,67 @@
+name: MNEBYVPN verify existing relay89 WireGuard bridge for Telegram
+on:
+  push:
+    paths: ['.github/workflows/mnebyvpn-existing-wg-route-check.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      FOREIGN_HOST: '89.125.90.101'
+      FOREIGN_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_HOST: '188.120.254.223'
+      RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Check existing secure tunnel and foreign HTTPS vhost (read only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o LogLevel=ERROR)
+          export SSHPASS="$FOREIGN_PASSWORD"
+          sshpass -e ssh "${opts[@]}" "root@$FOREIGN_HOST" 'python3 -' <<'PY'
+          import subprocess,re,pathlib,socket,urllib.request,ssl
+          def cmd(args):
+            try:return subprocess.run(args,capture_output=True,text=True,timeout=10)
+            except Exception:return None
+          print('foreign_wg_link='+str(bool(q:=cmd(['ip','-4','addr','show','dev','tg-relay'])) and '10.66.77.1' in q.stdout).lower())
+          print('foreign_wg_to_ru_ping='+str(bool(q:=cmd(['ping','-c','2','-W','2','10.66.77.2'])) and q.returncode==0).lower())
+          for port in [3001,8794]:
+            try:
+              with socket.create_connection(('10.66.77.2',port),timeout=3):
+                print('foreign_wg_ru_port_'+str(port)+'=reachable')
+            except Exception as e:print('foreign_wg_ru_port_'+str(port)+'='+type(e).__name__)
+          conf=cmd(['nginx','-T'])
+          cfg=conf.stdout if conf and conf.returncode==0 else ''
+          print('foreign_nginx_config_ok='+str(bool(cfg)).lower())
+          print('foreign_sni_cdn_present='+str('cdn.servgo.ru' in cfg).lower())
+          sites=re.split(r'(?m)^# configuration file (.+?):\n',cfg)
+          for i in range(1,len(sites),2):
+            name,body=sites[i],sites[i+1]
+            if 'server_name cdn.servgo.ru' in body:
+              print('foreign_cdn_vhost_config='+name)
+              print('foreign_cdn_vhost_ssl_4453='+str('4453' in body).lower())
+              print('foreign_cdn_vhost_existing_location_count='+str(len(re.findall(r'(?m)^\s*location\s',body))))
+              print('foreign_cdn_vhost_has_mnebyvpn_route='+str('mnebyvpn' in body).lower())
+          print('foreign_cdn_certificate_file='+str(pathlib.Path('/etc/letsencrypt/live/cdn.servgo.ru/fullchain.pem').exists()).lower())
+          print('foreign_nginx_read_only=true')
+          PY
+          export SSHPASS="$RU_PASSWORD"
+          sshpass -e ssh "${opts[@]}" "root@$RU_HOST" 'python3 -' <<'PY'
+          import subprocess,pathlib,re
+          p=subprocess.run(['ip','-4','addr','show','dev','tg-relay'],capture_output=True,text=True)
+          print('ru_wg_link='+str(p.returncode==0 and '10.66.77.2' in p.stdout).lower())
+          import socket
+          s=socket.socket();s.settimeout(3)
+          try:
+            s.connect(('10.66.77.1',8082));print('ru_wg_to_foreign_8082=reachable')
+          except Exception as e:print('ru_wg_to_foreign_8082='+type(e).__name__)
+          finally:s.close()
+          x=subprocess.run(['curl','--silent','--output','/dev/null','--write-out','%{http_code}',
+            '--max-time','4','http://127.0.0.1:8793/healthz'],capture_output=True,text=True)
+          print('ru_telegram_bot_local_http='+x.stdout)
+          print('ru_read_only=true')
+          PY
