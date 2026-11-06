@@ -29,17 +29,33 @@ jobs:
           s=socket.socket(socket.AF_PACKET,socket.SOCK_RAW,socket.htons(3))
           s.settimeout(2)
           end=time.monotonic()+20
-          count=0
+          inbound=outbound=reset=0
           while time.monotonic()<end:
             try:packet=s.recv(2048)
             except socket.timeout:continue
-            if len(packet)<54 or packet[12:14]!=b'\x08\x00':continue
+            if len(packet)<54 or packet[12:14]!=b'\\x08\\x00':continue
             ip=packet[14:]
-            if ip[9]!=6 or ip[12:16]!=source:continue
+            if ip[9]!=6:continue
             ihl=(ip[0]&15)*4
             tcp=ip[ihl:]
-            if len(tcp)>=14 and int.from_bytes(tcp[2:4],'big')==443 and tcp[13]&2:count+=1
-          print('matched_public_syn_packets='+str(count))
+            if len(tcp)<14:continue
+            sport=int.from_bytes(tcp[:2],'big')
+            dport=int.from_bytes(tcp[2:4],'big')
+            flags=tcp[13]
+            if ip[12:16]==source and dport==443 and flags&2:
+              inbound+=1
+            if ip[16:20]==source and sport==443:
+              if flags&18==18:outbound+=1
+              if flags&4:reset+=1
+          import subprocess,re
+          route=subprocess.run(['ip','-4','route','get',sys.argv[1]],
+            capture_output=True,text=True)
+          dev=re.search(r'\\bdev\\s+(\\S+)',route.stdout)
+          print('public_syn_received='+str(inbound))
+          print('public_synack_sent='+str(outbound))
+          print('public_rst_sent='+str(reset))
+          print('reply_route_device_type='+('wg' if dev and dev.group(1).startswith('wg') else
+            'ethernet' if dev and dev.group(1).startswith(('en','eth')) else 'other'))
           PY
           PID=$!
           sleep 3
