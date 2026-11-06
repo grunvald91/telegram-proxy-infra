@@ -1,0 +1,49 @@
+name: Diagnose MNEBYVPN HTTP ACME route without changes
+on:
+  push:
+    paths: ['.github/workflows/mnebyvpn-acme-diagnose.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      HOST: '188.120.254.223'
+      PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Inspect ACME file and Nginx port 80 routing
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PASSWORD"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          export SSHPASS="$PASSWORD"
+          sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o LogLevel=ERROR "root@$HOST" 'python3 -' <<'PY'
+          import pathlib,subprocess
+          config=subprocess.run(['nginx','-T'],capture_output=True,text=True,timeout=15)
+          s=config.stdout
+          print('nginx_syntax_ok='+str(config.returncode==0).lower())
+          print('acme_config_included='+str('configuration file /etc/nginx/sites-enabled/mnebyvpn-http.conf:' in s).lower())
+          print('acme_vhost_present='+str('server_name mnebyvpn.site www.mnebyvpn.site;' in s).lower())
+          print('nginx_sites_enabled_include='+str('include /etc/nginx/sites-enabled/*;' in s).lower())
+          print('http_port80_listens='+str(s.count('listen 80;')))
+          for name in ['mnebyvpn-http.conf','mnebyvpn-tls.conf']:
+            p=pathlib.Path('/etc/nginx/sites-enabled')/name
+            print(name+'_symlink='+str(p.is_symlink()).lower())
+          acme=pathlib.Path('/var/www/mnebyvpn-acme/.well-known/acme-challenge')
+          probes=list(acme.glob('mnebyvpn-*')) if acme.is_dir() else []
+          print('acme_probe_count='+str(len(probes)))
+          if probes:
+            probe=sorted(probes,key=lambda p:p.stat().st_mtime)[-1]
+            for host in ['127.0.0.1','188.120.254.223']:
+              p=subprocess.run(['curl','-s','-o','/dev/null','-w','%{http_code}',
+                '-H','Host: mnebyvpn.site','--max-time','5',
+                'http://'+host+'/.well-known/acme-challenge/'+probe.name],capture_output=True,text=True)
+              print('acme_'+('local' if host=='127.0.0.1' else 'publicip')+'_http='+p.stdout.strip())
+          p=subprocess.run("ss -H -lntp | grep -E ':80\\s' | sed -E 's/users:.*$//' | head -4",
+            shell=True,capture_output=True,text=True)
+          print('port80_listener_count='+str(len(p.stdout.splitlines())))
+          print('read_only=true')
+          PY
