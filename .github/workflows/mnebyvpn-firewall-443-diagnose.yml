@@ -1,0 +1,56 @@
+name: MNEBYVPN inspect inbound TCP443 policy safely
+on:
+  push:
+    paths: ['.github/workflows/mnebyvpn-firewall-443-diagnose.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      HOST: '188.120.254.223'
+      PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Read-only firewall and listener inspection
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PASSWORD"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          export SSHPASS="$PASSWORD"
+          sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o LogLevel=ERROR "root@$HOST" 'python3 -' <<'PY'
+          import subprocess,re,shutil
+          def run(args):
+            try:return subprocess.run(args,capture_output=True,text=True,timeout=12)
+            except Exception:return None
+          u=run(['ufw','status','verbose'])
+          if u:print('ufw_status='+next((x.strip() for x in u.stdout.splitlines() if x.startswith('Status:')),'unknown'))
+          else:print('ufw_status=not_installed')
+          p=run(['iptables','-S','INPUT'])
+          if p:
+            lines=p.stdout.splitlines()
+            print('iptables_input_default='+str(next((x for x in lines if x.startswith('-P INPUT ')),'unknown')))
+            relevant=[x for x in lines if '--dport 443' in x or '--dports' in x and '443' in x]
+            print('iptables_input_443_rule_count='+str(len(relevant)))
+            for index,x in enumerate(relevant[:12]):
+              target=re.search(r'(?:-j |--jump )(\w+)',x)
+              source=re.search(r'(?:-s |--source )([^ ]+)',x)
+              print('iptables_443_rule_'+str(index)+'_target='+(target.group(1) if target else 'none'))
+              print('iptables_443_rule_'+str(index)+'_source_filtered='+str(source is not None).lower())
+          n=run(['nft','list','ruleset'])
+          if n:
+            rules=[x.strip() for x in n.stdout.splitlines() if ('dport 443' in x or re.search(r'dport\s*\{[^}]*443',x))]
+            print('nft_443_explicit_rule_count='+str(len(rules)))
+            for i,x in enumerate(rules[:15]):
+              verdict='accept' if re.search(r'\baccept\b',x) else 'drop' if re.search(r'\bdrop\b',x) else 'reject' if re.search(r'\breject\b',x) else 'other'
+              print('nft_443_rule_'+str(i)+'_verdict='+verdict)
+              print('nft_443_rule_'+str(i)+'_source_filter='+str('saddr' in x).lower())
+          s=run(['ss','-H','-lntp'])
+          if s:
+            lines=[x for x in s.stdout.splitlines() if re.search(r':443\s',x)]
+            print('listener_443_count='+str(len(lines)))
+            print('listener_443_nginx='+str(any('nginx' in x for x in lines)).lower())
+          print('read_only=true')
+          PY
