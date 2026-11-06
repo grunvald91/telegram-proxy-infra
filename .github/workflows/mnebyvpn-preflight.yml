@@ -1,0 +1,70 @@
+name: MNEBYVPN isolated deployment preflight (read only)
+
+on:
+  push:
+    paths:
+      - '.github/workflows/mnebyvpn-preflight.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mnebyvpn-preflight
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      HOST: '188.120.254.223'
+      SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Verify restricted SSH credential exists
+        run: |
+          set -euo pipefail
+          test -n "$SSH_PASSWORD" || { echo 'SSH credential unavailable'; exit 2; }
+      - name: Install SSH helper
+        run: sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+      - name: Read-only host preflight (no service changes)
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$SSH_PASSWORD"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR "root@$HOST" 'python3 -' <<'PY'
+          import os, shutil, pathlib, subprocess, re
+          def check(cmd):
+            try:
+              p=subprocess.run(cmd,shell=True,capture_output=True,text=True,timeout=8)
+              return (p.stdout.strip() or p.stderr.strip())[:180].replace('\n','; ')
+            except Exception as e: return type(e).__name__
+          print('host_preflight=read_only')
+          print('cpu_count='+str(os.cpu_count()))
+          mem={}
+          for line in pathlib.Path('/proc/meminfo').read_text().splitlines():
+            k,_,v=line.partition(':')
+            if k in {'MemTotal','MemAvailable','SwapTotal'}:mem[k]=int(v.strip().split()[0])//1024
+          for k,v in mem.items():print(k+'_MiB='+str(v))
+          for dest in ['/','/opt','/var/lib/docker']:
+            if pathlib.Path(dest).exists():
+              du=shutil.disk_usage(dest)
+              print('disk_free_'+dest.replace('/','_')+'_GiB='+str(round(du.free/1024**3,1)))
+          print('docker='+check('docker --version 2>/dev/null || true'))
+          print('docker_running='+check('docker info --format "{{.ServerVersion}}" 2>/dev/null || true'))
+          print('compose='+check('docker compose version 2>/dev/null || true'))
+          print('node='+check('node --version 2>/dev/null || true'))
+          print('npm='+check('npm --version 2>/dev/null || true'))
+          print('git='+check('git --version 2>/dev/null || true'))
+          print('psql='+check('psql --version 2>/dev/null || true'))
+          print('postgres_active='+check('systemctl is-active postgresql 2>/dev/null || true'))
+          print('nginx_active='+check('systemctl is-active nginx 2>/dev/null || true'))
+          print('nginx_syntax='+check('nginx -t 2>&1 | tail -1'))
+          print('mnebyvpn_exists='+str(pathlib.Path('/opt/mnebyvpn').exists()).lower())
+          print('mnebyvpn_user_exists='+str(subprocess.call('id mnebyvpn >/dev/null 2>&1',shell=True)==0).lower())
+          for p in [8791,15432,55433]:
+            x=check("ss -H -lnt | awk '{print $4}' | grep -E '[:.]"+str(p)+"$' | wc -l")
+            print('tcp_port_'+str(p)+'_listener_count='+x)
+          print('existing_mnebyvpn_containers='+check("docker ps -a --format '{{.Names}}' 2>/dev/null | grep '^mnebyvpn-' | tr '\\n' ',' || true"))
+          print('read_only_complete=yes')
+          PY
