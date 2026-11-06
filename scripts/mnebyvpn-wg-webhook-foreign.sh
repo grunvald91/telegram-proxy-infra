@@ -42,10 +42,16 @@ if 'location = /mnebyvpn-telegram/webhook {' in source:
 else:
   marker=re.compile(r'(?m)^([ \t]*)server_name[ \t]+cdn\.servgo\.ru[ \t]*;[ \t]*$')
   matches=list(marker.finditer(source))
-  if len(matches)!=1:raise SystemExit('CDN server name is not unique')
-  if 'listen 127.0.0.1:4453' not in source:
-    raise SystemExit('CDN listener is not the previously checked 4453')
-  match=matches[0]
+  tls_matches=[]
+  for candidate in matches:
+    previous=source.rfind('server {',0,candidate.start())
+    next_server=source.find('server {',candidate.end())
+    if previous<0:continue
+    block=source[previous:next_server if next_server>=0 else len(source)]
+    if re.search(r'listen\\s+127\\.0\\.0\\.1:4453\\b',block):
+      tls_matches.append(candidate)
+  if len(tls_matches)!=1:raise SystemExit('Expected exactly one CDN HTTPS server on 4453')
+  match=tls_matches[0]
   indent=match.group(1)
   block=f'''
 {indent}# Isolated MNEBYVPN webhook: TLS at foreign CDN, payload over existing WireGuard.
