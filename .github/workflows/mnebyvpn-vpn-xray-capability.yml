@@ -1,0 +1,61 @@
+name: MNEBYVPN inspect existing foreign Xray compatibility (read only)
+on:
+  push:
+    paths: ['.github/workflows/mnebyvpn-vpn-xray-capability.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      FOREIGN_HOST: '89.125.90.101'
+      FOREIGN_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_HOST: '188.120.254.223'
+      RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Foreign Xray capability without reading credentials or config payloads
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          export SSHPASS="$FOREIGN_PASSWORD"
+          sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o LogLevel=ERROR "root@$FOREIGN_HOST" 'python3 -' <<'PY'
+          import pathlib,os,subprocess,shutil
+          def proc(args):
+            try:return subprocess.run(args,capture_output=True,text=True,timeout=6)
+            except:return None
+          print('foreign_xray_read_only=true')
+          binarypaths=['/opt/xray/xray','/usr/local/bin/xray','/usr/bin/xray','/opt/xray/bin/xray']
+          for binary in binarypaths:
+            p=pathlib.Path(binary)
+            print('candidate_'+binary.strip('/').replace('/','_')+'_executable='+str(p.is_file() and os.access(p,os.X_OK)).lower())
+            if p.is_file() and os.access(p,os.X_OK):
+              v=proc([binary,'version'])
+              print('candidate_binary_version_ok='+str(bool(v and v.returncode==0)).lower())
+          for name in ['xray.service','xray@.service','hysteria.service','nginx.service']:
+            active=proc(['systemctl','is-active',name])
+            print('unit_'+name.replace('.','_')+'_active='+str(bool(active and active.stdout.strip()=='active')).lower())
+          paths=['/opt/xray/config.json','/etc/xray/config.json','/usr/local/etc/xray/config.json']
+          for path in paths:
+            print('config_'+path.strip('/').replace('/','_')+'_present='+str(pathlib.Path(path).is_file()).lower())
+          print('xray_capability_inventory_complete=true')
+          PY
+      - name: Identify paid offers and trial node queue, no account details
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$RU_PASSWORD"
+          sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o LogLevel=ERROR "root@$RU_HOST" 'bash -s' <<'SH'
+          set -euo pipefail
+          docker exec -i mnebyvpn-stage-postgres psql -At -v ON_ERROR_STOP=1 \
+            -U mnebyvpn_stage -d mnebyvpn_stage <<'SQL'
+          SELECT 'vpn_trial_enabled='||enabled FROM trial_offers WHERE product='vpn';
+          SELECT 'vpn_stars_plans_published='||count(*) FROM billing_plans WHERE product='vpn' AND enabled AND stars IS NOT NULL;
+          SELECT 'vpn_pricing_drafts_with_prices='||count(*) FROM pricing_drafts WHERE product='vpn' AND (rub_minor IS NOT NULL OR stars IS NOT NULL);
+          SELECT 'vpn_entitlements_waiting_for_node='||count(*) FROM entitlements WHERE product='vpn' AND state='PAID_PENDING_PROVISIONING';
+          SELECT 'vpn_entitlements_active='||count(*) FROM entitlements WHERE product='vpn' AND state='ACTIVE';
+          SELECT 'vpn_reconcile_outbox_pending='||count(*) FROM reconcile_outbox b JOIN entitlements e ON e.id=b.entitlement_id WHERE e.product='vpn' AND b.handled_at IS NULL;
+          SQL
+          SH
