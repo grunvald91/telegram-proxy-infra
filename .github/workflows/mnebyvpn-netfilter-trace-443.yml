@@ -48,11 +48,11 @@ jobs:
             nodes=[]
             results=[]
             for line in data.splitlines():
-              match=re.search(r'trace id \\S+ (inet|ip|ip6) (\\S+) (\\S+) (.*)',line)
+              match=re.search(r'trace id \S+ (inet|ip|ip6) (\S+) (\S+) (.*)',line)
               if not match:continue
               family,table,chain,detail=match.groups()
               nodes.append((family,table,chain))
-              if re.search(r'\\b(drop|reject)\\b',detail):
+              if re.search(r'\b(drop|reject)\b',detail):
                 results.append('denial_'+table+'/'+chain)
               elif 'policy accept' in detail or 'verdict accept' in detail:
                 results.append('accept_'+table+'/'+chain)
