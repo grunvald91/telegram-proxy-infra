@@ -1,4 +1,5 @@
 name: Deploy reviewed MNEBYVPN main Telegram bot via existing server188 SSH
+# Release trigger: PR21 active VPN onboarding, app installation and HTTPS subscriptions.
 on:
   push:
     paths:
