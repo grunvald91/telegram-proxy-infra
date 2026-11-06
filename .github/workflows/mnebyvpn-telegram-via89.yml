@@ -1,7 +1,10 @@
 name: MNEBYVPN Telegram webhook via existing relay89 and WireGuard
 on:
   push:
-    paths: ['.github/workflows/mnebyvpn-telegram-via89.yml']
+    paths:
+      - '.github/workflows/mnebyvpn-telegram-via89.yml'
+      - 'scripts/mnebyvpn-wg-webhook-ru.sh'
+      - 'scripts/mnebyvpn-wg-webhook-foreign.sh'
   workflow_dispatch:
 permissions:
   contents: read
