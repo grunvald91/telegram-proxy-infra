@@ -1,7 +1,10 @@
 name: Publish MNEBYVPN informational site with Let's Encrypt HTTPS
 on:
   push:
-    paths: ['.github/workflows/mnebyvpn-public-https-deploy.yml']
+    paths:
+      - '.github/workflows/mnebyvpn-public-https-deploy.yml'
+      - 'scripts/mnebyvpn-acme-http-prepare.sh'
+      - 'scripts/mnebyvpn-https-sni-enable.sh'
   workflow_dispatch:
 permissions:
   contents: read
