@@ -1,0 +1,57 @@
+name: MNEBYVPN isolated VPN canary over foreign HTTPS 8443
+on:
+  push:
+    paths:
+      - '.github/workflows/mnebyvpn-vpn-canary-deploy.yml'
+      - 'scripts/mnebyvpn-vpn-canary-install.sh'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebyvpn-vpn-canary
+  cancel-in-progress: false
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      HOST: '89.125.90.101'
+      PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install isolated foreign VPN canary and protect existing Telegram route
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PASSWORD"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          export SSHPASS="$PASSWORD"
+          opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o LogLevel=ERROR)
+          sshpass -e scp "${opts[@]}" scripts/mnebyvpn-vpn-canary-install.sh "root@$HOST:/tmp/mnebyvpn-vpn-canary-install.sh"
+          sshpass -e ssh "${opts[@]}" "root@$HOST" 'bash /tmp/mnebyvpn-vpn-canary-install.sh'
+      - name: External TLS probe of WSS path while Telegram remains protected
+        shell: bash
+        run: |
+          set -euo pipefail
+          code="$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --max-time 7 \
+            --resolve cdn.servgo.ru:8443:89.125.90.101 \
+            --http1.1 -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+            -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+            https://cdn.servgo.ru:8443/mnebyvpn-vpn/ws || true)"
+          if [[ "$code" != 101 ]]; then echo "VPN WSS upgrade not verified: HTTP $code"; exit 2; fi
+          echo 'foreign_vpn_websocket_tls_upgrade=101'
+          code="$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --max-time 10 \
+            --resolve cdn.servgo.ru:8443:89.125.90.101 \
+            -X POST -H 'Content-Type: application/json' -d '{"update_id":1}' \
+            https://cdn.servgo.ru:8443/mnebyvpn-telegram/webhook)"
+          test "$code" = 401
+          echo 'telegram_foreign_webhook_still_protected=true'
+      - name: Clean up temporary installer
+        if: always()
+        shell: bash
+        run: |
+          if [ -n "$PASSWORD" ]; then
+            export SSHPASS="$PASSWORD"
+            sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o LogLevel=ERROR "root@$HOST" \
+              'rm -f /tmp/mnebyvpn-vpn-canary-install.sh' || true
+          fi
