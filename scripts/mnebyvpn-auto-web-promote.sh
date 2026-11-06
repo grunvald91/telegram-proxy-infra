@@ -61,7 +61,9 @@ healthy() {
     sleep 1
   done
   [ "$code" = 200 ] || return 1
-  curl -fsS --max-time 5 "http://127.0.0.1:$port/neo.css" | grep -Fq 'portal-art' || return 1
+  local css
+  css="$(curl -fsS --max-time 5 "http://127.0.0.1:$port/neo.css")" || return 1
+  [ -n "$css" ] || return 1
   curl -fsS --max-time 5 "http://127.0.0.1:$port/api/plans" |
     python3 -c 'import sys,json; x=json.load(sys.stdin); assert x["checkoutEnabled"] is False and x["loginEnabled"] is False' || return 1
   [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:$port/readyz")" = 503 ] || return 1
@@ -82,7 +84,8 @@ if [ "$has_public" = yes ]; then
   docker stop -t 12 "$NAME" >/dev/null
   docker rm "$NAME" >/dev/null
 fi
-if ! run_web "$NAME" "$IMAGE" 8792 no || ! healthy 8792; then
+if ! run_web "$NAME" "$IMAGE" 8792 no || ! healthy 8792 ||
+   ! ss -H -lnt | awk '{print $4}' | grep -Fqx '127.0.0.1:8792'; then
   echo 'Public website health failed; restoring previous image'
   docker rm -f "$NAME" >/dev/null 2>&1 || true
   if [ -n "$old_image" ]; then
@@ -93,10 +96,6 @@ if ! run_web "$NAME" "$IMAGE" 8792 no || ! healthy 8792; then
   exit 2
 fi
 test "$(docker inspect -f '{{.State.Running}}' "$NAME")" = true
-# The web must not expose any new public port.
-ss -H -lnt | awk '{print $4}' | grep -Fqx '127.0.0.1:8792' || {
-  echo 'Expected local-only website listener missing'; exit 2;
-}
 tmp="$(mktemp "$PUBLIC/active_sha.tmp.XXXXXX")"
 printf '%s\n' "$SHA" > "$tmp"
 chmod 600 "$tmp"
