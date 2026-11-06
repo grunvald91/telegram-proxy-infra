@@ -42,8 +42,13 @@ probe_content="valid-mnebyvpn-challenge-$(openssl rand -hex 16)"
 printf '%s\n' "$probe_content" > "/var/www/mnebyvpn-acme/.well-known/acme-challenge/$probe_name"
 chmod 644 "/var/www/mnebyvpn-acme/.well-known/acme-challenge/$probe_name"
 for domain in mnebyvpn.site www.mnebyvpn.site; do
-  actual="$(curl -fsS --max-time 5 -H "Host: $domain" "http://127.0.0.1/.well-known/acme-challenge/$probe_name")"
-  [[ "$actual" == "$probe_content" ]] || { echo 'Local challenge mismatch'; exit 2; }
+  matched=no
+  for attempt in $(seq 1 10); do
+    actual="$(curl -fsS --max-time 5 -H "Host: $domain" "http://127.0.0.1/.well-known/acme-challenge/$probe_name" 2>/dev/null || true)"
+    if [[ "$actual" == "$probe_content" ]]; then matched=yes; break; fi
+    sleep 1
+  done
+  [[ "$matched" == yes ]] || { echo 'Local challenge mismatch'; exit 2; }
 done
 echo "acme_probe_path=/.well-known/acme-challenge/$probe_name"
 echo "acme_probe_content=$probe_content"
