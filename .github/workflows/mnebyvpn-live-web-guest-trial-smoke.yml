@@ -1,0 +1,47 @@
+name: MNEBYVPN real free-24h website guest claim to node and immediate revoke
+on:
+  push:
+    paths:
+      - '.github/workflows/mnebyvpn-live-web-guest-trial-smoke.yml'
+      - 'scripts/mnebyvpn-live-web-guest-trial-smoke.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebyvpn-guest-live-smoke
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      HOST: '188.120.254.223'
+      PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify controlled smoke script and production SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PASSWORD"
+          python3 -m py_compile scripts/mnebyvpn-live-web-guest-trial-smoke.py
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+      - name: Exercise one website guest trial then revoke it on node
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$PASSWORD"
+          opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o LogLevel=ERROR)
+          sshpass -e scp "${opts[@]}" scripts/mnebyvpn-live-web-guest-trial-smoke.py \
+            "root@$HOST:/tmp/mnebyvpn-live-web-guest-trial-smoke.py"
+          sshpass -e ssh "${opts[@]}" "root@$HOST" \
+            'python3 /tmp/mnebyvpn-live-web-guest-trial-smoke.py'
+      - name: Remove only the ephemeral test script
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "$PASSWORD" ]]; then
+            SSHPASS="$PASSWORD" sshpass -e ssh -o StrictHostKeyChecking=accept-new \
+              -o ConnectTimeout=9 -o LogLevel=ERROR "root@$HOST" \
+              'rm -f /tmp/mnebyvpn-live-web-guest-trial-smoke.py' || true
+          fi
