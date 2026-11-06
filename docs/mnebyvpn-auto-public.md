@@ -19,6 +19,8 @@ in this infrastructure repository.
   the public MNEBYVPN source repository.
 - The remote `/opt/mnebyvpn/public/active_sha` records the successful commit.
   When it already matches main, no images are built or restarted.
+  Bot-only, workflow-only and documentation-only main commits also do not
+  restart the website when its runtime dependencies are unchanged.
 - One Actions workflow checks the source rather than duplicating its Node/SQL
   test suite. Each real code change is tested once by the MNEBYVPN CI.
 
