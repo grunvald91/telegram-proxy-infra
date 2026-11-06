@@ -32,6 +32,29 @@ jobs:
           docker exec mnebyvpn-stage-postgres psql -At -U mnebyvpn_stage -d mnebyvpn_stage -c "SELECT to_regclass('public.vpn_subscription_links');"
           echo 'subscription_query_probe='
           docker exec mnebyvpn-stage-postgres psql -At -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage -c "SELECT a.telegram_user_id,e.id AS entitlement_id,e.expires_at FROM vpn_subscription_links l JOIN entitlements e ON e.id=l.entitlement_id JOIN accounts a ON a.id=e.account_id JOIN provisioning_state p ON p.entitlement_id=e.id AND p.adapter='vpn' WHERE l.token_sha256=repeat('a',64) AND l.revoked_at IS NULL AND e.product='vpn' AND e.state='ACTIVE' AND e.expires_at>clock_timestamp() AND p.applied_revision=e.revision AND p.last_observed_at IS NOT NULL LIMIT 1;"
+          docker exec -i mnebyvpn-public-web node --input-type=module - <<'NODE'
+          import pg from 'pg';
+          const pool=new pg.Pool({connectionString:process.env.DATABASE_URL});
+          try{
+            const result=await pool.query("SELECT current_database() AS db, to_regclass('public.vpn_subscription_links') AS link_table");
+            console.log('public_web_database='+result.rows[0].db);
+            console.log('public_web_links_table='+result.rows[0].link_table);
+            try{
+              const record=await pool.query(
+                "SELECT a.telegram_user_id,e.id AS entitlement_id,e.expires_at "+
+                "FROM vpn_subscription_links l "+
+                "JOIN entitlements e ON e.id=l.entitlement_id "+
+                "JOIN accounts a ON a.id=e.account_id "+
+                "JOIN provisioning_state p ON p.entitlement_id=e.id AND p.adapter='vpn' "+
+                "WHERE l.token_sha256=$1 AND l.revoked_at IS NULL "+
+                "AND e.product='vpn' AND e.state='ACTIVE' "+
+                "AND e.expires_at>clock_timestamp() "+
+                "AND p.applied_revision=e.revision AND p.last_observed_at IS NOT NULL "+
+                "LIMIT 1",['a'.repeat(64)]);
+              console.log('public_web_link_query_rows='+record.rowCount);
+            }catch(err){console.log('public_web_link_query_error_code='+String(err.code||'unknown'));}
+          }finally{await pool.end();}
+          NODE
           invalid='AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
           status="$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:8792/sub/$invalid")"
           echo "local_inactive_sub_status=$status"
