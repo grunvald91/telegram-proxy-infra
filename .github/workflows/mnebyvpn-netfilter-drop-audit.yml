@@ -1,0 +1,47 @@
+name: MNEBYVPN read-only netfilter input order and reverse path diagnosis
+on:
+  push:
+    paths: ['.github/workflows/mnebyvpn-netfilter-drop-audit.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      HOST: '188.120.254.223'
+      PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Inspect order of INPUT chains, drop targets and rp_filter
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PASSWORD"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          export SSHPASS="$PASSWORD"
+          sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o LogLevel=ERROR "root@$HOST" 'python3 -' <<'PY'
+          import subprocess,re,pathlib
+          def run(args):
+            try:return subprocess.run(args,capture_output=True,text=True,timeout=10).stdout
+            except Exception:return ''
+          for chain in ['INPUT','ufw-before-input','ufw-user-input','ufw-after-input']:
+            rules=run(['iptables','-S',chain]).splitlines()
+            print('chain_'+chain+'_rules='+str(len(rules)))
+            for i,line in enumerate(rules[:35]):
+              if line.startswith('-P '):continue
+              jump=re.search(r'-j\s+(\S+)',line)
+              name=jump.group(1) if jump else 'other'
+              src='restricted' if re.search(r'(?:-s|--source)\s+',line) else 'any'
+              dest='443' if '--dport 443' in line else '80' if '--dport 80' in line else 'other'
+              print('chain_'+chain+'_rule_'+str(i)+'='+name+'/'+src+'/'+dest)
+          n=run(['nft','-a','list','ruleset'])
+          # Only a structural summary, no rules or IP addresses printed.
+          print('nft_drop_tokens='+str(len(re.findall(r'\bdrop\b',n))))
+          print('nft_reject_tokens='+str(len(re.findall(r'\breject\b',n))))
+          for x in ['all','default']:
+            p=pathlib.Path('/proc/sys/net/ipv4/conf/'+x+'/rp_filter')
+            if p.exists():print('rp_filter_'+x+'='+p.read_text().strip())
+          print('public_site_nginx_active='+run(['systemctl','is-active','nginx']).strip())
+          print('read_only=true')
+          PY
