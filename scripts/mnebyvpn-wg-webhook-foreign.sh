@@ -48,7 +48,7 @@ else:
     next_server=source.find('server {',candidate.end())
     if previous<0:continue
     block=source[previous:next_server if next_server>=0 else len(source)]
-    if re.search(r'listen\\s+127\\.0\\.0\\.1:4453\\b',block):
+    if re.search(r'listen\s+127\.0\.0\.1:4453\b',block):
       tls_matches.append(candidate)
   if len(tls_matches)!=1:raise SystemExit('Expected exactly one CDN HTTPS server on 4453')
   match=tls_matches[0]
