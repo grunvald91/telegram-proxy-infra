@@ -1,0 +1,52 @@
+name: MNEBYVPN network latency and node bandwidth baseline (read-only)
+on:
+  push:
+    paths: ['.github/workflows/mnebyvpn-network-baseline.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      FOREIGN_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Measure endpoint TCP latency from runner and node's direct internet egress
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$RU_PASSWORD"
+          test -n "$FOREIGN_PASSWORD"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          echo 'scope=network-baseline-not-client-through-VLESS'
+          python3 - <<'PY'
+          import socket,statistics,time
+          samples=[]
+          for _ in range(7):
+              start=time.monotonic()
+              try:
+                  with socket.create_connection(('89.125.90.101',8443),timeout=5):
+                      samples.append((time.monotonic()-start)*1000)
+              except OSError:
+                  pass
+              time.sleep(.15)
+          print('runner_to_foreign_8443_tcp_connect_median_ms='+
+                (str(round(statistics.median(samples),1)) if samples else 'unreachable'))
+          PY
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          SSHPASS="$RU_PASSWORD" sshpass -e ssh "${opts[@]}" root@188.120.254.223 'bash -se' <<'SH'
+          set -euo pipefail
+          echo 'ru188_to_foreign89_icmp='
+          ping -q -c 5 -W 3 89.125.90.101 | tail -n 2 || true
+          SH
+          SSHPASS="$FOREIGN_PASSWORD" sshpass -e ssh "${opts[@]}" root@89.125.90.101 'bash -se' <<'SH'
+          set -euo pipefail
+          echo 'foreign89_to_cloudflare_icmp='
+          ping -q -c 5 -W 3 1.1.1.1 | tail -n 2 || true
+          echo 'foreign89_direct_egress_speed_probe_not_vpn_tunnel='
+          curl --noproxy '*' -fsSL --connect-timeout 10 --max-time 65 \
+            -o /dev/null -w 'download_bytes=%{size_download}\nduration_s=%{time_total}\nbytes_per_second=%{speed_download}\n' \
+            'https://speed.cloudflare.com/__down?bytes=10000000' || true
+          SH
