@@ -1,0 +1,80 @@
+name: MNEBYVPN trace selected inbound 443 verdicts (temporary)
+on:
+  push:
+    paths: ['.github/workflows/mnebyvpn-netfilter-trace-443.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  trace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      HOST: '188.120.254.223'
+      PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Trace only this runner TCP SYN without changing firewall verdicts
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PASSWORD"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          SOURCE_IP="$(curl -4 -fsS --max-time 8 https://api.ipify.org)"
+          [[ "$SOURCE_IP" =~ ^[0-9.]+$ ]]
+          export SSHPASS="$PASSWORD"
+          opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" "root@$HOST" "python3 - '$SOURCE_IP'" > "$RUNNER_TEMP/tracer-output.txt" <<'PY' &
+          import subprocess,sys,time,pathlib,re,signal
+          src=sys.argv[1]
+          if not re.fullmatch(r'(?:\d{1,3}\.){3}\d{1,3}',src):raise SystemExit('Invalid source')
+          table='mnebyvpn_probe_443'
+          trace=pathlib.Path('/tmp/mnebyvpn-trace-443-events')
+          def nft(*args):
+            p=subprocess.run(['nft',*args],capture_output=True,text=True,timeout=8)
+            if p.returncode:raise RuntimeError('nft failed')
+          nft('add','table','inet',table)
+          monitor=None
+          try:
+            nft('add','chain','inet',table,'trace_prerouting','{','type','filter','hook','prerouting','priority','-310',';','policy','accept',';','}')
+            nft('add','rule','inet',table,'trace_prerouting','ip','saddr',src,'tcp','dport','443','meta','nftrace','set','1')
+            with trace.open('w') as f:
+              monitor=subprocess.Popen(['nft','monitor','trace'],stdout=f,stderr=subprocess.DEVNULL,text=True)
+              time.sleep(18)
+            data=trace.read_text()
+            print('trace_message_count='+str(len(data.splitlines())))
+            events=[]
+            for line in data.splitlines():
+              if ' verdict drop' in line or ' policy drop' in line or ' verdict reject' in line:
+                match=re.search(r'table\s+(\S+)\s+chain\s+(\S+)',line)
+                owner=('table:'+match.group(1)+' chain:'+match.group(2)) if match else 'unknown'
+                events.append(('DROP' if 'drop' in line else 'REJECT')+' '+owner)
+            print('drop_verdict_count='+str(len(events)))
+            for e in list(dict.fromkeys(events))[:7]:print('drop_owner='+e)
+            if not events:
+              chains=[]
+              for line in data.splitlines():
+                m=re.search(r'table\s+(\S+)\s+chain\s+(\S+)',line)
+                if m:chains.append(m.group(1)+'/'+m.group(2))
+              print('traced_chains='+str(len(set(chains))))
+              print('last_chain='+str(chains[-1] if chains else 'none'))
+          finally:
+            if monitor and monitor.poll() is None:
+              monitor.terminate()
+              try:monitor.wait(timeout=2)
+              except subprocess.TimeoutExpired:monitor.kill()
+            subprocess.run(['nft','delete','table','inet',table],capture_output=True,timeout=6)
+            trace.unlink(missing_ok=True)
+            print('trace_rule_removed=true')
+          PY
+          SSH_PID=$!
+          sleep 4
+          python3 - <<'PY'
+          import socket
+          for i in range(3):
+            try:
+              with socket.create_connection(('188.120.254.223',443),timeout=3):
+                print('external_tcp443=connected')
+            except Exception as exc:print('external_tcp443='+type(exc).__name__)
+          PY
+          wait "$SSH_PID"
+          cat "$RUNNER_TEMP/tracer-output.txt"
