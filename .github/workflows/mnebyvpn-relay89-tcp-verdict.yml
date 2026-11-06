@@ -1,0 +1,102 @@
+name: MNEBYVPN trace foreign TCP443 path and return packets
+on:
+  push:
+    paths: ['.github/workflows/mnebyvpn-relay89-tcp-verdict.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      TARGET: '89.125.90.101'
+      SSH_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Targeted packet metadata + nft trace (reverts temporary trace table)
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SSH_PASSWORD"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          SRC="$(curl -fsS -4 --max-time 10 https://api.ipify.org)"
+          [[ "$SRC" =~ ^[0-9.]+$ ]] || exit 2
+          export SSHPASS="$SSH_PASSWORD"
+          opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" "root@$TARGET" "python3 - '$SRC'" > "$RUNNER_TEMP/diag.txt" <<'PY' &
+          import sys,socket,subprocess,re,collections,time,os,pathlib
+          src=sys.argv[1]
+          if not re.fullmatch(r'(?:[0-9]{1,3}\.){3}[0-9]{1,3}',src):raise SystemExit('invalid SRC')
+          public=socket.inet_aton('89.125.90.101')
+          remote=socket.inet_aton(src)
+          def cmd(*x):
+            return subprocess.run(list(x),capture_output=True,text=True,timeout=8)
+          print('tcp443_listening='+str(any(':443' in x for x in cmd('ss','-H','-lnt').stdout.splitlines())).lower(),flush=True)
+          print('route_to_runner_valid='+str(cmd('ip','-4','route','get',src,'from','89.125.90.101').returncode==0).lower(),flush=True)
+          print('rp_filter_all='+pathlib.Path('/proc/sys/net/ipv4/conf/all/rp_filter').read_text().strip(),flush=True)
+          print('rp_filter_eth0='+pathlib.Path('/proc/sys/net/ipv4/conf/eth0/rp_filter').read_text().strip(),flush=True)
+          counter=collections.Counter()
+          nf='mnebyvpn_t443_diag'
+          nft=cmd('nft','add','table','inet',nf)
+          if nft.returncode:raise RuntimeError('temporary nft table failed')
+          monitor=None
+          tracepath='/tmp/mnebyvpn-t443-trace.log'
+          try:
+            q=cmd('nft','add','chain','inet',nf,'inbound','{','type','filter','hook','prerouting','priority','-300',';','policy','accept',';','}')
+            if q.returncode:raise RuntimeError('temporary trace chain failed')
+            q=cmd('nft','add','rule','inet',nf,'inbound','ip','saddr',src,'tcp','dport','443','meta','nftrace','set','1')
+            if q.returncode:raise RuntimeError('temporary trace rule failed')
+            with open(tracepath,'w') as f:
+              monitor=subprocess.Popen(['nft','monitor','trace'],stdout=f,stderr=subprocess.DEVNULL)
+              raw=socket.socket(socket.AF_PACKET,socket.SOCK_RAW,socket.htons(3))
+              raw.settimeout(1)
+              end=time.monotonic()+19
+              while time.monotonic()<end:
+                try:packet=raw.recv(2048)
+                except socket.timeout:continue
+                if len(packet)<54 or packet[12:14]!=bytes.fromhex('0800'):continue
+                ip=packet[14:]
+                if ip[9]!=6:continue
+                head=(ip[0]&15)*4
+                tcp=ip[head:]
+                if len(tcp)<14:continue
+                incoming=ip[12:16]==remote and ip[16:20]==public and int.from_bytes(tcp[2:4],'big')==443
+                outgoing=ip[16:20]==remote and ip[12:16]==public and int.from_bytes(tcp[:2],'big')==443
+                if incoming or outgoing:
+                  flags=tcp[13]
+                  event='SYNACK' if flags&18==18 else 'SYN' if flags&2 else 'RST' if flags&4 else 'ACK' if flags&16 else 'OTHER'
+                  counter[('in' if incoming else 'out',event)]+=1
+            data=pathlib.Path(tracepath).read_text()
+            chains=[]
+            for line in data.splitlines():
+              m=re.search(r'trace id \S+ (inet|ip|ip6) (\S+) (\S+) (.*)',line)
+              if not m:continue
+              fam,table,chain,detail=m.groups()
+              chains.append((table,chain))
+              if re.search(r'\b(drop|reject)\b',detail):
+                print('trace_drop_chain='+table+'/'+chain,flush=True)
+            print('trace_event_count='+str(len(data.splitlines())),flush=True)
+            print('trace_last_chain='+('/'.join(chains[-1]) if chains else 'none'),flush=True)
+            for item,count in counter.items():
+              print('packet_'+item[0]+'_'+item[1]+'='+str(count),flush=True)
+          finally:
+            if monitor and monitor.poll() is None:
+              monitor.terminate()
+              try:monitor.wait(timeout=2)
+              except:monitor.kill()
+            subprocess.run(['nft','delete','table','inet',nf],capture_output=True,timeout=5)
+            pathlib.Path(tracepath).unlink(missing_ok=True)
+            print('temporary_diagnostic_removed=true',flush=True)
+          PY
+          watcher=$!
+          sleep 4
+          python3 - <<'PY'
+          import socket
+          for port in [443,80]:
+            try:
+              with socket.create_connection(('89.125.90.101',port),timeout=5):
+                print('external_tcp_'+str(port)+'=connected')
+            except Exception as e:print('external_tcp_'+str(port)+'='+type(e).__name__)
+          PY
+          wait "$watcher"
+          cat "$RUNNER_TEMP/diag.txt"
