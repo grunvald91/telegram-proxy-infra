@@ -1,0 +1,33 @@
+name: MNEBYVPN read-only worker port ownership
+on:
+  push:
+    paths: ['.github/workflows/mnebyvpn-worker-port-audit.yml']
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      HOST: '188.120.254.223'
+      SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Check candidate ports via existing root SSH without modifying services
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          export SSHPASS="$SSH_PASSWORD"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new \
+            -o LogLevel=ERROR "root@$HOST" 'bash -se' <<'REMOTE'
+          set -euo pipefail
+          for port in 8794 18798 18799 18804 18805; do
+            matched="$(ss -H -lntp | grep -E ":$port[[:space:]]" || true)"
+            if test -n "$matched"; then
+              echo "port_$port=busy"
+              printf '%s\n' "$matched" | head -1
+            else
+              echo "port_$port=free"
+            fi
+          done
+          REMOTE
