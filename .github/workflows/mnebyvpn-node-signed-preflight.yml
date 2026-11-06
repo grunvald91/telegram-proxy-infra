@@ -40,10 +40,11 @@ jobs:
           print('existing_wireguard_node_hmac_authenticated_inspect=ok')
           print('node_secret_never_logged=true')
           PY
-          docker exec mnebyvpn-stage-postgres psql -At -v ON_ERROR_STOP=1 \
-            -U mnebyvpn_stage -d mnebyvpn_stage <<'SQL'
-          SELECT 'active_vpn_entitlements='||count(*) FROM entitlements WHERE product='vpn' AND state='ACTIVE';
-          SELECT 'pending_vpn_entitlements='||count(*) FROM entitlements WHERE product='vpn' AND state='PAID_PENDING_PROVISIONING';
-          SELECT 'trial_offer_enabled='||enabled FROM trial_offers WHERE product='vpn';
-          SQL
+          for sql in \
+            "SELECT 'active_vpn_entitlements='||count(*) FROM entitlements WHERE product='vpn' AND state='ACTIVE';" \
+            "SELECT 'pending_vpn_entitlements='||count(*) FROM entitlements WHERE product='vpn' AND state='PAID_PENDING_PROVISIONING';" \
+            "SELECT 'trial_offer_enabled='||enabled FROM trial_offers WHERE product='vpn';"; do
+            docker exec mnebyvpn-stage-postgres psql -At -v ON_ERROR_STOP=1 \
+              -U mnebyvpn_stage -d mnebyvpn_stage -c "$sql"
+          done
           REMOTE
