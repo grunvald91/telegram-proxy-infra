@@ -1,0 +1,53 @@
+name: MNEBYVPN inspect foreign CDN SNI to HTTP vhost mapping
+on:
+  push:
+    paths: ['.github/workflows/mnebyvpn-cdn-sni-debug.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      HOST: '89.125.90.101'
+      PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Confirm target SNI and backend vhost without modifying services
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          export SSHPASS="$PASSWORD"
+          sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o LogLevel=ERROR "root@$HOST" 'python3 -' <<'PY'
+          import re,subprocess,pathlib
+          p=subprocess.run(['nginx','-T'],capture_output=True,text=True,timeout=12)
+          assert p.returncode==0
+          c=p.stdout
+          m=re.search(r'map\s+\$ssl_preread_server_name\s+\$direct_mtproxy_backend\s*\{([^{}]*)\}',c,re.S)
+          if m:
+            for k in ['cdn.servgo.ru','default']:
+              a=re.search(r'(?m)^\s*'+re.escape(k)+r'\s+([^;]+);',m.group(1))
+              print('sni_'+k.replace('.','_')+'_destination='+(a.group(1).strip() if a else 'absent'))
+          else:print('sni_map_absent=true')
+          sections=re.split(r'(?m)^# configuration file (.+?):\n',c)
+          for i in range(1,len(sections),2):
+            name,part=sections[i],sections[i+1]
+            if ('server_name cdn.servgo.ru;' in part or
+                'listen 127.0.0.1:4453' in part or
+                'location = /mnebyvpn-telegram/webhook' in part):
+              print('candidate_file='+name)
+              print('  has_cdn_server_name='+str('server_name cdn.servgo.ru;' in part).lower())
+              print('  has_4453_listen='+str('listen 127.0.0.1:4453' in part).lower())
+              print('  has_telegram_exact_location='+str('location = /mnebyvpn-telegram/webhook' in part).lower())
+              print('  named_servers='+str(len(re.findall(r'(?m)^\s*server_name\s',part))))
+          print('site_symlink_target='+str(pathlib.Path('/etc/nginx/sites-enabled/cdn-servgo').resolve()))
+          for n,p in [('stream443',443),('cdn4453',4453)]:
+            result=subprocess.run(['curl','--noproxy','*','-s','-o','/dev/null',
+               '-w','%{http_code}','--max-time','4','--resolve','cdn.servgo.ru:'+str(p)+':127.0.0.1',
+               '-X','POST','-H','Content-Type: application/json','-d','{"update_id":1}',
+               'https://cdn.servgo.ru:'+str(p)+'/mnebyvpn-telegram/webhook'],
+              capture_output=True,text=True,timeout=8)
+            print('direct_'+n+'_webhook_http='+result.stdout.strip())
+          print('read_only=true')
+          PY
