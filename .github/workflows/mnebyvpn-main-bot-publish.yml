@@ -1,0 +1,84 @@
+name: Deploy reviewed MNEBYVPN main Telegram bot via existing server188 SSH
+on:
+  push:
+    paths:
+      - '.github/workflows/mnebyvpn-main-bot-publish.yml'
+      - 'scripts/mnebyvpn-main-bot-promote.sh'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebyvpn-live-telegram-main
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      HOST: '188.120.254.223'
+      PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: infra
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: grunvald91/Mnebyvpn
+          ref: main
+          path: vpn
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify current source CI, immutable target and local shell
+        id: gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PASSWORD" || { echo 'Existing 188 SSH secret unavailable'; exit 2; }
+          bash -n infra/scripts/mnebyvpn-main-bot-promote.sh
+          sha="$(git -C vpn rev-parse HEAD)"
+          [[ "$sha" =~ ^[a-f0-9]{40}$ ]]
+          curl -fsSL --retry 2 --max-time 25             'https://api.github.com/repos/grunvald91/Mnebyvpn/actions/workflows/offline-contracts.yml/runs?branch=main&status=success&per_page=10'             -o "$RUNNER_TEMP/ci.json"
+          green="$(python3 - "$RUNNER_TEMP/ci.json" <<'PY'
+          import json,sys
+          for r in json.load(open(sys.argv[1])).get('workflow_runs',[]):
+              if r.get('head_branch')=='main' and r.get('event')=='push' and r.get('conclusion')=='success':
+                  print(r['head_sha'])
+                  break
+          PY
+          )"
+          [[ "$green" =~ ^[a-f0-9]{40}$ ]]
+          git -C vpn merge-base --is-ancestor "$green" "$sha"
+          git -C vpn diff --quiet "$green" "$sha" -- apps/service packages/billing packages/provisioning packages/telegram-ui db package.json tsconfig.json
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "source_main=$sha" >> "$GITHUB_STEP_SUMMARY"
+          echo "source_green_ci=$green" >> "$GITHUB_STEP_SUMMARY"
+      - name: Promote tested stage image and verify owned Telegram container
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          export SSHPASS="$PASSWORD"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          sha="${{ steps.gate.outputs.sha }}"
+          sshpass -e scp "${opts[@]}" infra/scripts/mnebyvpn-main-bot-promote.sh             "root@$HOST:/tmp/mnebyvpn-main-bot-promote-$sha.sh"
+          sshpass -e ssh "${opts[@]}" "root@$HOST"             "bash /tmp/mnebyvpn-main-bot-promote-$sha.sh '$sha'"
+      - name: Probe the existing foreign Telegram ingress
+        shell: bash
+        run: |
+          set -euo pipefail
+          code="$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}'              --max-time 15 -X POST -H 'Content-Type: application/json'              -d '{"update_id":100}'              https://cdn.servgo.ru:8443/mnebyvpn-telegram/webhook || true)"
+          if [[ "$code" != 401 ]]; then
+            echo "::warning::Foreign TLS route not confirmed: HTTP $code"
+            exit 1
+          fi
+          echo 'foreign_telegram_rejects_unsigned_updates=401' >> "$GITHUB_STEP_SUMMARY"
+          echo "bot_release_sha=${{ steps.gate.outputs.sha }}" >> "$GITHUB_STEP_SUMMARY"
+      - name: Delete only release-specific installer
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "$PASSWORD" ]]; then
+            export SSHPASS="$PASSWORD"
+            sshpass -e ssh -o ConnectTimeout=9 -o StrictHostKeyChecking=accept-new               -o LogLevel=ERROR "root@$HOST"               "rm -f /tmp/mnebyvpn-main-bot-promote-${{ steps.gate.outputs.sha }}.sh" || true
+          fi
