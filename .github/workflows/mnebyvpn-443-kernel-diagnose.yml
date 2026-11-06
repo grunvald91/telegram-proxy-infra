@@ -1,0 +1,89 @@
+name: MNEBYVPN targeted TCP443 kernel and socket diagnosis
+on:
+  push:
+    paths: ['.github/workflows/mnebyvpn-443-kernel-diagnose.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      HOST: '188.120.254.223'
+      PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Correlate test packets with kernel TCP socket state
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PASSWORD"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          SRC="$(curl -4 -fsS --max-time 6 https://api.ipify.org)"
+          [[ "$SRC" =~ ^[0-9.]+$ ]]
+          export SSHPASS="$PASSWORD"
+          opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" "root@$HOST" "python3 - '$SRC'" > "$RUNNER_TEMP/tcp-kernel.txt" <<'PY' &
+          import socket,sys,subprocess,time,collections,ipaddress,pathlib,re
+          runner=socket.inet_aton(sys.argv[1])
+          own=socket.inet_aton('188.120.254.223')
+          def p(cmd):
+            try:return subprocess.run(cmd,capture_output=True,text=True,timeout=5).stdout
+            except:return ''
+          def counters():
+            data=pathlib.Path('/proc/net/netstat').read_text().splitlines()
+            stats={}
+            for i in range(0,len(data)-1,2):
+              if data[i].startswith('TcpExt:') and data[i+1].startswith('TcpExt:'):
+                stats.update(zip(data[i].split()[1:],map(int,data[i+1].split()[1:])))
+            return {k:stats.get(k,0) for k in ['ListenDrops','ListenOverflows','TCPReqQFullDrop','TCPReqQFullDoCookies','SyncookiesSent']}
+          before=counters()
+          sock=socket.socket(socket.AF_PACKET,socket.SOCK_RAW,socket.htons(3))
+          sock.settimeout(1)
+          result=collections.Counter()
+          samples=[]
+          end=time.monotonic()+20
+          while time.monotonic()<end:
+            try,except_=None,None
+            try: packet,meta=sock.recvfrom(4096)
+            except socket.timeout:continue
+            if len(packet)<54 or packet[12:14]!=bytes.fromhex('0800'):continue
+            ip=packet[14:]
+            if ip[9]!=6:continue
+            tcp=ip[(ip[0]&15)*4:]
+            if len(tcp)<14:continue
+            inpk=ip[12:16]==runner and ip[16:20]==own and int.from_bytes(tcp[2:4],'big')==443
+            outpk=ip[12:16]==own and ip[16:20]==runner and int.from_bytes(tcp[:2],'big')==443
+            if not(inpk or outpk):continue
+            direction='in' if inpk else 'out'
+            flags=tcp[13]
+            kind='SYNACK' if flags&18==18 else 'SYN' if flags&2 else 'RST' if flags&4 else 'ACK' if flags&16 else 'other'
+            result[(direction,kind,meta[2])]+=1
+            if len(samples)<8:
+              samples.append((direction,kind,meta[2],ip[8]))
+          for (direction,kind,pkt),count in result.items():
+            print('packet_'+direction+'_'+kind+'_packettype_'+str(pkt)+'='+str(count))
+          for index,(direction,kind,pkt,ttl) in enumerate(samples):
+            print('sample_'+str(index)+'='+direction+'/'+kind+'/pkt_type_'+str(pkt)+'/ttl_'+str(ttl))
+          after=counters()
+          for key in before:
+            print('tcp_counter_delta_'+key+'='+str(after[key]-before[key]))
+          sessions=p(['ss','-H','-nt','state','syn-recv','sport',':443'])
+          print('syn_recv_443_sessions='+str(len(sessions.splitlines())))
+          for key in ['net.ipv4.tcp_syncookies','net.ipv4.tcp_abort_on_overflow','net.ipv4.conf.all.rp_filter','net.ipv4.conf.default.rp_filter']:
+            x=p(['sysctl','-n',key]).strip()
+            print('sysctl_'+key.replace('.','_')+'='+x)
+          print('packet_inspection_done=true')
+          PY
+          PID=$!
+          sleep 3
+          python3 - <<'PY'
+          import socket
+          for i in range(3):
+            try:
+              with socket.create_connection(('188.120.254.223',443),timeout=4):
+                print('external_probe=connected')
+            except Exception as e:print('external_probe='+type(e).__name__)
+          PY
+          wait "$PID"
+          cat "$RUNNER_TEMP/tcp-kernel.txt"
