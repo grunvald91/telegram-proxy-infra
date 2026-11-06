@@ -1,0 +1,76 @@
+name: MNEBYVPN public domain DNS and HTTPS preflight
+
+on:
+  push:
+    paths:
+      - '.github/workflows/mnebyvpn-domain-preflight.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      SERVER_HOST: '188.120.254.223'
+      SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Inspect public DNS without assuming registrar settings
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import socket,subprocess
+          targets=['mnebyvpn.site','www.mnebyvpn.site','мнебыvpn.сайт','mnebyvpn.сайт']
+          for n in targets:
+            p=n.encode('idna').decode('ascii')
+            q=subprocess.run(['dig','+short','A',p,'@1.1.1.1'],capture_output=True,text=True,timeout=12)
+            ips=[x.strip() for x in q.stdout.splitlines() if x.strip().count('.')==3]
+            q6=subprocess.run(['dig','+short','AAAA',p,'@1.1.1.1'],capture_output=True,text=True,timeout=12)
+            aaaa=[x.strip() for x in q6.stdout.splitlines() if ':' in x]
+            print('dns_name='+n)
+            print('  ascii='+p)
+            print('  A_record_count='+str(len(ips)))
+            print('  points_to_server188='+str('188.120.254.223' in ips).lower())
+            print('  AAAA_record_count='+str(len(aaaa)))
+            if q.returncode:print('  dns_error='+str(q.returncode))
+          PY
+      - name: Check known-domain HTTPS and bot link without exposing tokens
+        shell: bash
+        run: |
+          set -euo pipefail
+          for address in 'https://mnebyvpn.site/' 'https://www.mnebyvpn.site/' 'https://t.me/MnebyVPN_bot'; do
+            code="$(curl -L --silent --output /dev/null --write-out '%{http_code}' --max-time 8 "$address" || true)"
+            case "$address" in
+              *'t.me/'*) echo "bot_public_page_http=$code" ;;
+              *'www.'*) echo "www_site_http=$code" ;;
+              *) echo "root_site_http=$code" ;;
+            esac
+          done
+      - name: Inspect server nginx domain, TLS tooling and conflicting locations read-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -n "$SSH_PASSWORD" ] || { echo 'SSH credentials are missing'; exit 2; }
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          export SSHPASS="$SSH_PASSWORD"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR "root@$SERVER_HOST" 'python3 -' <<'PY'
+          import pathlib,subprocess,shutil
+          def cmd(*args):
+            try:
+              p=subprocess.run(args,capture_output=True,text=True,timeout=10)
+              return p.stdout.strip()
+            except Exception:return ''
+          print('nginx_syntax_ok='+str(subprocess.run(['nginx','-t'],capture_output=True).returncode==0).lower())
+          print('certbot_available='+str(shutil.which('certbot') is not None).lower())
+          print('acme_cert_dirs='+str(len(list(pathlib.Path('/etc/letsencrypt/live').glob('*'))) if pathlib.Path('/etc/letsencrypt/live').exists() else 0))
+          conf=cmd('nginx','-T')
+          for domain in ['mnebyvpn.site','www.mnebyvpn.site','мнебыvpn.сайт']:
+            print('nginx_config_mentions_'+domain+'='+str(domain in conf).lower())
+          print('nginx_http_port_80='+str('80' in cmd('ss','-H','-lnt')).lower())
+          print('nginx_https_port_443='+str('443' in cmd('ss','-H','-lnt')).lower())
+          print('mnebyvpn_stage_exists='+str(pathlib.Path('/opt/mnebyvpn/staging/active_sha').exists()).lower())
+          print('read_only_done=yes')
+          PY
