@@ -36,6 +36,7 @@ jobs:
             print('  points_to_server188='+str('188.120.254.223' in ips).lower())
             print('  AAAA_record_count='+str(len(aaaa)))
             if q.returncode:print('  dns_error='+str(q.returncode))
+          # Repeat after registrar A/CNAME changes; this is read-only.
           PY
       - name: Check known-domain HTTPS and bot link without exposing tokens
         shell: bash
