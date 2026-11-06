@@ -75,29 +75,30 @@ jobs:
               chains.append((table,chain))
               if re.search(r'\b(drop|reject)\b',detail):
                 print('trace_drop_chain='+table+'/'+chain,flush=True)
-            ids=[m.group(1) for line in data.splitlines() if (m:=re.search(r'trace id (\\S+)',line))]
+            ids=[line.split()[2] for line in data.splitlines() if line.startswith('trace id ')]
             if ids:
               last=ids[-1]
               events=[line for line in data.splitlines() if line.startswith('trace id '+last+' ')]
-              for line in events[-16:]:
-                fragment=re.sub(r'^trace id \\S+ ','',line)
-                # Redact all packet and address metadata.
-                if ' packet:' in fragment:fragment=fragment.split(' packet:')[0]+' packet'
-                fragment=re.sub(r'\\b(?:[0-9]{1,3}\\.){3}[0-9]{1,3}\\b','<ip>',fragment)
-                print('trace_tail='+fragment[:220],flush=True)
-            for key in ['ip','-4','route','get',src,'from','89.125.90.101']:
-              pass
+              for line in events[-18:]:
+                tokens=line.split()
+                if len(tokens)<7:continue
+                routeinfo='/'.join(tokens[3:6])
+                kind=tokens[6]
+                verdict=('drop' if ' verdict drop' in line or ' policy drop' in line else
+                  'reject' if ' verdict reject' in line else
+                  'accept' if ' verdict accept' in line or ' policy accept' in line else
+                  'continue' if 'verdict continue' in line else 'other')
+                print('trace_tail='+routeinfo+' action='+kind+' verdict='+verdict,flush=True)
             result=cmd('ip','-4','route','get',src,'from','89.125.90.101')
             route=result.stdout
             print('route_get_exit='+str(result.returncode),flush=True)
-            print('route_uses_unreachable='+str('unreachable' in route.lower()).lower(),flush=True)
-            device=re.search(r'\\bdev\\s+(\\S+)',route)
-            print('route_device='+(device.group(1) if device else 'unknown'),flush=True)
+            device=route.split(' dev ')[1].split()[0] if ' dev ' in route else 'unknown'
+            print('route_device='+device,flush=True)
             for table in ['INPUT','OUTPUT']:
-              policy=cmd('iptables','-S',table).stdout
-              rules=[line for line in policy.splitlines() if line.startswith('-A')]
+              lines=cmd('iptables','-S',table).stdout.splitlines()
+              rules=[line for line in lines if line.startswith('-A')]
               verdicts=collections.Counter(
-                (re.search(r'\\s-j\\s+(\\w+)',line).group(1) if re.search(r'\\s-j\\s+(\\w+)',line) else 'NONE')
+                line.split(' -j ')[1].split()[0] if ' -j ' in line else 'NONE'
                 for line in rules)
               print('iptables_'+table+'_rules='+str(len(rules)),flush=True)
               print('iptables_'+table+'_verdicts='+str(dict(verdicts)),flush=True)
