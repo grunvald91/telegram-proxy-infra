@@ -1,0 +1,42 @@
+name: Diagnose public Telegram ingress on relay89
+on:
+  push:
+    paths: ['.github/workflows/mnebyvpn-relay89-public-audit.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      FOREIGN_HOST: '89.125.90.101'
+      FOREIGN_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Probe public TLS from independent external network
+        shell: bash
+        run: |
+          set +e
+          for port in 443 4453; do
+            echo "public_probe_port=$port"
+            curl --noproxy '*' -sS -o /dev/null -w 'status=%{http_code} tcp_connect=%{time_connect} tls=%{time_appconnect} remote=%{remote_ip}\n'               --connect-timeout 6 --max-time 9               --resolve "cdn.servgo.ru:$port:89.125.90.101"               -X POST -H 'Content-Type: application/json' -d '{"update_id":1}'               "https://cdn.servgo.ru:$port/mnebyvpn-telegram/webhook"
+            echo "curl_exit=$?"
+          done
+      - name: Verify foreign listeners and ingress policy read-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$FOREIGN_PASSWORD"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          export SSHPASS="$FOREIGN_PASSWORD"
+          sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=9 -o LogLevel=ERROR             "root@$FOREIGN_HOST" 'bash -s' <<'SH'
+          set -u
+          echo 'tcp_listeners_443_4453:'
+          ss -Hlnt | awk '$4 ~ /:(443|4453)$/ { print $4 }'
+          echo 'nft_rules_matching_443:'
+          nft -a list ruleset 2>/dev/null | grep -E 'dport (443|4453)|policy drop|policy accept' | head -55 || true
+          echo 'iptables_input:'
+          iptables -S INPUT 2>/dev/null | head -30 || true
+          echo 'local_tls_probe:'
+          curl --noproxy '*' -ksS -o /dev/null -w 'status=%{http_code} tcp_connect=%{time_connect} tls=%{time_appconnect}\n' --max-time 8             --resolve cdn.servgo.ru:443:127.0.0.1 -X POST             -H 'Content-Type: application/json' -d '{"update_id":1}'             https://cdn.servgo.ru/mnebyvpn-telegram/webhook || true
+          SH
