@@ -1,0 +1,56 @@
+name: MNEBYVPN diagnose missing external 443 SYN packets (read-only)
+on:
+  push:
+    paths: ['.github/workflows/mnebyvpn-tcp443-syn-trace.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      HOST: '188.120.254.223'
+      PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Count only TCP SYNs from this runner, never capture user payloads
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PASSWORD"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          MY_IP="$(curl -4 -fsS --max-time 8 https://api.ipify.org)"
+          [[ "$MY_IP" =~ ^[0-9.]+$ ]] || exit 2
+          export SSHPASS="$PASSWORD"
+          opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" "root@$HOST" "python3 - '$MY_IP'" > "$RUNNER_TEMP/syn-count.txt" <<'PY' &
+          import socket,sys,time
+          source=socket.inet_aton(sys.argv[1])
+          s=socket.socket(socket.AF_PACKET,socket.SOCK_RAW,socket.htons(3))
+          s.settimeout(2)
+          end=time.monotonic()+20
+          count=0
+          while time.monotonic()<end:
+            try:packet=s.recv(2048)
+            except socket.timeout:continue
+            if len(packet)<54 or packet[12:14]!=b'\x08\x00':continue
+            ip=packet[14:]
+            if ip[9]!=6 or ip[12:16]!=source:continue
+            ihl=(ip[0]&15)*4
+            tcp=ip[ihl:]
+            if len(tcp)>=14 and int.from_bytes(tcp[2:4],'big')==443 and tcp[13]&2:count+=1
+          print('matched_public_syn_packets='+str(count))
+          PY
+          PID=$!
+          sleep 3
+          python3 - <<'PY'
+          import socket
+          for n in range(3):
+            try:
+              with socket.create_connection(('188.120.254.223',443),timeout=3):
+                print('external_443_connect=success')
+            except Exception as e:
+              print('external_443_connect='+type(e).__name__)
+          PY
+          wait "$PID"
+          cat "$RUNNER_TEMP/syn-count.txt"
