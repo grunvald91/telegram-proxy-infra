@@ -1,0 +1,41 @@
+name: MNEBYVPN SNI map structure audit
+on:
+  push:
+    paths: ['.github/workflows/mnebyvpn-sni-structure-preflight.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      HOST: '188.120.254.223'
+      PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Summarize SNI map capabilities only (no routing destinations)
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PASSWORD"
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+          export SSHPASS="$PASSWORD"
+          sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o LogLevel=ERROR "root@$HOST" 'python3 -' <<'PY'
+          import re,subprocess,pathlib
+          p=subprocess.run(['nginx','-T'],capture_output=True,text=True,timeout=20)
+          if p.returncode:raise SystemExit('nginx -T failed')
+          text=p.stdout
+          maps=re.findall(r'(?s)map\s+\$ssl_preread_server_name\s+\$(\w+)\s*\{(.*?)\}',text)
+          print('sni_map_count='+str(len(maps)))
+          for i,(name,body) in enumerate(maps):
+            # Log only capabilities, not private backend names/addresses.
+            print('sni_map_'+str(i)+'_has_include='+str(bool(re.search(r'\binclude\s+',body))).lower())
+            print('sni_map_'+str(i)+'_existing_noncomment_entries='+str(len(re.findall(r'(?m)^\s*[^#;\s][^;]*;',body))))
+            print('sni_map_'+str(i)+'_variable='+name)
+          print('ssl_preread_on_count='+str(len(re.findall(r'(?m)^\s*ssl_preread\s+on\s*;',text))))
+          print('stream_config_dir_present='+str(pathlib.Path('/etc/nginx/streams.d').exists()).lower())
+          print('http_sites_enabled_dir_present='+str(pathlib.Path('/etc/nginx/sites-enabled').exists()).lower())
+          print('http_sites_available_dir_present='+str(pathlib.Path('/etc/nginx/sites-available').exists()).lower())
+          print('acme_webroot_available='+str(pathlib.Path('/var/www/html').exists()).lower())
+          print('no_changes=true')
+          PY
