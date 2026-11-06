@@ -28,6 +28,10 @@ jobs:
           done
           curl --noproxy '*' -fsS --max-time 5 http://127.0.0.1:8792/vpn-install.js | grep -q 'incy://import/'
           echo 'local_install_script=ok'
+          echo 'subscription_table='
+          docker exec mnebyvpn-stage-postgres psql -At -U mnebyvpn_stage -d mnebyvpn_stage -c "SELECT to_regclass('public.vpn_subscription_links');"
+          echo 'subscription_query_probe='
+          docker exec mnebyvpn-stage-postgres psql -At -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage -c "SELECT a.telegram_user_id,e.id AS entitlement_id,e.expires_at FROM vpn_subscription_links l JOIN entitlements e ON e.id=l.entitlement_id JOIN accounts a ON a.id=e.account_id JOIN provisioning_state p ON p.entitlement_id=e.id AND p.adapter='vpn' WHERE l.token_sha256=repeat('a',64) AND l.revoked_at IS NULL AND e.product='vpn' AND e.state='ACTIVE' AND e.expires_at>clock_timestamp() AND p.applied_revision=e.revision AND p.last_observed_at IS NOT NULL LIMIT 1;"
           invalid='AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
           status="$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:8792/sub/$invalid")"
           echo "local_inactive_sub_status=$status"
