@@ -1,0 +1,51 @@
+name: MNEBYVPN public Telegram webhook probe via relay89
+on:
+  push:
+    paths: ['.github/workflows/mnebyvpn-telegram-remote-smoke.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      RELAY_HOST: '89.125.90.101'
+      RELAY_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Independently verify public TLS, API gating and webhook signature requirement
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$RELAY_PASSWORD"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          export SSHPASS="$RELAY_PASSWORD"
+          sshpass -e ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR "root@$RELAY_HOST" 'python3 -' <<'PY'
+          import urllib.request,urllib.error,json,ssl,socket
+          origin='https://mnebyvpn.site'
+          context=ssl.create_default_context()
+          with urllib.request.urlopen(origin+'/',timeout=10,context=context) as r:
+            html=r.read(128000).decode('utf8')
+            assert r.status==200
+            assert 'https://t.me/MnebyVPN_bot' in html
+          print('public_site_https=ok')
+          with urllib.request.urlopen(origin+'/api/plans',timeout=10,context=context) as r:
+            flags=json.load(r)
+            assert flags['checkoutEnabled'] is False
+            assert flags['loginEnabled'] is False
+          print('public_checkout_enabled=false')
+          for path,expected,method in [
+            ('/auth/login',503,'GET'),
+            ('/webhooks/telegram',401,'POST')]:
+            request=urllib.request.Request(origin+path,method=method,
+              headers={'Content-Type':'application/json'},
+              data=(b'{"update_id":1}' if method=='POST' else None))
+            try:
+              urllib.request.urlopen(request,timeout=10,context=context)
+              raise ValueError('Endpoint unexpectedly accepted request: '+path)
+            except urllib.error.HTTPError as e:
+              assert e.code==expected,(path,e.code,expected)
+          print('public_telegram_unsigned_http=401')
+          print('public_login_http=503')
+          print('public_tls_verified=true')
+          PY
