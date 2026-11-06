@@ -55,7 +55,88 @@ run_web() {
   local name="$1" image="$2" port="$3" ephemeral="$4"
   local policy_flags=()
   if [ "$ephemeral" = yes ]; then policy_flags=(--rm); else policy_flags=(--restart unless-stopped); fi
-  docker run -d "${policy_flags[@]}" --name "$name"     --network host --user 1000:1000 --read-only     --tmpfs /tmp:rw,nosuid,nodev,size=32m --cap-drop ALL     --security-opt no-new-privileges --pids-limit 96     --memory 300m --cpus 0.4 --env-file "$ENV_FILE" -e "WEB_PORT=$port"     "$image" >/dev/null
+  local vpn_bridge_env=()
+  if [ -s "$ROOT/bot/worker.env" ]; then
+    # Shared only with the localhost subscription bridge; node HMAC key stays
+    # in the private worker container and is never exposed to the website.
+    grep -Eq '^VPN_WORKER_PROFILE_TOKEN=[a-f0-9]{64}
+}
+public_listener() { ss -H -lnt | awk '{print $4}' | grep -Fqx '127.0.0.1:8792'; }
+healthy() {
+  local port="$1"
+  local require_logo="${2:-yes}"
+  local code=''
+  for attempt in $(seq 1 35); do
+    code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 2 "http://127.0.0.1:$port/healthz" 2>/dev/null || true)"
+    if [ "$code" = 200 ]; then break; fi
+    sleep 1
+  done
+  [ "$code" = 200 ] || return 1
+  local css
+  css="$(curl -fsS --max-time 5 "http://127.0.0.1:$port/neo.css")" || return 1
+  [ -n "$css" ] || return 1
+  # A successful homepage is insufficient if the Telegram logo is missing.
+  # Previous releases might predate this asset; rollback tolerates that.
+  if [ "$require_logo" = yes ]; then
+    local avatar_response
+    avatar_response="$(curl -sS --max-time 5 -o /dev/null -w '%{http_code} %{content_type}'       "http://127.0.0.1:$port/brand-avatar.webp" || true)"
+    [ "$avatar_response" = '200 image/webp' ] || {
+      echo 'Brand asset missing or wrong content-type'; return 1;
+    }
+  fi
+  curl -fsS --max-time 5 "http://127.0.0.1:$port/api/plans" |
+    python3 -c 'import sys,json; x=json.load(sys.stdin); assert x["checkoutEnabled"] is False and x["loginEnabled"] is False' || return 1
+  [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:$port/readyz")" = 503 ] || return 1
+  [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:$port/auth/login")" = 503 ] || return 1
+}
+
+cleanup_canary() {
+  docker stop -t 3 "$CANARY" >/dev/null 2>&1 || true
+}
+trap cleanup_canary EXIT
+run_web "$CANARY" "$IMAGE" "$CANARY_PORT" yes
+healthy "$CANARY_PORT" || { echo 'New website failed canary health / security checks'; exit 2; }
+cleanup_canary
+trap - EXIT
+
+# Downtime is limited to replacing this single named brochure container.
+if [ "$has_public" = yes ]; then
+  docker stop -t 12 "$NAME" >/dev/null
+  docker rm "$NAME" >/dev/null
+fi
+if ! run_web "$NAME" "$IMAGE" 8792 no || ! healthy 8792 || ! public_listener; then
+  echo 'Public website health failed; restoring previous image'
+  docker rm -f "$NAME" >/dev/null 2>&1 || true
+  if [ -n "$old_image" ]; then
+    run_web "$NAME" "$old_image" 8792 no
+    healthy 8792 no || { echo 'CRITICAL: previous public website image failed recovery'; exit 3; }
+    echo 'public_rollback=restored_previous_image'
+  fi
+  exit 2
+fi
+test "$(docker inspect -f '{{.State.Running}}' "$NAME")" = true
+tmp="$(mktemp "$PUBLIC/active_sha.tmp.XXXXXX")"
+printf '%s\n' "$SHA" > "$tmp"
+chmod 600 "$tmp"
+mv -f "$tmp" "$PUBLIC/active_sha"
+
+echo "public_web_sha=$SHA"
+echo 'public_web_health=200'
+echo 'public_web_readyz=503_expected'
+echo 'public_checkout_enabled=false'
+echo 'public_telegram_oidc_enabled=false'
+echo 'public_web_port=127.0.0.1:8792'
+echo 'nginx_and_other_services_unchanged=yes'
+ "$ROOT/bot/worker.env" ||
+      { echo 'Invalid private profile bridge token'; return 2; }
+    vpn_bridge_env=(--env-file "$ROOT/bot/worker.env")
+  fi
+  docker run -d "${policy_flags[@]}" --name "$name" \
+    --network host --user 1000:1000 --read-only \
+    --tmpfs /tmp:rw,nosuid,nodev,size=32m --cap-drop ALL \
+    --security-opt no-new-privileges --pids-limit 96 \
+    --memory 300m --cpus 0.4 --env-file "$ENV_FILE" \
+    "${vpn_bridge_env[@]}" -e "WEB_PORT=$port" "$image" >/dev/null
 }
 public_listener() { ss -H -lnt | awk '{print $4}' | grep -Fqx '127.0.0.1:8792'; }
 healthy() {
