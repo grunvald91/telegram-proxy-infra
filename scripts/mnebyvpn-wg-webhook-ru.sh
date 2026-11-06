@@ -78,9 +78,23 @@ systemctl enable --now mnebyvpn-wg-webhook-firewall.service >/dev/null
 systemctl reload nginx
 # This bridge accepts only source 10.66.77.1 on WireGuard. A request
 # from RU itself is deliberately blocked. Test it from relay89 in the next step.
-ss -H -lnt | awk '{print $4}' | grep -Fqx '10.66.77.2:8794' || {
-  echo "wg_bridge_not_listening"; exit 2;
-}
+ready=no
+for attempt in $(seq 1 15); do
+  if ss -H -lnt | awk '{print $4}' | grep -Fqx '10.66.77.2:8794'; then
+    ready=yes; break
+  fi
+  sleep 1
+done
+if [[ "$ready" != yes ]]; then
+  echo "wg_bridge_not_listening"
+  # Report whether config was included, without revealing unrelated routes.
+  if nginx -T 2>/dev/null | grep -Fq '# configuration file /etc/nginx/conf.d/mnebyvpn-wg-telegram.conf:'; then
+    echo "wg_bridge_nginx_config_included=true"
+  else
+    echo "wg_bridge_nginx_config_included=false"
+  fi
+  exit 2
+fi
 test "$(curl -s -o /dev/null -w '%{http_code}' --max-time 4 -X POST -H 'Content-Type: application/json' -d '{"update_id":1}' http://127.0.0.1:8793/webhooks/telegram)" = 401
 trap - ERR
 echo "ru_wg_webhook_bridge=ready"
