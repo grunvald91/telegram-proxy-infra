@@ -1,0 +1,79 @@
+name: MNEBYVPN mobile browser visibility smoke of live website
+on:
+  push:
+    paths: ['.github/workflows/mnebyvpn-mobile-trial-visibility-smoke.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  mobile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      HOST: '188.120.254.223'
+      PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Fetch published HTML/CSS directly from production website on 188
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PASSWORD"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          export SSHPASS="$PASSWORD"
+          mkdir -p "$RUNNER_TEMP/site"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          for entry in 'index.html /' 'neo.css /neo.css' 'site.css /site.css'; do
+            read -r filename route <<< "$entry"
+            sshpass -e ssh "${opts[@]}" "root@$HOST" \
+              "curl --noproxy '*' -fsS --max-time 8 'http://127.0.0.1:8792$route'" \
+              > "$RUNNER_TEMP/site/$filename"
+          done
+          grep -q 'id="trial-hero-button"' "$RUNNER_TEMP/site/index.html"
+          grep -q 'display: flex' "$RUNNER_TEMP/site/neo.css"
+          echo 'production_trial_html_and_mobile_css_downloaded=true'
+      - name: Check computed button visibility in actual headless Chrome mobile viewport
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v google-chrome >/dev/null || { echo 'Missing browser'; exit 2; }
+          SITE="$RUNNER_TEMP/site" python3 - <<'PY'
+          import os,pathlib
+          p=pathlib.Path(os.environ['SITE'])/'index.html'
+          html=p.read_text()
+          html=html.replace('<script src="/app.js" defer></script>','')
+          test_script="""<script>
+          addEventListener('load',()=>{
+            const btn=document.getElementById('trial-hero-button');
+            const card=document.getElementById('trial-button');
+            const a=getComputedStyle(btn),r=btn.getBoundingClientRect();
+            const b=getComputedStyle(card),s=card.getBoundingClientRect();
+            const hit=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);
+            const okay=innerWidth<=680 && a.display!=='none' &&
+              a.visibility!=='hidden' && r.width>=135 && r.height>=40 &&
+              r.top>=0 && r.top<850 &&
+              (hit===btn||btn.contains(hit)) &&
+              b.display!=='none' && s.width>=135 && s.height>=40;
+            document.documentElement.dataset.trialMobileBrowser=okay?'pass':'fail';
+            document.documentElement.dataset.mobileWidth=innerWidth;
+          });
+          </script>"""
+          html=html.replace('</body>',test_script+'</body>')
+          p.write_text(html)
+          PY
+          cd "$RUNNER_TEMP/site"
+          python3 -m http.server 18886 --bind 127.0.0.1 >/dev/null 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" || true' EXIT
+          sleep 1
+          google-chrome --headless=new --no-sandbox --disable-gpu \
+            --disable-dev-shm-usage --hide-scrollbars \
+            --window-size=390,900 --virtual-time-budget=2200 \
+            --dump-dom http://127.0.0.1:18886/ \
+            > "$RUNNER_TEMP/mobile.html" 2>"$RUNNER_TEMP/chrome.err"
+          grep -q 'data-trial-mobile-browser="pass"' "$RUNNER_TEMP/mobile.html" || {
+            grep -o 'data-trial-mobile-browser="[^"]*"' "$RUNNER_TEMP/mobile.html" || true
+            grep -o 'data-mobile-width="[^"]*"' "$RUNNER_TEMP/mobile.html" || true
+            exit 2
+          }
+          echo 'production_mobile_24h_button_computed_visible_and_tappable=true'
+          echo 'production_mobile_tariff_trial_button_computed_visible=true'
