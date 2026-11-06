@@ -85,7 +85,21 @@ for attempt in $(seq 1 12); do
   if [[ "$code" == 401 ]]; then break; fi
   sleep 1
 done
-test "$code" = 401 || { echo "foreign_webhook_auth_check_failed:$code"; exit 2; }
+if [[ "$code" != 401 ]]; then
+  direct="$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --max-time 7 \
+    --resolve cdn.servgo.ru:4453:127.0.0.1 -X POST \
+    -H 'Content-Type: application/json' -d '{"update_id":1}' \
+    https://cdn.servgo.ru:4453/mnebyvpn-telegram/webhook || true)"
+  direct_wg="$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --max-time 7 \
+    -X POST -H 'Content-Type: application/json' -d '{"update_id":1}' \
+    http://10.66.77.2:8794/webhooks/telegram || true)"
+  echo "foreign_debug_cdn_tls4453_http=$direct"
+  echo "foreign_debug_wg_upstream_http=$direct_wg"
+  echo "foreign_debug_sni443_http=$code"
+  nginx -T 2>/dev/null | grep -F 'location = /mnebyvpn-telegram/webhook {' | wc -l |
+    xargs -I{} echo "foreign_debug_nginx_route_count={}"
+  echo "foreign_webhook_auth_check_failed:$code"; exit 2
+fi
 curl -fsS --noproxy '*' --max-time 8 --resolve cdn.servgo.ru:443:127.0.0.1 \
   https://cdn.servgo.ru/ > "$AFTER_HTML"
 cmp -s "$BEFORE_HTML" "$AFTER_HTML" || { echo "cdn_homepage_changed"; exit 2; }
