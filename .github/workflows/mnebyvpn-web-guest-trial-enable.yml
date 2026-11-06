@@ -1,0 +1,71 @@
+name: MNEBYVPN enable verified guest 24h website VPN requests
+on:
+  push:
+    paths:
+      - '.github/workflows/mnebyvpn-web-guest-trial-enable.yml'
+      - 'scripts/mnebyvpn-web-guest-trial-enable.sh'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebyvpn-public-guest-trial-release
+  cancel-in-progress: false
+jobs:
+  enable:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      HOST: '188.120.254.223'
+      PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate promotion scripts and existing SSH channel
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PASSWORD"
+          bash -n scripts/mnebyvpn-auto-web-promote.sh
+          bash -n scripts/mnebyvpn-web-guest-trial-enable.sh
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+      - name: Enable guest trial only after verified Xray worker and schema
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$PASSWORD"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          sshpass -e scp "${opts[@]}" scripts/mnebyvpn-auto-web-promote.sh \
+            "root@$HOST:/tmp/mnebyvpn-web-guest-public-promote.sh"
+          sshpass -e scp "${opts[@]}" scripts/mnebyvpn-web-guest-trial-enable.sh \
+            "root@$HOST:/tmp/mnebyvpn-web-guest-trial-enable.sh"
+          sshpass -e ssh "${opts[@]}" "root@$HOST" \
+            'bash /tmp/mnebyvpn-web-guest-trial-enable.sh fd6b1d44ca65b1cf82efbde8ab606793d958d760 /tmp/mnebyvpn-web-guest-public-promote.sh'
+      - name: Confirm website offers a real same-origin claim without Telegram OAuth
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$PASSWORD"
+          sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 \
+            -o LogLevel=ERROR "root@$HOST" 'bash -se' <<'SH'
+          set -euo pipefail
+          curl --noproxy '*' -fsS --max-time 8 \
+            http://127.0.0.1:8792/ |
+            grep -Fq 'id="trial-hero-button"'
+          curl --noproxy '*' -fsS --max-time 8 \
+            http://127.0.0.1:8792/api/plans |
+            python3 -c 'import sys,json; j=json.load(sys.stdin); assert j["guestTrialEnabled"] is True and j["checkoutEnabled"] is False'
+          test "$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --max-time 5 -X POST \
+            -d '{"product":"vpn"}' -H 'Content-Type: application/json' \
+            http://127.0.0.1:8792/api/guest/trial)" = 403
+          echo 'guest_trial_web_button_present=true'
+          echo 'guest_trial_web_offer_enabled=true'
+          echo 'guest_trial_without_origin_denied=403'
+          SH
+      - name: Remove only dedicated temporary scripts
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "$PASSWORD" ]]; then
+            SSHPASS="$PASSWORD" sshpass -e ssh -o StrictHostKeyChecking=accept-new \
+              -o ConnectTimeout=9 -o LogLevel=ERROR "root@$HOST" \
+              'rm -f /tmp/mnebyvpn-web-guest-public-promote.sh /tmp/mnebyvpn-web-guest-trial-enable.sh' || true
+          fi
