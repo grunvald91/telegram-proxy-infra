@@ -1,0 +1,54 @@
+name: MNEBYVPN domain TLS routing preflight (read-only)
+on:
+  push:
+    paths: ['.github/workflows/mnebyvpn-tls-preflight.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      HOST: '188.120.254.223'
+      SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Inspect dedicated TLS listener feasibility without printing existing routes
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SSH_PASSWORD"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          export SSHPASS="$SSH_PASSWORD"
+          sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o LogLevel=ERROR "root@$HOST" 'python3 -' <<'PY'
+          import pathlib,re,subprocess,socket
+          root=pathlib.Path('/etc/nginx')
+          configs=[]
+          for item in root.rglob('*'):
+            if not item.is_file() or item.suffix not in {'.conf',''} or '/sites-enabled/' in str(item):
+              continue
+            try:s=item.read_text()
+            except (OSError,UnicodeError):continue
+            if re.search(r'map\s+\$ssl_preread_server_name\s+\$stream_443_backend\s*\{',s):
+              configs.append((str(item),s))
+          print('matching_sni_map_files='+str(len(configs)))
+          for i,(name,s) in enumerate(configs):
+            print('map_'+str(i)+'_file_kind='+('streams.d' if '/streams.d/' in name else 'other'))
+            m=re.search(r'map\s+\$ssl_preread_server_name\s+\$stream_443_backend\s*\{([^{}]*)\}',s,re.S)
+            print('map_'+str(i)+'_single_block='+str(bool(m)).lower())
+            if m:
+              body=m.group(1)
+              print('map_'+str(i)+'_default_present='+str(bool(re.search(r'(?m)^\s*default\s+[^;]+;',body))).lower())
+              print('map_'+str(i)+'_new_domain_absent='+str('mnebyvpn.site' not in body).lower())
+              print('map_'+str(i)+'_other_entries='+str(len(re.findall(r'(?m)^\s*[^#\s][^;]*;',body))))
+          t=subprocess.run(['nginx','-T'],capture_output=True,text=True,timeout=20)
+          print('nginx_test_ok='+str(t.returncode==0).lower())
+          print('uses_stream_443_backend='+str('proxy_pass $stream_443_backend;' in t.stdout).lower())
+          print('ssl_preread_on='+str('ssl_preread on;' in t.stdout).lower())
+          print('tls_9443_listener_count='+str(subprocess.run("ss -H -lnt | awk '{print $4}' | grep -Ec ':9443$' || true",shell=True,capture_output=True,text=True).stdout.strip()))
+          print('http_port_80_listener_count='+str(subprocess.run("ss -H -lnt | awk '{print $4}' | grep -Ec ':80$' || true",shell=True,capture_output=True,text=True).stdout.strip()))
+          print('certbot_present='+str(subprocess.run(['which','certbot'],capture_output=True).returncode==0).lower())
+          print('ssl_certificate_exists='+str(pathlib.Path('/etc/letsencrypt/live/mnebyvpn.site/fullchain.pem').exists()).lower())
+          print('port_8791_stage_healthy='+str(subprocess.run(['curl','-fsS','--max-time','3','http://127.0.0.1:8791/healthz'],capture_output=True).returncode==0).lower())
+          print('read_only=true')
+          PY
