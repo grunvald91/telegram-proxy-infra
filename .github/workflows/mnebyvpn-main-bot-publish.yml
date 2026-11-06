@@ -1,5 +1,5 @@
 name: Deploy reviewed MNEBYVPN main Telegram bot via existing server188 SSH
-# Release trigger: PR24 CDN HTTPS 8443 subscription/install buttons, verified main CI and site.
+# Release trigger: PR25 immediate INCY/Karing import attempt with fallback; site green.
 on:
   push:
     paths:
