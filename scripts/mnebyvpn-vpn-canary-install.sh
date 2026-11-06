@@ -162,7 +162,7 @@ done
 [[ "$ready" == yes ]] || { echo "xray_canary_listener_not_running"; exit 2; }
 # The existing bot endpoint must remain protected.
 code="$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --max-time 8 \
- --resolve cdn.servgo.ru:8443:127.0.0.1 \
+ --resolve cdn.servgo.ru:8443:"$(ip -4 -o addr show dev eth0 | awk '$3=="inet" {print $4}' | cut -d/ -f1 | head -1)" \
  -X POST -H 'Content-Type: application/json' -d '{"update_id":1}' \
  https://cdn.servgo.ru:8443/mnebyvpn-telegram/webhook)"
 [[ "$code" == 401 ]] || { echo "existing_telegram_route_regressed"; exit 2; }
