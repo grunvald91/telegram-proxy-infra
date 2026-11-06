@@ -1,0 +1,24 @@
+name: MNEBYVPN onboarding public HTTPS smoke
+on:
+  push:
+    paths: ['.github/workflows/mnebyvpn-onboarding-public-smoke.yml']
+permissions:
+  contents: read
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check live installation JavaScript and denied anonymous subscription
+        shell: bash
+        run: |
+          set -euo pipefail
+          code="$(curl --noproxy '*' -s -o "$RUNNER_TEMP/install.js" -w '%{http_code}' --connect-timeout 8 --max-time 18 https://mnebyvpn.site/vpn-install.js)"
+          echo "public_install_js_status=$code"
+          test "$code" = 200
+          grep -q 'incy://import/' "$RUNNER_TEMP/install.js"
+          bogus='AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+          status="$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --connect-timeout 8 --max-time 18 "https://mnebyvpn.site/sub/$bogus")"
+          echo "inactive_subscription_status=$status"
+          test "$status" = 404
+          echo 'onboarding_https_routes_verified=true'
