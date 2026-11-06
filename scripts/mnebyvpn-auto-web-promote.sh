@@ -48,9 +48,9 @@ fi
 
 run_web() {
   local name="$1" image="$2" port="$3" ephemeral="$4"
-  local cleanup_flags=()
-  if [ "$ephemeral" = yes ]; then cleanup_flags=(--rm); fi
-  docker run -d "${cleanup_flags[@]}" --name "$name" --restart "$( [ "$ephemeral" = yes ] && echo no || echo unless-stopped )"     --network host --user 1000:1000 --read-only     --tmpfs /tmp:rw,nosuid,nodev,size=32m --cap-drop ALL     --security-opt no-new-privileges --pids-limit 96     --memory 300m --cpus 0.4 --env-file "$ENV_FILE" -e "WEB_PORT=$port"     "$image" >/dev/null
+  local policy_flags=()
+  if [ "$ephemeral" = yes ]; then policy_flags=(--rm); else policy_flags=(--restart unless-stopped); fi
+  docker run -d "${policy_flags[@]}" --name "$name"     --network host --user 1000:1000 --read-only     --tmpfs /tmp:rw,nosuid,nodev,size=32m --cap-drop ALL     --security-opt no-new-privileges --pids-limit 96     --memory 300m --cpus 0.4 --env-file "$ENV_FILE" -e "WEB_PORT=$port"     "$image" >/dev/null
 }
 healthy() {
   local port="$1"
