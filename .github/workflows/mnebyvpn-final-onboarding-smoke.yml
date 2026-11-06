@@ -1,0 +1,40 @@
+name: MNEBYVPN final public CDN onboarding smoke
+on:
+  push:
+    paths: ['.github/workflows/mnebyvpn-final-onboarding-smoke.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check real externally reachable subscription and import endpoints
+        shell: bash
+        run: |
+          set -euo pipefail
+          base=https://cdn.servgo.ru:8443
+          target=cdn.servgo.ru:8443:89.125.90.101
+          curl --noproxy '*' --fail --silent --show-error \
+            --connect-timeout 7 --max-time 16 --resolve "$target" \
+            "$base/vpn-install.js" -o "$RUNNER_TEMP/vpn-install.js"
+          grep -Fq 'incy://import/' "$RUNNER_TEMP/vpn-install.js"
+          grep -Fq 'https://cdn.servgo.ru:8443/sub/' "$RUNNER_TEMP/vpn-install.js"
+          echo 'public_install_js=200'
+          bogus=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+          for path in "/sub/$bogus" "/install/$bogus?client=incy"; do
+            result="$(curl --noproxy '*' --silent --show-error \
+              --connect-timeout 7 --max-time 16 --resolve "$target" \
+              -o /dev/null -w '%{http_code}' "$base$path")"
+            test "$result" = 404
+            echo "anonymous_expired_or_unknown_subscription=$result"
+          done
+          webhook="$(curl --noproxy '*' --silent --show-error \
+            --connect-timeout 7 --max-time 16 --resolve "$target" \
+            -X POST -H 'Content-Type: application/json' \
+            -d '{"update_id":1}' -o /dev/null -w '%{http_code}' \
+            "$base/mnebyvpn-telegram/webhook")"
+          test "$webhook" = 401
+          echo 'foreign_bot_unsigned_webhook=401'
+          echo 'public_tls_certificate_and_gateway=verified'
