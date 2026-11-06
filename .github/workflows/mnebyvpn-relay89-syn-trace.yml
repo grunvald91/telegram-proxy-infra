@@ -1,0 +1,32 @@
+name: Trace external TCP SYN to relay89 HTTPS
+on:
+  push:
+    paths: ['.github/workflows/mnebyvpn-relay89-syn-trace.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  trace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      FOREIGN_HOST: '89.125.90.101'
+      FOREIGN_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Count packet arrivals while attempting external TCP HTTPS
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$FOREIGN_PASSWORD"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          export SSHPASS="$FOREIGN_PASSWORD"
+          opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=9 -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" "root@$FOREIGN_HOST"             'timeout 14 tcpdump -l -n -i eth0 "tcp[tcpflags] & tcp-syn != 0 and (dst port 443 or dst port 80)" 2>/dev/null | awk '\''/\.443:/{a++} /\.80:/{b++} END{print "inbound_syn_443_count=" a+0; print "inbound_syn_80_count=" b+0}'\''' &
+          observer=$!
+          sleep 2
+          for port in 443 80; do
+            echo "external_port=$port"
+            timeout 8 bash -c "echo > /dev/tcp/89.125.90.101/$port" >/dev/null 2>&1 &&
+              echo "external_tcp_connect=ok" || echo "external_tcp_connect=failed"
+          done
+          wait "$observer"
