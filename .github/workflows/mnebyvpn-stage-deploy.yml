@@ -1,0 +1,74 @@
+name: Deploy MNEBYVPN isolated web stage (server188)
+
+on:
+  push:
+    paths:
+      - '.github/workflows/mnebyvpn-stage-deploy.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-mnebyvpn-isolated-stage
+  cancel-in-progress: false
+
+jobs:
+  stage:
+    name: Deploy and verify localhost-only staged web
+    runs-on: ubuntu-latest
+    timeout-minutes: 16
+    env:
+      HOST: '188.120.254.223'
+      SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      MNEBYVPN_SHA: 'd521b024190bbfa566459f4f0c704d53c8b72ec1'
+    steps:
+      - name: Checkout deployment tooling
+        uses: actions/checkout@v4
+        with:
+          path: infra
+      - name: Checkout reviewed MNEBYVPN main commit
+        uses: actions/checkout@v4
+        with:
+          repository: grunvald91/Mnebyvpn
+          ref: d521b024190bbfa566459f4f0c704d53c8b72ec1
+          path: vpn
+          persist-credentials: false
+      - name: Verify immutable release and package
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -n "$SSH_PASSWORD" ] || { echo 'SERVER188 SSH secret is missing'; exit 2; }
+          actual="$(git -C vpn rev-parse HEAD)"
+          test "$actual" = "$MNEBYVPN_SHA" || { echo 'Unexpected source commit'; exit 2; }
+          test -f vpn/apps/web/src/server.ts
+          test -f vpn/db/migrations/0015_dns_credit_metering.sql
+          tar -czf "$RUNNER_TEMP/mnebyvpn-stage.tar.gz" --exclude=.git -C vpn .
+          sha256sum "$RUNNER_TEMP/mnebyvpn-stage.tar.gz" | cut -d' ' -f1 | cut -c1-16 | sed 's/^/artifact_sha256_prefix=/'
+      - name: Install SSH transport
+        run: sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+      - name: Copy isolated deployment bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$SSH_PASSWORD"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          sshpass -e scp "${opts[@]}" infra/scripts/mnebyvpn-stage-install.sh "root@$HOST:/tmp/mnebyvpn-stage-install.sh"
+          sshpass -e scp "${opts[@]}" "$RUNNER_TEMP/mnebyvpn-stage.tar.gz" "root@$HOST:/tmp/mnebyvpn-stage.tar.gz"
+      - name: Stage on server188 with payments blocked and health checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$SSH_PASSWORD"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR \
+            "root@$HOST" "bash /tmp/mnebyvpn-stage-install.sh /tmp/mnebyvpn-stage.tar.gz '$MNEBYVPN_SHA'"
+      - name: Remove only temporary upload files
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "$SSH_PASSWORD" ]; then
+            export SSHPASS="$SSH_PASSWORD"
+            sshpass -e ssh -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR \
+              "root@$HOST" 'rm -f /tmp/mnebyvpn-stage.tar.gz /tmp/mnebyvpn-stage-install.sh' || true
+          fi
