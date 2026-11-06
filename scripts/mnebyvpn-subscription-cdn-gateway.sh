@@ -71,8 +71,8 @@ else:
 '''
     rules='    '+tag+'\n'
     for matcher in (
-        'location ~ ^/sub/[A-Za-z0-9_-]{43}$',
-        'location ~ ^/install/[A-Za-z0-9_-]{43}$',
+        'location ~ "^/sub/[A-Za-z0-9_-]{43}$"',
+        'location ~ "^/install/[A-Za-z0-9_-]{43}$"',
         'location = /vpn-install.js',
     ):
         rules+='    '+matcher+' {\n'+shared+f'        proxy_pass {upstream};\n'+'    }\n'
