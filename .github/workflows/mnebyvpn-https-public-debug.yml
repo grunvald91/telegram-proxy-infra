@@ -1,0 +1,68 @@
+name: MNEBYVPN diagnose external HTTPS timeout (read only)
+on:
+  push:
+    paths: ['.github/workflows/mnebyvpn-https-public-debug.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      HOST: '188.120.254.223'
+      PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Probe external TCP and TLS path
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import socket,subprocess
+          for port in [80,443]:
+            try:
+              sock=socket.create_connection(('188.120.254.223',port),5)
+              sock.close()
+              print('external_tcp_'+str(port)+'=connected')
+            except Exception as exc:
+              print('external_tcp_'+str(port)+'='+type(exc).__name__)
+          for name in ['mnebyvpn.site','www.mnebyvpn.site']:
+            p=subprocess.run(['curl','--noproxy','*','--connect-timeout','5','--max-time','10','-sS',
+              '-o','/dev/null','-w','code=%{http_code};connect=%{time_connect};tls=%{time_appconnect};verify=%{ssl_verify_result};ip=%{remote_ip}',
+              'https://'+name+'/'],capture_output=True,text=True,timeout=12)
+            print('external_https_'+name+'_exit='+str(p.returncode))
+            print('external_https_'+name+'_metrics='+p.stdout.strip())
+            print('external_https_'+name+'_error='+p.stderr.strip()[:100])
+          PY
+      - name: Check local TLS, port ownership and certificate status
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PASSWORD"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          export SSHPASS="$PASSWORD"
+          sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o LogLevel=ERROR "root@$HOST" 'python3 -' <<'PY'
+          import pathlib,subprocess,re
+          def cmd(args):
+            try:return subprocess.run(args,capture_output=True,text=True,timeout=12)
+            except Exception:return None
+          out=cmd(['nginx','-T'])
+          config=out.stdout if out else ''
+          print('nginx_syntax_ok='+str(bool(out and out.returncode==0)).lower())
+          print('sni_domain_route_count='+str(config.count('mnebyvpn.site 127.0.0.1:18449;')))
+          print('sni_www_route_count='+str(config.count('www.mnebyvpn.site 127.0.0.1:18449;')))
+          print('https_site_present='+str('listen 127.0.0.1:18449 ssl;' in config).lower())
+          for p in [80,443,18449,8792]:
+            n=cmd(['bash','-c', "ss -H -lnt | awk '{print $4}' | grep -Ec ':"+str(p)+"$' || true"])
+            print('local_listener_'+str(p)+'='+(n.stdout.strip() if n else '?'))
+          for name,ip,port in [
+            ('localstream','127.0.0.1',443),('localtls','127.0.0.1',18449),
+            ('publicip','188.120.254.223',443)]:
+            p=cmd(['curl','--noproxy','*','--resolve',
+              'mnebyvpn.site:'+str(port)+':'+ip,'--connect-timeout','3','--max-time','9',
+              '-sS','-o','/dev/null','-w','%{http_code};tls=%{time_appconnect};verify=%{ssl_verify_result}',
+              'https://mnebyvpn.site'+(':'+str(port) if port!=443 else '')+'/'])
+            print('server_https_'+name+'_exit='+str(p.returncode if p else -1))
+            print('server_https_'+name+'_metrics='+(p.stdout.strip() if p else '?'))
+          print('read_only=true')
+          PY
