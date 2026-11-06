@@ -1,0 +1,45 @@
+name: Deploy Telegram primary cabinet using existing 89-188 route
+on:
+  push:
+    paths:
+      - '.github/workflows/mnebyvpn-telegram-primary-promotion.yml'
+      - 'scripts/mnebyvpn-bot-primary-deploy.sh'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebyvpn-telegram-primary-promotion
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      HOST: '188.120.254.223'
+      PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      EXPECTED_SHA: 'edd298cac9b990805544ad2029ca19a90c7ef8d9'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tokenless Telegram cabinet after verified stage image
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PASSWORD"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          export SSHPASS="$PASSWORD"
+          opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" "root@$HOST" \
+            "test \"\$(cat /opt/mnebyvpn/staging/active_sha)\" = '$EXPECTED_SHA'" || {
+              echo "::error::Staged app SHA mismatch; refusing promotion"; exit 2;
+            }
+          sshpass -e scp "${opts[@]}" scripts/mnebyvpn-bot-primary-deploy.sh "root@$HOST:/tmp/mnebyvpn-bot-primary-deploy.sh"
+          sshpass -e ssh "${opts[@]}" "root@$HOST" 'bash /tmp/mnebyvpn-bot-primary-deploy.sh'
+      - name: Remove temporary installer
+        if: always()
+        shell: bash
+        run: |
+          if [ -n "$PASSWORD" ]; then
+            export SSHPASS="$PASSWORD"
+            sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o LogLevel=ERROR \
+              "root@$HOST" 'rm -f /tmp/mnebyvpn-bot-primary-deploy.sh' || true
+          fi
