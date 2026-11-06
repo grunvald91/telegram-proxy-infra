@@ -52,6 +52,7 @@ run_web() {
   if [ "$ephemeral" = yes ]; then policy_flags=(--rm); else policy_flags=(--restart unless-stopped); fi
   docker run -d "${policy_flags[@]}" --name "$name"     --network host --user 1000:1000 --read-only     --tmpfs /tmp:rw,nosuid,nodev,size=32m --cap-drop ALL     --security-opt no-new-privileges --pids-limit 96     --memory 300m --cpus 0.4 --env-file "$ENV_FILE" -e "WEB_PORT=$port"     "$image" >/dev/null
 }
+public_listener() { ss -H -lnt | awk '{print $4}' | grep -Fqx '127.0.0.1:8792'; }
 healthy() {
   local port="$1"
   local code=''
@@ -84,8 +85,7 @@ if [ "$has_public" = yes ]; then
   docker stop -t 12 "$NAME" >/dev/null
   docker rm "$NAME" >/dev/null
 fi
-if ! run_web "$NAME" "$IMAGE" 8792 no || ! healthy 8792 ||
-   ! ss -H -lnt | awk '{print $4}' | grep -Fqx '127.0.0.1:8792'; then
+if ! run_web "$NAME" "$IMAGE" 8792 no || ! healthy 8792 || ! public_listener; then
   echo 'Public website health failed; restoring previous image'
   docker rm -f "$NAME" >/dev/null 2>&1 || true
   if [ -n "$old_image" ]; then
