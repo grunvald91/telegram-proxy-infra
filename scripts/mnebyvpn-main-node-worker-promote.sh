@@ -54,7 +54,7 @@ done
 old=no
 if docker ps -a --format '{{.Names}}' | grep -qx "$NAME"; then
   old=yes
-elif ss -H -lnt | awk '{print $4}' | grep -Eq ':8794$'; then
+elif ss -H -lnt | awk '{print $4}' | grep -Eq '^(127[.]0[.]0[.]1|0[.]0[.]0[.]0|\\[::\\]|\\*):8794$'; then
   echo 'VPN worker port occupied by unknown process'; exit 2
 fi
 
