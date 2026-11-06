@@ -1,0 +1,45 @@
+name: MNEBYVPN foreign Telegram egress and Python readiness
+on:
+  push:
+    paths: ['.github/workflows/mnebyvpn-foreign-bot-egress.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      FOREIGN_HOST: '89.125.90.101'
+      PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Read-only check foreign HTTPS Telegram Bot API egress and Python
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PASSWORD"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          export SSHPASS="$PASSWORD"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR "root@$FOREIGN_HOST" 'python3 -' <<'PY'
+          import sys,subprocess,ssl,urllib.request,urllib.error,pathlib,socket,shutil
+          print('python_version='+sys.version.split()[0])
+          print('openssl_present='+str(shutil.which('openssl') is not None).lower())
+          print('systemctl_present='+str(shutil.which('systemctl') is not None).lower())
+          print('curl_present='+str(shutil.which('curl') is not None).lower())
+          print('git_present='+str(shutil.which('git') is not None).lower())
+          print('foreign_bot_path_exists='+str(pathlib.Path('/opt/mnebyvpn-telegram').exists()).lower())
+          print('telegram_bot_services='+str(subprocess.run(['systemctl','list-unit-files','--type','service','--no-legend'],
+            capture_output=True,text=True,timeout=10).stdout.lower().count('mnebyvpn')))
+          for host,path in [('api.telegram.org','/'),('raw.githubusercontent.com','/grunvald91/Mnebyvpn/main/package.json')]:
+            try:
+              with urllib.request.urlopen('https://'+host+path,timeout=10,context=ssl.create_default_context()) as response:
+                print(host+'_tls_verified=true')
+                print(host+'_http_status='+str(response.status))
+            except urllib.error.HTTPError as exc:
+              print(host+'_tls_verified=true')
+              print(host+'_http_status='+str(exc.code))
+            except Exception as exc:
+              print(host+'_tls_verified=false')
+              print(host+'_error='+type(exc).__name__)
+          print('read_only=true')
+          PY
