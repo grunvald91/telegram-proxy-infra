@@ -21,6 +21,7 @@ jobs:
             "$base/vpn-install.js" -o "$RUNNER_TEMP/vpn-install.js"
           grep -Fq 'incy://import/' "$RUNNER_TEMP/vpn-install.js"
           grep -Fq 'https://cdn.servgo.ru:8443/sub/' "$RUNNER_TEMP/vpn-install.js"
+          grep -Fq 'window.location.assign(target)' "$RUNNER_TEMP/vpn-install.js"
           echo 'public_install_js=200'
           bogus=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
           for path in "/sub/$bogus" "/install/$bogus?client=incy"; do
