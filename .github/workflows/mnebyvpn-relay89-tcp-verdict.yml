@@ -87,7 +87,10 @@ jobs:
                 print('trace_tail='+fragment[:220],flush=True)
             for key in ['ip','-4','route','get',src,'from','89.125.90.101']:
               pass
-            route=cmd('ip','-4','route','get',src,'from','89.125.90.101').stdout
+            result=cmd('ip','-4','route','get',src,'from','89.125.90.101')
+            route=result.stdout
+            print('route_get_exit='+str(result.returncode),flush=True)
+            print('route_uses_unreachable='+str('unreachable' in route.lower()).lower(),flush=True)
             device=re.search(r'\\bdev\\s+(\\S+)',route)
             print('route_device='+(device.group(1) if device else 'unknown'),flush=True)
             for table in ['INPUT','OUTPUT']:
