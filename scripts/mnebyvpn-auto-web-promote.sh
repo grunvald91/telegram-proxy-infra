@@ -51,19 +51,14 @@ elif port_busy 8792; then
   echo 'Public web port belongs to an unknown service; refusing'; exit 2
 fi
 
-# Existing public website and Telegram subscription DB are separate.
-# Use a root-only env file for the bot DB; never replace public DATABASE_URL.
-test -s "$ROOT/bot/web.env"
+# The website reads Telegram subscriptions using a dedicated SELECT-only DB role.
+# Never load the Telegram bot database writer credentials into this container.
 test -s "$ROOT/bot/worker.env"
-BOT_SUBSCRIPTION_DB="$(sed -n 's/^DATABASE_URL=//p' "$ROOT/bot/web.env")"
-[[ "$BOT_SUBSCRIPTION_DB" == postgresql://* && "$BOT_SUBSCRIPTION_DB" != *$'\n'* ]] ||
-  { echo 'Private Telegram subscription DB missing or invalid'; exit 2; }
-BRIDGE_TMP="$(mktemp "$ROOT/bot/subscription-web.env.tmp.XXXXXXXX")"
-printf 'VPN_SUBSCRIPTION_DATABASE_URL=%s\n' "$BOT_SUBSCRIPTION_DB" > "$BRIDGE_TMP"
-chmod 600 "$BRIDGE_TMP"
-mv -f "$BRIDGE_TMP" "$ROOT/bot/subscription-web.env"
-unset BOT_SUBSCRIPTION_DB
-
+test -s "$ROOT/public/subscription-db.env" ||
+  { echo 'Subscription DB reader credentials missing'; exit 2; }
+grep -Eq '^VPN_SUBSCRIPTION_DATABASE_URL=postgresql://mnebyvpn_sub_ro:[a-f0-9]{64}@127[.]0[.]0[.]1:55433/mnebyvpn_stage$' \
+  "$ROOT/public/subscription-db.env" ||
+  { echo 'Subscription DB reader URL malformed'; exit 2; }
 run_web() {
   local name="$1" image="$2" port="$3" ephemeral="$4"
   local policy_flags=()
@@ -80,7 +75,7 @@ run_web() {
     --cap-drop ALL --security-opt no-new-privileges --pids-limit 96 \
     --memory 300m --cpus 0.4 --env-file "$ENV_FILE" \
     --env-file "$ROOT/bot/worker.env" \
-    --env-file "$ROOT/bot/subscription-web.env" \
+    --env-file "$ROOT/public/subscription-db.env" \
     -e "WEB_PORT=$port" "$image" >/dev/null
 }
 public_listener() { ss -H -lnt | awk '{print $4}' | grep -Fqx '127.0.0.1:8792'; }
