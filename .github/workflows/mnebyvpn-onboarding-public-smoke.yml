@@ -1,4 +1,5 @@
 name: MNEBYVPN onboarding public HTTPS smoke
+# Recheck HTTPS reachability after validated production subscription DB rollout.
 on:
   push:
     paths: ['.github/workflows/mnebyvpn-onboarding-public-smoke.yml']
