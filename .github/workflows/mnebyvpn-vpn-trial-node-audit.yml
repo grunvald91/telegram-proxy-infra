@@ -1,0 +1,67 @@
+name: MNEBYVPN verify real VPN provisioning capability for free trial
+on:
+  push:
+    paths: ['.github/workflows/mnebyvpn-vpn-trial-node-audit.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      RU_HOST: '188.120.254.223'
+      RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      FOREIGN_HOST: '89.125.90.101'
+      FOREIGN_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Inspect foreign VPN node candidates and existing proxy services without changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          export SSHPASS="$FOREIGN_PASSWORD"
+          sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o LogLevel=ERROR "root@$FOREIGN_HOST" 'python3 -' <<'PY'
+          import shutil,subprocess,pathlib,re,os
+          def cmd(x):
+            return subprocess.run(x,capture_output=True,text=True,timeout=12)
+          print('vpn_foreign_read_only=true')
+          for k in ['xray','sing-box','remnawave','docker','wg','nginx','caddy']:
+            print('foreign_'+k.replace('-','_')+'_binary='+str(shutil.which(k) is not None).lower())
+          units=cmd(['systemctl','list-unit-files','--type=service','--no-legend']).stdout.lower()
+          for name in ['xray','sing-box','remnawave','marzban','3x-ui','hysteria','v2ray']:
+            print('foreign_'+name.replace('-','_')+'_unit='+str(name in units).lower())
+          for path in ['/opt/remnawave','/opt/xray','/etc/xray','/etc/sing-box','/opt/3x-ui']:
+            print('foreign_'+path.strip('/').replace('/','_').replace('-','_')+'_exists='+str(pathlib.Path(path).exists()).lower())
+          listen=cmd(['ss','-H','-lnt']).stdout
+          print('foreign_loopback_tls8443='+str('127.0.0.1:8443' in listen).lower())
+          print('foreign_public_bot8443='+str(bool(re.search(r'\d+\.\d+\.\d+\.\d+:8443',listen))).lower())
+          print('foreign_norisk_audit_complete=true')
+          PY
+      - name: Verify RU DB paid offers and trial grants without identifiers
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$RU_PASSWORD"
+          sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o LogLevel=ERROR "root@$RU_HOST" 'bash -s' <<'SH'
+          set -euo pipefail
+          docker exec mnebyvpn-stage-postgres psql -At -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage <<'SQL'
+          SELECT 'vpn_trial_enabled='||enabled FROM trial_offers WHERE product='vpn';
+          SELECT 'vpn_paid_plans_live='||count(*) FROM billing_plans WHERE product='vpn' AND enabled AND stars IS NOT NULL;
+          SELECT 'vpn_pricing_drafts_with_prices='||count(*) FROM pricing_drafts WHERE product='vpn' AND (rub_minor IS NOT NULL OR stars IS NOT NULL);
+          SELECT 'vpn_entitlements_waiting_for_node='||count(*) FROM entitlements WHERE product='vpn' AND state='PAID_PENDING_PROVISIONING';
+          SELECT 'vpn_entitlements_active='||count(*) FROM entitlements WHERE product='vpn' AND state='ACTIVE';
+          SELECT 'vpn_reconcile_outbox_pending='||count(*) FROM reconcile_outbox b JOIN entitlements e ON e.id=b.entitlement_id WHERE e.product='vpn' AND b.handled_at IS NULL;
+          SQL
+          python3 - <<'PY'
+          import subprocess,shutil,pathlib
+          for key in ['xray','sing-box','remnawave','docker']:
+            print('ru_'+key.replace('-','_')+'_binary='+str(shutil.which(key) is not None).lower())
+          p=subprocess.run(['systemctl','list-unit-files','--type=service','--no-legend'],
+            capture_output=True,text=True,timeout=12)
+          units=p.stdout.lower()
+          for key in ['xray','sing-box','remnawave','marzban']:
+            print('ru_'+key.replace('-','_')+'_unit='+str(key in units).lower())
+          print('ru_vpn_read_only=true')
+          PY
+          SH
