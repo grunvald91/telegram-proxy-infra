@@ -24,7 +24,7 @@ jobs:
             -o LogLevel=ERROR "root@$HOST" 'bash -se' <<'REMOTE'
           set -euo pipefail
           python3 - <<'PY'
-          import pathlib,uuid,time,hmac,hashlib,json,urllib.request
+          import pathlib,uuid,time,hmac,hashlib,json,urllib.request,email.utils
           key_path=pathlib.Path('/opt/mnebyvpn/bot/provisioner.key')
           key=bytes.fromhex(key_path.read_text().strip())
           assert len(key)==32
@@ -35,8 +35,13 @@ jobs:
             {'Content-Type':'application/json','X-Mnebyvpn-Signature':sig},method='POST')
           with urllib.request.urlopen(req,timeout=9) as response:
             assert response.status==200
+            date_header=response.headers.get('Date')
             result=json.load(response)
           assert result['enabled'] is False and result['revision']==0
+          assert date_header
+          server_ts=email.utils.parsedate_to_datetime(date_header).timestamp()
+          delta=round(server_ts-time.time(),1)
+          print('foreign_node_clock_delta_seconds='+str(delta))
           print('existing_wireguard_node_hmac_authenticated_inspect=ok')
           print('node_secret_never_logged=true')
           PY
