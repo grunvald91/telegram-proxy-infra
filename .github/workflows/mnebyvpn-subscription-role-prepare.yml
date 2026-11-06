@@ -1,0 +1,34 @@
+name: MNEBYVPN provision read-only subscription database access on 188
+on:
+  push:
+    paths:
+      - '.github/workflows/mnebyvpn-subscription-role-prepare.yml'
+      - 'scripts/mnebyvpn-subscription-read-role.sh'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebyvpn-subscription-role-188
+  cancel-in-progress: false
+jobs:
+  configure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      HOST: '188.120.254.223'
+      PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate installer and configure least privilege using existing SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PASSWORD"
+          bash -n scripts/mnebyvpn-subscription-read-role.sh
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          export SSHPASS="$PASSWORD"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          sshpass -e scp "${opts[@]}" scripts/mnebyvpn-subscription-read-role.sh \
+            "root@$HOST:/tmp/mnebyvpn-subscription-read-role.sh"
+          sshpass -e ssh "${opts[@]}" "root@$HOST" \
+            'bash /tmp/mnebyvpn-subscription-read-role.sh; result=$?; rm -f /tmp/mnebyvpn-subscription-read-role.sh; exit "$result"'
