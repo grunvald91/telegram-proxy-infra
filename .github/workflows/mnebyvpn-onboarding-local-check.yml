@@ -1,4 +1,5 @@
 name: MNEBYVPN localhost onboarding routes check on 188
+# Validate production release 6ea5a64 with dedicated readonly subscriber DB.
 on:
   push:
     paths: ['.github/workflows/mnebyvpn-onboarding-local-check.yml']
