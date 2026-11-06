@@ -1,0 +1,35 @@
+name: MNEBYVPN localhost onboarding routes check on 188
+on:
+  push:
+    paths: ['.github/workflows/mnebyvpn-onboarding-local-check.yml']
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      HOST: '188.120.254.223'
+      PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Verify local bot and HTTPS backend routes without any tokens
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PASSWORD"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          export SSHPASS="$PASSWORD"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR "root@$HOST" 'bash -se' <<'REMOTE'
+          set -euo pipefail
+          for pair in "8792/healthz" "8793/readyz" "8794/readyz"; do
+            status="$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:$pair")"
+            echo "local_status_$pair=$status"
+            test "$status" = 200
+          done
+          curl --noproxy '*' -fsS --max-time 5 http://127.0.0.1:8792/vpn-install.js | grep -q 'incy://import/'
+          echo 'local_install_script=ok'
+          invalid='AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+          status="$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:8792/sub/$invalid")"
+          echo "local_inactive_sub_status=$status"
+          test "$status" = 404
+          REMOTE
