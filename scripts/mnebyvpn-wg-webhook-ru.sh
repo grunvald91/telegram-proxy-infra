@@ -76,10 +76,14 @@ nginx -t >/dev/null
 systemctl daemon-reload
 systemctl enable --now mnebyvpn-wg-webhook-firewall.service >/dev/null
 systemctl reload nginx
-probe="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 4 -X POST -H 'Content-Type: application/json' -d '{"update_id":1}' http://10.66.77.2:8794/webhooks/telegram)"
-test "$probe" = 401 || { echo "wg_bridge_auth_failed"; exit 2; }
+# This bridge accepts only source 10.66.77.1 on WireGuard. A request
+# from RU itself is deliberately blocked. Test it from relay89 in the next step.
+ss -H -lnt | awk '{print $4}' | grep -Fqx '10.66.77.2:8794' || {
+  echo "wg_bridge_not_listening"; exit 2;
+}
+test "$(curl -s -o /dev/null -w '%{http_code}' --max-time 4 -X POST -H 'Content-Type: application/json' -d '{"update_id":1}' http://127.0.0.1:8793/webhooks/telegram)" = 401
 trap - ERR
 echo "ru_wg_webhook_bridge=ready"
-echo "ru_wg_webhook_http_unsigned=401"
+echo "ru_local_webhook_auth_required=true"
 echo "ru_wg_listen=10.66.77.2:8794"
 echo "ru_other_proxy_sites_unmodified=true"
