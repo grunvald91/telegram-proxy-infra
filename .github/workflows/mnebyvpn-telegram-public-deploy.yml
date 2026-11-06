@@ -1,0 +1,40 @@
+name: Deploy MNEBYVPN tokenless Telegram webhook on server188
+on:
+  push:
+    paths: ['.github/workflows/mnebyvpn-telegram-public-deploy.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebyvpn-public-bot
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      HOST: '188.120.254.223'
+      PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install bot responder and append protected Nginx exact route
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PASSWORD"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          export SSHPASS="$PASSWORD"
+          opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o LogLevel=ERROR)
+          sshpass -e scp "${opts[@]}" scripts/mnebyvpn-bot-info-prepare.sh "root@$HOST:/tmp/mnebyvpn-bot-info-prepare.sh"
+          sshpass -e scp "${opts[@]}" scripts/mnebyvpn-bot-webhook-route.sh "root@$HOST:/tmp/mnebyvpn-bot-webhook-route.sh"
+          sshpass -e ssh "${opts[@]}" "root@$HOST" \
+            'bash /tmp/mnebyvpn-bot-info-prepare.sh && bash /tmp/mnebyvpn-bot-webhook-route.sh'
+      - name: Remove only upload scripts
+        if: always()
+        shell: bash
+        run: |
+          if [ -n "$PASSWORD" ]; then
+            export SSHPASS="$PASSWORD"
+            sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=9 -o LogLevel=ERROR \
+              "root@$HOST" 'rm -f /tmp/mnebyvpn-bot-info-prepare.sh /tmp/mnebyvpn-bot-webhook-route.sh' || true
+          fi
