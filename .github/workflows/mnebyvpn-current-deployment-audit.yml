@@ -1,0 +1,63 @@
+name: MNEBYVPN read-only deployment inventory via existing 188 channel
+on:
+  push:
+    paths: ['.github/workflows/mnebyvpn-current-deployment-audit.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      HOST: '188.120.254.223'
+      PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Inspect only MNEBYVPN resources on existing VPS
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PASSWORD" || { echo 'existing_188_ssh_password=missing'; exit 2; }
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          export SSHPASS="$PASSWORD"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR "root@$HOST" 'bash -se' <<'REMOTE'
+          set -euo pipefail
+          echo 'mnebyvpn_inventory=read_only'
+          for location in /opt/mnebyvpn/staging/active_sha /opt/mnebyvpn/public/active_sha; do
+            if test -f "$location"; then
+              sha="$(cat "$location")"
+              if [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+                echo "$(basename "$(dirname "$location")")_sha=$sha"
+              else
+                echo "$(basename "$(dirname "$location")")_sha=invalid"
+              fi
+            else
+              echo "$(basename "$(dirname "$location")")_sha=missing"
+            fi
+          done
+          for unit in mnebyvpn-vpn-worker.service mnebyvpn-expiry-worker.service mnebyvpn-bot.service; do
+            echo "unit_$unit=$(systemctl is-active "$unit" 2>/dev/null || true)"
+          done
+          for container in mnebyvpn-stage-web mnebyvpn-public-web mnebyvpn-stage-postgres mnebyvpn-bot-info mnebyvpn-vpn-worker; do
+            if docker container inspect "$container" >/dev/null 2>&1; then
+              docker inspect --format "container_{{.Name}}={{.State.Status}} image={{.Config.Image}}" "$container"
+            else
+              echo "container_$container=missing"
+            fi
+          done
+          for target in bot/web.env bot/provisioner.key staging/web.env public/web.env; do
+            if test -s "/opt/mnebyvpn/$target"; then
+              echo "private_file_$(echo "$target" | tr '/' '_')=present"
+            else
+              echo "private_file_$(echo "$target" | tr '/' '_')=missing"
+            fi
+          done
+          for url in http://127.0.0.1:8791/healthz http://127.0.0.1:8792/healthz http://127.0.0.1:8793/readyz http://10.66.77.1:18944/healthz; do
+            code="$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --max-time 4 "$url" || true)"
+            case "$url" in
+              *:8791*) label=stage_web;; *:8792*) label=public_web;; *:8793*) label=telegram_cabinet;; *) label=vpn_node_private;;
+            esac
+            echo "$label=$code"
+          done
+          docker version --format 'docker_engine={{.Server.Version}}' 2>/dev/null || true
+          REMOTE
