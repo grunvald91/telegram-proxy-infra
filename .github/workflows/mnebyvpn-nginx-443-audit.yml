@@ -1,0 +1,41 @@
+name: MNEBYVPN read-only Nginx HTTPS listener audit
+on:
+  push:
+    paths: ['.github/workflows/mnebyvpn-nginx-443-audit.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      HOST: '188.120.254.223'
+      PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Check listener ownership without displaying proxy routing
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PASSWORD"
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+          export SSHPASS="$PASSWORD"
+          sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o LogLevel=ERROR "root@$HOST" 'python3 -' <<'PY'
+          import subprocess,re
+          p=subprocess.run(['nginx','-T'],capture_output=True,text=True,timeout=15)
+          if p.returncode:raise SystemExit('nginx -T failed')
+          source=p.stdout
+          sections=re.split(r'(?m)^# configuration file (.+?):\n',source)
+          summary={'http':0,'stream':0,'other':0}
+          for i in range(1,len(sections),2):
+            path=sections[i]
+            data=sections[i+1]
+            matches=re.findall(r'(?m)^\s*listen\s+[^;]*?(?:[:.]443|\b443\b)[^;]*;',data)
+            kind='stream' if re.search(r'streams?|sni',path,re.I) else (
+              'http' if re.search(r'sites-|conf\.d|http',path,re.I) else 'other')
+            summary[kind]+=len(matches)
+          for kind,total in summary.items():print('nginx_https_listeners_'+kind+'='+str(total))
+          print('existing_nginx_443_bind='+str(bool(re.search(r':443\b|\s443\b',source))))
+          print('safe_to_add_443_automatically='+str(summary['stream']==0 and summary['other']==0).lower())
+          print('read_only=yes')
+          PY
