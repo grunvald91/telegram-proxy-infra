@@ -1,0 +1,73 @@
+name: MNEBYVPN inspect foreign Telegram webhook hosting capacity
+on:
+  push:
+    paths: ['.github/workflows/mnebyvpn-foreign-telegram-readiness.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      HOST: '89.125.90.101'
+      PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Read only inspection of foreign relay TCP80/443, storage and routing
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PASSWORD"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          export SSHPASS="$PASSWORD"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR "root@$HOST" 'python3 -' <<'PY'
+          import pathlib,re,subprocess,os,shutil,socket
+          def run(args):
+            try:return subprocess.run(args,capture_output=True,text=True,timeout=15)
+            except Exception:return None
+          def output(args):
+            z=run(args)
+            return z.stdout.strip() if z else ''
+          print('foreign_host_read_only=true')
+          print('cpu_count='+str(os.cpu_count()))
+          for k in ['MemTotal','MemAvailable','SwapTotal']:
+            m=re.search(r'^'+k+r':\s+(\d+) kB$',pathlib.Path('/proc/meminfo').read_text(),re.M)
+            print(k+'_MiB='+str(round(int(m.group(1))/1024) if m else 'unknown'))
+          print('disk_available_GiB='+str(round(shutil.disk_usage('/').free/1024**3,1)))
+          for k,cmd in [('docker', ['docker','info','--format','{{.ServerVersion}}']),
+              ('node',['node','--version']),('nginx',['nginx','-v']),('certbot',['certbot','--version']),
+              ('nft',['nft','--version'])]:
+            z=run(cmd)
+            print(k+'_installed='+str(bool(z and z.returncode==0)).lower())
+          print('nginx_syntax_ok='+str(bool(z:=run(['nginx','-t'])) and z.returncode==0).lower())
+          s=output(['nginx','-T'])
+          print('nginx_443_stream_sni='+str('ssl_preread on;' in s).lower())
+          print('nginx_443_http_vhosts='+str(len(re.findall(r'(?m)^\s*listen\s+[^;]*443[^;]*;',s))))
+          print('nginx_80_http_vhosts='+str(len(re.findall(r'(?m)^\s*listen\s+[^;]*80[^;]*;',s))))
+          for port in [80,443,8443,8793,18449,18450]:
+            lines=[x for x in output(['ss','-H','-lnt']).splitlines()
+              if re.search(r':'+str(port)+r'\s',x)]
+            print('tcp_'+str(port)+'_listeners='+str(len(lines)))
+          maps=re.findall(r'(?s)map\s+\$ssl_preread_server_name\s+\$(\w+)\s*\{(.*?)\}',s)
+          print('sni_map_count='+str(len(maps)))
+          for i,(key,body) in enumerate(maps):
+            print('sni_map_'+str(i)+'_variable='+key)
+            print('sni_map_'+str(i)+'_includes='+str('include' in body).lower())
+            print('sni_map_'+str(i)+'_entries='+str(len(re.findall(r'(?m)^\s*[^#;\s][^;]*;',body))))
+          print('foreign_letsencrypt_live_count='+str(len(list(pathlib.Path('/etc/letsencrypt/live').glob('*'))) if pathlib.Path('/etc/letsencrypt/live').exists() else 0))
+          print('foreign_postgres_active='+output(['systemctl','is-active','postgresql']))
+          print('foreign_mnebyvpn_exists='+str(pathlib.Path('/opt/mnebyvpn').exists()).lower())
+          print('foreign_read_only_complete=true')
+          PY
+      - name: Independent reachability to foreign HTTPS
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import socket
+          for port in [80,443,8443]:
+            try:
+              with socket.create_connection(('89.125.90.101',port),timeout=4):
+                print('foreign_public_tcp_'+str(port)+'=connected')
+            except Exception as exc:
+              print('foreign_public_tcp_'+str(port)+'='+type(exc).__name__)
+          PY
