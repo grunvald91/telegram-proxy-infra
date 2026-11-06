@@ -1,0 +1,162 @@
+name: Auto-deploy tested MNEBYVPN main to public website
+on:
+  # The SSH secret lives in this infrastructure repo, not in Mnebyvpn.
+  # Cross-repo pushes cannot directly trigger Actions without a separate token.
+  # Poll cheaply; only build/deploy after the source CI has passed.
+  schedule:
+    - cron: '*/15 * * * *'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebyvpn-main-auto-public.yml'
+      - 'scripts/mnebyvpn-auto-web-promote.sh'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mnebyvpn-auto-public-deploy
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Deploy only vetted web code to existing port 8792
+    runs-on: ubuntu-latest
+    timeout-minutes: 22
+    env:
+      HOST: '188.120.254.223'
+      SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Checkout infrastructure scripts
+        uses: actions/checkout@v4
+        with:
+          path: infra
+          persist-credentials: false
+      - name: Checkout latest MNEBYVPN main
+        uses: actions/checkout@v4
+        with:
+          repository: grunvald91/Mnebyvpn
+          ref: main
+          path: vpn
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require passing source CI for all changed website dependencies
+        id: gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha="$(git -C vpn rev-parse HEAD)"
+          [[ "$sha" =~ ^[a-f0-9]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          url='https://api.github.com/repos/grunvald91/Mnebyvpn/actions/workflows/offline-contracts.yml/runs?branch=main&status=success&per_page=15'
+          curl -fsSL --retry 2 --max-time 25 "$url" -o "$RUNNER_TEMP/source-ci.json"
+          last_passed="$(python3 - "$RUNNER_TEMP/source-ci.json" <<'PY'
+          import json,sys
+          runs=json.load(open(sys.argv[1])).get('workflow_runs',[])
+          for r in runs:
+              if (r.get('name')=='Offline code and database contracts' and
+                  r.get('conclusion')=='success' and r.get('event')=='push' and
+                  r.get('head_branch')=='main'):
+                  print(r['head_sha'])
+                  break
+          PY
+          )"
+          if [[ ! "$last_passed" =~ ^[a-f0-9]{40}$ ]]; then
+            echo '::warning::Source has no verified green CI; no deploy'
+            echo "deploy=no" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Main may contain a later documentation/bot-only commit. The web
+          # still qualifies only if all its runtime dependencies match CI.
+          if ! git -C vpn merge-base --is-ancestor "$last_passed" "$sha"; then
+            echo '::warning::CI SHA is not an ancestor of main; no deploy'
+            echo "deploy=no" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! git -C vpn diff --quiet "$last_passed" "$sha" --               apps/web packages db package.json tsconfig.json; then
+            echo '::warning::Unverified website code changes since last green CI; no deploy'
+            echo "deploy=no" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "deploy=yes" >> "$GITHUB_OUTPUT"
+          echo "source_main_sha=$sha" >> "$GITHUB_STEP_SUMMARY"
+          echo "source_green_ci_sha=$last_passed" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Inspect existing deployment (read-only)
+        if: steps.gate.outputs.deploy == 'yes'
+        id: remote
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SSH_PASSWORD" || { echo '::error::Missing SERVER188_SSH_PASSWORD secret in infrastructure repo'; exit 2; }
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          export SSHPASS="$SSH_PASSWORD"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          active="$(sshpass -e ssh "${opts[@]}" "root@$HOST"             'cat /opt/mnebyvpn/public/active_sha 2>/dev/null || true')"
+          if [ "$active" = "${{ steps.gate.outputs.sha }}" ]; then
+            echo 'deploy=no' >> "$GITHUB_OUTPUT"
+            echo 'website_current=already_at_this_SHA' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'deploy=yes' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Package verified immutable source
+        if: steps.remote.outputs.deploy == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C vpn rev-parse HEAD)" = "${{ steps.gate.outputs.sha }}"
+          test -f vpn/apps/web/public/neo.css
+          test -f vpn/apps/web/src/server.ts
+          test -f vpn/db/migrations/0015_dns_credit_metering.sql
+          tar -czf "$RUNNER_TEMP/mnebyvpn-auto-web.tar.gz" --exclude=.git -C vpn .
+          sha256sum "$RUNNER_TEMP/mnebyvpn-auto-web.tar.gz" | cut -c1-20 |
+            sed 's/^/archive_digest_prefix=/'
+
+      - name: Copy isolated release and deploy scripts
+        if: steps.remote.outputs.deploy == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$SSH_PASSWORD"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          sha="${{ steps.gate.outputs.sha }}"
+          sshpass -e scp "${opts[@]}" infra/scripts/mnebyvpn-stage-install.sh             "root@$HOST:/tmp/mnebyvpn-stage-auto-$sha.sh"
+          sshpass -e scp "${opts[@]}" infra/scripts/mnebyvpn-auto-web-promote.sh             "root@$HOST:/tmp/mnebyvpn-promote-auto-$sha.sh"
+          sshpass -e scp "${opts[@]}" "$RUNNER_TEMP/mnebyvpn-auto-web.tar.gz"             "root@$HOST:/tmp/mnebyvpn-release-auto-$sha.tar.gz"
+
+      - name: Staging health, canary, atomic public promotion and rollback
+        if: steps.remote.outputs.deploy == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$SSH_PASSWORD"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          sha="${{ steps.gate.outputs.sha }}"
+          sshpass -e ssh "${opts[@]}" "root@$HOST"             "bash /tmp/mnebyvpn-stage-auto-$sha.sh /tmp/mnebyvpn-release-auto-$sha.tar.gz $sha && bash /tmp/mnebyvpn-promote-auto-$sha.sh $sha"
+          echo "Deployed website main commit: $sha" >> "$GITHUB_STEP_SUMMARY"
+          echo 'Payments, DNS and Telegram integrations were not enabled or modified.' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Probe externally without changing the successful private release
+        if: steps.remote.outputs.deploy == 'yes'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if curl -fsSL --max-time 12 --retry 1 https://mnebyvpn.site/ -o "$RUNNER_TEMP/public-page.html" &&
+            grep -Fq '/neo.css' "$RUNNER_TEMP/public-page.html"; then
+            echo 'External website returned the new theme.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo '::warning::External HTTPS reachability not verified; the localhost public backend passed. Investigate existing DNS/443 route separately.'
+            echo 'External HTTPS: NOT VERIFIED' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Remove only release-specific temporary uploads
+        if: always() && steps.remote.outputs.deploy == 'yes'
+        shell: bash
+        run: |
+          if [ -n "$SSH_PASSWORD" ]; then
+            export SSHPASS="$SSH_PASSWORD"
+            sha="${{ steps.gate.outputs.sha }}"
+            sshpass -e ssh -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new               -o LogLevel=ERROR "root@$HOST"               "rm -f /tmp/mnebyvpn-stage-auto-$sha.sh /tmp/mnebyvpn-promote-auto-$sha.sh /tmp/mnebyvpn-release-auto-$sha.tar.gz" || true
+          fi
