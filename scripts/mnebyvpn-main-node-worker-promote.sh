@@ -53,6 +53,21 @@ if [[ "$live_users" == 0 ]]; then
 else
   echo 'node_expiry_pilot=skipped_to_preserve_live_customers'
 fi
+# No customer operation is permitted until actual remote node deadlines have
+# been inspected without writing or restarting anything on the data plane.
+AUDIT=/tmp/mnebyvpn-live-node-readonly-check.py
+test -s "$AUDIT" || { echo 'Missing signed read-only node inspection';exit 2; }
+python3 "$AUDIT"
+# Repeated main triggers must NOT restart a healthy, already-current worker.
+current_image="$(docker inspect --format '{{.Config.Image}}' "$NAME" 2>/dev/null || true)"
+current_status="$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' \
+  --max-time 5 http://127.0.0.1:8794/readyz || true)"
+if [[ "$current_image" == "$IMAGE" && "$current_status" == 200 ]]; then
+  echo "node_worker_sha=$SHA"
+  echo 'node_worker_promotion=already_current_healthy'
+  echo 'node_live_deadline_check=passed_readonly'
+  exit 0
+fi
 
 for candidate in "$PREVIOUS"; do
   if docker ps -a --format '{{.Names}}' | grep -qx "$candidate"; then
@@ -123,6 +138,8 @@ test "$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' \
   --max-time 3 -X POST -H 'Content-Type: application/json' \
   -d '{"telegramUserId":1}' \
   http://127.0.0.1:8794/profile)" = 401
+# Post-cutover customer readback ensures no loss of active node profiles.
+python3 "$AUDIT"
 if [[ "$old" == yes ]]; then docker rm "$PREVIOUS" >/dev/null; fi
 trap - ERR EXIT
 echo "node_worker_sha=$SHA"
