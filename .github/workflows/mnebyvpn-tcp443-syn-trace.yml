@@ -1,3 +1,4 @@
+# Probe public HTTPS readiness for immediate unrestricted VPN purchases on 2026-11-07.
 name: MNEBYVPN diagnose missing external 443 SYN packets (read-only)
 on:
   push:
