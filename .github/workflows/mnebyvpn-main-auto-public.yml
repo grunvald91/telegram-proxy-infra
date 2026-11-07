@@ -1,3 +1,4 @@
+# Review fix 2026-11-07: publish MNEBYVPN source 0b37346f5bad5d3b83298ed0516f52808fa0a43c after green CI 42386143675; support buttons only, preserve payment settings.
 # Release 2026-11-07: button-only Telegram support inbox pagination API after green CI 42384793687.
 # Release tested Prodamus return-anchor fix source b2aff5eee85b57fe4da899526a2fc63460004fee (green source CI 42369241855).
 # Checkout incident PR48: publish source efe9d55ff335e538d3e32b21f357a91a543d9f9e after green push CI 42362683902.
