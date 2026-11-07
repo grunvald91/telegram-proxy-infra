@@ -47,7 +47,9 @@ GRANT SELECT(id, telegram_user_id, email_address), INSERT(id,email_address),
 GRANT SELECT,INSERT,UPDATE,DELETE ON
       public.website_sessions,public.web_email_codes TO {ROLE};
 GRANT SELECT,INSERT,UPDATE ON public.web_email_rate_limits TO {ROLE};
-GRANT SELECT ON public.entitlements,public.orders,public.order_terms TO {ROLE};
+GRANT SELECT ON public.entitlements,public.orders,public.order_terms,
+      public.provisioning_state,public.vpn_subscription_links TO {ROLE};
+GRANT INSERT(token_sha256,entitlement_id) ON public.vpn_subscription_links TO {ROLE};
 COMMIT;
 """
     run_sql(sql)

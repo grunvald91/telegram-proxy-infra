@@ -51,7 +51,7 @@ GRANT CONNECT ON DATABASE {DB} TO {ROLE};
 GRANT USAGE ON SCHEMA public TO {ROLE};
 
 GRANT SELECT ON public.accounts,public.billing_plans,public.trial_offers,
-  public.referral_invites,public.provisioning_state TO {ROLE};
+  public.referral_invites,public.provisioning_state,public.trial_grants TO {ROLE};
 -- SELECT ... FOR UPDATE/SHARE requires UPDATE on at least one column.
 -- Do not allow this role to edit email, telegram IDs or published prices.
 GRANT UPDATE(created_at) ON public.accounts TO {ROLE};
