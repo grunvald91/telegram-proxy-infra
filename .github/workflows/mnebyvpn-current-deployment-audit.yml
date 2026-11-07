@@ -166,6 +166,13 @@ jobs:
             -U mnebyvpn_stage -d mnebyvpn_stage <<'SQL'
           SELECT 'notice_'||kind||'_'||status||'='||count(*)::text
             FROM vpn_purchase_notifications GROUP BY kind,status ORDER BY kind,status;
+          SELECT 'prodamus_paid_14d_telegram_linked='||count(*)::text
+            FROM orders o JOIN accounts a ON a.id=o.account_id
+           WHERE o.provider='prodamus' AND o.state='PAID'
+             AND a.telegram_user_id IS NOT NULL AND o.created_at>clock_timestamp()-interval '14 days';
+          SELECT 'prodamus_paid_14d_total='||count(*)::text FROM orders o
+           WHERE o.provider='prodamus' AND o.state='PAID'
+             AND o.created_at>clock_timestamp()-interval '14 days';
           SQL
           docker logs --tail 8 mnebyvpn-purchase-notices 2>&1 |
             grep -E '^(vpn-purchase-notifications |MNEBYVPN_PURCHASE_NOTICE_WORKER_FAILURE)' || true
