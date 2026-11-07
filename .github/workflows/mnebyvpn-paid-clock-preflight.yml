@@ -1,3 +1,4 @@
+# Final branch verification: two shell release scripts and real-node read-only deadlines.
 name: MNEBYVPN paid VPN clock nonintrusive node preflight
 on:
   push:
