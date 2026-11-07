@@ -1,3 +1,4 @@
+# Retry scoped DB role after restoring tested website script shell syntax.
 name: Prepare scoped MNEBYVPN website billing DB on canonical server188
 on:
   push:
