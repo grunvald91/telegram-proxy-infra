@@ -73,6 +73,8 @@ def prove_servgo_shared_key(secret:str)->None:
 def set_email_login(secret:str)->None:
     if os.geteuid()!=0:
         raise RuntimeError('Activation requires root')
+    if not (ROOT/'public/auth-db.env').is_file():
+        raise RuntimeError('Scoped canonical auth database was not provisioned')
     if (ROOT/'public/active_sha').read_text().strip()!=PRODUCTION_SHA:
         raise RuntimeError('Production SHA changed; refuse to update unrelated release')
     current=WEB_ENV.read_text()
