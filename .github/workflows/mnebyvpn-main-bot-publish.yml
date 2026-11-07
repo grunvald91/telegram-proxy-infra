@@ -1,4 +1,5 @@
 name: Deploy reviewed MNEBYVPN main Telegram bot via existing server188 SSH
+# Approved isolated bot rollout after source CI main 6657060e on 2026-11-07.
 # Release trigger: PR25 immediate INCY/Karing import attempt with fallback; site green.
 on:
   push:
