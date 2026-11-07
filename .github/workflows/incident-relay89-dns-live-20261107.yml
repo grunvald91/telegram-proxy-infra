@@ -1,0 +1,71 @@
+name: Diagnose relay89 DNS intermittency (read only)
+on:
+  push:
+    branches: ['ops/incident-readonly-20261107']
+    paths: ['.github/workflows/incident-relay89-dns-live-20261107.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  relay89:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      HOST: '89.125.90.101'
+      SSHPASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Install SSH client helper
+        run: |
+          set -euo pipefail
+          test -n "$SSHPASS"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+      - name: Inspect relay89 resolver and reachability without changing services
+        shell: bash
+        run: |
+          set -euo pipefail
+          sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o ServerAliveInterval=8 -o ServerAliveCountMax=2 "root@$HOST" 'python3 -' <<'PY'
+          import datetime, subprocess, time, collections, pathlib, re
+          def run(cmd,t=15):
+              try:
+                  p=subprocess.run(cmd,capture_output=True,text=True,timeout=t)
+                  return p.returncode,p.stdout.strip(),p.stderr.strip()
+              except subprocess.TimeoutExpired:return 124,'','timeout'
+          def cleaned(s):
+              s=re.sub(r'\b\d{7,12}:[A-Za-z0-9_-]{20,}\b','[TOKEN]',s)
+              s=re.sub(r'https?://\S+','[URL]',s)
+              return s[:1400]
+          print('TIME',datetime.datetime.now().astimezone().isoformat())
+          for cmd in [
+              ['uptime'],['free','-m'],['cat','/etc/resolv.conf'],
+              ['systemctl','show','systemd-resolved','-p','LoadState,ActiveState,SubState,NRestarts,Result'],
+              ['systemctl','show','dnsmasq','-p','LoadState,ActiveState,SubState,NRestarts,Result'],
+              ['systemctl','show','unbound','-p','LoadState,ActiveState,SubState,NRestarts,Result'],
+              ['ip','route','get','1.1.1.1'],
+          ]:
+              code,out,err=run(cmd)
+              print('COMMAND',cmd[:2],'exit',code,cleaned(out),cleaned(err))
+          try:
+              p=pathlib.Path('/etc/resolv.conf')
+              print('RESOLV_REALPATH',p.resolve())
+          except Exception as ex:print('RESOLV_ERROR',type(ex).__name__)
+          for unit in ['systemd-resolved','dnsmasq','unbound','telegram-route-refresh']:
+              code,out,err=run(['journalctl','-u',unit,'--since','2026-11-07 07:30:00','--quiet','--no-pager','-o','short-iso'])
+              lines=[l for l in out.splitlines() if re.search('fail|error|timeout|dns|server|restart|stop|start|resolve|unreach|route|name',l,re.I)]
+              print('JOURNAL',unit,'total',len(out.splitlines()))
+              for line in lines[-12:]:print(cleaned(line)[:210])
+          tally=collections.Counter()
+          for i in range(20):
+              t0=time.monotonic()
+              code,out,err=run(['getent','ahostsv4','api.telegram.org'],t=7)
+              elapsed=round(time.monotonic()-t0,2)
+              tally[code]+=1
+              first=out.splitlines()[0].split()[0] if out else ''
+              print('RESOLVE',i,'exit',code,'elapsed',elapsed,'ip',first,'error',cleaned(err)[:120])
+              time.sleep(0.4)
+          print('DNS_EXIT_COUNTS',dict(tally))
+          for i in range(5):
+              code,out,err=run(['curl','-sS','-o','/dev/null','-w','%{http_code} %{time_namelookup} %{time_connect} %{time_total}','--connect-timeout','10','--max-time','16','https://api.telegram.org/'],t=19)
+              print('HTTPS',i,'exit',code,'timings',out,'error',cleaned(err)[:180])
+          print('READ_ONLY',True)
+          PY
