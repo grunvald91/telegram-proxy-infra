@@ -64,15 +64,21 @@ COMMIT;
     ENV.chmod(0o600)
     # Ensure this role cannot settle orders or alter paid entitlements.
     verify=f"""
-SELECT CASE
-  WHEN has_column_privilege('{ROLE}','public.accounts','email_address','UPDATE')
+DO $check$
+BEGIN
+ IF NOT (
+   has_column_privilege('{ROLE}','public.accounts','email_address','UPDATE')
    AND has_table_privilege('{ROLE}','public.web_email_codes','INSERT')
    AND has_table_privilege('{ROLE}','public.web_email_rate_limits','UPDATE')
    AND has_table_privilege('{ROLE}','public.website_sessions','INSERT')
    AND has_table_privilege('{ROLE}','public.entitlements','SELECT')
    AND NOT has_table_privilege('{ROLE}','public.orders','INSERT')
    AND NOT has_table_privilege('{ROLE}','public.entitlements','UPDATE')
- THEN 1 ELSE 1/0 END;
+ ) THEN
+   RAISE EXCEPTION 'Auth DB grant check failed';
+ END IF;
+END;
+$check$;
 """
     run_sql(verify)
     print('canonical_auth_db_role_ready=true')
