@@ -1,3 +1,4 @@
+# Release 2026-11-07: button-only MNEBYVPN support and operator inbox from verified source CI 42385154590.
 # CI-verified button-only support bot source main 973f71af16bca98e56c329d20f2ae4ccbccfc554 (run 42385154590 success); trigger isolated canary release.
 # Button-only support release request 2026-11-07: source main a0b326a CI green, followed by workflow-only commit 51d1383; promote through established canary + rollback.
 # Deploy request: MNEBYVPN source main 23334b455ff6100b40a0df877a21ca107961ff36 CI green; Telegram bot canary and rollback.
