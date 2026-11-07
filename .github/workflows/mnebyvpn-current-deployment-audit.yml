@@ -1,3 +1,4 @@
+# Post-cutover read-only verification: paid VPN node clock enabled by 42419605395; no mutations to customer records.
 name: MNEBYVPN read-only deployment inventory via existing 188 channel
 on:
   push:
