@@ -1,0 +1,56 @@
+name: MNEBYVPN auth runtime preflight (read-only)
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/mnebyvpn-auth-runtime-preflight.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      SERVER188_SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      SERVGO_SSH_PASSWORD: ${{ secrets.SERVER_SSH_PASSWORD }}
+    steps:
+      - name: Check available isolated SSH credentials without revealing them
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "$SERVER188_SSH_PASSWORD" ]]; then echo 'server188_ssh_available=true'; else echo 'server188_ssh_available=false'; exit 2; fi
+          if [[ -n "$SERVGO_SSH_PASSWORD" ]]; then echo 'servgo_ssh_in_infra_repo=true'; else echo 'servgo_ssh_in_infra_repo=false'; fi
+      - name: Inspect MNEBYVPN owned application files and service health (read-only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass
+          SSHPASS="$SERVER188_SSH_PASSWORD" sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@188.120.254.223 'python3 -' <<'PY'
+          import pathlib, subprocess, re
+          root=pathlib.Path('/opt/mnebyvpn')
+          for name,file in [('web',root/'public/web.env'),('bot',root/'bot/web.env'),('worker',root/'bot/worker.env'),('stage',root/'staging/web.env')]:
+              data={}
+              if file.is_file():
+                  for line in file.read_text().splitlines():
+                      if '=' in line:
+                          k,v=line.split('=',1)
+                          data[k]=v
+              for key in ['WEB_EMAIL_LOGIN_ENABLED','MNEBYVPN_MAIL_GATEWAY_SECRET','WEB_TELEGRAM_OIDC_ENABLED','TELEGRAM_OIDC_CLIENT_ID','TELEGRAM_OIDC_CLIENT_SECRET','WEB_TRIAL_ENABLED','WEB_PRODAMUS_WEBHOOK_ENABLED','WEB_NETWORK_PROVISIONING_VERIFIED','WEB_RELEASE_APPROVED','VPN_SUBSCRIPTION_DATABASE_URL','DATABASE_URL']:
+                  v=data.get(key,'')
+                  print(name+'_'+key+'_present='+str(bool(v)).lower())
+                  if key.startswith('WEB_') and key not in ('WEB_RELEASE_APPROVED',):
+                      if v in ('yes','no','0','1'):print(name+'_'+key+'_mode='+v)
+          for name,cmd in [
+              ('site_active_sha',('cat','/opt/mnebyvpn/public/active_sha')),
+              ('stage_active_sha',('cat','/opt/mnebyvpn/staging/active_sha'))
+          ]:
+              x=subprocess.run(cmd,capture_output=True,text=True,timeout=4)
+              code=x.stdout.strip()
+              print(name+'='+code if re.fullmatch('[a-f0-9]{40}',code) else name+'=unverified')
+          for name,url in [('web','http://127.0.0.1:8792/healthz'),('bot','http://127.0.0.1:8793/readyz'),('mail_route','https://servgo.ru/api/auth/mnebyvpn/email-code')]:
+              method='POST' if name=='mail_route' else 'GET'
+              cp=subprocess.run(['curl','-s','-o','/dev/null','-w','%{http_code}','-X',method,'--max-time','7',url],capture_output=True,text=True,timeout=10)
+              print(name+'_http='+cp.stdout.strip()[:3])
+          print('production_changed=false')
+          PY
