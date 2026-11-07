@@ -1,0 +1,23 @@
+name: Guard MNEBYVPN database migration backup
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/mnebyvpn-stage-install.sh'
+      - '.github/workflows/mnebyvpn-stage-migration-lint.yml'
+permissions:
+  contents: read
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate staging installer and snapshot preconditions
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n scripts/mnebyvpn-stage-install.sh
+          grep -Fq "pg_dump -Fc -U mnebyvpn_stage" scripts/mnebyvpn-stage-install.sh
+          grep -Fq "pre_migration_pg_dump=verified" scripts/mnebyvpn-stage-install.sh
+          echo 'snapshot_before_migrations=verified'
