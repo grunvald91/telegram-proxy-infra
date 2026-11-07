@@ -1,0 +1,60 @@
+name: MNEBYVPN encrypted mail secret — publish public key
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebyvpn-mail-public-key.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: mnebyvpn-mail-key
+  cancel-in-progress: false
+jobs:
+  public-key:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      REMOTE_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SSH client
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+      - name: Generate dedicated private key on 188, export PUBLIC key only
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "$REMOTE_PASSWORD"
+          export SSHPASS="$REMOTE_PASSWORD"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@188.120.254.223 '
+            set -eu
+            umask 077
+            install -d -m 700 /opt/mnebyvpn/private
+            private=/opt/mnebyvpn/private/mail-bridge-oaep.pem
+            if test ! -s "$private"; then
+              openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out "$private" >/dev/null 2>&1
+            fi
+            chmod 600 "$private"
+            openssl pkey -in "$private" -pubout 2>/dev/null
+          ' > "$RUNNER_TEMP/mail-bridge.pub.pem"
+          openssl pkey -pubin -in "$RUNNER_TEMP/mail-bridge.pub.pem" -noout
+          install -d -m 755 ops
+          install -m 644 "$RUNNER_TEMP/mail-bridge.pub.pem" ops/mnebyvpn-mail-bridge.pub.pem
+      - name: Publish only the public key for the ServGo encryption job
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- ops/mnebyvpn-mail-bridge.pub.pem && test -z "$(git status --porcelain -- ops/mnebyvpn-mail-bridge.pub.pem)"; then
+            echo 'public_key_already_current=true'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- ops/mnebyvpn-mail-bridge.pub.pem
+          git commit -m "Publish MNEBYVPN mail relay encryption public key only"
+          git pull --rebase origin main
+          git push origin HEAD:main
+          echo 'public_key_published=true'
