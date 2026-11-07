@@ -1,3 +1,4 @@
+# Checkout incident PR48: publish source efe9d55ff335e538d3e32b21f357a91a543d9f9e after green push CI 42362683902.
 # Release main 00256d144b5 after green source CI 42356365850, before Prodamus activation.
 # Deploy green source a680063 with public sale terms before owner-approved checkout activation.
 # Requested green-CI release 7d89fd79b2a380ea714947e0e911294ca4930857: separate canonical auth connection, email still fail-closed until activation.
