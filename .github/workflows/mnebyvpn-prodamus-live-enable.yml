@@ -31,7 +31,7 @@ jobs:
           python3 - <<'PY'
           import pathlib,re
           s=pathlib.Path('scripts/mnebyvpn-prodamus-live-enable.sh').read_text()
-          chunks=re.findall(r"^python3 [^\\n]+<<'PY'\\n(.*?)^PY$",s,re.M|re.S)
+          chunks=re.findall(r"^python3 [^\n]+<<'PY'\n(.*?)^PY$",s,re.M|re.S)
           assert len(chunks)==2,len(chunks)
           for c in chunks:compile(c,'embedded preflight','exec')
           print('merchant_script_shell_and_embedded_python=valid')
