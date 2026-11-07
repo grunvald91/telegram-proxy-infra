@@ -83,8 +83,7 @@ jobs:
                 awk '$7 == "/webhooks/prodamus" && $6 ~ /POST/ { print $9 }' "$logfile"
               fi
             done
-          } | grep -E '^[0-9]{3}
- | sort | uniq -c || true
+          } | grep -E '^[0-9]{3}$' | sort | uniq -c || true
           echo 'prodamus_nginx_callback_status_counts_end'
           echo 'prodamus_app_callback_outcomes_begin'
           docker logs --since 2026-11-07T18:30:00Z mnebyvpn-public-web 2>&1 |
