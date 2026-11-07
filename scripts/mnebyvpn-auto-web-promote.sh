@@ -86,7 +86,11 @@ run_web() {
     test -s "$ROOT/public/billing-db.env" || {
       echo 'Canonical scoped merchant DB credential missing'; return 2;
     }
-    grep -Eq '^WEB_BILLING_DATABASE_URL=postgresql://mnebyvpn_site_pay:[a-f0-9]{64}@127[.]0[.]0[.]1:55433/mnebyvpn_stage
+    grep -Eq '^WEB_BILLING_DATABASE_URL=postgresql://mnebyvpn_site_pay:[a-f0-9]{64}@127[.]0[.]0[.]1:55433/mnebyvpn_stage$' "$ROOT/public/billing-db.env" || {
+      echo 'Billing DB credential cannot be proven canonical and scoped'; return 2;
+    }
+    billing_env=(--env-file "$ROOT/public/billing-db.env")
+    test -s "$ROOT/public/prodamus.env" || {
       echo 'Approved payment webhook requires private Prodamus config'; return 2;
     }
     merchant_env=(--env-file "$ROOT/public/prodamus.env")
