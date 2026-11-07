@@ -1,0 +1,99 @@
+name: MNEBYVPN pinpoint 443 SYN filtering verdict for merchant ingress
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/mnebyvpn-443-syn-verdict.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: SYN-only per-connection trace with safe cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PASSWORD"
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+          SRC="$(curl -fsS -4 --max-time 8 https://api.ipify.org)"
+          [[ "$SRC" =~ ^[0-9.]+$ ]]
+          export SSHPASS="$PASSWORD"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new \
+            -o LogLevel=ERROR root@188.120.254.223 "python3 - '$SRC'" \
+            > "$RUNNER_TEMP/trace.log" <<'PY' &
+          import os,re,sys,time,subprocess,pathlib,signal
+          src=sys.argv[1]
+          assert re.fullmatch(r'(?:[0-9]{1,3}\.){3}[0-9]{1,3}',src)
+          def cmd(*args,timeout=6):
+              return subprocess.run(args,capture_output=True,text=True,timeout=timeout)
+          for target in ['INPUT','OUTPUT']:
+              p=cmd('iptables','-S',target)
+              policies=[x for x in p.stdout.splitlines() if x.startswith('-P ')]
+              print(target+'_policy='+','.join(x.split()[-1] for x in policies),flush=True)
+          for name,args in [
+              ('incoming_443_route',('ip','route','get','188.120.254.223','from',src,'iif','eth0')),
+              ('outgoing_443_route',('ip','route','get',src,'from','188.120.254.223'))]:
+              p=cmd(*args)
+              print(name+'_valid='+str(p.returncode==0).lower(),flush=True)
+              match=re.search(r'\bdev (\S+)',p.stdout)
+              print(name+'_device='+('ethernet' if match and match.group(1).startswith(('en','eth')) else 'other'),flush=True)
+          table='mnebyvpn_syn_only_probe'
+          trace_file=pathlib.Path('/tmp/mnebyvpn-syn-only-trace.log')
+          def nft(*args):
+              p=cmd('nft',*args)
+              if p.returncode:raise RuntimeError('nft diagnostics failed')
+          nft('add','table','inet',table)
+          monitor=None
+          try:
+              nft('add','chain','inet',table,'inbound','{','type','filter','hook','prerouting','priority','-311',';','policy','accept',';','}')
+              nft('add','rule','inet',table,'inbound','ip','saddr',src,
+                  'tcp','dport','443','tcp','flags','&','(','syn','|','ack',')',
+                  '==','syn','meta','nftrace','set','1')
+              with trace_file.open('w') as f:
+                  monitor=subprocess.Popen(['nft','monitor','trace'],stdout=f,stderr=subprocess.DEVNULL)
+                  time.sleep(20)
+              events={}
+              for line in trace_file.read_text().splitlines():
+                  m=re.match(r'trace id (\S+) (.*)',line)
+                  if not m:continue
+                  key,item=m.groups()
+                  if key not in events:events[key]=[]
+                  item=re.sub(r'\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b','<redacted>',item)
+                  if ' packet:' in item:item=item.split(' packet:')[0]+' packet:<redacted>'
+                  if len(item)>190:item=item[:190]
+                  events[key].append(item)
+              print('traced_syn_connections='+str(len(events)),flush=True)
+              for index,(key,lines) in enumerate(list(events.items())[:8]):
+                  kinds=[]
+                  for line in lines:
+                      if 'verdict drop' in line or 'policy drop' in line:kinds.append('DROP '+line.split(' packet:')[0][:120])
+                      elif 'verdict reject' in line:kinds.append('REJECT '+line[:120])
+                  print('trace_'+str(index)+'_step_count='+str(len(lines)),flush=True)
+                  print('trace_'+str(index)+'_last='+str(lines[-1] if lines else 'none'),flush=True)
+                  print('trace_'+str(index)+'_denials='+','.join(kinds),flush=True)
+              print('temporary_tracing_only=true',flush=True)
+          finally:
+              if monitor and monitor.poll() is None:
+                  monitor.terminate()
+                  try:monitor.wait(timeout=2)
+                  except subprocess.TimeoutExpired:monitor.kill()
+              subprocess.run(['nft','delete','table','inet',table],capture_output=True,timeout=6)
+              trace_file.unlink(missing_ok=True)
+              print('temporary_trace_removed=true',flush=True)
+          PY
+          SSH_PID=$!
+          sleep 3
+          python3 - <<'PY'
+          import socket
+          for _ in range(3):
+              try:
+                  with socket.create_connection(('188.120.254.223',443),timeout=3):
+                      print('direct_443=connected')
+              except Exception as e:print('direct_443='+type(e).__name__)
+          PY
+          wait "$SSH_PID"
+          cat "$RUNNER_TEMP/trace.log"
