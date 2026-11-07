@@ -27,11 +27,14 @@ jobs:
             const q=await pool.query("SELECT current_user AS role, current_database() AS db, current_schema() AS schema");
             console.log("db_user_role="+q.rows[0].role);
             console.log("db_schema="+q.rows[0].schema);
+            console.log("db_name="+q.rows[0].db);
             for(const name of ['web_email_codes','web_email_rate_limits','accounts','website_sessions','website_support_tickets']){
               const table='public.'+name;
-              const x=await pool.query("SELECT to_regclass($1) IS NOT NULL AS present, has_table_privilege(current_user,$1,'INSERT') AS can_insert, has_table_privilege(current_user,$1,'UPDATE') AS can_update, has_table_privilege(current_user,$1,'SELECT') AS can_select",[table]);
+              const rel=await pool.query("SELECT to_regclass($1)::text AS name",[table]);
+              if(!rel.rows[0].name){console.log(name+"_exists=false");continue;}
+              const x=await pool.query("SELECT has_table_privilege(current_user,$1,'INSERT') AS can_insert, has_table_privilege(current_user,$1,'UPDATE') AS can_update, has_table_privilege(current_user,$1,'SELECT') AS can_select",[table]);
               const row=x.rows[0];
-              console.log(name+"_exists="+row.present+" insert="+row.can_insert+" update="+row.can_update+" select="+row.can_select);
+              console.log(name+"_exists=true insert="+row.can_insert+" update="+row.can_update+" select="+row.can_select);
             }
             await pool.query('BEGIN');
             await pool.query("SELECT pg_advisory_xact_lock(hashtextextended('email-diag',0))");
