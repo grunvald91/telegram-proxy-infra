@@ -93,6 +93,64 @@ jobs:
             GROUP BY account_id HAVING count(*)>=3
           ) recent;
           SQL
+          echo 'merchant_original_checkout_module_probe=begin'
+          # Executes the real MNEBYVPN checkout signer and link validator
+          # against a fake in-memory order. Never writes customer/order rows.
+          docker exec -i mnebyvpn-public-web node --experimental-strip-types --input-type=module <<'NODE'
+          import {randomUUID} from 'node:crypto';
+          import {prepareWebsiteProdamusCheckout}
+            from '/srv/mnebyvpn/packages/billing/src/website-checkout.ts';
+          const e=process.env;
+          const config={
+            formUrl:e.PRODAMUS_FORM_URL,
+            notificationUrl:e.PRODAMUS_NOTIFICATION_URL,
+            successUrl:e.PRODAMUS_SUCCESS_URL,
+            returnUrl:e.PRODAMUS_RETURN_URL,
+            secret:e.PRODAMUS_SIGN_SECRET,
+            sys:e.PRODAMUS_SYS||undefined
+          };
+          const fake={
+            createWebsiteOrder:async()=>({
+              id:randomUUID(),provider:'prodamus',currency:'RUB',
+              amount:6000,state:'PENDING',planTitle:'VPN 15 days'
+            })
+          };
+          const transport={
+            getLink:async signedUrl=>{
+              const target=new URL(signedUrl);
+              const merchant=new URL(config.formUrl);
+              if(target.origin!==merchant.origin||
+                 target.pathname!==merchant.pathname||target.protocol!=='https:')
+                throw Error('Unapproved merchant request');
+              const response=await fetch(target,{method:'GET',redirect:'error',
+                signal:AbortSignal.timeout(8000),headers:{Accept:'text/plain'}});
+              if(!response.ok)throw Error('Merchant checkout unavailable');
+              const result=await response.text();
+              if(result.length>2048)throw Error('Merchant response too large');
+              return result;
+            }
+          };
+          try{
+            const result=await prepareWebsiteProdamusCheckout({
+              accountId:randomUUID(),planId:'vpn_15d_1device',
+              requestId:'web:'+randomUUID()
+            },fake,config,transport);
+            console.log('merchant_original_checkout_module_probe=passed');
+            console.log('merchant_original_valid_link='+
+              (result.paymentUrl.startsWith('https://')));
+          }catch(e){
+            const safeReasons=new Set([
+              'Invalid Prodamus order','Invalid Prodamus response',
+              'Unsafe Prodamus payment link','Unapproved merchant request',
+              'Merchant checkout unavailable','Merchant response too large',
+              'Missing Prodamus key','Invalid merchant Prodamus integration code'
+            ]);
+            console.log('merchant_original_checkout_module_probe=failed');
+            console.log('merchant_original_failure_reason='+
+              (safeReasons.has(e?.message)?e.message:'other'));
+            process.exitCode=1;
+          }
+          NODE
           echo 'merchant_node_runtime_link_probe=begin'
           # Probe the same Node fetch/redirect policy as the website, with
           # synthetic unpersisted order ID. No customer data or payment charge.
