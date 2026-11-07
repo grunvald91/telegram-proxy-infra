@@ -130,7 +130,11 @@ def verify_enabled()->None:
       'Origin':'https://mnebyvpn.site',
     })
     if code!=200 or json.loads(body).get('status')!='CODE_SENT':
-        raise RuntimeError('Live email code round trip failed')
+        try: failure=json.loads(body).get('code','UNEXPECTED_RESPONSE')
+        except Exception: failure='NON_JSON_RESPONSE'
+        if not re.fullmatch(r'[A-Z_]{2,50}',str(failure)):
+            failure='UNRECOGNIZED_ERROR'
+        raise RuntimeError('Live email code round trip failed: HTTP '+str(code)+' '+failure)
     print('email_otp_dispatch_via_web=accepted')
     print('web_login_enabled=true')
     print('vpn_checkout_enabled=false')
