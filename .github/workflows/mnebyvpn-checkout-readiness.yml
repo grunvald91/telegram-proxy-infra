@@ -36,6 +36,111 @@ jobs:
             code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 4 "http://127.0.0.1:$port/healthz" || true)"
             echo "service_${port}=$code"
           done
+          echo 'checkout_failure_logs_by_code_begin'
+          # Print only our fixed, data-free checkout log codes; never log
+          # request bodies, personal identifiers, tokens or provider links.
+          docker logs --since 2026-11-07T10:10:00Z mnebyvpn-public-web 2>&1 |
+            grep -E '^MNEBYVPN_CHECKOUT_(DB_ERROR_SQLSTATE_[A-Z0-9]{5}|PROVIDER_UNAVAILABLE|PROVIDER_INVALID_LINK|SERVICE_ERROR)
+          # Use a synthetic temporary account, exact checkout INSERTs and the
+          # production billing role. ROLLBACK ensures no customer/order mutation.
+          docker exec -i mnebyvpn-stage-postgres psql -qAt -X -v ON_ERROR_STOP=1 \
+            -U mnebyvpn_stage -d mnebyvpn_stage <<'SQL'
+          BEGIN;
+          INSERT INTO accounts(id) VALUES(gen_random_uuid()) RETURNING id AS fixture_account \gset
+          SET LOCAL ROLE mnebyvpn_site_pay;
+          SELECT 1 FROM accounts WHERE id=:'fixture_account' FOR UPDATE;
+          SELECT 1 FROM billing_plans WHERE id='vpn_15d_1device' AND enabled=true FOR SHARE;
+          UPDATE orders o SET state='CANCELLED'
+            FROM order_terms ot WHERE ot.order_id=o.id
+              AND o.account_id=:'fixture_account' AND o.state='PENDING'
+              AND ot.expires_at<=clock_timestamp();
+          INSERT INTO orders(id,account_id,product,provider,amount_minor,currency)
+            VALUES(gen_random_uuid(),:'fixture_account','vpn','prodamus',6000,'RUB')
+            RETURNING id AS fixture_order \gset
+          INSERT INTO order_terms(order_id,plan_id,plan_title,duration_seconds,dns_quota_bytes,expires_at)
+            SELECT :'fixture_order',id,title,duration_seconds,dns_quota_bytes,
+              clock_timestamp()+interval '1 hour'
+              FROM billing_plans WHERE id='vpn_15d_1device';
+          INSERT INTO checkout_requests(channel,request_id,order_id)
+            VALUES('prodamus','web:synthetic-rollback-checkout',:'fixture_order');
+          SELECT order_id FROM checkout_requests
+            WHERE channel='prodamus' AND request_id='web:synthetic-rollback-checkout' \gset
+          ROLLBACK;
+          SELECT 'merchant_checkout_transaction_probe=passed_rolled_back';
+          SELECT 'prodamus_orders_recent_60m='||count(*) FROM orders
+            WHERE provider='prodamus' AND created_at>clock_timestamp()-interval '60 minutes';
+          SELECT 'checkout_accounts_at_pending_order_cap='||count(*) FROM (
+            SELECT account_id FROM orders WHERE provider='prodamus'
+              AND state='PENDING' AND created_at>clock_timestamp()-interval '15 minutes'
+            GROUP BY account_id HAVING count(*)>=3
+          ) recent;
+          SQL
+          echo 'merchant_node_runtime_link_probe=begin'
+          # Probe the same Node fetch/redirect policy as the website, with
+          # synthetic unpersisted order ID. No customer data or payment charge.
+          docker exec -i mnebyvpn-public-web node --input-type=module <<'NODE'
+          import {createHmac,randomUUID} from 'node:crypto';
+          const e=process.env;
+          const fields={
+            do:'link',order_id:randomUUID(),currency:'rub',payments_limit:'1',
+            products:[{name:'MNEBYVPN VPN 15 дней',price:'60.00',quantity:'1'}],
+            ...(e.PRODAMUS_SYS?{sys:e.PRODAMUS_SYS,
+              urlNotification:e.PRODAMUS_NOTIFICATION_URL}:{}),
+            urlSuccess:e.PRODAMUS_SUCCESS_URL,urlReturn:e.PRODAMUS_RETURN_URL
+          };
+          function normalized(v){
+            if(Array.isArray(v))return v.map(normalized);
+            if(v&&typeof v==='object')return Object.fromEntries(
+              Object.keys(v).sort().map(k=>[k,normalized(v[k])]));
+            return String(v);
+          }
+          const canonical=JSON.stringify(normalized(fields)).replace(/\//g,'\\/');
+          const signature=createHmac('sha256',e.PRODAMUS_SIGN_SECRET)
+            .update(canonical).digest('hex');
+          const params=new URLSearchParams();
+          function flatten(k,v){
+            if(Array.isArray(v))return v.forEach((x,i)=>flatten(k+'['+i+']',x));
+            if(v&&typeof v==='object')return Object.entries(v)
+              .forEach(([key,val])=>flatten(k+'['+key+']',val));
+            params.append(k,String(v));
+          }
+          Object.entries(fields).forEach(([k,v])=>flatten(k,v));
+          params.set('signature',signature);
+          const target=new URL(e.PRODAMUS_FORM_URL);
+          target.search=params.toString();
+          try{
+            const response=await fetch(target,{method:'GET',redirect:'manual',
+              signal:AbortSignal.timeout(8000),headers:{Accept:'text/plain'}});
+            console.log('merchant_node_http='+response.status);
+            const responseBody=await response.text();
+            let valid=false;
+            try{
+              const u=new URL(responseBody.trim());
+              valid=u.protocol==='https:'&&
+                (u.hostname==='payform.ru'||u.hostname.endsWith('.payform.ru'));
+            }catch{}
+            console.log('merchant_node_link_body_valid='+valid);
+            console.log('merchant_node_redirect_received='+
+              (response.status>=300&&response.status<400));
+          }catch(error){
+            console.log('merchant_node_fetch_error='+error?.name);
+            process.exitCode=2;
+          }
+          NODE
+          REMOTE
+ |
+            sort | uniq -c || true
+          echo 'checkout_failure_logs_by_code_end'
+          echo 'checkout_requests_recent_buckets'
+          docker exec -i mnebyvpn-stage-postgres psql -qAt -X -v ON_ERROR_STOP=1 \
+            -U mnebyvpn_stage -d mnebyvpn_stage <<'SQL'
+          SELECT to_char(date_bin('5 minutes',created_at, TIMESTAMPTZ '2000-01-01'),
+                   'YYYY-MM-DD HH24:MI TZ')||' orders='||count(*)||
+                   ' states='||string_agg(DISTINCT state,',')
+            FROM orders
+           WHERE provider='prodamus' AND created_at > clock_timestamp()-interval '4 hours'
+           GROUP BY 1 ORDER BY 1;
+          SQL
           echo 'merchant_checkout_transaction_probe=begin'
           # Use a synthetic temporary account, exact checkout INSERTs and the
           # production billing role. ROLLBACK ensures no customer/order mutation.
