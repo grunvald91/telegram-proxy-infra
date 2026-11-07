@@ -109,4 +109,16 @@ jobs:
             echo 'merchant_sys_configured=no'
           fi
           echo 'prodamus_webhook_route_probes_end'
+          echo 'prodamus_urlencoded_invalid_signature_smoke_begin'
+          for target in http://127.0.0.1:8792/webhooks/prodamus https://mnebyvpn.site/webhooks/prodamus; do
+            result="$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' \
+              --connect-timeout 5 --max-time 10 \
+              -H 'Sign: 0000000000000000000000000000000000000000000000000000000000000000' \
+              -H 'Content-Type: application/x-www-form-urlencoded' \
+              --data 'payment_status=success&order_num=invalid-smoke-order' "$target" 2>/dev/null || true)"
+            case "$target" in http:*) label=direct_backend;; *) label=public_domain;; esac
+            echo "urlencoded_smoke_$label=$result"
+            test "$result" = 401
+          done
+          echo 'prodamus_urlencoded_invalid_signature_smoke_end'
           REMOTE
