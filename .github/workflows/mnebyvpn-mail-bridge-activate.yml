@@ -50,6 +50,7 @@ jobs:
           export SSHPASS="$SERVER188_PASSWORD"
           sshopts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
           sshpass -e scp "${sshopts[@]}" scripts/mnebyvpn-mail-bridge-activate.py root@188.120.254.223:/tmp/mnebyvpn-mail-bridge-activate.py
+          sshpass -e scp "${sshopts[@]}" scripts/mnebyvpn-mail-auth-db-setup.py root@188.120.254.223:/tmp/mnebyvpn-mail-auth-db-setup.py
           sshpass -e scp "${sshopts[@]}" scripts/mnebyvpn-auto-web-promote.sh root@188.120.254.223:/tmp/mnebyvpn-mail-web-promote.sh
           sshpass -e scp "${sshopts[@]}" "$RUNNER_TEMP/mnebyvpn-mail.cipher.b64" root@188.120.254.223:/tmp/mnebyvpn-mail.cipher.b64
           sshpass -e ssh "${sshopts[@]}" root@188.120.254.223 "bash -s -- '$SITE_SHA'" <<'REMOTE'
@@ -57,12 +58,14 @@ jobs:
           umask 077
           sha="$1"
           cleanup() {
-            rm -f /tmp/mnebyvpn-mail-bridge-activate.py /tmp/mnebyvpn-mail-web-promote.sh /tmp/mnebyvpn-mail.cipher.b64
+            rm -f /tmp/mnebyvpn-mail-bridge-activate.py /tmp/mnebyvpn-mail-auth-db-setup.py /tmp/mnebyvpn-mail-web-promote.sh /tmp/mnebyvpn-mail.cipher.b64
           }
           trap cleanup EXIT
           py=/tmp/mnebyvpn-mail-bridge-activate.py
           promote=/tmp/mnebyvpn-mail-web-promote.sh
           cipher=/tmp/mnebyvpn-mail.cipher.b64
+          # Create dedicated SQL role with only identity/session writes.
+          python3 /tmp/mnebyvpn-mail-auth-db-setup.py
           if ! python3 "$py" stage "$cipher"; then
             echo 'HMAC verification or guarded stage failed; login unchanged'
             exit 2
