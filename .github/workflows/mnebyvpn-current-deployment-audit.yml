@@ -60,4 +60,35 @@ jobs:
             echo "$label=$code"
           done
           docker version --format 'docker_engine={{.Server.Version}}' 2>/dev/null || true
+          echo 'prodamus_incident_audit=read_only'
+          echo 'prodamus_recent_order_states_begin'
+          docker exec -i mnebyvpn-stage-postgres psql -qAt -X -v ON_ERROR_STOP=1 \
+            -U mnebyvpn_stage -d mnebyvpn_stage <<'SQL'
+          SELECT 'orders_4h_'||state||'='||count(*)::text
+          FROM orders
+          WHERE provider='prodamus' AND created_at>clock_timestamp()-interval '4 hours'
+          GROUP BY state ORDER BY state;
+          SELECT 'captures_on_orders_4h='||count(*)::text
+          FROM provider_captures pc JOIN orders o ON o.id=pc.order_id
+          WHERE pc.provider='prodamus' AND o.created_at>clock_timestamp()-interval '4 hours';
+          SELECT 'entitlements_on_orders_4h='||count(*)::text
+          FROM entitlements e JOIN orders o ON o.id=e.source_order_id
+          WHERE o.provider='prodamus' AND o.created_at>clock_timestamp()-interval '4 hours';
+          SQL
+          echo 'prodamus_recent_order_states_end'
+          echo 'prodamus_nginx_callback_status_counts_begin'
+          {
+            for logfile in /var/log/nginx/*access*.log; do
+              if test -r "$logfile"; then
+                awk '$7 == "/webhooks/prodamus" && $6 ~ /POST/ { print $9 }' "$logfile"
+              fi
+            done
+          } | grep -E '^[0-9]{3}
+ | sort | uniq -c || true
+          echo 'prodamus_nginx_callback_status_counts_end'
+          echo 'prodamus_app_callback_outcomes_begin'
+          docker logs --since 2026-11-07T18:30:00Z mnebyvpn-public-web 2>&1 |
+            grep -E '^MNEBYVPN_PRODAMUS_WEBHOOK_(RESULT|PROCESSING_ERROR)' |
+            tail -30 || true
+          echo 'prodamus_app_callback_outcomes_end'
           REMOTE
