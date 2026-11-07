@@ -111,50 +111,7 @@ healthy() {
   fi
   local expect_email=no
   if grep -Fxq 'WEB_EMAIL_LOGIN_ENABLED=yes' "$ENV_FILE"; then
-    grep -Eq '^MNEBYVPN_MAIL_GATEWAY_SECRET=[a-f0-9]{96}
-  [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:$port/readyz")" = 503 ] || return 1
-  [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:$port/auth/login")" = 503 ] || return 1
-}
-
-cleanup_canary() {
-  docker stop -t 3 "$CANARY" >/dev/null 2>&1 || true
-}
-trap cleanup_canary EXIT
-run_web "$CANARY" "$IMAGE" "$CANARY_PORT" yes
-healthy "$CANARY_PORT" || { echo 'New website failed canary health / security checks'; exit 2; }
-cleanup_canary
-trap - EXIT
-
-# Downtime is limited to replacing this single named brochure container.
-if [ "$has_public" = yes ]; then
-  docker stop -t 12 "$NAME" >/dev/null
-  docker rm "$NAME" >/dev/null
-fi
-if ! run_web "$NAME" "$IMAGE" 8792 no || ! healthy 8792 || ! public_listener; then
-  echo 'Public website health failed; restoring previous image'
-  docker rm -f "$NAME" >/dev/null 2>&1 || true
-  if [ -n "$old_image" ]; then
-    run_web "$NAME" "$old_image" 8792 no
-    healthy 8792 no || { echo 'CRITICAL: previous public website image failed recovery'; exit 3; }
-    echo 'public_rollback=restored_previous_image'
-  fi
-  exit 2
-fi
-test "$(docker inspect -f '{{.State.Running}}' "$NAME")" = true
-tmp="$(mktemp "$PUBLIC/active_sha.tmp.XXXXXX")"
-printf '%s\n' "$SHA" > "$tmp"
-chmod 600 "$tmp"
-mv -f "$tmp" "$PUBLIC/active_sha"
-
-echo "public_web_sha=$SHA"
-echo 'public_web_health=200'
-echo 'public_web_readyz=503_expected'
-echo 'public_checkout_enabled=false'
-echo 'public_telegram_oidc_enabled=false'
-if grep -Fxq 'WEB_EMAIL_LOGIN_ENABLED=yes' "$ENV_FILE"; then echo 'public_email_login_enabled=true'; else echo 'public_email_login_enabled=false'; fi
-echo 'public_web_port=127.0.0.1:8792'
-echo 'nginx_and_other_services_unchanged=yes'
- "$ENV_FILE" || {
+    grep -Eq '^MNEBYVPN_MAIL_GATEWAY_SECRET=[a-f0-9]{96}$' "$ENV_FILE" || {
       echo 'Email feature enabled without a valid private mail secret'; return 1;
     }
     expect_email=yes
@@ -200,5 +157,6 @@ echo 'public_web_health=200'
 echo 'public_web_readyz=503_expected'
 echo 'public_checkout_enabled=false'
 echo 'public_telegram_oidc_enabled=false'
+if grep -Fxq 'WEB_EMAIL_LOGIN_ENABLED=yes' "$ENV_FILE"; then echo 'public_email_login_enabled=true'; else echo 'public_email_login_enabled=false'; fi
 echo 'public_web_port=127.0.0.1:8792'
 echo 'nginx_and_other_services_unchanged=yes'
