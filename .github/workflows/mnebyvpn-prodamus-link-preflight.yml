@@ -1,0 +1,47 @@
+name: MNEBYVPN live merchant link preflight (no charge, no checkout)
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebyvpn-prodamus-link-preflight.yml'
+      - 'scripts/mnebyvpn-prodamus-link-preflight.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Lint merchant preflight and install private SSH transport
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SSH_PASSWORD"
+          python3 -m py_compile scripts/mnebyvpn-prodamus-link-preflight.py
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Request a genuine unique merchant payment URL but never print or charge it
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$SSH_PASSWORD"
+          opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o LogLevel=ERROR)
+          sshpass -e scp "${opts[@]}" scripts/mnebyvpn-prodamus-link-preflight.py \
+            root@188.120.254.223:/tmp/mnebyvpn-prodamus-link-preflight.py
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 \
+            'python3 /tmp/mnebyvpn-prodamus-link-preflight.py'
+      - name: Remove only dedicated test script
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "$SSH_PASSWORD" ]]; then
+            export SSHPASS="$SSH_PASSWORD"
+            sshpass -e ssh -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new \
+              -o LogLevel=ERROR root@188.120.254.223 \
+              'rm -f /tmp/mnebyvpn-prodamus-link-preflight.py' || true
+          fi
