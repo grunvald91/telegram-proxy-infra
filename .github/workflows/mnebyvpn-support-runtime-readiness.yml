@@ -50,5 +50,37 @@ jobs:
                   print(name+'_http_status='+cp.stdout.strip()[:3])
               except Exception:
                   print(name+'_http_status=unavailable')
+          image=subprocess.run(['docker','inspect','--format','{{.Config.Image}}',
+                'mnebyvpn-bot-info'],capture_output=True,text=True,timeout=6)
+          ref=image.stdout.strip()
+          print('bot_image_sha='+ref.removeprefix('mnebyvpn-stage-web:')
+                if re.fullmatch(r'mnebyvpn-stage-web:[a-f0-9]{40}',ref)
+                else 'bot_image_sha=unverified')
+          check=subprocess.run(['curl','--noproxy','*','-fsS','--max-time','8',
+                'http://127.0.0.1:8792/api/support/status'],
+                capture_output=True,text=True,timeout=10)
+          try:
+              import json
+              availability=json.loads(check.stdout).get('available')
+              print('site_support_available='+str(availability is True).lower())
+          except Exception:
+              print('site_support_available=unverified')
           print('read_only=true')
           PY
+
+      - name: Check public HTML from independent GitHub runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          if curl -fsSL --max-time 12 https://mnebyvpn.site/ -o "$RUNNER_TEMP/mnebyvpn-public.html"; then
+            if grep -Fq 'MNEBYVPN' "$RUNNER_TEMP/mnebyvpn-public.html" &&
+               grep -Fq 'id="contact-support"' "$RUNNER_TEMP/mnebyvpn-public.html"; then
+              echo 'public_brand_and_support_form_visible=true'
+            else
+              echo '::warning::Public HTML does not yet contain the expected support form'
+              echo 'public_brand_and_support_form_visible=false'
+            fi
+          else
+            echo '::warning::Public HTTPS could not be independently verified'
+            echo 'public_brand_and_support_form_visible=unverified'
+          fi
