@@ -40,7 +40,8 @@ jobs:
                     else name+'_sha=missing')
           probes=[('bot','http://127.0.0.1:8793/readyz'),
                   ('site','http://127.0.0.1:8792/api/support/status'),
-                  ('telegram','https://api.telegram.org/')]
+                  ('telegram','https://api.telegram.org/'),
+                  ('telegram_bot_api','https://api.telegram.org/bot000000000:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/getMe')]
           for name,url in probes:
               try:
                   cp=subprocess.run(['curl','--noproxy','*','--silent','--show-error',
