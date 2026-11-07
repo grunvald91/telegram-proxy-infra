@@ -1,0 +1,67 @@
+name: Incident 2026-11-07 read-only diagnosis
+on:
+  push:
+    branches: ['ops/incident-readonly-20261107']
+    paths:
+      - '.github/workflows/incident-readonly-20261107.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      HOST: '188.120.254.223'
+      SSHPASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Check SSH credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SSHPASS" || { echo 'SSH_SECRET_MISSING'; exit 10; }
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+      - name: Read-only server and service incident evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          opts=(-o ConnectTimeout=12 -o BatchMode=no -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" -o ServerAliveInterval=5 -o ServerAliveCountMax=2 "root@$HOST" 'bash -s' <<'REMOTE'
+          set +e
+          export SYSTEMD_COLORS=0
+          export LC_ALL=C
+          heading() { printf '\n===== %s =====\n' "$1"; }
+          heading 'HOST AND TIME'
+          hostname; date -Is; uptime; who -b
+          heading 'MEMORY AND STORAGE'
+          free -m; df -h / /var 2>/dev/null | sort -u
+          heading 'FAILED SYSTEMD UNITS'
+          systemctl --failed --no-legend --plain --no-pager | head -40
+          heading 'MONITORED UNIT INVENTORY'
+          systemctl list-units --type=service --all --no-legend --plain --no-pager | grep -Ei 'nginx|telegram|proxy|mtproto|mtproxy|xray|wireguard|wg-quick|docker|caddy|servgo|mnebyvpn' | head -70
+          heading 'ACTIVE, RESTART COUNT, LAST STATE TRANSITIONS'
+          for unit in nginx docker docker.service telegram-proxy mtproxy xray mnebyvpn caddy; do
+            state="$(systemctl show "$unit" -p LoadState --value 2>/dev/null)"
+            [ "$state" = 'loaded' ] || continue
+            printf '%s ' "$unit"
+            systemctl show "$unit" -p ActiveState -p SubState -p NRestarts -p Result -p ExecMainStatus -p ActiveEnterTimestamp -p InactiveEnterTimestamp --no-pager |
+              tr '\n' ' '; printf '\n'
+          done
+          heading 'NGINX CONFIG TEST'
+          if command -v nginx >/dev/null; then nginx -t 2>&1 | sed -E 's#(token|secret|password)=[^ ]+#\1=REDACTED#Ig' | tail -8; else echo 'nginx command absent'; fi
+          heading 'NGINX JOURNAL SELECTED'
+          journalctl -u nginx --since '2026-11-06 00:00:00 UTC' --no-pager -o short-iso --quiet 2>/dev/null |
+           grep -Ei 'failed|starting|started|stopping|stopped|error|emerg|exit|signal|reload|restart|kill|terminated|cannot|no space|timed out' |
+           grep -Evi 'token=|secret=|password=|authorization:|bearer ' | tail -65
+          heading 'SYSTEMD RESTART EVENTS'
+          journalctl _PID=1 --since '2026-11-06 00:00:00 UTC' --no-pager -o short-iso --quiet 2>/dev/null |
+           grep -Ei 'nginx|telegram|proxy|mtproxy|mtproto|xray|docker|caddy|servgo|mnebyvpn|out of memory|oom|failed to start' |
+           grep -Evi 'token=|secret=|password=|authorization:|bearer ' | tail -85
+          heading 'KERNEL OOM AND DISK ERRORS'
+          journalctl -k --since '2026-11-06 00:00:00 UTC' --no-pager -o short-iso --quiet 2>/dev/null |
+           grep -Ei 'out of memory|oom.kill|killed process|segfault|i.o error|ext4.fs.error|read.only file.system' | tail -25
+          heading 'CONTAINER PROCESS STATES'
+          docker ps -a --format '{{.Names}} | {{.Status}}' 2>/dev/null |
+            grep -Ei 'nginx|proxy|mt|telegram|servgo|vpn|xray|bot|growth' | head -55
+          heading 'AUDIT COMPLETE - NO SERVER CHANGES'
+          REMOTE
