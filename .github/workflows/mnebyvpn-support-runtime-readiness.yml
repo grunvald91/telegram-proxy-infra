@@ -14,6 +14,19 @@ jobs:
     env:
       SERVER188_SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
     steps:
+      - name: Checkout and syntax-check support activation before any runtime setup
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check support activation shell and encrypted owner file
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n scripts/mnebyvpn-support-activate.sh
+          bash -n scripts/mnebyvpn-main-bot-promote.sh
+          bash -n scripts/mnebyvpn-auto-web-promote.sh
+          test -s ops/secure/mnebyvpn-support-owner.enc.b64
+          echo 'support_activation_shell_lint=pass'
       - name: Inspect only dedicated MNEBYVPN configuration and Telegram egress
         shell: bash
         run: |
