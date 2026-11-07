@@ -25,11 +25,30 @@ docker image inspect "$IMAGE" >/dev/null
 }
 
 # Never enable the unfinished commercial functionality by deploying UI code.
-for setting in   MNEBYVPN_ENV=production   WEB_BASE_URL=https://mnebyvpn.site   WEB_TELEGRAM_OIDC_ENABLED=no   WEB_PRODAMUS_WEBHOOK_ENABLED=no   WEB_CHECKOUT_ENABLED=0   WEB_TRIAL_ENABLED=no   WEB_NETWORK_PROVISIONING_VERIFIED=no   WEB_DNS_METERING_VERIFIED=no; do
+for setting in   MNEBYVPN_ENV=production   WEB_BASE_URL=https://mnebyvpn.site   WEB_TELEGRAM_OIDC_ENABLED=no   WEB_TRIAL_ENABLED=no   WEB_DNS_METERING_VERIFIED=no; do
   grep -Fxq "$setting" "$ENV_FILE" || {
     echo 'Existing production web environment violates the read-only deployment policy'; exit 2;
   }
 done
+# The site must accept unrestricted customer purchases once owner-approved
+# commercial verification is complete. Do not force checkout=no on each deploy.
+if grep -Fxq 'WEB_CHECKOUT_ENABLED=1' "$ENV_FILE"; then
+  for setting in WEB_EMAIL_LOGIN_ENABLED=yes WEB_PRODAMUS_WEBHOOK_ENABLED=yes \
+    WEB_PAYMENT_PROVIDER_TESTED=yes WEB_NETWORK_PROVISIONING_VERIFIED=yes \
+    WEB_LEGAL_PAGES_PUBLISHED=yes WEB_RELEASE_APPROVED=yes; do
+    grep -Fxq "$setting" "$ENV_FILE" || {
+      echo 'Live checkout requested without verified payment or VPN provisioning'; exit 2;
+    }
+  done
+elif ! grep -Fxq 'WEB_CHECKOUT_ENABLED=0' "$ENV_FILE"; then
+  echo 'Invalid checkout flag'; exit 2
+fi
+if grep -Fxq 'WEB_PRODAMUS_WEBHOOK_ENABLED=yes' "$ENV_FILE"; then
+  grep -Fxq 'WEB_PAYMENT_PROVIDER_TESTED=yes' "$ENV_FILE" ||
+    { echo 'Unsigned or untested Prodamus notifications cannot be exposed'; exit 2; }
+elif ! grep -Fxq 'WEB_PRODAMUS_WEBHOOK_ENABLED=no' "$ENV_FILE"; then
+  echo 'Invalid merchant webhook flag'; exit 2
+fi
 
 # This deploy owns only the two named website containers and localhost ports.
 port_busy() { ss -H -lnt | awk '{print $4}' | grep -Eq ":$1$"; }
@@ -135,7 +154,13 @@ healthy() {
     expect_email=yes
   fi
   curl -fsS --max-time 5 "http://127.0.0.1:$port/api/plans" |
-    EXPECT_EMAIL="$expect_email" python3 -c 'import sys,json,os; x=json.load(sys.stdin); y=(os.environ.get("EXPECT_EMAIL")=="yes"); assert x["checkoutEnabled"] is False and x["loginEnabled"] is y and x["emailLoginEnabled"] is y' || return 1
+    EXPECT_EMAIL="$expect_email" EXPECT_CHECKOUT="$(grep -Fxq 'WEB_CHECKOUT_ENABLED=1' "$ENV_FILE" && echo yes || echo no)" python3 -c 'import sys,json,os; x=json.load(sys.stdin); y=(os.environ.get("EXPECT_EMAIL")=="yes"); c=(os.environ.get("EXPECT_CHECKOUT")=="yes"); assert x["checkoutEnabled"] is c and x["loginEnabled"] is y and x["emailLoginEnabled"] is y' || return 1
+  if grep -Fxq 'WEB_CHECKOUT_ENABLED=1' "$ENV_FILE"; then
+    # Invalid unsigned callback must be rejected. Full valid capture is tested
+    # by the separate merchant readiness workflow before enabling this flag.
+    [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -X POST \
+      -H 'Sign: invalid' "http://127.0.0.1:$port/webhooks/prodamus")" = 401 ] || return 1
+  fi
   [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:$port/readyz")" = 503 ] || return 1
   [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:$port/auth/login")" = 503 ] || return 1
 }
@@ -173,7 +198,11 @@ mv -f "$tmp" "$PUBLIC/active_sha"
 echo "public_web_sha=$SHA"
 echo 'public_web_health=200'
 echo 'public_web_readyz=503_expected'
-echo 'public_checkout_enabled=false'
+if grep -Fxq 'WEB_CHECKOUT_ENABLED=1' "$ENV_FILE"; then
+  echo 'public_checkout_enabled=true'
+else
+  echo 'public_checkout_enabled=false'
+fi
 echo 'public_telegram_oidc_enabled=false'
 if grep -Fxq 'WEB_EMAIL_LOGIN_ENABLED=yes' "$ENV_FILE"; then echo 'public_email_login_enabled=true'; else echo 'public_email_login_enabled=false'; fi
 echo 'public_web_port=127.0.0.1:8792'
