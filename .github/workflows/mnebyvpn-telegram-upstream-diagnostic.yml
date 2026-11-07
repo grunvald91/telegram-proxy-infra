@@ -46,6 +46,14 @@ jobs:
           for host in cdn.servgo.ru; do
             echo "foreign_tls_8443=$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --connect-timeout 4 --max-time 9 --resolve $host:8443:127.0.0.1 -X POST -H 'Content-Type: application/json' -d '{\"update_id\":100}' https://$host:8443/mnebyvpn-telegram/webhook || true)"
           done
+          for n in 1 2 3; do
+            response="$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --connect-timeout 4 --max-time 8 \
+              --resolve cdn.servgo.ru:8443:89.125.90.101 -X POST \
+              -H 'Content-Type: application/json' -d '{\"update_id\":100}' \
+              https://cdn.servgo.ru:8443/mnebyvpn-telegram/webhook || true)"
+            echo "foreign_public_nginx_post_$n=$response"
+            sleep 1
+          done
           echo "foreign_to_ru_8793=$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --connect-timeout 4 --max-time 7 -X POST -H 'Content-Type: application/json' -d '{\"update_id\":100}' http://10.66.77.2:8793/webhooks/telegram || true)"
           echo "foreign_to_ru_8794=$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --connect-timeout 4 --max-time 7 -X POST -H 'Content-Type: application/json' -d '{\"update_id\":100}' http://10.66.77.2:8794/webhooks/telegram || true)"
           echo 'foreign_read_only=true'
