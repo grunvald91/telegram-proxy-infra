@@ -1,3 +1,4 @@
+# Re-run canonical payment DB role after the working deployment script was restored.
 name: Prepare scoped MNEBYVPN website billing DB on canonical server188
 on:
   push:
