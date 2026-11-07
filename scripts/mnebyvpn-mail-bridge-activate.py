@@ -33,9 +33,9 @@ def request(url:str, data:bytes|None=None, headers:dict|None=None)->tuple[int,by
         data=data,headers=headers or {})
     try:
         with urllib.request.urlopen(req,timeout=12) as resp:
-            return resp.status,resp.read(2048)
+            return resp.status,resp.read(65536)
     except urllib.error.HTTPError as exc:
-        return exc.code,exc.read(2048)
+        return exc.code,exc.read(65536)
 
 def encrypted_secret(blob_path:Path)->str:
     if not KEY.is_file():
