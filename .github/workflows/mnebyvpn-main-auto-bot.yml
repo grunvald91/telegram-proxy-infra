@@ -1,3 +1,4 @@
+# Button-only support release request 2026-11-07: source main a0b326a CI green, followed by workflow-only commit 51d1383; promote through established canary + rollback.
 # Deploy request: MNEBYVPN source main 23334b455ff6100b40a0df877a21ca107961ff36 CI green; Telegram bot canary and rollback.
 # Source MNEBYVPN main 6657060 has green CI; request isolated release.
 # Support release 2026-11-07: bot 33a5cc73 after website confirmed green and deployed.
