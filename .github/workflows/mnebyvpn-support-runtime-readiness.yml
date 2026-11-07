@@ -118,6 +118,6 @@ jobs:
       - name: Test HMAC, one-use nonce and bounded request body using fake SMTP
         env:
           PYTHONPATH: ${{ github.workspace }}
-          DATABASE_URL: sqlite+aiosqlite:///:memory:
+          DATABASE_URL: "sqlite+aiosqlite:///:memory:"
           BOT_TOKEN: test-token
         run: python -m unittest discover -s tests -p test_mnebyvpn_mail.py -v
