@@ -47,13 +47,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if git diff --quiet -- ops/mnebyvpn-mail-bridge.pub.pem && test -z "$(git status --porcelain -- ops/mnebyvpn-mail-bridge.pub.pem)"; then
+          if git ls-files --error-unmatch ops/mnebyvpn-mail-bridge.pub.pem >/dev/null 2>&1 && git diff --quiet -- ops/mnebyvpn-mail-bridge.pub.pem; then
             echo 'public_key_already_current=true'
             exit 0
           fi
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -- ops/mnebyvpn-mail-bridge.pub.pem
+          git add -f -- ops/mnebyvpn-mail-bridge.pub.pem
           git commit -m "Publish MNEBYVPN mail relay encryption public key only"
           git pull --rebase origin main
           git push origin HEAD:main
