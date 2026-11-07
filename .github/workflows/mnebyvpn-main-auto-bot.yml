@@ -1,3 +1,4 @@
+# Deploy request: MNEBYVPN source main 23334b455ff6100b40a0df877a21ca107961ff36 CI green; Telegram bot canary and rollback.
 # Source MNEBYVPN main 6657060 has green CI; request isolated release.
 name: Auto-deploy tested MNEBYVPN Telegram bot via existing 188 SSH 
 # Request checked deployment after source CI of MNEBYVPN main 6657060e (2026-11-07).
