@@ -1,0 +1,83 @@
+name: Activate MNEBYVPN email OTP with encrypted ServGo HMAC
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebyvpn-mail-bridge-activate.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebyvpn-auto-public-deploy
+  cancel-in-progress: false
+jobs:
+  activate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SERVER188_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      SITE_SHA: '23334b455ff6100b40a0df877a21ca107961ff36'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate guarded release scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/mnebyvpn-mail-bridge-activate.py
+          bash -n scripts/mnebyvpn-auto-web-promote.sh
+          test -n "$SERVER188_PASSWORD"
+      - name: Fetch RSA-OAEP ciphertext only (never plaintext)
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fLsS --retry 3 --max-time 25 \
+            https://raw.githubusercontent.com/grunvald91/booking_bot/main/ops/mnebyvpn-mail-bridge.enc.b64 \
+            -o "$RUNNER_TEMP/mnebyvpn-mail.cipher.b64"
+          test "$(base64 -d "$RUNNER_TEMP/mnebyvpn-mail.cipher.b64" | wc -c)" -eq 384
+          echo 'encrypted_bridge_artifact_verified=true'
+      - name: Install SSH utility
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+      - name: Decrypt on 188, prove HMAC to ServGo, enable email login and test delivery
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          export SSHPASS="$SERVER188_PASSWORD"
+          sshopts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          sshpass -e scp "${sshopts[@]}" scripts/mnebyvpn-mail-bridge-activate.py root@188.120.254.223:/tmp/mnebyvpn-mail-bridge-activate.py
+          sshpass -e scp "${sshopts[@]}" scripts/mnebyvpn-auto-web-promote.sh root@188.120.254.223:/tmp/mnebyvpn-mail-web-promote.sh
+          sshpass -e scp "${sshopts[@]}" "$RUNNER_TEMP/mnebyvpn-mail.cipher.b64" root@188.120.254.223:/tmp/mnebyvpn-mail.cipher.b64
+          sshpass -e ssh "${sshopts[@]}" root@188.120.254.223 "bash -s -- '$SITE_SHA'" <<'REMOTE'
+          set -Eeuo pipefail
+          umask 077
+          sha="$1"
+          cleanup() {
+            rm -f /tmp/mnebyvpn-mail-bridge-activate.py /tmp/mnebyvpn-mail-web-promote.sh /tmp/mnebyvpn-mail.cipher.b64
+          }
+          trap cleanup EXIT
+          py=/tmp/mnebyvpn-mail-bridge-activate.py
+          promote=/tmp/mnebyvpn-mail-web-promote.sh
+          cipher=/tmp/mnebyvpn-mail.cipher.b64
+          if ! python3 "$py" stage "$cipher"; then
+            echo 'HMAC verification or guarded stage failed; login unchanged'
+            exit 2
+          fi
+          if ! bash "$promote" "$sha"; then
+            echo 'Web canary rejected email activation; rolling back'
+            python3 "$py" rollback
+            bash "$promote" "$sha" || true
+            exit 2
+          fi
+          if ! python3 "$py" verify; then
+            echo 'Live email OTP test failed; rolling back'
+            python3 "$py" rollback
+            bash "$promote" "$sha" || true
+            exit 2
+          fi
+          python3 "$py" finalize
+          echo 'mnebyvpn_email_login_activated_and_tested=true'
+          REMOTE
