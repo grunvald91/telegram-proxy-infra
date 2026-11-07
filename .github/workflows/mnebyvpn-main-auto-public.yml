@@ -1,3 +1,4 @@
+# MNEBYVPN 2026-11-07 release P1-P2 purchase flow 7f3a6605d8a2707514dc42323887384bcbbd1fcc after verified main CI 42414741878; paid clock remains feature-gated OFF.
 # Payment incident P0 2026-11-07: deploy signed URL-encoded Prodamus webhook fix fc31c79f9b820fc382bfcf478395f5aa29c70abb, verified by green main CI 42410858586.
 # Payment incident 2026-11-07: release tested source 8946af41a33129acbe9806f77c2a7a9fd44aad1c after green main CI 42407297685 (signed Prodamus webhook currency omission).
 # Release 2026-11-07: promote verified website support fallback b3bcf1b5df8e74a8ba9fcc661d27d04f8134b85c after main CI 42390494737. No changes to VPN/proxy/network.
