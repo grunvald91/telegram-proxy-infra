@@ -1,0 +1,84 @@
+name: Enable instant MNEBYVPN site support notifications with original bot
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebyvpn-support-enable-instant-notifications.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebyvpn-support-token-activation
+  cancel-in-progress: false
+jobs:
+  activate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: mnebyvpn-support
+    env:
+      SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      ORIGINAL_BOT_TOKEN: ${{ secrets.MNEBYVPN_SUPPORT_BOT_TOKEN }}
+      HOST: '188.120.254.223'
+    steps:
+      - name: Checkout established infra scripts
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check scripts and verify that supplied credential is the original bot
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n scripts/mnebyvpn-support-enable-existing-bot-token.sh
+          bash -n scripts/mnebyvpn-main-bot-promote.sh
+          bash -n scripts/mnebyvpn-auto-web-promote.sh
+          test -n "$SSH_PASSWORD" || {
+            echo 'Existing server188 SSH secret is not configured'; exit 2;
+          }
+          test -n "$ORIGINAL_BOT_TOKEN" || {
+            echo '::error::Add repository secret MNEBYVPN_SUPPORT_BOT_TOKEN in telegram-proxy-infra, then rerun this workflow.'
+            exit 2
+          }
+          python3 - <<'PY'
+          import json,os,re,urllib.request
+          token=os.environ["ORIGINAL_BOT_TOKEN"]
+          if not re.fullmatch(r"[0-9]{5,20}:[A-Za-z0-9_-]{25,}",token):
+              raise RuntimeError("Original Telegram bot token format is invalid")
+          req=urllib.request.Request("https://api.telegram.org/bot"+token+"/getMe",
+              data=b"{}",method="POST",headers={"Content-Type":"application/json"})
+          try:
+              with urllib.request.urlopen(req,timeout=12) as r:
+                  result=json.load(r)
+          except Exception:
+              raise RuntimeError("Could not verify original Telegram bot credential") from None
+          if not result.get("ok") or str(result.get("result",{}).get("username","")).lower()!="mnebyvpn_bot":
+              raise RuntimeError("Configured credential is not @MnebyVPN_bot")
+          print("verified_existing_bot=true")
+          print("new_bot_created=false")
+          PY
+      - name: Install only existing MNEBYVPN support runtime settings via secure SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          export SSHPASS="$SSH_PASSWORD"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          target="root@$HOST"
+          remote="/tmp/mnebyvpn-instant-support-$GITHUB_RUN_ID"
+          sshpass -e scp "${opts[@]}" scripts/mnebyvpn-support-enable-existing-bot-token.sh "$target:$remote-activate.sh"
+          sshpass -e scp "${opts[@]}" scripts/mnebyvpn-main-bot-promote.sh "$target:$remote-bot-promote.sh"
+          sshpass -e scp "${opts[@]}" scripts/mnebyvpn-auto-web-promote.sh "$target:$remote-web-promote.sh"
+          # The token moves only over authenticated SSH stdin; never via argv,
+          # logs, GitHub artifacts, or source code. No second Telegram bot.
+          printf '%s\n' "$ORIGINAL_BOT_TOKEN" |
+            sshpass -e ssh -T "${opts[@]}" "$target"               "bash '$remote-activate.sh' '$remote-bot-promote.sh' '$remote-web-promote.sh'"
+          echo 'same_bot_immediate_site_notifications_activated=true' >> "$GITHUB_STEP_SUMMARY"
+      - name: Delete only this activation's temporary scripts
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "$SSH_PASSWORD" ]]; then
+            export SSHPASS="$SSH_PASSWORD"
+            remote="/tmp/mnebyvpn-instant-support-$GITHUB_RUN_ID"
+            sshpass -e ssh -o ConnectTimeout=9 -o StrictHostKeyChecking=accept-new               -o LogLevel=ERROR "root@$HOST"               "rm -f '$remote-activate.sh' '$remote-bot-promote.sh' '$remote-web-promote.sh'" || true
+          fi
