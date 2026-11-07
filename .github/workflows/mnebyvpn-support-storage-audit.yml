@@ -45,5 +45,40 @@ jobs:
               finally{await pool.end()}
             '
           done
+          # Verify the already running bot can read the site inbox using the
+          # privately generated HMAC key. Never print the key or ticket data.
+          docker exec mnebyvpn-bot-info node --input-type=module -e '
+            import {createHmac} from "node:crypto";
+            const secret=process.env.SUPPORT_BRIDGE_SECRET??"";
+            const operator=process.env.SUPPORT_TELEGRAM_OPERATOR_ID??"";
+            const hasSecret=/^[0-9a-f]{64}$/.test(secret);
+            const hasOperator=/^[1-9][0-9]{5,15}$/.test(operator);
+            const tokenless=!(process.env.TELEGRAM_TOKEN_BOT??"");
+            console.log("bridge_secret_present="+hasSecret);
+            console.log("operator_id_present="+hasOperator);
+            console.log("runtime_bot_token_not_required="+tokenless);
+            if(!hasSecret||!hasOperator)process.exit(2);
+            const url="http://127.0.0.1:8792";
+            const status=await fetch(url+"/api/support/status",{
+              signal:AbortSignal.timeout(6000)});
+            const ready=status.ok&&(await status.json()).available===true;
+            console.log("website_support_ready="+ready);
+            if(!ready)process.exit(2);
+            const stamp=String(Math.floor(Date.now()/1000));
+            const mac=createHmac("sha256",secret)
+              .update("MNEBYVPN-inbox-v1\n"+stamp).digest("hex");
+            const ok=await fetch(url+"/api/support/operator-inbox",{
+              headers:{"X-MNEBYVPN-Support-Ts":stamp,
+                "X-MNEBYVPN-Support-Signature":mac},
+              signal:AbortSignal.timeout(6000)});
+            console.log("signed_inbox_http="+ok.status);
+            if(!ok.ok)process.exit(2);
+            const bad=await fetch(url+"/api/support/operator-inbox",{
+              headers:{"X-MNEBYVPN-Support-Ts":stamp,
+                "X-MNEBYVPN-Support-Signature":"0".repeat(64)},
+              signal:AbortSignal.timeout(6000)});
+            console.log("forged_inbox_http="+bad.status);
+            if(bad.status!==403)process.exit(2);
+          '
           echo 'read_only=true'
           SH
