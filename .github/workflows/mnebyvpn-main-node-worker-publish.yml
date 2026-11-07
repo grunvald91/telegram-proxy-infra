@@ -77,13 +77,19 @@ jobs:
           sshpass -e scp "${opts[@]}" infra/scripts/mnebyvpn-main-bot-promote.sh \
             "root@$HOST:/tmp/mnebyvpn-main-bot-promote-$sha.sh"
           # Updating only the worker must not restart a healthy, same-version
-          # Telegram bot. Only promote it if its image is actually outdated.
-          sshpass -e ssh "${opts[@]}" "root@$HOST" \
-            "bash /tmp/mnebyvpn-main-node-worker-$sha.sh '$sha' && \
-             if [[ \\"\\$(docker inspect --format '{{.Config.Image}}' mnebyvpn-bot-info 2>/dev/null || true)\\" == 'mnebyvpn-stage-web:$sha' ]] \
-               && [[ \\"\\$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:8793/readyz || true)\\" == 200 ]]; then \
-               echo 'telegram_bot=unchanged_current_and_healthy'; \
-             else bash /tmp/mnebyvpn-main-bot-promote-$sha.sh '$sha'; fi"
+          # Telegram bot. Run commands remotely without local interpolation.
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR "root@$HOST" "bash -se -- '$sha'" <<'REMOTE'
+          set -euo pipefail
+          sha="$1"
+          bash "/tmp/mnebyvpn-main-node-worker-$sha.sh" "$sha"
+          bot_image="$(docker inspect --format '{{.Config.Image}}' mnebyvpn-bot-info 2>/dev/null || true)"
+          bot_ready="$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:8793/readyz || true)"
+          if [[ "$bot_image" == "mnebyvpn-stage-web:$sha" && "$bot_ready" == 200 ]]; then
+            echo 'telegram_bot=unchanged_current_and_healthy'
+          else
+            bash "/tmp/mnebyvpn-main-bot-promote-$sha.sh" "$sha"
+          fi
+          REMOTE
           echo "node_worker_release_sha=$sha" >> "$GITHUB_STEP_SUMMARY"
           echo 'node_expiry_pilot=skipped_if_live_subscribers' >> "$GITHUB_STEP_SUMMARY"
           echo 'existing_customer_node_deadlines=checked_readonly' >> "$GITHUB_STEP_SUMMARY"
