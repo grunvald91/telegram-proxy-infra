@@ -1,0 +1,73 @@
+name: MNEBYDNS read-only two-node capacity baseline
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/mnebydns-readonly-capacity.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      FOREIGN_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Collect sanitized single-point resource metrics without changing services
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          options=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          collect() {
+            local role="$1" host="$2" password="$3"
+            echo "role=$role"
+            if [[ -z "$password" ]]; then
+              echo "ssh_secret=unavailable"
+              return 1
+            fi
+            export SSHPASS="$password"
+            sshpass -e ssh "${options[@]}" "root@$host" 'python3 -' <<'PY'
+          import os, pathlib, shutil, subprocess
+          print('audit_mode=read_only')
+          print('cpu_count='+str(os.cpu_count()))
+          try:
+              print('load_1_5_15='+','.join(f'{v:.2f}' for v in os.getloadavg()))
+          except OSError:
+              print('load=unavailable')
+          mem={}
+          for line in pathlib.Path('/proc/meminfo').read_text().splitlines():
+              k,_,v=line.partition(':')
+              if k in {'MemTotal','MemAvailable','SwapTotal','SwapFree'}:
+                  mem[k]=int(v.strip().split()[0])//1024
+          for k,v in sorted(mem.items()):
+              print(k+'_MiB='+str(v))
+          for path,label in (('/','root'),('/opt','opt')):
+              try:
+                  du=shutil.disk_usage(path)
+                  print('disk_free_'+label+'_MiB='+str(du.free//1048576))
+              except OSError:
+                  print('disk_free_'+label+'=unavailable')
+          for path,label in (('/proc/pressure/memory','memory'),('/proc/pressure/cpu','cpu')):
+              try:
+                  line=pathlib.Path(path).read_text().splitlines()[0]
+                  avg=next((v.split('=')[1] for v in line.split() if v.startswith('avg10=')), 'unknown')
+                  print('pressure_some_'+label+'_avg10='+avg)
+              except (OSError,IndexError):
+                  print('pressure_some_'+label+'_avg10=unavailable')
+          for port in (53,443,853,1853):
+              try:
+                  p=subprocess.run(['ss','-H','-lnt','sport = :'+str(port)],
+                                   capture_output=True,text=True,timeout=6)
+                  n=len([line for line in p.stdout.splitlines() if line.strip()])
+                  print('tcp_'+str(port)+'_listener_count='+str(n) if p.returncode==0
+                        else 'tcp_'+str(port)+'_listener_count=unavailable')
+              except (OSError,subprocess.TimeoutExpired):
+                  print('tcp_'+str(port)+'_listener_count=unavailable')
+          print('audit_complete=yes')
+          PY
+          }
+          collect ru_control_node 188.120.254.223 "$RU_PASSWORD"
+          collect foreign_egress_node 89.125.90.101 "$FOREIGN_PASSWORD"
+          echo "metrics_are_single_snapshot_not_capacity_certification=yes"
