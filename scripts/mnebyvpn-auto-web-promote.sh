@@ -69,6 +69,16 @@ run_web() {
   fi
   grep -Eq '^VPN_WORKER_PROFILE_TOKEN=[a-f0-9]{64}$' "$ROOT/bot/worker.env" ||
     { echo 'Invalid private profile bridge token'; return 2; }
+  local auth_env=()
+  if grep -Fxq 'WEB_EMAIL_LOGIN_ENABLED=yes' "$ENV_FILE"; then
+    test -s "$ROOT/public/auth-db.env" || {
+      echo 'Scoped canonical auth DB environment missing'; return 2;
+    }
+    grep -Eq '^WEB_AUTH_DATABASE_URL=postgresql://mnebyvpn_site_auth:[a-f0-9]{64}@127[.]0[.]0[.]1:55433/mnebyvpn_stage$' "$ROOT/public/auth-db.env" || {
+      echo 'Auth DB credential cannot be proven canonical and scoped'; return 2;
+    }
+    auth_env=(--env-file "$ROOT/public/auth-db.env")
+  fi
   local merchant_env=()
   # Merchant secret never belongs to the ordinary public web container.
   if grep -Fxq 'WEB_PRODAMUS_WEBHOOK_ENABLED=yes' "$ENV_FILE"; then
@@ -84,7 +94,7 @@ run_web() {
     --memory 300m --cpus 0.4 --env-file "$ENV_FILE" \
     --env-file "$ROOT/bot/worker.env" \
     --env-file "$ROOT/public/subscription-db.env" \
-    "${merchant_env[@]}" -e "WEB_PORT=$port" "$image" >/dev/null
+    "${auth_env[@]}" "${merchant_env[@]}" -e "WEB_PORT=$port" "$image" >/dev/null
 }
 public_listener() { ss -H -lnt | awk '{print $4}' | grep -Fqx '127.0.0.1:8792'; }
 healthy() {
