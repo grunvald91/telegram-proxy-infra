@@ -121,4 +121,25 @@ jobs:
             test "$result" = 401
           done
           echo 'prodamus_urlencoded_invalid_signature_smoke_end'
+          echo 'purchase_notifications_read_only_audit=begin'
+          for source in bot/web.env bot/worker.env; do
+            if [[ -s "/opt/mnebyvpn/$source" ]] &&
+              grep -Eq '^TELEGRAM_BOT_TOKEN=[0-9]{5,20}:[A-Za-z0-9_-]{30,}$' "/opt/mnebyvpn/$source"; then
+              echo "token_present_$(echo "$source" | tr '/.' '__')=yes"
+            else
+              echo "token_present_$(echo "$source" | tr '/.' '__')=no"
+            fi
+          done
+          docker inspect --format 'vpn_worker_image={{.Config.Image}}' mnebyvpn-vpn-worker 2>/dev/null || true
+          if [[ -r /opt/mnebyvpn/bot/web.env ]]; then
+            if grep -Fxq 'VPN_PURCHASE_NOTIFICATIONS_ENABLED=yes' /opt/mnebyvpn/bot/web.env ||
+              grep -Fxq 'VPN_PURCHASE_NOTIFICATIONS_ENABLED=yes' /opt/mnebyvpn/bot/worker.env 2>/dev/null; then
+              echo 'purchase_notification_flag=yes'
+            else
+              echo 'purchase_notification_flag=no'
+            fi
+          fi
+          docker exec mnebyvpn-stage-postgres psql -AtX -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage \
+            -c "SELECT 'paid_clock_table_exists='||(to_regclass('public.vpn_release_flags') IS NOT NULL)::text" || true
+          echo 'purchase_notifications_read_only_audit=end'
           REMOTE
