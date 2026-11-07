@@ -126,6 +126,10 @@ jobs:
                 signal:AbortSignal.timeout(8000),headers:{Accept:'text/plain'}});
               if(!response.ok)throw Error('Merchant checkout unavailable');
               const result=await response.text();
+              console.log('original_prodamus_http='+response.status);
+              console.log('original_prodamus_response_length='+result.length);
+              console.log('original_prodamus_is_https_link='+/^https:\/\//.test(result.trim()));
+              console.log('original_prodamus_looks_html='+/^\s*</.test(result));
               if(result.length>2048)throw Error('Merchant response too large');
               return result;
             }
@@ -143,9 +147,12 @@ jobs:
               'Invalid Prodamus order','Invalid Prodamus response',
               'Unsafe Prodamus payment link','Unapproved merchant request',
               'Merchant checkout unavailable','Merchant response too large',
-              'Missing Prodamus key','Invalid merchant Prodamus integration code'
+              'Missing Prodamus key','Invalid merchant Prodamus integration code',
+              'Invalid URL','Not a Prodamus order','Missing configuration'
             ]);
             console.log('merchant_original_checkout_module_probe=failed');
+            console.log('merchant_original_error_class='+
+              (['TypeError','Error','RangeError'].includes(e?.name)?e.name:'unknown'));
             console.log('merchant_original_failure_reason='+
               (safeReasons.has(e?.message)?e.message:'other'));
             process.exitCode=1;
