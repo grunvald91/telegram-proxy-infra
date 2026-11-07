@@ -1,0 +1,83 @@
+name: Activate node-acknowledged paid VPN clock after safe control-plane rollout
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/mnebyvpn-paid-vpn-clock-enable.yml'
+      - 'scripts/mnebyvpn-paid-vpn-clock-enable.sh'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebyvpn-paid-vpn-clock-production
+  cancel-in-progress: false
+jobs:
+  activate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      HOST: '188.120.254.223'
+      SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: infra
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: grunvald91/Mnebyvpn
+          ref: main
+          path: vpn
+          persist-credentials: false
+      - name: Validate reviewed source, latest green CI and guarded rollout scripts
+        shell: bash
+        id: gate
+        run: |
+          set -euo pipefail
+          test -n "$SSH_PASSWORD"
+          bash -n infra/scripts/mnebyvpn-main-node-worker-promote.sh
+          bash -n infra/scripts/mnebyvpn-paid-vpn-clock-enable.sh
+          python3 -m py_compile infra/scripts/mnebyvpn-live-node-readonly-check.py
+          sha="$(git -C vpn rev-parse HEAD)"
+          [[ "$sha" =~ ^[a-f0-9]{40}$ ]]
+          test -f vpn/db/migrations/0105_paid_vpn_activation_clock.sql
+          test -f vpn/packages/provisioning/src/pg-worker.ts
+          curl -fsSL --retry 2 --max-time 25 \
+            'https://api.github.com/repos/grunvald91/Mnebyvpn/actions/workflows/offline-contracts.yml/runs?branch=main&status=success&per_page=12' \
+            -o "$RUNNER_TEMP/ci.json"
+          SRC_SHA="$sha" python3 - "$RUNNER_TEMP/ci.json" <<'PY'
+          import json,os,sys
+          sha=os.environ['SRC_SHA']
+          runs=json.load(open(sys.argv[1])).get('workflow_runs',[])
+          assert any(r.get('head_sha')==sha and r.get('head_branch')=='main'
+             and r.get('event')=='push' and r.get('conclusion')=='success'
+             for r in runs), 'The exact production source has no green CI'
+          PY
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - name: Inspect existing node and enable the paid clock in one guarded transaction
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          export SSHPASS="$SSH_PASSWORD"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          sha="${{ steps.gate.outputs.sha }}"
+          sshpass -e scp "${opts[@]}" infra/scripts/mnebyvpn-live-node-readonly-check.py \
+            "root@$HOST:/tmp/mnebyvpn-live-node-readonly-check.py"
+          sshpass -e scp "${opts[@]}" infra/scripts/mnebyvpn-paid-vpn-clock-enable.sh \
+            "root@$HOST:/tmp/mnebyvpn-paid-vpn-clock-enable-$sha.sh"
+          sshpass -e ssh "${opts[@]}" "root@$HOST" \
+            "bash /tmp/mnebyvpn-paid-vpn-clock-enable-$sha.sh '$sha'"
+          echo "paid_vpn_clock=enabled_after_verified_node" >> "$GITHUB_STEP_SUMMARY"
+          echo "exact_worker_release=$sha" >> "$GITHUB_STEP_SUMMARY"
+      - name: Remove only temporary audit and feature-release scripts
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "$SSH_PASSWORD" ]]; then
+            export SSHPASS="$SSH_PASSWORD"
+            sshpass -e ssh -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new \
+              -o LogLevel=ERROR "root@$HOST" \
+              "rm -f /tmp/mnebyvpn-live-node-readonly-check.py /tmp/mnebyvpn-paid-vpn-clock-enable-${{ steps.gate.outputs.sha }}.sh" || true
+          fi
