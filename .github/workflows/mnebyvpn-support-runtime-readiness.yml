@@ -84,3 +84,27 @@ jobs:
             echo '::warning::Public HTTPS could not be independently verified'
             echo 'public_brand_and_support_form_visible=unverified'
           fi
+
+  mail-gateway-ci:
+    name: Test ServGo signed email gateway without secrets
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: grunvald91/booking_bot
+          ref: 316590cd168163f441f5800e0e3a47208f57f8d1
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check -q -r requirements.txt -r web/api/requirements.txt aiosqlite
+      - name: Compile auth mail source
+        run: python -m py_compile web/api/routes/mnebyvpn_mail.py database/models.py bot/services/email_notifications.py tests/test_mnebyvpn_mail.py
+      - name: Test HMAC, one-use nonce and bounded request body using fake SMTP
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          DATABASE_URL: sqlite+aiosqlite:///:memory:
+          BOT_TOKEN: test-token
+        run: python -m unittest discover -s tests -p test_mnebyvpn_mail.py -v
