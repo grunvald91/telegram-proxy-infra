@@ -1,5 +1,9 @@
 name: MNEBYDNS read-only two-node capacity baseline
 on:
+  push:
+    branches: ['feature/mnebydns-readonly-capacity-20261107']
+    paths:
+      - '.github/workflows/mnebydns-readonly-capacity.yml'
   pull_request:
     paths:
       - '.github/workflows/mnebydns-readonly-capacity.yml'
