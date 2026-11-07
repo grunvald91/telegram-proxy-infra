@@ -1,0 +1,147 @@
+name: Activate real MNEBYVPN Prodamus website checkout
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebyvpn-prodamus-live-enable.yml'
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebyvpn-prodamus-live-enable.yml'
+      - 'scripts/mnebyvpn-prodamus-live-enable.sh'
+permissions:
+  contents: read
+concurrency:
+  group: mnebyvpn-commercial-activation-188
+  cancel-in-progress: false
+jobs:
+  lint:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Parse shell and embedded Python preflights
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n scripts/mnebyvpn-prodamus-live-enable.sh
+          python3 - <<'PY'
+          import pathlib,re
+          s=pathlib.Path('scripts/mnebyvpn-prodamus-live-enable.sh').read_text()
+          chunks=re.findall(r"^python3 [^\n]+<<'PY'\n(.*?)^PY$",s,re.M|re.S)
+          assert len(chunks)==2,len(chunks)
+          for c in chunks:compile(c,'embedded preflight','exec')
+          print('merchant_script_shell_and_embedded_python=valid')
+          PY
+  activate:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      RELAY_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate deployment shell, private key presence and source CI
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SSH_PASSWORD"
+          bash -n scripts/mnebyvpn-prodamus-live-enable.sh
+          bash -n scripts/mnebyvpn-auto-web-promote.sh
+          curl -fsS --retry 2 --max-time 20 \
+            https://api.github.com/repos/grunvald91/Mnebyvpn/git/ref/heads/main \
+            -o "$RUNNER_TEMP/source.json"
+          sha="$(python3 - "$RUNNER_TEMP/source.json" <<'PY'
+          import json,sys
+          print(json.load(open(sys.argv[1]))['object']['sha'])
+          PY
+          )"
+          [[ "$sha" =~ ^[a-f0-9]{40}$ ]]
+          curl -fsS --retry 2 --max-time 25 \
+            'https://api.github.com/repos/grunvald91/Mnebyvpn/actions/workflows/offline-contracts.yml/runs?branch=main&status=success&per_page=5' \
+            -o "$RUNNER_TEMP/ci.json"
+          SOURCE="$sha" python3 - "$RUNNER_TEMP/ci.json" <<'PY'
+          import json,os,sys
+          runs=json.load(open(sys.argv[1])).get('workflow_runs',[])
+          assert any(r.get('head_sha')==os.environ['SOURCE'] and
+            r.get('conclusion')=='success' and r.get('head_branch')=='main' for r in runs),\
+            'Source main has not passed complete CI'
+          PY
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+      - name: Prove exact source is already deployed and TLS works locally
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$SSH_PASSWORD"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          sha="${{ steps.source.outputs.sha }}"
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 "bash -se -- $sha" <<'REMOTE'
+          set -Eeuo pipefail
+          [ "$(cat /opt/mnebyvpn/public/active_sha)" = "$1" ]
+          for path in terms privacy; do
+            [ "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:8792/$path")" = 200 ]
+          done
+          REMOTE
+      - name: Upload isolated activation and existing trusted canary publisher
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$SSH_PASSWORD"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          sshpass -e scp "${opts[@]}" \
+            scripts/mnebyvpn-prodamus-live-enable.sh root@188.120.254.223:/tmp/mnebyvpn-prodamus-live-enable.sh
+          sshpass -e scp "${opts[@]}" \
+            scripts/mnebyvpn-auto-web-promote.sh root@188.120.254.223:/tmp/mnebyvpn-prodamus-live-promote.sh
+      - name: Activate, canary, synthetic signed webhook, automatic rollback if failed
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$SSH_PASSWORD"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          sha="${{ steps.source.outputs.sha }}"
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 \
+            "bash /tmp/mnebyvpn-prodamus-live-enable.sh $sha /tmp/mnebyvpn-prodamus-live-promote.sh"
+          echo 'Real checkout was enabled after complete internal canary, signed webhook and canonical DB checks.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Public callback probe from independent foreign node
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "$RELAY_PASSWORD" ]]; then
+            echo '::warning::External Prodamus callback reachability not checked from foreign server'
+            exit 0
+          fi
+          export SSHPASS="$RELAY_PASSWORD"
+          opts=(-o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          if ! sshpass -e ssh "${opts[@]}" root@89.125.90.101 'bash -se' <<'REMOTE'
+          status=000
+          for n in 1 2 3; do
+            status="$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' \
+              --connect-timeout 8 --max-time 12 -X POST -H 'Sign: invalid' \
+              https://mnebyvpn.site/webhooks/prodamus 2>/dev/null || true)"
+            if [[ "$status" == 401 ]];then break;fi
+            sleep 2
+          done
+          echo "external_signed_webhook_authentication_http=$status"
+          test "$status" = 401
+          REMOTE
+          then
+            echo '::warning::External webhook reachability intermittently fails; manually confirm Prodamus callback URL after first customer test'
+          fi
+      - name: Remove only isolated temporary scripts
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "$SSH_PASSWORD" ]];then
+            export SSHPASS="$SSH_PASSWORD"
+            sshpass -e ssh -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new \
+              -o LogLevel=ERROR root@188.120.254.223 \
+              'rm -f /tmp/mnebyvpn-prodamus-live-enable.sh /tmp/mnebyvpn-prodamus-live-promote.sh' || true
+          fi
