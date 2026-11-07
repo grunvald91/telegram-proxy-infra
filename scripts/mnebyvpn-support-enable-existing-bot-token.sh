@@ -26,8 +26,7 @@ operator="$(sed -n 's/^SUPPORT_TELEGRAM_OPERATOR_ID=//p' "$BOT_ENV")"
 [[ "$operator" =~ ^[1-9][0-9]{5,15}$ ]] || { echo 'Operator is missing'; exit 2; }
 [[ "$(sed -n 's/^SUPPORT_TELEGRAM_OPERATOR_ID=//p' "$WEB_ENV")" == "$operator" ]] ||
   { echo 'Site and bot operator mismatch'; exit 2; }
-[[ "$(sed -n 's/^SUPPORT_BRIDGE_SECRET=//p' "$BOT_ENV")" ==
-   "$(sed -n 's/^SUPPORT_BRIDGE_SECRET=//p' "$WEB_ENV")" ]] ||
+[[ "$(sed -n 's/^SUPPORT_BRIDGE_SECRET=//p' "$BOT_ENV")" == "$(sed -n 's/^SUPPORT_BRIDGE_SECRET=//p' "$WEB_ENV")" ]] ||
   { echo 'Private support bridge mismatch'; exit 2; }
 test "$(docker inspect -f '{{.State.Running}}' mnebyvpn-bot-info)" = true
 test "$(docker inspect -f '{{.State.Running}}' mnebyvpn-public-web)" = true
@@ -40,8 +39,7 @@ SHA="$(cat "$ROOT/staging/active_sha")"
 [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'Invalid stage SHA'; exit 2; }
 [[ "$(cat "$ROOT/public/active_sha")" == "$SHA" ]] ||
   { echo 'Website release differs from staging'; exit 2; }
-[[ "$(docker inspect -f '{{.Config.Image}}' mnebyvpn-bot-info)" ==
-   "mnebyvpn-stage-web:$SHA" ]] ||
+[[ "$(docker inspect -f '{{.Config.Image}}' mnebyvpn-bot-info)" == "mnebyvpn-stage-web:$SHA" ]] ||
   { echo 'Bot release differs from staging'; exit 2; }
 docker image inspect "mnebyvpn-stage-web:$SHA" >/dev/null
 exec 8>/run/lock/mnebyvpn-support-token-activation.lock
