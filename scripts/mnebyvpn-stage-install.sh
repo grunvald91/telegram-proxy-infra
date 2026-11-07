@@ -96,6 +96,25 @@ psql_stage() {
   docker exec -i mnebyvpn-stage-postgres psql -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage "$@"
 }
 psql_stage -q -c 'CREATE TABLE IF NOT EXISTS deployment_schema_migrations (file_name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT clock_timestamp());' >/dev/null
+# Never migrate the shared staging/bot PostgreSQL database without a fresh
+# restorable snapshot. The data directory is persistent across image releases.
+pending_migrations=no
+for file in "$RELEASE"/db/migrations/*.sql; do
+  name="$(basename "$file")"
+  [[ "$name" =~ ^[0-9]{4}_[A-Za-z0-9_]+\.sql$ ]] || { echo 'Unexpected migration name'; exit 2; }
+  exists="$(psql_stage -At -c "SELECT COUNT(*) FROM deployment_schema_migrations WHERE file_name='$name'")"
+  if [[ "$exists" == 0 ]]; then pending_migrations=yes; break; fi
+done
+if [[ "$pending_migrations" == yes ]]; then
+  snapshot="$(mktemp "$STAGE/backups/pre-migration-$SHA.XXXXXXXX.dump")"
+  chmod 600 "$snapshot"
+  # pg_dump output is binary; avoid a pseudo-TTY and never print DB contents.
+  docker exec mnebyvpn-stage-postgres \
+    pg_dump -Fc -U mnebyvpn_stage -d mnebyvpn_stage > "$snapshot"
+  test "$(stat -c %s "$snapshot")" -gt 128 || { echo 'PostgreSQL dump too small'; exit 2; }
+  test "$(head -c 5 "$snapshot")" = 'PGDMP' || { echo 'Invalid PostgreSQL custom archive'; exit 2; }
+  echo 'pre_migration_pg_dump=verified'
+fi
 for file in "$RELEASE"/db/migrations/*.sql; do
   name="$(basename "$file")"
   [[ "$name" =~ ^[0-9]{4}_[A-Za-z0-9_]+\.sql$ ]] || { echo 'Unexpected migration name'; exit 2; }
