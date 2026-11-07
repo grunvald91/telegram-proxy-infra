@@ -1,0 +1,107 @@
+name: MNEBYVPN commercial readiness inventory (read-only)
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/mnebyvpn-commercial-readiness.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: External HTTPS storefront and webhook ingress (no payment)
+        shell: bash
+        run: |
+          set -euo pipefail
+          for path in / /api/plans /webhooks/prodamus; do
+            value="$(curl --noproxy '*' -sS -o /dev/null -w 'http=%{http_code},tls=%{ssl_verify_result},ip=%{remote_ip}' \
+              --connect-timeout 8 --max-time 14 "https://mnebyvpn.site$path" 2>&1 || true)"
+            case "$path" in
+              /) echo "external_home=$value" ;;
+              /api/plans) echo "external_catalog=$value" ;;
+              *) echo "external_webhook_get=$value" ;;
+            esac
+          done
+          status="$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 12 \
+            https://mnebyvpn.payform.ru/ || true)"
+          echo "merchant_form_http=$status"
+      - name: Inventory server188 configuration without secret values or mutations
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SSH_PASSWORD"
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+          export SSHPASS="$SSH_PASSWORD"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new \
+            -o LogLevel=ERROR root@188.120.254.223 'python3 -' <<'PY'
+          import pathlib,subprocess,urllib.parse,json,urllib.request
+          root=pathlib.Path('/opt/mnebyvpn')
+          def env(file):
+              out={}
+              if file.is_file():
+                  for line in file.read_text().splitlines():
+                      if '=' in line and not line.startswith('#'):
+                          k,v=line.split('=',1)
+                          if k.isidentifier():out[k]=v
+              return out
+          web=env(root/'public/web.env')
+          auth=env(root/'public/auth-db.env')
+          merchant=env(root/'public/prodamus.env')
+          subscribed=env(root/'public/subscription-db.env')
+          bot=env(root/'bot/web.env')
+          for p,name in [
+              (root/'public/web.env','web_env'),
+              (root/'public/auth-db.env','auth_db_env'),
+              (root/'public/prodamus.env','merchant_env'),
+              (root/'public/subscription-db.env','subscription_db_env')]:
+              print(name+'='+('present' if p.is_file() and p.stat().st_size>0 else 'missing'))
+          for k,expected in [
+              ('WEB_EMAIL_LOGIN_ENABLED','yes'),
+              ('WEB_TELEGRAM_OIDC_ENABLED','yes'),
+              ('WEB_PRODAMUS_WEBHOOK_ENABLED','yes'),
+              ('WEB_PAYMENT_PROVIDER_TESTED','yes'),
+              ('WEB_NETWORK_PROVISIONING_VERIFIED','yes'),
+              ('WEB_CHECKOUT_ENABLED','1'),
+              ('WEB_LEGAL_PAGES_PUBLISHED','yes'),
+          ]:print(k+'_ready='+str(web.get(k)==expected).lower())
+          print('merchant_signing_secret_present='+str(len(merchant.get('PRODAMUS_SIGN_SECRET',''))>=32).lower())
+          print('merchant_form_url_configured='+str(merchant.get('PRODAMUS_FORM_URL')=='https://mnebyvpn.payform.ru/').lower())
+          print('merchant_webhook_url_configured='+str(merchant.get('PRODAMUS_NOTIFICATION_URL')=='https://mnebyvpn.site/webhooks/prodamus').lower())
+          print('merchant_sys_present='+str(bool(merchant.get('PRODAMUS_SYS'))).lower())
+          def target(v):
+              try:
+                  u=urllib.parse.urlparse(v)
+                  if u.scheme not in ('postgresql','postgres') or not u.hostname:return None
+                  return (u.hostname,u.port or 5432,u.path)
+              except Exception:return None
+          canon=target(subscribed.get('VPN_SUBSCRIPTION_DATABASE_URL',''))
+          print('canonical_subscription_db_target_present='+str(bool(canon)).lower())
+          for key,dsn in [
+              ('web_primary',web.get('DATABASE_URL','')),
+              ('web_auth',auth.get('WEB_AUTH_DATABASE_URL','')),
+              ('bot_primary',bot.get('DATABASE_URL','')),
+              ('web_billing',web.get('WEB_BILLING_DATABASE_URL',''))]:
+              u=target(dsn)
+              print(key+'_db_equals_canonical='+str(u==canon and canon is not None).lower())
+          for name in ['mnebyvpn-public-web','mnebyvpn-bot-info','mnebyvpn-vpn-worker']:
+              proc=subprocess.run(['docker','inspect','-f','{{.State.Status}}',name],capture_output=True,text=True,timeout=5)
+              print(name+'_running='+str(proc.stdout.strip()=='running').lower())
+          for name,url in [('web','http://127.0.0.1:8792/healthz'),
+                           ('catalog','http://127.0.0.1:8792/api/plans'),
+                           ('bot','http://127.0.0.1:8793/readyz'),
+                           ('node_bridge','http://127.0.0.1:8794/healthz')]:
+              try:
+                  with urllib.request.urlopen(url,timeout=5) as r:
+                      print(name+'_http='+str(r.status))
+                      if name=='catalog':
+                          obj=json.load(r)
+                          print('catalog_checkout_enabled='+str(obj.get('checkoutEnabled') is True).lower())
+                          print('catalog_email_enabled='+str(obj.get('emailLoginEnabled') is True).lower())
+              except Exception as e:
+                  print(name+'_http='+str(getattr(e,'code',0)))
+          print('audit_only_no_mutations=true')
+          PY
