@@ -31,7 +31,7 @@ class RenewalTests(unittest.TestCase):
         self.assertEqual(self.agent.state[self.identifier]['expiresAt'], deadline)
         self.assertEqual(self.agent.operation(request), {'status': 'applied', 'revision': 2})
 
-    def test_unbounded_or_elapsed_deadlines_and_stale_revisions_still_rejected(self):
+    def test_unbounded_or_elapsed_deadlines_still_rejected(self):
         for days in [-1, 4000]:
             request = dict(op='apply', id=self.identifier, enabled=True, revision=2,
                            expiresAt=(agent_module.utcnow() + dt.timedelta(days=days)).isoformat())
