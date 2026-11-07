@@ -1,4 +1,4 @@
-# Recheck against lint-corrected canary promoter; feature-gated and reversible.
+# Retest HMAC from production Node runtime and use safe error codes; rollback remains mandatory.
 name: Activate MNEBYVPN email OTP with encrypted ServGo HMAC
 on:
   push:
