@@ -1,0 +1,73 @@
+name: MNEBYVPN activate support using configured existing bot token
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebyvpn-support-activation
+  cancel-in-progress: false
+jobs:
+  activate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: mnebyvpn-support
+    env:
+      SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      MAIN_BOT_TOKEN: ${{ secrets.MNEBYVPN_SUPPORT_BOT_TOKEN }}
+    steps:
+      - name: Checkout existing isolated MNEBYVPN release scripts
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate prerequisites without exposing any token
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SSH_PASSWORD" || { echo 'Existing server SSH secret missing'; exit 2; }
+          test -n "$MAIN_BOT_TOKEN" || {
+            echo 'Configure MNEBYVPN_SUPPORT_BOT_TOKEN as a GitHub Actions secret in telegram-proxy-infra'
+            exit 2
+          }
+          [[ "$MAIN_BOT_TOKEN" =~ ^[0-9]{5,20}:[A-Za-z0-9_-]{25,}$ ]] || exit 2
+          test -s ops/secure/mnebyvpn-support-owner.enc.b64
+          bash -n scripts/mnebyvpn-support-activate.sh
+          bash -n scripts/mnebyvpn-main-bot-promote.sh
+          bash -n scripts/mnebyvpn-auto-web-promote.sh
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+      - name: Copy support installer and encrypted operator config to MNEBYVPN directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$SSH_PASSWORD"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          sshpass -e scp "${opts[@]}" scripts/mnebyvpn-support-activate.sh \
+            'root@188.120.254.223:/tmp/mnebyvpn-support-activate.sh'
+          sshpass -e scp "${opts[@]}" ops/secure/mnebyvpn-support-owner.enc.b64 \
+            'root@188.120.254.223:/tmp/mnebyvpn-support-owner.enc.b64'
+          sshpass -e scp "${opts[@]}" scripts/mnebyvpn-main-bot-promote.sh \
+            'root@188.120.254.223:/tmp/mnebyvpn-support-promote-bot.sh'
+          sshpass -e scp "${opts[@]}" scripts/mnebyvpn-auto-web-promote.sh \
+            'root@188.120.254.223:/tmp/mnebyvpn-support-promote-web.sh'
+      - name: Validate BotFather identity and atomically activate support only for owned app services
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$SSH_PASSWORD"
+          # The bot token is supplied to the remote process through encrypted
+          # SSH STDIN, never through CLI arguments, files in the runner or logs.
+          printf '%s\n' "$MAIN_BOT_TOKEN" | sshpass -e ssh -T \
+            -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new \
+            -o LogLevel=ERROR root@188.120.254.223 \
+            'bash /tmp/mnebyvpn-support-activate.sh /tmp/mnebyvpn-support-owner.enc.b64 /tmp/mnebyvpn-support-promote-bot.sh /tmp/mnebyvpn-support-promote-web.sh'
+          echo 'support_activation=verified'
+      - name: Remove only the support release-specific temporary uploads
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "$SSH_PASSWORD" ]]; then
+            export SSHPASS="$SSH_PASSWORD"
+            sshpass -e ssh -o ConnectTimeout=9 -o StrictHostKeyChecking=accept-new \
+              -o LogLevel=ERROR root@188.120.254.223 \
+              'rm -f /tmp/mnebyvpn-support-activate.sh /tmp/mnebyvpn-support-owner.enc.b64 /tmp/mnebyvpn-support-promote-bot.sh /tmp/mnebyvpn-support-promote-web.sh' || true
+          fi
