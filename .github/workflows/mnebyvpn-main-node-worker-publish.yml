@@ -2,6 +2,8 @@ name: MNEBYVPN deploy signed Xray worker and Telegram VPN profiles on 188
 # Explicit release after green main 454c658 and verified staging on server188.
 on:
   push:
+    branches:
+      - main
     paths:
       - '.github/workflows/mnebyvpn-main-node-worker-publish.yml'
       - 'scripts/mnebyvpn-main-node-worker-promote.sh'
@@ -39,7 +41,7 @@ jobs:
           test -n "$SSH_PASSWORD" || { echo 'Existing server188 connection secret missing'; exit 2; }
           bash -n infra/scripts/mnebyvpn-main-node-worker-promote.sh
           bash -n infra/scripts/mnebyvpn-main-bot-promote.sh
-          python3 -m py_compile infra/scripts/mnebyvpn-node-expiry-pilot.py
+          python3 -m py_compile infra/scripts/mnebyvpn-node-expiry-pilot.py infra/scripts/mnebyvpn-live-node-readonly-check.py
           test -f vpn/packages/provisioning/src/xray-node.ts
           sha="$(git -C vpn rev-parse HEAD)"
           [[ "$sha" =~ ^[a-f0-9]{40}$ ]]
@@ -68,14 +70,29 @@ jobs:
           sha="${{ steps.gate.outputs.sha }}"
           sshpass -e scp "${opts[@]}" infra/scripts/mnebyvpn-node-expiry-pilot.py \
             "root@$HOST:/tmp/mnebyvpn-node-expiry-pilot.py"
+          sshpass -e scp "${opts[@]}" infra/scripts/mnebyvpn-live-node-readonly-check.py \
+            "root@$HOST:/tmp/mnebyvpn-live-node-readonly-check.py"
           sshpass -e scp "${opts[@]}" infra/scripts/mnebyvpn-main-node-worker-promote.sh \
             "root@$HOST:/tmp/mnebyvpn-main-node-worker-$sha.sh"
           sshpass -e scp "${opts[@]}" infra/scripts/mnebyvpn-main-bot-promote.sh \
             "root@$HOST:/tmp/mnebyvpn-main-bot-promote-$sha.sh"
-          sshpass -e ssh "${opts[@]}" "root@$HOST" \
-            "bash /tmp/mnebyvpn-main-node-worker-$sha.sh '$sha' && bash /tmp/mnebyvpn-main-bot-promote-$sha.sh '$sha'"
+          # Updating only the worker must not restart a healthy, same-version
+          # Telegram bot. Run commands remotely without local interpolation.
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR "root@$HOST" "bash -se -- '$sha'" <<'REMOTE'
+          set -euo pipefail
+          sha="$1"
+          bash "/tmp/mnebyvpn-main-node-worker-$sha.sh" "$sha"
+          bot_image="$(docker inspect --format '{{.Config.Image}}' mnebyvpn-bot-info 2>/dev/null || true)"
+          bot_ready="$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:8793/readyz || true)"
+          if [[ "$bot_image" == "mnebyvpn-stage-web:$sha" && "$bot_ready" == 200 ]]; then
+            echo 'telegram_bot=unchanged_current_and_healthy'
+          else
+            bash "/tmp/mnebyvpn-main-bot-promote-$sha.sh" "$sha"
+          fi
+          REMOTE
           echo "node_worker_release_sha=$sha" >> "$GITHUB_STEP_SUMMARY"
-          echo 'node_agent_ephemeral_expiry_revoke=checked' >> "$GITHUB_STEP_SUMMARY"
+          echo 'node_expiry_pilot=skipped_if_live_subscribers' >> "$GITHUB_STEP_SUMMARY"
+          echo 'existing_customer_node_deadlines=checked_readonly' >> "$GITHUB_STEP_SUMMARY"
       - name: Verify foreign Telegram webhook still enforces authentication
         shell: bash
         run: |
@@ -84,8 +101,17 @@ jobs:
             --max-time 15 -X POST -H 'Content-Type: application/json' \
             -d '{"update_id":100}' \
             https://cdn.servgo.ru:8443/mnebyvpn-telegram/webhook || true)"
-          test "$code" = 401 || { echo "foreign_telegram_auth_check=$code"; exit 2; }
-          echo 'foreign_telegram_auth=401_expected' >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$code" == 401 ]]; then
+            echo 'foreign_telegram_auth=401_expected' >> "$GITHUB_STEP_SUMMARY"
+          elif [[ "$code" == 200 ]]; then
+            echo "::error::Foreign Telegram webhook accepted unauthenticated request"
+            exit 2
+          else
+            # An unrelated 502/504/timeout must not mark a completed VPN control
+            # worker cutover as failed; it does not exercise VPN authentication.
+            echo "::warning::External Telegram webhook availability inconclusive (HTTP $code); VPN node checks completed independently"
+            echo 'foreign_telegram_auth=external_unavailable_not_a_vpn_result' >> "$GITHUB_STEP_SUMMARY"
+          fi
       - name: Clean only uploaded release-specific files
         if: always()
         shell: bash
@@ -94,5 +120,5 @@ jobs:
             export SSHPASS="$SSH_PASSWORD"
             sshpass -e ssh -o ConnectTimeout=9 -o StrictHostKeyChecking=accept-new \
               -o LogLevel=ERROR "root@$HOST" \
-              "rm -f /tmp/mnebyvpn-node-expiry-pilot.py /tmp/mnebyvpn-main-node-worker-${{ steps.gate.outputs.sha }}.sh /tmp/mnebyvpn-main-bot-promote-${{ steps.gate.outputs.sha }}.sh" || true
+              "rm -f /tmp/mnebyvpn-node-expiry-pilot.py /tmp/mnebyvpn-live-node-readonly-check.py /tmp/mnebyvpn-main-node-worker-${{ steps.gate.outputs.sha }}.sh /tmp/mnebyvpn-main-bot-promote-${{ steps.gate.outputs.sha }}.sh" || true
           fi

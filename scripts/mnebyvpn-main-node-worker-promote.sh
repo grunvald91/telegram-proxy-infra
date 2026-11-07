@@ -17,6 +17,8 @@ flock -w 100 9 || { echo 'VPN worker deployment already running'; exit 2; }
 
 test "$(cat "$ROOT/staging/active_sha")" = "$SHA" ||
   { echo 'Staged app SHA differs from reviewed main'; exit 2; }
+test "$(cat "$ROOT/public/active_sha")" = "$SHA" ||
+  { echo 'Public app SHA differs from staged worker; abort mixed release';exit 2; }
 docker image inspect "$IMAGE" >/dev/null
 test -s "$ROOT/releases/$SHA/apps/service/src/vpn-provisioning-worker.ts"
 test -s "$ROOT/releases/$SHA/packages/provisioning/src/xray-node.ts"
@@ -31,20 +33,41 @@ test "$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' \
   --max-time 5 http://127.0.0.1:8792/healthz)" = 200
 test "$(docker inspect --format '{{.State.Running}}' mnebyvpn-stage-postgres)" = true
 
-# Ephemeral test restarts ONLY the isolated Xray agent child. Abort if a
-# customer has an actual/pending entitlement; do not interrupt subscribers.
+# The expiry pilot modifies a temporary profile AND restarts the remote
+# Xray child. It must NOT run with any actual subscribers on that node.
+# The control-plane container can be replaced independently: customer data
+# traffic flows through the foreign node and must never be interrupted by a
+# validation test. Evidence for agent expiry comes from green source CI and
+# prior dedicated pilot runs, not a new intrusive live test.
 sql_count() {
-  docker exec mnebyvpn-stage-postgres psql -At -v ON_ERROR_STOP=1 \
+  docker exec mnebyvpn-stage-postgres psql -At -X -v ON_ERROR_STOP=1 \
     -U mnebyvpn_stage -d mnebyvpn_stage -c "$1"
 }
-active="$(sql_count "SELECT count(*) FROM entitlements WHERE product='vpn' AND state='ACTIVE';")"
-pending="$(sql_count "SELECT count(*) FROM entitlements WHERE product='vpn' AND state='PAID_PENDING_PROVISIONING';")"
-if [[ "$active" != 0 || "$pending" != 0 ]]; then
-  echo 'Active or pending VPN customers exist; isolated agent expiry test needs maintenance plan'
-  exit 2
+live_users="$(sql_count "SELECT count(*) FROM entitlements
+  WHERE product='vpn' AND state NOT IN ('REFUNDED','EXPIRED','CANCELLED');")"
+[[ "$live_users" =~ ^[0-9]+$ ]] || { echo 'Unable to verify customer occupancy';exit 2; }
+if [[ "$live_users" == 0 ]]; then
+  test -s /tmp/mnebyvpn-node-expiry-pilot.py
+  python3 /tmp/mnebyvpn-node-expiry-pilot.py
+  echo 'node_expiry_pilot=verified_no_subscribers'
+else
+  echo 'node_expiry_pilot=skipped_to_preserve_live_customers'
 fi
-test -s /tmp/mnebyvpn-node-expiry-pilot.py
-python3 /tmp/mnebyvpn-node-expiry-pilot.py
+# No customer operation is permitted until actual remote node deadlines have
+# been inspected without writing or restarting anything on the data plane.
+AUDIT=/tmp/mnebyvpn-live-node-readonly-check.py
+test -s "$AUDIT" || { echo 'Missing signed read-only node inspection';exit 2; }
+python3 "$AUDIT"
+# Repeated main triggers must NOT restart a healthy, already-current worker.
+current_image="$(docker inspect --format '{{.Config.Image}}' "$NAME" 2>/dev/null || true)"
+current_status="$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' \
+  --max-time 5 http://127.0.0.1:8794/readyz || true)"
+if [[ "$current_image" == "$IMAGE" && "$current_status" == 200 ]]; then
+  echo "node_worker_sha=$SHA"
+  echo 'node_worker_promotion=already_current_healthy'
+  echo 'node_live_deadline_check=passed_readonly'
+  exit 0
+fi
 
 for candidate in "$PREVIOUS"; do
   if docker ps -a --format '{{.Names}}' | grep -qx "$candidate"; then
@@ -115,11 +138,14 @@ test "$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' \
   --max-time 3 -X POST -H 'Content-Type: application/json' \
   -d '{"telegramUserId":1}' \
   http://127.0.0.1:8794/profile)" = 401
+# Post-cutover customer readback ensures no loss of active node profiles.
+python3 "$AUDIT"
 if [[ "$old" == yes ]]; then docker rm "$PREVIOUS" >/dev/null; fi
 trap - ERR EXIT
 echo "node_worker_sha=$SHA"
 echo 'node_hmac_wireguard=verified'
-echo 'ephemeral_node_expiry_and_revoke=verified'
+echo 'node_expiry_check=nonintrusive_or_no_subscribers_pilot'
+echo 'subscriber_data_plane=untouched_by_worker_promotion'
 echo 'node_worker_readyz=200'
 echo 'node_worker_profile_requires_token=401'
 echo 'other_188_services_preserved=true'

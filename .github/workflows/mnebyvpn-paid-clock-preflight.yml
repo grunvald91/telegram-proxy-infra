@@ -1,0 +1,47 @@
+# Final branch verification: two shell release scripts and real-node read-only deadlines.
+name: MNEBYVPN paid VPN clock nonintrusive node preflight
+on:
+  push:
+    branches:
+      - fix/mnebyvpn-safe-live-vpn-worker-rollout-20261108
+      - main
+    paths:
+      - '.github/workflows/mnebyvpn-paid-clock-preflight.yml'
+      - 'scripts/mnebyvpn-live-node-readonly-check.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebyvpn-paid-clock-readonly-preflight
+  cancel-in-progress: false
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      HOST: '188.120.254.223'
+      SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate read-only inspection script
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SSH_PASSWORD"
+          python3 -m py_compile scripts/mnebyvpn-live-node-readonly-check.py
+          bash -n scripts/mnebyvpn-main-node-worker-promote.sh
+          bash -n scripts/mnebyvpn-paid-vpn-clock-enable.sh
+      - name: Verify existing customer profile and hard deadline via signed INSPECT
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          export SSHPASS="$SSH_PASSWORD"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          sshpass -e scp "${opts[@]}" scripts/mnebyvpn-live-node-readonly-check.py \
+            "root@$HOST:/tmp/mnebyvpn-paid-clock-readonly-audit.py"
+          sshpass -e ssh "${opts[@]}" "root@$HOST" \
+            "python3 /tmp/mnebyvpn-paid-clock-readonly-audit.py; result=\$?; rm -f /tmp/mnebyvpn-paid-clock-readonly-audit.py; exit \$result"
+          echo 'read_only_customer_profile_observation=passed' >> "$GITHUB_STEP_SUMMARY"
