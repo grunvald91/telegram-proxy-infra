@@ -1,0 +1,35 @@
+name: Verify MNEBYVPN ServGo mail relay before promotion
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/verify-mnebyvpn-servgo-mail.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  offline-mail-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: grunvald91/booking_bot
+          ref: 316590cd168163f441f5800e0e3a47208f57f8d1
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install ServGo dependencies for SMTP gateway tests
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check -q -r requirements.txt -r web/api/requirements.txt aiosqlite
+      - name: Fail closed if routes do not compile
+        run: |
+          set -euo pipefail
+          python -m py_compile web/api/routes/mnebyvpn_mail.py database/models.py bot/services/email_notifications.py tests/test_mnebyvpn_mail.py
+      - name: Check one-time signed mail gateway with mocked SMTP only
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          DATABASE_URL: sqlite+aiosqlite:///:memory:
+          BOT_TOKEN: test-token
+        run: python -m unittest discover -s tests -p test_mnebyvpn_mail.py -v
