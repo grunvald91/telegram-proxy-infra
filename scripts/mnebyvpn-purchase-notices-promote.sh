@@ -75,6 +75,9 @@ docker run -d --name "$NAME" --restart unless-stopped \
   apps/service/src/purchase-notification-worker.ts >/dev/null
 for _ in $(seq 1 8); do
   test "$(docker inspect --format '{{.State.Running}}' "$NAME")" = true || exit 2
+  test "$(docker inspect --format '{{.RestartCount}}' "$NAME")" = 0 || {
+    echo 'Purchase notice process restarted during canary';exit 2;
+  }
   sleep 1
 done
 test "$(docker inspect --format '{{.Image}}' mnebyvpn-vpn-worker)" = "$old_worker" || {
