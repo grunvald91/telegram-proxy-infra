@@ -9,8 +9,8 @@ IFS= read -r TOKEN || { echo 'Private bot token input unavailable'; exit 2; }
 ROOT=/opt/mnebyvpn
 BOT_ENV="$ROOT/bot/web.env"
 WEB_ENV="$ROOT/public/web.env"
-BOT_PROMOTER="\${1:?Bot promoter required}"
-WEB_PROMOTER="\${2:?Web promoter required}"
+BOT_PROMOTER="${1:?Bot promoter required}"
+WEB_PROMOTER="${2:?Web promoter required}"
 for path in "$BOT_ENV" "$WEB_ENV" "$BOT_PROMOTER" "$WEB_PROMOTER"; do
   test -s "$path" || { echo 'Private MNEBYVPN prerequisite missing'; exit 2; }
 done
