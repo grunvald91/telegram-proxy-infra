@@ -124,7 +124,7 @@ jobs:
           echo 'purchase_notifications_read_only_audit=begin'
           for source in bot/web.env bot/worker.env; do
             if [[ -s "/opt/mnebyvpn/$source" ]] &&
-              grep -Eq '^TELEGRAM_BOT_TOKEN=[0-9]{5,20}:[A-Za-z0-9_-]{30,}$' "/opt/mnebyvpn/$source"; then
+              grep -Eq '^(TELEGRAM_TOKEN_BOT|TELEGRAM_BOT_TOKEN)=[0-9]{5,20}:[A-Za-z0-9_-]{25,}$' "/opt/mnebyvpn/$source"; then
               echo "token_present_$(echo "$source" | tr '/.' '__')=yes"
             else
               echo "token_present_$(echo "$source" | tr '/.' '__')=no"
@@ -142,4 +142,21 @@ jobs:
           docker exec mnebyvpn-stage-postgres psql -AtX -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage \
             -c "SELECT 'paid_clock_table_exists='||(to_regclass('public.vpn_release_flags') IS NOT NULL)::text" || true
           echo 'purchase_notifications_read_only_audit=end'
+          echo 'paid_vpn_60_recent_readonly=begin'
+          docker exec -i mnebyvpn-stage-postgres psql -qAt -X -v ON_ERROR_STOP=1 \
+            -U mnebyvpn_stage -d mnebyvpn_stage <<'SQL'
+          SELECT 'paid_clock_enabled='||enabled::text FROM vpn_release_flags
+            WHERE feature='paid_vpn_clock_on_node';
+          SELECT 'paid_60_vpn_'||COALESCE(e.state,'NO_ENTITLEMENT')||'='||count(*)::text
+            FROM orders o LEFT JOIN entitlements e ON e.source_order_id=o.id AND e.product='vpn'
+            WHERE o.provider='prodamus' AND o.amount_minor=6000
+              AND o.created_at>clock_timestamp()-interval '4 hours'
+            GROUP BY e.state ORDER BY e.state;
+          SQL
+          if docker exec mnebyvpn-public-web sh -c 'grep -q "purchase-result-title" /srv/mnebyvpn/apps/web/public/app.js'; then
+            echo 'purchase_ui_in_public_container=yes'
+          else
+            echo 'purchase_ui_in_public_container=no'
+          fi
+          echo 'paid_vpn_60_recent_readonly=end'
           REMOTE
