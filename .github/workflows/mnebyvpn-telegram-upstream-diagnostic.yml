@@ -83,6 +83,24 @@ jobs:
             echo "private_telegram_upstream_$attempt=$code"
             sleep 1
           done
+          python3 - <<'PY'
+          import re,subprocess,pathlib
+          ping=subprocess.run(['ping','-q','-c','12','-i','0.2','-W','1','10.66.77.2'],
+            text=True,capture_output=True,timeout=17)
+          for line in ping.stdout.splitlines():
+            if 'packet loss' in line or 'rtt min' in line:
+              print('wireguard_route_ping='+line.strip()[:150])
+          error=pathlib.Path('/var/log/nginx/error.log')
+          if error.is_file():
+            lines=error.read_text(errors='replace').splitlines()[-1800:]
+            matches=[x for x in lines if 'upstream' in x and
+                     ('mnebyvpn-telegram' in x or '10.66.77.2' in x)]
+            print('telegram_nginx_upstream_errors_recent='+str(len(matches)))
+            for line in matches[-6:]:
+              reason=re.search(r'\\]\\s+([^,]+?)(?:, client:|, server:|$)',line)
+              snippet=reason.group(1) if reason else 'upstream_error'
+              print('telegram_nginx_error='+snippet[:160])
+          PY
           echo 'foreign_read_only=true'
           FOREIGN
           fi
