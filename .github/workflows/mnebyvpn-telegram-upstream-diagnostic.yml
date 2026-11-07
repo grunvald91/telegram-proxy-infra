@@ -56,6 +56,33 @@ jobs:
           done
           echo "foreign_to_ru_8793=$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --connect-timeout 4 --max-time 7 -X POST -H 'Content-Type: application/json' -d '{\"update_id\":100}' http://10.66.77.2:8793/webhooks/telegram || true)"
           echo "foreign_to_ru_8794=$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --connect-timeout 4 --max-time 7 -X POST -H 'Content-Type: application/json' -d '{\"update_id\":100}' http://10.66.77.2:8794/webhooks/telegram || true)"
+          echo 'foreign_wireguard_snapshot'
+          python3 - <<'PY'
+          import subprocess,time,re
+          p=subprocess.run(['wg','show','tg-relay','latest-handshakes'],text=True,capture_output=True,timeout=5)
+          stamps=[]
+          for line in p.stdout.splitlines():
+            cols=line.split()
+            if len(cols)==2 and cols[1].isdigit() and int(cols[1])>0:
+              stamps.append(int(cols[1]))
+          ages=[round(time.time()-x) for x in stamps]
+          print('wg_peer_count='+str(len(stamps)))
+          print('wg_handshake_newest_age_seconds='+str(min(ages) if ages else -1))
+          r=subprocess.run(['ip','route','get','10.66.77.2'],text=True,capture_output=True,timeout=5)
+          print('route_to_bot_private='+r.stdout.strip()[:180])
+          conf=subprocess.run(['nginx','-T'],text=True,capture_output=True,timeout=8)
+          for line in conf.stdout.splitlines():
+            if 'mnebyvpn-telegram' in line:
+              print('nginx_telegram_location_present=true')
+            if 'proxy_pass' in line and ('10.66.77.' in line or '8794' in line or '8793' in line):
+              match=re.search(r'proxy_pass\\s+(https?://[0-9a-zA-Z.:-]+)',line)
+              if match: print('nginx_telegram_upstream='+match.group(1))
+          PY
+          for attempt in 1 2 3 4 5; do
+            code="$(curl --noproxy '*' --silent -o /dev/null -w '%{http_code}' --connect-timeout 2 --max-time 4 -X POST -H 'Content-Type: application/json' -d '{\"update_id\":100}' http://10.66.77.2:8794/webhooks/telegram || true)"
+            echo "private_telegram_upstream_$attempt=$code"
+            sleep 1
+          done
           echo 'foreign_read_only=true'
           FOREIGN
           fi
