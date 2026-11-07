@@ -159,4 +159,15 @@ jobs:
             echo 'purchase_ui_in_public_container=no'
           fi
           echo 'paid_vpn_60_recent_readonly=end'
+          echo 'purchase_notices_delivery_audit=begin'
+          docker inspect --format 'purchase_notices_container={{.State.Status}} restarts={{.RestartCount}}' \
+            mnebyvpn-purchase-notices 2>/dev/null || true
+          docker exec -i mnebyvpn-stage-postgres psql -qAt -X -v ON_ERROR_STOP=1 \
+            -U mnebyvpn_stage -d mnebyvpn_stage <<'SQL'
+          SELECT 'notice_'||kind||'_'||status||'='||count(*)::text
+            FROM vpn_purchase_notifications GROUP BY kind,status ORDER BY kind,status;
+          SQL
+          docker logs --tail 8 mnebyvpn-purchase-notices 2>&1 |
+            grep -E '^(vpn-purchase-notifications |MNEBYVPN_PURCHASE_NOTICE_WORKER_FAILURE)' || true
+          echo 'purchase_notices_delivery_audit=end'
           REMOTE
