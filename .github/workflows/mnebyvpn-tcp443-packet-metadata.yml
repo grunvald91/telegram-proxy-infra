@@ -1,3 +1,4 @@
+# Recheck public 443 after verified email activation and before Prodamus live payments (2026-11-07).
 name: MNEBYVPN inspect TCP443 packets and local listener (read-only)
 on:
   push:
