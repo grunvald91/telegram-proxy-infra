@@ -1,3 +1,4 @@
+# Post-launch read-only website checkout audit, 2026-11-07.
 name: MNEBYVPN commercial readiness inventory (read-only)
 on:
   push:
@@ -51,6 +52,7 @@ jobs:
           web=env(root/'public/web.env')
           auth=env(root/'public/auth-db.env')
           merchant=env(root/'public/prodamus.env')
+          billing=env(root/'public/billing-db.env')
           subscribed=env(root/'public/subscription-db.env')
           bot=env(root/'bot/web.env')
           for p,name in [
@@ -84,7 +86,7 @@ jobs:
               ('web_primary',web.get('DATABASE_URL','')),
               ('web_auth',auth.get('WEB_AUTH_DATABASE_URL','')),
               ('bot_primary',bot.get('DATABASE_URL','')),
-              ('web_billing',web.get('WEB_BILLING_DATABASE_URL',''))]:
+              ('web_billing',billing.get('WEB_BILLING_DATABASE_URL',''))]:
               u=target(dsn)
               print(key+'_db_equals_canonical='+str(u==canon and canon is not None).lower())
           for name in ['mnebyvpn-public-web','mnebyvpn-bot-info','mnebyvpn-vpn-worker']:
@@ -103,5 +105,19 @@ jobs:
                           print('catalog_email_enabled='+str(obj.get('emailLoginEnabled') is True).lower())
               except Exception as e:
                   print(name+'_http='+str(getattr(e,'code',0)))
+          for name,url in [('terms','http://127.0.0.1:8792/terms'),
+                           ('privacy','http://127.0.0.1:8792/privacy')]:
+              try:
+                  with urllib.request.urlopen(url,timeout=5) as r:
+                      print(name+'_http='+str(r.status))
+              except Exception as e:
+                  print(name+'_http='+str(getattr(e,'code',0)))
+          req=urllib.request.Request('http://127.0.0.1:8792/webhooks/prodamus',
+              data=b'',headers={'Sign':'invalid'},method='POST')
+          try:
+              with urllib.request.urlopen(req,timeout=5) as r:
+                  print('unsigned_merchant_callback_http='+str(r.status))
+          except Exception as e:
+              print('unsigned_merchant_callback_http='+str(getattr(e,'code',0)))
           print('audit_only_no_mutations=true')
           PY
