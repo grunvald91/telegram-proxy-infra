@@ -90,4 +90,23 @@ jobs:
             grep -E '^MNEBYVPN_PRODAMUS_WEBHOOK_(RESULT|PROCESSING_ERROR)' |
             tail -30 || true
           echo 'prodamus_app_callback_outcomes_end'
+          echo 'prodamus_webhook_route_probes_begin'
+          for target in \
+            http://127.0.0.1:8792/webhooks/prodamus \
+            https://mnebyvpn.site/webhooks/prodamus; do
+            code="$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' \
+              --connect-timeout 5 --max-time 9 -X POST -H 'Sign: invalid' "$target" 2>/dev/null || true)"
+            case "$target" in http:*) label=direct_backend;; *) label=public_domain;; esac
+            echo "$label=$code"
+          done
+          code="$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' \
+            --resolve mnebyvpn.site:443:127.0.0.1 --connect-timeout 4 --max-time 9 \
+            -X POST -H 'Sign: invalid' https://mnebyvpn.site/webhooks/prodamus 2>/dev/null || true)"
+          echo "loopback_tls_sni=$code"
+          if grep -Eq '^PRODAMUS_SYS=[^[:space:]]+' /opt/mnebyvpn/public/prodamus.env;then
+            echo 'merchant_sys_configured=yes'
+          else
+            echo 'merchant_sys_configured=no'
+          fi
+          echo 'prodamus_webhook_route_probes_end'
           REMOTE
