@@ -31,6 +31,36 @@ grep -Fq 'if(!support.botToken)' "$WEB_SRC"
 test "$(docker exec mnebyvpn-stage-postgres psql -At \
   -U mnebyvpn_stage -d mnebyvpn_stage \
   -c "SELECT to_regclass('public.website_support_tickets')::text")" = website_support_tickets
+grep -Fq 'SUPPORT_BRIDGE_SECRET' "$BOT_SRC"
+grep -Fq 'SUPPORT_BRIDGE_SECRET' "$WEB_SRC"
+grep -Fq '/api/support/operator-inbox' "$WEB_SRC"
+# The public website uses an INDEPENDENT PostgreSQL database. Apply ONLY
+# the additive support-ticket migration in that known site-owned database.
+SITE_MIGRATION="$ROOT/releases/$SHA/db/migrations/0018_website_support_tickets.sql"
+test -s "$SITE_MIGRATION"
+test "$(docker exec mnebyvpn-stage-postgres psql -At -U mnebyvpn_stage \
+  -d mnebyvpn_public -c 'SELECT current_database()')" = mnebyvpn_public
+site_table="$(docker exec mnebyvpn-stage-postgres psql -At -U mnebyvpn_stage \
+  -d mnebyvpn_public -c "SELECT to_regclass('public.website_support_tickets')::text")"
+if [[ -z "$site_table" ]]; then
+  {
+    printf 'BEGIN;\n'
+    cat "$SITE_MIGRATION"
+    printf '\nGRANT SELECT, INSERT, UPDATE, DELETE ON public.website_support_tickets TO mnebyvpn_public;\nCOMMIT;\n'
+  } | docker exec -i mnebyvpn-stage-postgres psql -v ON_ERROR_STOP=1 -q \
+    -U mnebyvpn_stage -d mnebyvpn_public
+else
+  [[ "$site_table" == website_support_tickets ]] || { echo 'Unexpected site support table'; exit 2; }
+fi
+docker exec mnebyvpn-stage-postgres psql -v ON_ERROR_STOP=1 -q \
+  -U mnebyvpn_stage -d mnebyvpn_public \
+  -c 'GRANT SELECT, INSERT, UPDATE, DELETE ON public.website_support_tickets TO mnebyvpn_public'
+# Check the public role has ONLY data access, no schema creation.
+test "$(docker exec mnebyvpn-stage-postgres psql -At -U mnebyvpn_stage \
+  -d mnebyvpn_public \
+  -c "SELECT has_table_privilege('mnebyvpn_public','public.website_support_tickets','SELECT,INSERT,UPDATE,DELETE')")" = t
+BRIDGE_SECRET="$(openssl rand -hex 32)"
+[[ "$BRIDGE_SECRET" =~ ^[0-9a-f]{64}$ ]] || { echo 'Support bridge entropy missing'; exit 2; }
 BOT_ENV="$ROOT/bot/web.env"
 WEB_ENV="$ROOT/public/web.env"
 test -s "$BOT_ENV" && test -s "$WEB_ENV"
@@ -55,8 +85,8 @@ cleanup() {
 trap cleanup EXIT
 for env_file in "$BOT_ENV" "$WEB_ENV"; do
   temp="$(mktemp "$env_file.support.XXXXXXXX")"
-  grep -Ev '^SUPPORT_TELEGRAM_OPERATOR_ID=' "$env_file" > "$temp" || true
-  printf 'SUPPORT_TELEGRAM_OPERATOR_ID=%s\n' "$OP_ID" >> "$temp"
+  grep -Ev '^(SUPPORT_TELEGRAM_OPERATOR_ID|SUPPORT_BRIDGE_SECRET)=' "$env_file" > "$temp" || true
+  printf 'SUPPORT_TELEGRAM_OPERATOR_ID=%s\nSUPPORT_BRIDGE_SECRET=%s\n' "$OP_ID" "$BRIDGE_SECRET" >> "$temp"
   chmod 600 "$temp"
   mv -f "$temp" "$env_file"
 done
@@ -75,4 +105,5 @@ curl --noproxy '*' -fsS --max-time 7 \
 echo "support_deployed_sha=$SHA"
 echo 'support_bot=existing_webhook'
 echo 'support_site=queue_ready'
+echo 'support_private_bridge=authenticated'
 echo 'no_new_token_or_bot=true'
