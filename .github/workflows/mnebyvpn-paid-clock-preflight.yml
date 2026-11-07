@@ -30,6 +30,8 @@ jobs:
           set -euo pipefail
           test -n "$SSH_PASSWORD"
           python3 -m py_compile scripts/mnebyvpn-live-node-readonly-check.py
+          bash -n scripts/mnebyvpn-main-node-worker-promote.sh
+          bash -n scripts/mnebyvpn-paid-vpn-clock-enable.sh
       - name: Verify existing customer profile and hard deadline via signed INSPECT
         shell: bash
         run: |
