@@ -57,10 +57,13 @@ jobs:
           export SSHPASS="$SSH_PASSWORD"
           opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
           sha="${{ steps.source.outputs.sha }}"
-          sshpass -e ssh "${opts[@]}" root@188.120.254.223 \
-            "test \"$(cat /opt/mnebyvpn/public/active_sha)\" = \"$sha\" && \
-             test \"$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:8792/terms)\" = 200 &&
-             test \"$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:8792/privacy)\" = 200"
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 "bash -se -- $sha" <<'REMOTE'
+          set -Eeuo pipefail
+          [ "$(cat /opt/mnebyvpn/public/active_sha)" = "$1" ]
+          for path in terms privacy; do
+            [ "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:8792/$path")" = 200 ]
+          done
+          REMOTE
       - name: Upload isolated activation and existing trusted canary publisher
         shell: bash
         run: |
