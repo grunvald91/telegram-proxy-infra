@@ -25,7 +25,7 @@ KEY=ROOT/'private/mail-bridge-oaep.pem'
 BACKUP=ROOT/'private/mail-login-prev.env'
 ENDPOINT='https://servgo.ru/api/auth/mnebyvpn/email-code'
 BASE='http://127.0.0.1:8792'
-PRODUCTION_SHA='23334b455ff6100b40a0df877a21ca107961ff36'
+PRODUCTION_SHA='7d89fd79b2a380ea714947e0e911294ca4930857'
 RECIPIENT='Grunvaldlab@gmail.com'
 
 def request(url:str, data:bytes|None=None, headers:dict|None=None)->tuple[int,bytes]:
