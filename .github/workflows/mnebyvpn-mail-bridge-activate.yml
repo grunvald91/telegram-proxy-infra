@@ -1,3 +1,4 @@
+# Recheck against lint-corrected canary promoter; feature-gated and reversible.
 name: Activate MNEBYVPN email OTP with encrypted ServGo HMAC
 on:
   push:
