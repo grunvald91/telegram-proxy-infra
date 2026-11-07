@@ -1,3 +1,4 @@
+# Payment incident 2026-11-07: release tested source 8946af41a33129acbe9806f77c2a7a9fd44aad1c after green main CI 42407297685 (signed Prodamus webhook currency omission).
 # Release 2026-11-07: promote verified website support fallback b3bcf1b5df8e74a8ba9fcc661d27d04f8134b85c after main CI 42390494737. No changes to VPN/proxy/network.
 # Review fix 2026-11-07: publish MNEBYVPN source 0b37346f5bad5d3b83298ed0516f52808fa0a43c after green CI 42386143675; support buttons only, preserve payment settings.
 # Release 2026-11-07: button-only Telegram support inbox pagination API after green CI 42384793687.
