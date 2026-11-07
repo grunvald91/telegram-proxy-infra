@@ -1,3 +1,4 @@
+# Independent foreign VPS merchant ingress probe after canonical billing role deployment.
 name: MNEBYVPN external HTTPS probe from independent relay89
 on:
   push:
