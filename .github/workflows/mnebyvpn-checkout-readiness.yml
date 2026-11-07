@@ -36,4 +36,39 @@ jobs:
             code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 4 "http://127.0.0.1:$port/healthz" || true)"
             echo "service_${port}=$code"
           done
+          echo 'merchant_checkout_transaction_probe=begin'
+          # Use a synthetic temporary account, exact checkout INSERTs and the
+          # production billing role. ROLLBACK ensures no customer/order mutation.
+          docker exec -i mnebyvpn-stage-postgres psql -qAt -X -v ON_ERROR_STOP=1 \
+            -U mnebyvpn_stage -d mnebyvpn_stage <<'SQL'
+          BEGIN;
+          INSERT INTO accounts(id) VALUES(gen_random_uuid()) RETURNING id AS fixture_account \gset
+          SET LOCAL ROLE mnebyvpn_site_pay;
+          SELECT 1 FROM accounts WHERE id=:'fixture_account' FOR UPDATE;
+          SELECT 1 FROM billing_plans WHERE id='vpn_15d_1device' AND enabled=true FOR SHARE;
+          UPDATE orders o SET state='CANCELLED'
+            FROM order_terms ot WHERE ot.order_id=o.id
+              AND o.account_id=:'fixture_account' AND o.state='PENDING'
+              AND ot.expires_at<=clock_timestamp();
+          INSERT INTO orders(id,account_id,product,provider,amount_minor,currency)
+            VALUES(gen_random_uuid(),:'fixture_account','vpn','prodamus',6000,'RUB')
+            RETURNING id AS fixture_order \gset
+          INSERT INTO order_terms(order_id,plan_id,plan_title,duration_seconds,dns_quota_bytes,expires_at)
+            SELECT :'fixture_order',id,title,duration_seconds,dns_quota_bytes,
+              clock_timestamp()+interval '1 hour'
+              FROM billing_plans WHERE id='vpn_15d_1device';
+          INSERT INTO checkout_requests(channel,request_id,order_id)
+            VALUES('prodamus','web:synthetic-rollback-checkout',:'fixture_order');
+          SELECT order_id FROM checkout_requests
+            WHERE channel='prodamus' AND request_id='web:synthetic-rollback-checkout' \gset
+          ROLLBACK;
+          SELECT 'merchant_checkout_transaction_probe=passed_rolled_back';
+          SELECT 'prodamus_orders_recent_60m='||count(*) FROM orders
+            WHERE provider='prodamus' AND created_at>clock_timestamp()-interval '60 minutes';
+          SELECT 'checkout_accounts_at_pending_order_cap='||count(*) FROM (
+            SELECT account_id FROM orders WHERE provider='prodamus'
+              AND state='PENDING' AND created_at>clock_timestamp()-interval '15 minutes'
+            GROUP BY account_id HAVING count(*)>=3
+          ) recent;
+          SQL
           REMOTE
