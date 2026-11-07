@@ -1,3 +1,4 @@
+# Trace exactly inbound HTTPS 443 for failing external public payment callback, no firewall verdict changes.
 name: MNEBYVPN trace selected inbound 443 verdicts (temporary)
 on:
   push:
