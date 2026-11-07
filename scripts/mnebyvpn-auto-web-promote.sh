@@ -80,6 +80,106 @@ run_web() {
     auth_env=(--env-file "$ROOT/public/auth-db.env")
   fi
   local merchant_env=()
+  local billing_env=()
+  if grep -Fxq 'WEB_PRODAMUS_WEBHOOK_ENABLED=yes' "$ENV_FILE" ||
+     grep -Fxq 'WEB_CHECKOUT_ENABLED=1' "$ENV_FILE"; then
+    test -s "$ROOT/public/billing-db.env" || {
+      echo 'Canonical scoped merchant DB credential missing'; return 2;
+    }
+    grep -Eq '^WEB_BILLING_DATABASE_URL=postgresql://mnebyvpn_site_pay:[a-f0-9]{64}@127[.]0[.]0[.]1:55433/mnebyvpn_stage
+    test -s "$ROOT/public/prodamus.env" || {
+      echo 'Approved payment webhook requires private Prodamus config'; return 2;
+    }
+    merchant_env=(--env-file "$ROOT/public/prodamus.env")
+  fi
+  docker run -d "${policy_flags[@]}" --name "$name" \
+    --network host --user 1000:1000 --read-only \
+    --tmpfs /tmp:rw,nosuid,nodev,size=32m \
+    --cap-drop ALL --security-opt no-new-privileges --pids-limit 96 \
+    --memory 300m --cpus 0.4 --env-file "$ENV_FILE" \
+    --env-file "$ROOT/bot/worker.env" \
+    --env-file "$ROOT/public/subscription-db.env" \
+    "${auth_env[@]}" "${billing_env[@]}" "${merchant_env[@]}" -e "WEB_PORT=$port" "$image" >/dev/null
+}
+public_listener() { ss -H -lnt | awk '{print $4}' | grep -Fqx '127.0.0.1:8792'; }
+healthy() {
+  local port="$1"
+  local require_logo="${2:-yes}"
+  local code=''
+  for attempt in $(seq 1 35); do
+    code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 2 "http://127.0.0.1:$port/healthz" 2>/dev/null || true)"
+    if [ "$code" = 200 ]; then break; fi
+    sleep 1
+  done
+  [ "$code" = 200 ] || return 1
+  local css
+  css="$(curl -fsS --max-time 5 "http://127.0.0.1:$port/neo.css")" || return 1
+  [ -n "$css" ] || return 1
+  # A successful homepage is insufficient if the Telegram logo is missing.
+  # Previous releases might predate this asset; rollback tolerates that.
+  if [ "$require_logo" = yes ]; then
+    local avatar_response
+    avatar_response="$(curl -sS --max-time 5 -o /dev/null -w '%{http_code} %{content_type}'       "http://127.0.0.1:$port/brand-avatar.webp" || true)"
+    [ "$avatar_response" = '200 image/webp' ] || {
+      echo 'Brand asset missing or wrong content-type'; return 1;
+    }
+  fi
+  local expect_email=no
+  if grep -Fxq 'WEB_EMAIL_LOGIN_ENABLED=yes' "$ENV_FILE"; then
+    grep -Eq '^MNEBYVPN_MAIL_GATEWAY_SECRET=[a-f0-9]{96}$' "$ENV_FILE" || {
+      echo 'Email feature enabled without a valid private mail secret'; return 1;
+    }
+    expect_email=yes
+  fi
+  curl -fsS --max-time 5 "http://127.0.0.1:$port/api/plans" |
+    EXPECT_EMAIL="$expect_email" python3 -c 'import sys,json,os; x=json.load(sys.stdin); y=(os.environ.get("EXPECT_EMAIL")=="yes"); assert x["checkoutEnabled"] is False and x["loginEnabled"] is y and x["emailLoginEnabled"] is y' || return 1
+  [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:$port/readyz")" = 503 ] || return 1
+  [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:$port/auth/login")" = 503 ] || return 1
+}
+
+cleanup_canary() {
+  docker stop -t 3 "$CANARY" >/dev/null 2>&1 || true
+}
+trap cleanup_canary EXIT
+run_web "$CANARY" "$IMAGE" "$CANARY_PORT" yes
+healthy "$CANARY_PORT" || { echo 'New website failed canary health / security checks'; exit 2; }
+cleanup_canary
+trap - EXIT
+
+# Downtime is limited to replacing this single named brochure container.
+if [ "$has_public" = yes ]; then
+  docker stop -t 12 "$NAME" >/dev/null
+  docker rm "$NAME" >/dev/null
+fi
+if ! run_web "$NAME" "$IMAGE" 8792 no || ! healthy 8792 || ! public_listener; then
+  echo 'Public website health failed; restoring previous image'
+  docker rm -f "$NAME" >/dev/null 2>&1 || true
+  if [ -n "$old_image" ]; then
+    run_web "$NAME" "$old_image" 8792 no
+    healthy 8792 no || { echo 'CRITICAL: previous public website image failed recovery'; exit 3; }
+    echo 'public_rollback=restored_previous_image'
+  fi
+  exit 2
+fi
+test "$(docker inspect -f '{{.State.Running}}' "$NAME")" = true
+tmp="$(mktemp "$PUBLIC/active_sha.tmp.XXXXXX")"
+printf '%s\n' "$SHA" > "$tmp"
+chmod 600 "$tmp"
+mv -f "$tmp" "$PUBLIC/active_sha"
+
+echo "public_web_sha=$SHA"
+echo 'public_web_health=200'
+echo 'public_web_readyz=503_expected'
+echo 'public_checkout_enabled=false'
+echo 'public_telegram_oidc_enabled=false'
+if grep -Fxq 'WEB_EMAIL_LOGIN_ENABLED=yes' "$ENV_FILE"; then echo 'public_email_login_enabled=true'; else echo 'public_email_login_enabled=false'; fi
+echo 'public_web_port=127.0.0.1:8792'
+echo 'nginx_and_other_services_unchanged=yes'
+ "$ROOT/public/billing-db.env" || {
+      echo 'Unexpected canonical billing database credential shape'; return 2;
+    }
+    billing_env=(--env-file "$ROOT/public/billing-db.env")
+  fi
   # Merchant secret never belongs to the ordinary public web container.
   if grep -Fxq 'WEB_PRODAMUS_WEBHOOK_ENABLED=yes' "$ENV_FILE"; then
     test -s "$ROOT/public/prodamus.env" || {
