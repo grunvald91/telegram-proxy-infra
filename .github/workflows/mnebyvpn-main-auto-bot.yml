@@ -1,3 +1,4 @@
+# Source MNEBYVPN main 6657060 has green CI; request isolated release.
 name: Auto-deploy tested MNEBYVPN Telegram bot via existing 188 SSH 
 # Reviewed source main d3604286; release only after green source CI (2026-11-07).
 # Deploy refresh 2026-11-06: approved four one-device VPN products and fixed XTR prices.
