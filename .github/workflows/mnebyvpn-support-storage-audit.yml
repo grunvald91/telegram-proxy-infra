@@ -33,15 +33,15 @@ jobs:
                 const r=await pool.query("SELECT current_database()=$1 AS expected, to_regclass($2) IS NOT NULL AS has_support",[ "mnebyvpn_stage","public.website_support_tickets" ]);
                 console.log("uses_stage_db="+r.rows[0].expected);
                 console.log("has_support_table="+r.rows[0].has_support);
-                const target=await pool.query("SELECT current_database() AS db,current_user AS role,has_database_privilege(current_user,current_database(),'CREATE') AS can_create_db,has_schema_privilege(current_user,'public','CREATE') AS can_create_public");
+                const target=await pool.query("SELECT current_database() AS db,current_user AS db_role,has_schema_privilege('public','CREATE') AS can_create_public");
                 console.log("db_name="+target.rows[0].db);
-                console.log("db_role="+target.rows[0].role);
+                console.log("db_role="+target.rows[0].db_role);
                 console.log("db_can_create_public="+target.rows[0].can_create_public);
                 if(r.rows[0].has_support){
                   const p=await pool.query("SELECT has_table_privilege(current_user,$1,$2) AS can_insert",["public.website_support_tickets","INSERT"]);
                   console.log("can_insert_ticket="+p.rows[0].can_insert);
                 }
-              }catch(e){console.log("database_reachable=false");process.exitCode=1}
+              }catch(e){console.log("database_reachable=false");console.log("pg_error_code="+String(e?.code||"unknown"));process.exitCode=1}
               finally{await pool.end()}
             '
           done
