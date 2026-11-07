@@ -2,6 +2,8 @@ name: MNEBYVPN deploy signed Xray worker and Telegram VPN profiles on 188
 # Explicit release after green main 454c658 and verified staging on server188.
 on:
   push:
+    branches:
+      - main
     paths:
       - '.github/workflows/mnebyvpn-main-node-worker-publish.yml'
       - 'scripts/mnebyvpn-main-node-worker-promote.sh'
@@ -75,7 +77,8 @@ jobs:
           sshpass -e ssh "${opts[@]}" "root@$HOST" \
             "bash /tmp/mnebyvpn-main-node-worker-$sha.sh '$sha' && bash /tmp/mnebyvpn-main-bot-promote-$sha.sh '$sha'"
           echo "node_worker_release_sha=$sha" >> "$GITHUB_STEP_SUMMARY"
-          echo 'node_agent_ephemeral_expiry_revoke=checked' >> "$GITHUB_STEP_SUMMARY"
+          echo 'node_expiry_pilot=skipped_if_live_subscribers' >> "$GITHUB_STEP_SUMMARY"
+          echo 'existing_customer_node_deadlines=checked_readonly' >> "$GITHUB_STEP_SUMMARY"
       - name: Verify foreign Telegram webhook still enforces authentication
         shell: bash
         run: |
