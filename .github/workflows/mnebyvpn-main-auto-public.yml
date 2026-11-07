@@ -2,7 +2,7 @@
 # Deploy request: tested MNEBYVPN source main 23334b455ff6100b40a0df877a21ca107961ff36 with mandatory pre-migration pg_dump.
 # Source MNEBYVPN main 6657060 has green CI; request isolated release.
 name: Auto-deploy tested MNEBYVPN main to public website
-# Release support queue from green main CI 42352404478, source d490bb21 (bot+web source) 
+# Release MNEBYVPN tokenless support from latest green main CI 42352624826, source cacbd7ff. 
 # Request checked deployment after source CI of MNEBYVPN main 6657060e (2026-11-07).
 # Deploy refresh 2026-11-06: owner VPN price catalog and Prodamus secret staged.
 # Operator-triggered release refresh: 2026-11-06 signed Prodamus all-events handler PR28; payments remain disabled.
