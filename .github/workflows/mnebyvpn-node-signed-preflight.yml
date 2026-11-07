@@ -1,3 +1,4 @@
+# Verify actual VPN traffic and signed node readiness before allowing online payments, 2026-11-07.
 name: MNEBYVPN signed VPN node preflight from existing 188
 on:
   push:
