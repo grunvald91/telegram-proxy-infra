@@ -46,11 +46,17 @@ jobs:
           docker exec -i mnebyvpn-stage-postgres psql -qAt -X -v ON_ERROR_STOP=1 \
             -U mnebyvpn_stage -d mnebyvpn_stage <<'SQL'
           SELECT to_char(date_bin('5 minutes',created_at,TIMESTAMPTZ '2000-01-01'),
-                   'YYYY-MM-DD HH24:MI TZ')||' orders='||count(*)||
-                   ' states='||string_agg(DISTINCT state,',')
+                   'YYYY-MM-DD HH24:MI TZ') AS bucket,
+                 count(*) AS total, string_agg(DISTINCT state,',') AS states
             FROM orders
            WHERE provider='prodamus' AND created_at > clock_timestamp()-interval '4 hours'
-           GROUP BY 1 ORDER BY 1;
+           GROUP BY date_bin('5 minutes',created_at,TIMESTAMPTZ '2000-01-01')
+           ORDER BY bucket;
+          SELECT 'orders_without_checkout_request='||count(*)
+            FROM orders o LEFT JOIN checkout_requests c ON c.order_id=o.id
+           WHERE o.provider='prodamus'
+             AND o.created_at>clock_timestamp()-interval '4 hours'
+             AND c.order_id IS NULL;
           SQL
           echo 'merchant_checkout_transaction_probe=begin'
           # Use a synthetic temporary account, exact checkout INSERTs and the
