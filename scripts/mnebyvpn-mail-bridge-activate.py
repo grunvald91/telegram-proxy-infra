@@ -124,6 +124,30 @@ def verify_enabled()->None:
     code,body=request(BASE+'/readyz')
     if code!=503:
         raise RuntimeError('Unexpected VPN commercial readiness')
+    # Independently exercise the exact TLS/fetch stack used inside the
+    # production Node container. A signed malformed payload must return 400.
+    js = """
+const {createHmac,randomBytes}=require('node:crypto');
+const ts=String(Math.floor(Date.now()/1000));
+const nonce=randomBytes(24).toString('base64url');
+const raw=JSON.stringify({probe:'signed-only'});
+const signature=createHmac('sha256',process.env.MNEBYVPN_MAIL_GATEWAY_SECRET)
+  .update(ts+'.'+nonce+'.'+raw).digest('hex');
+fetch('https://servgo.ru/api/auth/mnebyvpn/email-code',{
+  method:'POST',redirect:'error',signal:AbortSignal.timeout(7000),
+  headers:{'Content-Type':'application/json','X-Mnebyvpn-Timestamp':ts,
+           'X-Mnebyvpn-Nonce':nonce,'X-Mnebyvpn-Signature':signature},
+  body:raw
+}).then(r=>console.log('node_mail_gateway_status='+r.status))
+  .catch(e=>{console.log('node_mail_gateway_error='+String(e.cause?.code||e.name));process.exitCode=2;});
+"""
+    probe=subprocess.run(['docker','exec','mnebyvpn-public-web','node','-e',js],
+        capture_output=True,text=True,timeout=14)
+    for line in probe.stdout.splitlines():
+        if re.fullmatch(r'node_mail_gateway_(status|error)=[A-Za-z0-9_]+',line):
+            print(line)
+    if probe.returncode!=0 or 'node_mail_gateway_status=400' not in probe.stdout:
+        raise RuntimeError('Node runtime could not validate ServGo HMAC mail gateway')
     payload=json.dumps({'email':RECIPIENT},separators=(',',':')).encode()
     code,body=request(BASE+'/api/auth/email/start',payload,{
       'Content-Type':'application/json',
