@@ -1,3 +1,4 @@
+# Activation request 2026-11-07: operator has added original MNEBYVPN bot credential; scripts now linted and fail-closed.
 name: Enable instant MNEBYVPN site support notifications with original bot
 on:
   push:
