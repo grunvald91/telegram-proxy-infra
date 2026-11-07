@@ -37,6 +37,8 @@ XRAY = '/opt/xray/xray'
 WG = '10.66.77.1'
 PORT = 18944
 SOCK_PORT = 18943
+# Match the billing contract: renewals may exceed one 90-day purchase.
+MAX_ACCESS_SECONDS = 315360000
 
 def utcnow() -> dt.datetime:
     return dt.datetime.now(dt.timezone.utc)
@@ -190,7 +192,7 @@ class Agent:
             if enabled:
                 when = normalized_datetime(body.get('expiresAt'))
                 delta = (when-utcnow()).total_seconds()
-                if not 0 < delta <= 100*86400:
+                if not 0 < delta <= MAX_ACCESS_SECONDS:
                     raise ValueError('Invalid access expiry')
             if current and rev < current['revision']:
                 return {'status':'stale','revision':current['revision']}
