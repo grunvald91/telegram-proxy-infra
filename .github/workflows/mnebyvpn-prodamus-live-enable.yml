@@ -5,13 +5,39 @@ on:
     paths:
       - '.github/workflows/mnebyvpn-prodamus-live-enable.yml'
   workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebyvpn-prodamus-live-enable.yml'
+      - 'scripts/mnebyvpn-prodamus-live-enable.sh'
 permissions:
   contents: read
 concurrency:
   group: mnebyvpn-commercial-activation-188
   cancel-in-progress: false
 jobs:
+  lint:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Parse shell and embedded Python preflights
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n scripts/mnebyvpn-prodamus-live-enable.sh
+          python3 - <<'PY'
+          import pathlib,re
+          s=pathlib.Path('scripts/mnebyvpn-prodamus-live-enable.sh').read_text()
+          chunks=re.findall(r"^python3 [^\\n]+<<'PY'\\n(.*?)^PY$",s,re.M|re.S)
+          assert len(chunks)==2,len(chunks)
+          for c in chunks:compile(c,'embedded preflight','exec')
+          print('merchant_script_shell_and_embedded_python=valid')
+          PY
   activate:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
