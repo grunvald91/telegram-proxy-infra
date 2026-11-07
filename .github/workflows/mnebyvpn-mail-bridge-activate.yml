@@ -17,7 +17,7 @@ jobs:
     timeout-minutes: 15
     env:
       SERVER188_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
-      SITE_SHA: '23334b455ff6100b40a0df877a21ca107961ff36'
+      SITE_SHA: '7d89fd79b2a380ea714947e0e911294ca4930857'
     steps:
       - uses: actions/checkout@v4
         with:
