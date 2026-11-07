@@ -24,6 +24,8 @@ jobs:
           export SSHPASS="$RU_PASS"
           sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@188.120.254.223 'bash -s' <<'REMOTE'
           set -Eeuo pipefail
+          echo 'ru_dns_cdn_servgo_ru'
+          getent ahostsv4 cdn.servgo.ru | head -3 || true
           echo "bot_image=$(docker inspect -f '{{.Config.Image}}' mnebyvpn-bot-info 2>/dev/null || echo unavailable)"
           echo "bot_running=$(docker inspect -f '{{.State.Running}}' mnebyvpn-bot-info 2>/dev/null || echo unavailable)"
           for port in 8793 8794; do
@@ -35,6 +37,10 @@ jobs:
           if [[ -n "$FOREIGN_PASS" ]]; then
             SSHPASS="$FOREIGN_PASS" sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@89.125.90.101 'bash -s' <<'FOREIGN'
           set -Eeuo pipefail
+          echo 'foreign_dns_cdn_servgo_ru'
+          getent ahostsv4 cdn.servgo.ru | head -3 || true
+          echo 'foreign_listener_8443'
+          ss -H -ltnp | grep ':8443 ' | head -4 || true
           echo "foreign_nginx_active=$(systemctl is-active nginx || true)"
           echo "foreign_nginx_syntax=$(nginx -t 2>&1 | tail -1)"
           for host in cdn.servgo.ru; do
