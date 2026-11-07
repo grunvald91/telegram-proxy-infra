@@ -33,7 +33,7 @@ jobs:
                 const r=await pool.query("SELECT current_database()=$1 AS expected, to_regclass($2) IS NOT NULL AS has_support",[ "mnebyvpn_stage","public.website_support_tickets" ]);
                 console.log("uses_stage_db="+r.rows[0].expected);
                 console.log("has_support_table="+r.rows[0].has_support);
-                const target=await pool.query("SELECT current_database() AS db,current_user AS db_role,has_schema_privilege('public','CREATE') AS can_create_public");
+                const target=await pool.query("SELECT current_database() AS db,current_user AS db_role,has_schema_privilege($1,$2) AS can_create_public",["public","CREATE"]);
                 console.log("db_name="+target.rows[0].db);
                 console.log("db_role="+target.rows[0].db_role);
                 console.log("db_can_create_public="+target.rows[0].can_create_public);
