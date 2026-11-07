@@ -1,3 +1,4 @@
+# Verify production checkout source b2aff5eee85b57fe4da899526a2fc63460004fee after return URL fragment fix.
 name: MNEBYVPN read-only checkout readiness
 on:
   push:
