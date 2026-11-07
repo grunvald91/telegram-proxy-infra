@@ -52,5 +52,21 @@ jobs:
               method='POST' if name=='mail_route' else 'GET'
               cp=subprocess.run(['curl','-s','-o','/dev/null','-w','%{http_code}','-X',method,'--max-time','7',url],capture_output=True,text=True,timeout=10)
               print(name+'_http='+cp.stdout.strip()[:3])
+          import json
+          try:
+              plans=subprocess.run(['curl','-fsS','--max-time','5','http://127.0.0.1:8792/api/plans'],
+                text=True,capture_output=True,timeout=7)
+              obj=json.loads(plans.stdout) if plans.returncode==0 else {}
+              print('site_email_enabled='+str(obj.get('emailLoginEnabled') is True).lower())
+              print('site_telegram_enabled='+str(obj.get('telegramLoginEnabled') is True).lower())
+              print('site_checkout_enabled='+str(obj.get('checkoutEnabled') is True).lower())
+              print('site_login_enabled='+str(obj.get('loginEnabled') is True).lower())
+          except Exception: print('site_auth_status=unverified')
+          try:
+              html=subprocess.run(['curl','-fsS','--max-time','5','http://127.0.0.1:8792/'],
+                text=True,capture_output=True,timeout=7).stdout
+              print('email_form_present='+str('id="email-start-form"' in html).lower())
+              print('support_form_present='+str('id="support-form"' in html).lower())
+          except Exception: print('site_html_status=unverified')
           print('production_changed=false')
           PY
