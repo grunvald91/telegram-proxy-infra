@@ -51,11 +51,12 @@ def setup():
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         if sock.connect_ex(("127.0.0.1", PORT)) == 0:
             raise SystemExit("canary_port_busy")
-    keys = run([XRAY, "x25519"]).stdout
+    output = run([XRAY, "x25519"])
+    keys = output.stdout + "\n" + output.stderr
     private_match = re.search(r"(?im)^\s*private\s*key\s*:\s*(\S+)", keys)
     public_match = re.search(r"(?im)^\s*(?:public\s*key|password)\s*:\s*(\S+)", keys)
     if not private_match or not public_match:
-        raise SystemExit("reality_key_output_unrecognized")
+        raise SystemExit(f"reality_key_output_unrecognized private={bool(private_match)} public={bool(public_match)} stdout_lines={len(output.stdout.splitlines())} stderr_lines={len(output.stderr.splitlines())}")
     private_key, public_key = private_match.group(1), public_match.group(1)
     if not re.fullmatch(r"[A-Za-z0-9_-]{43}", private_key) or not re.fullmatch(r"[A-Za-z0-9_-]{43}", public_key):
         raise SystemExit("invalid_reality_key_format")
