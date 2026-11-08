@@ -1,0 +1,128 @@
+name: Activate verified MNEBYVPN Reality profile in INCY only
+on:
+  push:
+    branches: ['feature/mnebyvpn-reality-announce-20261108']
+    paths: ['.github/workflows/mnebyvpn-reality-announce.yml']
+permissions:
+  contents: read
+concurrency:
+  group: mnebyvpn-reality-profile-announce
+  cancel-in-progress: false
+jobs:
+  activate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      FOREIGN_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      SOURCE_SHA: 06cce510c742b94347762bc94d4f93f46280c347
+    steps:
+      - uses: actions/checkout@v4
+      - name: Gate release by exact website and worker versions, then verify signed Reality advertisement
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASSWORD" && test -n "$FOREIGN_PASSWORD"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          OPTS=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          ID="$(python3 -c 'import uuid;print(uuid.uuid4())')"
+          CREATED=0
+          ANNOUNCED=0
+          SUCCESS=0
+          cleanup() {
+            set +e
+            if [[ "$CREATED" == 1 ]]; then
+              SSHPASS="$RU_PASSWORD" sshpass -e ssh "${OPTS[@]}" root@188.120.254.223 \
+                "python3 - revoke $ID" < scripts/mnebyvpn-benchmark-ephemeral.py \
+                >/dev/null && echo 'ephemeral_profile_revoked=true' || echo 'EPHEMERAL_REVOCATION_FAILED=true'
+            fi
+            if [[ "$ANNOUNCED" == 1 && "$SUCCESS" != 1 ]]; then
+              SSHPASS="$FOREIGN_PASSWORD" sshpass -e ssh "${OPTS[@]}" root@89.125.90.101 \
+                'rm -f /etc/mnebyvpn/reality-announce-enabled' \
+                && echo 'reality_announcement_rolled_back=true' || echo 'REALITY_ROLLBACK_FAILED=true'
+            fi
+          }
+          trap cleanup EXIT
+          SSHPASS="$RU_PASSWORD" sshpass -e ssh "${OPTS[@]}" root@188.120.254.223 \
+            "SOURCE_SHA=$SOURCE_SHA bash -se" <<'SH'
+          set -Eeuo pipefail
+          test "$(cat /opt/mnebyvpn/public/active_sha)" = "$SOURCE_SHA"
+          test "$(cat /opt/mnebyvpn/staging/active_sha)" = "$SOURCE_SHA"
+          test "$(docker inspect -f '{{.Config.Image}}' mnebyvpn-vpn-worker)" = "mnebyvpn-stage-web:$SOURCE_SHA"
+          test "$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --max-time 4 http://127.0.0.1:8792/healthz)" = 200
+          test "$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --max-time 4 http://127.0.0.1:8794/readyz)" = 200
+          test "$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --max-time 4 http://10.66.77.1:18944/healthz)" = 200
+          test "$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --max-time 4 http://127.0.0.1:8793/readyz)" = 200
+          echo 'website_worker_and_bot_same_green_sha=true'
+          SH
+          SSHPASS="$FOREIGN_PASSWORD" sshpass -e ssh "${OPTS[@]}" root@89.125.90.101 'bash -se' <<'SH'
+          set -Eeuo pipefail
+          test "$(systemctl is-active mnebyvpn-vpn-provisioner.service)" = active
+          test "$(systemctl is-active xray.service)" = active
+          test ! -e /etc/mnebyvpn/reality-announce-enabled
+          test -s /etc/mnebyvpn/reality-public.json
+          test -s /etc/mnebyvpn/xray-canary.json
+          /opt/xray/xray run -test -config /etc/mnebyvpn/xray-canary.json >/dev/null
+          python3 - <<'PY'
+          import json,pathlib
+          j=json.loads(pathlib.Path('/etc/mnebyvpn/xray-canary.json').read_text())
+          p=json.loads(pathlib.Path('/etc/mnebyvpn/reality-public.json').read_text())
+          assert len(j['inbounds'])==2
+          assert j['inbounds'][0]['port']==18943
+          assert j['inbounds'][1]['port']==2053
+          assert j['inbounds'][1]['streamSettings']['security']=='reality'
+          assert p['port']==2053
+          PY
+          echo 'existing_ws_and_reality_inbounds_valid=true'
+          SH
+          python3 - <<'PY'
+          import socket
+          with socket.create_connection(("89.125.90.101",2053),timeout=6):
+              print('reality_public_tcp_reachable=true')
+          PY
+          PROFILE_JSON="$(SSHPASS="$RU_PASSWORD" sshpass -e ssh "${OPTS[@]}" root@188.120.254.223 \
+            "python3 - create $ID" < scripts/mnebyvpn-benchmark-ephemeral.py)"
+          CREATED=1
+          CREDENTIAL="$(printf '%s' "$PROFILE_JSON" | python3 -c 'import json,sys;print(json.load(sys.stdin)["credential"])')"
+          echo "::add-mask::$CREDENTIAL"
+          inspect() {
+            local phase="$1"
+            SSHPASS="$RU_PASSWORD" sshpass -e ssh "${OPTS[@]}" root@188.120.254.223 \
+              "python3 - $ID $phase" <<'PY'
+          import hashlib,hmac,json,pathlib,sys,time,urllib.request
+          identifier,phase=sys.argv[1:]
+          key=bytes.fromhex(pathlib.Path('/opt/mnebyvpn/bot/provisioner.key').read_text().strip())
+          body=json.dumps({'op':'inspect','id':identifier,'ts':int(time.time())},
+                          separators=(',',':')).encode('utf8')
+          sig=hmac.new(key,body,hashlib.sha256).hexdigest()
+          req=urllib.request.Request('http://10.66.77.1:18944/v1/provision',body,
+                  {'X-Mnebyvpn-Signature':sig,'Content-Type':'application/json'},
+                  method='POST')
+          with urllib.request.urlopen(req,timeout=8) as response:
+              record=json.load(response)
+          assert record['enabled'] is True and record['revision']==1
+          if phase=='before':
+              assert 'reality' not in record
+              print('legacy_profile_unchanged_before_announcement=true')
+          elif phase=='after':
+              r=record['reality']
+              assert r['port']==2053
+              assert len(r['publicKey'])==43
+              assert len(r['shortId'])==16
+              print('signed_active_node_reality_advertisement=true')
+          else:raise ValueError('Unexpected phase')
+          PY
+          }
+          inspect before
+          SSHPASS="$FOREIGN_PASSWORD" sshpass -e ssh "${OPTS[@]}" root@89.125.90.101 \
+            'install -m 600 /dev/null /etc/mnebyvpn/reality-announce-enabled'
+          ANNOUNCED=1
+          inspect after
+          SSHPASS="$RU_PASSWORD" sshpass -e ssh "${OPTS[@]}" root@188.120.254.223 \
+            "python3 - revoke $ID" < scripts/mnebyvpn-benchmark-ephemeral.py >/dev/null
+          CREATED=0
+          echo 'ephemeral_profile_revoked=true'
+          SUCCESS=1
+          echo 'reality_optin_incy_advertisement_enabled=true'
+          echo 'legacy_websocket_subscriptions_unchanged=true'
