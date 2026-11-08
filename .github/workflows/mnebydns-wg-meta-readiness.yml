@@ -1,0 +1,59 @@
+name: MNEBYDNS existing private RU-DE WireGuard route readiness read-only
+on:
+  push:
+    branches: ['feature/mnebydns-wg-meta-diagnostics-20261109']
+    paths: ['.github/workflows/mnebydns-wg-meta-readiness.yml']
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      FOREIGN_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Inspect existing private transport, without modifying VPN, DNS, Nginx or WireGuard
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$FOREIGN_PASS" && test -n "$RU_PASS"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          opts=(-o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new)
+          SSHPASS="$FOREIGN_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY'
+          import subprocess,socket
+          def run(a):
+              z=subprocess.run(a,capture_output=True,text=True,timeout=8)
+              return z.returncode,z.stdout.strip()
+          c,t=run(['ip','-4','-o','addr','show','dev','tg-relay'])
+          print('foreign_wireguard_interface_present='+str(c==0).lower(),flush=True)
+          print('foreign_private_10_66_77_1_assigned='+str('10.66.77.1/' in t).lower(),flush=True)
+          c,t=run(['ip','-4','route','get','10.66.77.2'])
+          print('foreign_route_to_ru_via_tg_relay='+str(c==0 and 'tg-relay' in t).lower(),flush=True)
+          s=socket.socket()
+          try:
+              s.bind(('10.66.77.1',19443))
+              print('foreign_private_probe_port_available=true',flush=True)
+          except OSError as exc:
+              print('foreign_private_probe_port_available=false error='+type(exc).__name__,flush=True)
+          finally:s.close()
+          for unit in ('nginx','mnebydns-dot.service','xray.service'):
+              c,t=run(['systemctl','is-active',unit])
+              print('foreign_'+unit+'_active='+str(c==0).lower(),flush=True)
+          PY
+          SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -' <<'PY'
+          import subprocess
+          def run(a):
+              z=subprocess.run(a,capture_output=True,text=True,timeout=8)
+              return z.returncode,z.stdout.strip()
+          c,t=run(['ip','-4','-o','addr','show','dev','tg-relay'])
+          print('ru_wireguard_interface_present='+str(c==0).lower(),flush=True)
+          print('ru_private_10_66_77_2_assigned='+str('10.66.77.2/' in t).lower(),flush=True)
+          c,t=run(['ip','-4','route','get','10.66.77.1'])
+          print('ru_route_to_foreign_via_tg_relay='+str(c==0 and 'tg-relay' in t).lower(),flush=True)
+          for unit in ('nginx','xray.service'):
+              c,t=run(['systemctl','is-active',unit])
+              print('ru_'+unit+'_active='+str(c==0).lower(),flush=True)
+          print('read_only_no_production_changes=true',flush=True)
+          PY
