@@ -23,12 +23,12 @@ jobs:
               print('dns_lookup_error',type(e).__name__)
           failures=0
           successful=0
-          for target in (host,'89.125.90.101'):
+          for target,servername in ((host,host),('89.125.90.101',host),('9.9.9.9','dns.quad9.net'),('149.112.112.112','dns.quad9.net')):
               for attempt in range(3):
                   try:
                       start=time.monotonic()
                       with socket.create_connection((target,853),timeout=5) as raw:
-                          with ssl.create_default_context().wrap_socket(raw,server_hostname=host) as conn:
+                          with ssl.create_default_context().wrap_socket(raw,server_hostname=servername) as conn:
                               conn.settimeout(5)
                               question=b''.join(bytes([len(part)])+part.encode('ascii') for part in ('example','org'))+bytes([0])+struct.pack('!HH',1,1)
                               message=struct.pack('!HHHHHH',1234,256,1,0,0,0)+question
