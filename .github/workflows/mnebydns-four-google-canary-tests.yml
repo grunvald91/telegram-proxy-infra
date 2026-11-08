@@ -29,11 +29,16 @@ jobs:
           d=Path('scripts/mnebydns-four-google-deploy.sh').read_text()
           assert 'cmp -s "$base/$component.pilot" "$live"' in r
           assert 'cmp -s "$base/$component.before" "$live"' in r
-          assert 'systemd-run --unit="$watchdog" --on-active=1800s' in d
+          assert 'OnCalendar=$deadline' in d
+          assert 'Persistent=true' in d
+          assert 'systemctl enable --now "$watchdog.timer"' in d
+          assert 'systemd-analyze calendar "$deadline"' in d
+          assert r.index('systemctl stop mnebydns-googlepilot.service') > r.index('systemctl restart mnebydns-dot.service')
           assert 'nginx -t' in d
           assert 'systemctl reload nginx' in d
           assert 'systemctl restart mnebydns-dot.service' in d
           assert 'xray' in d and 'stitch.withgoogle.com' in d
           assert 'MNEBYDNS four-Google-services time-limited' in d
+          assert 'nginx -t -c "$base/nginx.pilot"' in d
           print('transactional_auto_rollback_contract=PASS')
           PY
