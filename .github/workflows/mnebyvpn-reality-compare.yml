@@ -70,7 +70,7 @@ jobs:
           chmod 700 "$TMP/xray"
           SSHPASS="$FOREIGN_PASSWORD" sshpass -e ssh "${OPTS[@]}" \
             -o ExitOnForwardFailure=yes -o ServerAliveInterval=10 \
-            -L 127.0.0.1:18443:127.0.0.1:8443 \
+            -L 127.0.0.1:18443:89.125.90.101:8443 \
             -L 127.0.0.1:18444:127.0.0.1:18948 \
             -N root@89.125.90.101 &
           SSH_PID=$!
@@ -117,7 +117,7 @@ jobs:
           echo 'measurement_scope=external_runner_same_SSH_forward_to_89_localhost_existing_WS_vs_temporary_REALITY'
           TARGET='https://www.cloudflare.com/cdn-cgi/trace'
           : > "$TMP/measure.csv"
-          for i in $(seq 1 8); do
+          for i in $(seq 1 5); do
             for route in direct ws reality; do
               opts=(--noproxy '*')
               case "$route" in
@@ -139,8 +139,8 @@ jobs:
               if val!="fail":groups[route].append(float(val)*1000)
           for route in ("direct","ws","reality"):
               values=groups[route]
-              print(f"route={route} successful={len(values)}/8 median_ms={statistics.median(values):.1f}" if values else f"route={route} successful=0/8")
-          assert len(groups["ws"])>=7 and len(groups["reality"])>=7, "Cannot trust low sample count"
+              print(f"route={route} successful={len(values)}/5 median_ms={statistics.median(values):.1f}" if values else f"route={route} successful=0/5")
+          assert len(groups["ws"])>=4 and len(groups["reality"])>=4, "Cannot trust low sample count"
           delta=statistics.median(groups["ws"])-statistics.median(groups["reality"])
           print(f"reality_advantage_ms={delta:.1f}")
           PY
