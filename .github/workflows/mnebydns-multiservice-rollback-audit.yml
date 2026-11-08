@@ -1,4 +1,4 @@
-name: Verify six-host rollback and disarm old canary timer
+name: Verify Discord-only failed canary rollback and disarm old timer
 on:
   push:
     branches: ['feature/mnebydns-multiservice-audit-20261108']
@@ -22,7 +22,7 @@ jobs:
           export SSHPASS="$PASS"
           sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@89.125.90.101 'bash -se' <<'REMOTE'
           set -Eeuo pipefail
-          base=/opt/mnebydns-ru-access-backups/42466953794
+          base=/opt/mnebydns-ru-access-backups/42467225671
           test -s "$base/nginx.before"
           test -s "$base/dns.before"
           if cmp -s "$base/nginx.before" /etc/nginx/nginx.conf; then
@@ -37,8 +37,8 @@ jobs:
             echo "failed_canary_DNS_original_restored=no"
             exit 2
           fi
-          systemctl stop mnebydns-ru-access-watchdog-42466953794.timer >/dev/null 2>&1 || true
-          if systemctl is-active --quiet mnebydns-ru-access-watchdog-42466953794.timer; then
+          systemctl stop mnebydns-ru-access-watchdog-42467225671.timer >/dev/null 2>&1 || true
+          if systemctl is-active --quiet mnebydns-ru-access-watchdog-42467225671.timer; then
             echo "failed_canary_watchdog_still_active=yes"; exit 3
           fi
           echo "failed_canary_watchdog_stopped=yes"
