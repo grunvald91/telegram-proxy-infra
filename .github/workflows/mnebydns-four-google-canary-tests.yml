@@ -1,7 +1,7 @@
 name: Validate MNEBYDNS experimental four-service canary offline
 on:
   push:
-    branches: ['feature/mnebydns-android-https-only-extension-20261109']
+    branches: ['feature/mnebydns-entire-android-dns-30m-20261109']
     paths:
       - 'scripts/mnebydns-four-google-canary.py'
       - 'scripts/mnebydns-four-google-deploy.sh'
@@ -29,20 +29,27 @@ jobs:
           spec.loader.exec_module(m)
           added=('android.googleapis.com','firebaseinstallations.googleapis.com','gcm-http.googleapis.com')
           assert all(h in m.HOSTS for h in added)
-          assert len(m.HOSTS)==66 and len(set(m.HOSTS))==66
+          assert len(m.HOSTS)==73 and len(set(m.HOSTS))==73
           safe_443=('pki.google.com','clients1.google.com','notifications.google.com')
           assert all(h in m.HOSTS for h in safe_443)
           assert not any(h in m.DYNAMIC_SUFFIXES for h in ('googleapis.com','google.com'))
-          # Do not proxy FCM's known non-443 endpoints.
-          assert not any(h in m.HOSTS for h in ('fcm.googleapis.com','mtalk.google.com','mtalk4.google.com','time.google.com'))
+          # Owner-directed temporary DNS-only redirect includes all system names.
+          android_system=('mtalk.google.com','mtalk4.google.com','time.google.com',
+                          'fcm.googleapis.com','fcm-xmpp.googleapis.com',
+                          'firebaseinstallations.googleapis.com','gcm-http.googleapis.com',
+                          'gcm-xmpp.googleapis.com','android.googleapis.com',
+                          'pki.google.com','clients1.google.com',
+                          'notifications.google.com','stun.l.google.com')
+          assert len(android_system)==13
+          assert all(h in m.HOSTS for h in android_system)
           fixture='''tls://.:853 {
               template IN A gemini.google.com { match x }
               cache 30
           }
           '''
           rendered=m.render_dot(fixture)
-          assert all(('template IN A '+h+' {') in rendered for h in (*added,*safe_443))
-          print('three_trace_candidates_exact_only=PASS')
+          assert all(('template IN A '+h+' {') in rendered for h in android_system)
+          print('all_known_Android_system_domains_including_STUN=PASS')
           PY
           bash -n scripts/mnebydns-four-google-deploy.sh
           bash -n scripts/mnebydns-four-google-rollback.sh
