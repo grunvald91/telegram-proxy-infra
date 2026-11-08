@@ -1,3 +1,4 @@
+# Repeat safe live preflight before 90-second-capture-derived candidate routing, 2026-11-09.
 name: MNEBYDNS Google batch production preflight (read only)
 on:
   push:
