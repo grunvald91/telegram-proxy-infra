@@ -110,7 +110,7 @@ jobs:
           assert 'systemctl reload nginx' in d
           assert 'systemctl restart mnebydns-dot.service' in d
           assert 'xray' in d and 'stitch.withgoogle.com' in d
-          assert 'MNEBYDNS Google Claude Instagram X Grok Threads timed' in d
+          assert 'MNEBYDNS Google Claude Meta TikTok Telegram short diagnostic pilot' in d
           assert 'nginx -t -c "$base/nginx.pilot"' in d
           h=Path('scripts/mnebydns-claude-handoff.sh').read_text()
           assert 'bash "$old/rollback.sh" "$old"' in h
@@ -120,7 +120,7 @@ jobs:
           assert 'cmp -s "$old/dns.before" "$dns"' in h
           assert 'systemctl is-active --quiet mnebydns-four-google-watchdog-42534478710.timer' in h
           assert 'api.anthropic.com' in d and 'bridge.claudeusercontent.com' in d
-          for hst in ('instagram.com','threads.com','x.com','grok.com','api.x.ai'):
+          for hst in ('instagram.com','threads.com','x.com','grok.com','api.x.ai','www.tiktok.com','api.tiktokv.com','t.me','api.telegram.org'):
               assert hst in d
           assert '/opt/mnebydns-googlepilot-backups/42534478710' in h
           print('transactional_auto_rollback_contract=PASS')
