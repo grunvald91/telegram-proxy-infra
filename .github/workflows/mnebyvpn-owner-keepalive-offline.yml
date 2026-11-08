@@ -1,0 +1,35 @@
+name: MNEBYVPN owner keepalive offline syntax and scope checks
+on:
+  push:
+    branches: ['ops/mnebyvpn-owner-rolling-access-20261108']
+    paths:
+      - 'scripts/mnebyvpn-owner-keepalive.py'
+      - 'scripts/mnebyvpn-owner-keepalive-install.sh'
+      - '.github/workflows/mnebyvpn-owner-keepalive-offline.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scripts/mnebyvpn-owner-keepalive.py'
+      - 'scripts/mnebyvpn-owner-keepalive-install.sh'
+      - '.github/workflows/mnebyvpn-owner-keepalive-offline.yml'
+permissions:
+  contents: read
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Syntax and limited operator scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/mnebyvpn-owner-keepalive.py
+          bash -n scripts/mnebyvpn-owner-keepalive-install.sh
+          grep -Fq "interval '75 days'" scripts/mnebyvpn-owner-keepalive.py
+          grep -Fq "interval '45 days'" scripts/mnebyvpn-owner-keepalive.py
+          grep -Fq 'revoked_at IS NULL' scripts/mnebyvpn-owner-keepalive.py
+          grep -Fq 'original' docs/mnebyvpn-operator-keepalive.md || true
+          echo 'syntax_and_scope_preflight=passed'
