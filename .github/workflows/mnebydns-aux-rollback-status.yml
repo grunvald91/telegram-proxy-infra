@@ -1,0 +1,52 @@
+name: Gemini auxiliary rollback state check
+on:
+  push:
+    branches: ['feature/mnebydns-gemini-voice-audit-20261108']
+    paths: ['.github/workflows/mnebydns-aux-rollback-status.yml']
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    env:
+      PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Compare configs with approved snapshots and verify services
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          test -n "$PASS"
+          export SSHPASS="$PASS"
+          sshpass -e ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@89.125.90.101 'bash -se' <<'REMOTE'
+          set -eu
+          b=/opt/mnebydns-voice-backups/42464486729
+          for component in nginx dns; do
+            case "$component" in
+              nginx) f=/etc/nginx/nginx.conf;;
+              dns) f=/opt/mnebydns-dot/Corefile;;
+            esac
+            if cmp -s "$b/$component.before" "$f"; then
+              echo "$component=baseline"
+            elif cmp -s "$b/$component.pilot" "$f"; then
+              echo "$component=pilot"
+            else
+              echo "$component=unknown"
+            fi
+          done
+          if nginx -t >/dev/null 2>&1; then echo nginx_config_valid=yes; else echo nginx_config_valid=no; fi
+          for svc in nginx mnebydns-dot.service mnebydns-gemini.service; do
+            echo "$svc=$(systemctl is-active "$svc" || true)"
+          done
+          if grep -Fq 'jnn-pa.googleapis.com 127.0.0.1:15444;' /etc/nginx/nginx.conf; then
+            echo auxiliary_sni_present=yes
+          else
+            echo auxiliary_sni_present=no
+          fi
+          if grep -Fq 'template IN A jnn-pa.googleapis.com' /opt/mnebydns-dot/Corefile; then
+            echo auxiliary_dns_present=yes
+          else
+            echo auxiliary_dns_present=no
+          fi
+          REMOTE
