@@ -1,0 +1,124 @@
+name: Diagnose MNEBYVPN subscription HTTP 503 without exposing keys
+on:
+  push:
+    branches: [diag/mnebyvpn-incy-subscription-503-20261108]
+    paths: ['.github/workflows/mnebyvpn-subscription-503-readonly.yml']
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      SERVER188_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Check live public site, worker, and active profile bridge (read-only)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$SERVER188_PASSWORD"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          export SSHPASS="$SERVER188_PASSWORD"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new \
+            -o LogLevel=ERROR root@188.120.254.223 'python3 -' <<'PY'
+          import json
+          import pathlib
+          import re
+          import subprocess
+          import urllib.error
+          import urllib.request
+          from urllib.parse import urlsplit,parse_qs
+          def probe(url, data=None, headers=None):
+              req=urllib.request.Request(url,data=data,headers=headers or {})
+              try:
+                  with urllib.request.urlopen(req,timeout=7) as response:
+                      return response.status,response.read(8192)
+              except urllib.error.HTTPError as e:
+                  return e.code,e.read(2048)
+              except Exception as exc:
+                  return 0,str(type(exc).__name__).encode()
+          for name,url in [
+              ('website','http://127.0.0.1:8792/healthz'),
+              ('worker','http://127.0.0.1:8794/readyz'),
+              ('node','http://10.66.77.1:18944/healthz')]:
+              code,_=probe(url)
+              print(name+'_status='+str(code))
+          for name in ['mnebyvpn-public-web','mnebyvpn-vpn-worker','mnebyvpn-stage-postgres']:
+              result=subprocess.run(['docker','inspect','-f','{{.State.Running}}',name],
+                  text=True,capture_output=True,timeout=6)
+              print(name+'_running='+str(result.stdout.strip()=='true').lower())
+          mainsha=pathlib.Path('/opt/mnebyvpn/public/active_sha').read_text().strip()
+          print('public_sha='+mainsha[:12])
+          workerimage=subprocess.run(
+              ['docker','inspect','-f','{{.Config.Image}}','mnebyvpn-vpn-worker'],
+              text=True,capture_output=True,timeout=6).stdout.strip()
+          print('worker_image_matches_public_sha='+str(workerimage.endswith(mainsha)).lower())
+          keyfile=pathlib.Path('/opt/mnebyvpn/bot/worker.env').read_text()
+          match=re.search(r'^VPN_WORKER_PROFILE_TOKEN=([a-f0-9]{64})$',keyfile,re.M)
+          if not match:
+              print('worker_token_env=invalid')
+              raise SystemExit(2)
+          token=match.group(1)
+          # The actual public website and worker must use the SAME private token.
+          def env_value(container,key):
+              out=subprocess.run(['docker','exec',container,'printenv',key],
+                  text=True,capture_output=True,timeout=6)
+              return out.stdout.strip() if out.returncode==0 else None
+          sitekey=env_value('mnebyvpn-public-web','VPN_WORKER_PROFILE_TOKEN')
+          workerkey=env_value('mnebyvpn-vpn-worker','VPN_WORKER_PROFILE_TOKEN')
+          print('website_token_matches_private_file='+str(sitekey==token).lower())
+          print('worker_token_matches_private_file='+str(workerkey==token).lower())
+          print('website_subscription_db_env_set='+str(bool(env_value('mnebyvpn-public-web','VPN_SUBSCRIPTION_DATABASE_URL'))).lower())
+          sql="""SELECT e.id::text,COALESCE(a.telegram_user_id::text,'')
+                 FROM entitlements e
+                 JOIN accounts a ON a.id=e.account_id
+                 JOIN provisioning_state p ON p.entitlement_id=e.id AND p.adapter='vpn'
+                 WHERE e.product='vpn' AND e.state='ACTIVE'
+                   AND e.expires_at>clock_timestamp()
+                   AND p.applied_revision=e.revision
+                   AND p.last_observed_at IS NOT NULL
+                 ORDER BY e.expires_at DESC LIMIT 3"""
+          db=subprocess.run(['docker','exec','mnebyvpn-stage-postgres','psql',
+             '-At','-X','-v','ON_ERROR_STOP=1','-U','mnebyvpn_stage',
+             '-d','mnebyvpn_stage','-c',sql],
+             capture_output=True,text=True,timeout=12)
+          if db.returncode!=0:
+              print('active_profile_query=failed')
+              raise SystemExit(2)
+          lines=[x for x in db.stdout.splitlines() if '|' in x]
+          print('active_verified_profiles_sampled='+str(len(lines)))
+          for number,row in enumerate(lines,1):
+              entid,actor=row.split('|',1)
+              payload={'entitlementId':entid}
+              if actor:
+                  payload['telegramUserId']=int(actor)
+              code,body=probe('http://127.0.0.1:8794/profile',
+                  json.dumps(payload).encode(),
+                  {'Authorization':'Bearer '+token,'Content-Type':'application/json'})
+              print('sample_'+str(number)+'_worker_http='+str(code))
+              if code!=200:
+                  try:print('sample_'+str(number)+'_worker_error_code='+
+                     str(json.loads(body).get('code','unknown'))[:80])
+                  except Exception:print('sample_'+str(number)+'_worker_error_code=unparseable')
+                  continue
+              try:profile=json.loads(body).get('profile')
+              except Exception:profile=None
+              print('sample_'+str(number)+'_profile_type='+
+                    ('string' if isinstance(profile,str) else ('null' if profile is None else 'other')))
+              if not isinstance(profile,str):continue
+              parts=profile.split('\n')
+              print('sample_'+str(number)+'_profile_link_count='+str(len(parts)))
+              for line in parts:
+                  uri=urlsplit(line)
+                  params=parse_qs(uri.query)
+                  # Never disclose UUID, profile URI, public keys, or user identifiers.
+                  print('sample_'+str(number)+'_line_scheme='+uri.scheme)
+                  print('sample_'+str(number)+'_line_host_port='+
+                    uri.hostname+':'+str(uri.port))
+                  print('sample_'+str(number)+'_line_security='+
+                    str(params.get('security',[''])[0]))
+                  print('sample_'+str(number)+'_line_keys='+
+                    ','.join(sorted(params.keys())))
+          print('diagnostic_readonly_complete=true')
+          PY
