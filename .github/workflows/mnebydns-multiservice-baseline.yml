@@ -1,0 +1,76 @@
+name: MNEBYDNS multi-service direct RU vs foreign TLS baseline
+on:
+  push:
+    branches: ['feature/mnebydns-multiservice-audit-20261108']
+    paths: ['.github/workflows/mnebydns-multiservice-baseline.yml']
+permissions:
+  contents: read
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      FOREIGN_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Differential exact-name HTTPS reachability (metadata only)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$FOREIGN_PASS" && test -n "$RU_PASS"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          cat > /tmp/mnebydns-service-probe.py <<'PY'
+          import ssl,socket,time,concurrent.futures,subprocess
+          HOSTS=[
+            ('discord','discord.com'),('discord','gateway.discord.gg'),('discord','cdn.discordapp.com'),
+            ('meta','www.instagram.com'),('meta','www.facebook.com'),('meta','static.cdninstagram.com'),
+            ('x','x.com'),('x','abs.twimg.com'),
+            ('bluesky','bsky.app'),('bluesky','api.bsky.app'),
+            ('openai','chatgpt.com'),('openai','auth.openai.com'),('openai','cdn.oaistatic.com'),('openai','api.openai.com'),
+            ('anthropic','claude.ai'),('anthropic','api.anthropic.com'),
+            ('perplexity','www.perplexity.ai'),('tiktok','www.tiktok.com'),
+            ('youtube','www.youtube.com'),('youtube','youtubei.googleapis.com'),
+            ('spotify','open.spotify.com'),('archive','archive.org'),('roblox','www.roblox.com'),
+            ('google_ai','gemini.google.com'),('google_ai','jnn-pa.googleapis.com')
+          ]
+          def check(item):
+              label,host=item
+              started=time.monotonic()
+              try:
+                  with socket.create_connection((host,443),timeout=6) as sock:
+                      sock.settimeout(6)
+                      with ssl.create_default_context().wrap_socket(sock,server_hostname=host) as tls:
+                          t=tls.version()
+                  return label,host,'tls_ok',round((time.monotonic()-started)*1000),t
+              except Exception as e:
+                  return label,host,type(e).__name__,round((time.monotonic()-started)*1000),'-'
+          with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
+              for label,host,status,elapsed,proto in pool.map(check,HOSTS):
+                  print(f"service={label} host={host} tls={status} elapsed_ms={elapsed} protocol={proto}",flush=True)
+          PY
+          export SSHPASS="$FOREIGN_PASS"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@89.125.90.101 'python3 -' < /tmp/mnebydns-service-probe.py | sed 's/^/foreign_/'
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@188.120.254.223 'python3 -' < /tmp/mnebydns-service-probe.py | sed 's/^/ru_/'
+          echo "ru_and_foreign_source_network_probe_complete=yes"
+      - name: Confirm last live Google rollback and existing VPN endpoints (read only)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$FOREIGN_PASS"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@89.125.90.101 'python3 -' <<'PY'
+          import subprocess,pathlib,re
+          c=pathlib.Path('/etc/nginx/nginx.conf').read_text()
+          d=pathlib.Path('/opt/mnebydns-dot/Corefile').read_text()
+          print('original_gemini_sni_live='+str('gemini.google.com 127.0.0.1:15443;' in c).lower())
+          print('original_gemini_dns_live='+str('template IN A gemini.google.com' in d).lower())
+          for host in ['jnn-pa.googleapis.com','waa-pa.clients6.google.com']:
+              print('rolled_back_aux_'+host+'='+str(host not in c and host not in d).lower())
+          print('current_sni_route_count='+str(len(re.findall(r'(?m)^\s+[a-zA-Z0-9.-]+\s+127[.]0[.]0[.]1:[0-9]+;',c))))
+          for service in ['nginx','xray.service','mnebydns-dot.service','mnebydns-gemini.service']:
+              p=subprocess.run(['systemctl','is-active',service],capture_output=True,timeout=5)
+              print('service_'+service.replace('.service','')+'_active='+str(p.returncode==0).lower())
+          print('memory_available_kib='+str(next(int(line.split()[1]) for line in pathlib.Path('/proc/meminfo').read_text().splitlines() if line.startswith('MemAvailable:'))))
+          print('read_only=yes')
+          PY

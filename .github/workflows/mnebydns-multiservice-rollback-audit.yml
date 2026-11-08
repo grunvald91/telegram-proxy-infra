@@ -1,0 +1,56 @@
+name: Verify Discord-only failed canary rollback and disarm old timer
+on:
+  push:
+    branches: ['feature/mnebydns-multiservice-audit-20261108']
+    paths: ['.github/workflows/mnebydns-multiservice-rollback-audit.yml']
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Verify original Gemini baseline and stop only previous failed canary watchdog
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$PASS"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          export SSHPASS="$PASS"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@89.125.90.101 'bash -se' <<'REMOTE'
+          set -Eeuo pipefail
+          base=/opt/mnebydns-ru-access-backups/42467225671
+          test -s "$base/nginx.before"
+          test -s "$base/dns.before"
+          if cmp -s "$base/nginx.before" /etc/nginx/nginx.conf; then
+            echo "failed_canary_nginx_original_restored=yes"
+          else
+            echo "failed_canary_nginx_original_restored=no"
+            exit 2
+          fi
+          if cmp -s "$base/dns.before" /opt/mnebydns-dot/Corefile; then
+            echo "failed_canary_DNS_original_restored=yes"
+          else
+            echo "failed_canary_DNS_original_restored=no"
+            exit 2
+          fi
+          systemctl stop mnebydns-ru-access-watchdog-42467225671.timer >/dev/null 2>&1 || true
+          if systemctl is-active --quiet mnebydns-ru-access-watchdog-42467225671.timer; then
+            echo "failed_canary_watchdog_still_active=yes"; exit 3
+          fi
+          echo "failed_canary_watchdog_stopped=yes"
+          test ! -e /etc/systemd/system/mnebydns-ru-access.service
+          test ! -e /etc/mnebydns-ru-access
+          test -z "$(ss -H -lnt 'sport = :15446')"
+          grep -Fq 'template IN A gemini.google.com {' /opt/mnebydns-dot/Corefile
+          grep -Fq 'gemini.google.com 127.0.0.1:15443;' /etc/nginx/nginx.conf
+          nginx -t >/dev/null 2>&1
+          for svc in nginx xray.service mnebydns-dot.service mnebydns-gemini.service; do
+            systemctl is-active --quiet "$svc"
+          done
+          echo "original_gemini_and_vpn_services=healthy"
+          echo "discord_pilot_ready_to_retry=yes"
+          REMOTE

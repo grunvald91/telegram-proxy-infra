@@ -1,0 +1,109 @@
+name: MNEBYDNS three Discord domains guarded pilot
+on:
+  push:
+    branches: ['feature/mnebydns-multiservice-audit-20261108']
+    paths: ['.github/workflows/mnebydns-ru-access-pilot.yml']
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-google-public-443-change
+  cancel-in-progress: false
+jobs:
+  pilot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      FOREIGN_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: grunvald91/Mnebyvpn
+          ref: 0ac3cf11278fdf3ab0d912606e0c728c2b76ad2c
+          path: mnebyvpn
+          persist-credentials: false
+      - name: Three Discord hosts DNS + original TLS + Russian ingress E2E; rollback on error
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$FOREIGN_PASS" && test -n "$RU_PASS"
+          [[ "$GITHUB_RUN_ID" =~ ^[0-9]+$ ]] || exit 2
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          server=root@89.125.90.101
+          work="/tmp/mnebydns-ci-$GITHUB_RUN_ID"
+          backup="/opt/mnebydns-ru-access-backups/$GITHUB_RUN_ID"
+          watchdog="mnebydns-ru-access-watchdog-$GITHUB_RUN_ID"
+          installed=false
+          cleanup() {
+            result=$?
+            trap - EXIT
+            if [[ "$installed" == true && "$result" -ne 0 ]]; then
+              echo "mnebydns_ru_access_pilot_failed_trying_rollback=yes"
+              SSHPASS="$FOREIGN_PASS" sshpass -e ssh "${opts[@]}" "$server" \
+                "if test -s '$backup/rollback.sh'; then bash '$backup/rollback.sh' '$backup'; fi" \
+                || echo "mnebydns_ru_access_rollback_unconfirmed=yes"
+            fi
+            SSHPASS="$FOREIGN_PASS" sshpass -e ssh "${opts[@]}" "$server" \
+              "rm -rf -- '$work'" >/dev/null 2>&1 || echo "temporary_dir_cleanup_unconfirmed=yes"
+            exit "$result"
+          }
+          trap cleanup EXIT
+          bash -n mnebyvpn/ops/smart-dns-poc/deploy-ru-access-pilot.sh
+          bash -n mnebyvpn/ops/smart-dns-poc/rollback-ru-access-pilot.sh
+          python3 mnebyvpn/ops/smart-dns-poc/test-ru-access-pilot.py
+          SSHPASS="$FOREIGN_PASS" sshpass -e ssh "${opts[@]}" "$server" \
+            "test ! -e '$work' && mkdir -m 700 -- '$work'"
+          tar -C mnebyvpn/ops/smart-dns-poc -czf - \
+            ru-access-first-pilot.json stage-ru-access-pilot.py \
+            mnebydns-ru-access.service probe-ru-access.py \
+            probe-gemini-canary.py deploy-ru-access-pilot.sh rollback-ru-access-pilot.sh |
+            SSHPASS="$FOREIGN_PASS" sshpass -e ssh "${opts[@]}" "$server" \
+              "tar -xzf - -C '$work'"
+          installed=true
+          SSHPASS="$FOREIGN_PASS" sshpass -e ssh "${opts[@]}" "$server" \
+            "bash '$work/deploy-ru-access-pilot.sh' '$work'"
+
+          # Truly external network verifies the active certificate and DNS RR set.
+          python3 mnebyvpn/ops/smart-dns-poc/probe-ru-access.py \
+            --ip 89.125.90.101 --port 853 --hostname dns.mnebyvpn.site
+          python3 mnebyvpn/ops/smart-dns-poc/probe-gemini-canary.py \
+            --ip 89.125.90.101 --port 853 --hostname dns.mnebyvpn.site
+
+          # The GitHub runner cannot connect to foreign TCP443; Russian VPS can.
+          SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 'bash -se' <<'RUSSIAN'
+          set -Eeuo pipefail
+          for host in discord.com gateway.discord.gg cdn.discordapp.com; do
+            code="$(curl -4 --noproxy '*' -sS -o /dev/null \
+              --connect-timeout 6 --max-time 18 \
+              --resolve "$host:443:89.125.90.101" \
+              -w '%{http_code}' "https://$host/")"
+            [[ -n "$code" && "$code" != 000 ]] || { echo "russian_HTTPS_canary_failed=$host"; exit 1; }
+            echo "russian_HTTPS_original_TLS_valid=$host"
+          done
+          for host in gemini.google.com cdn.servgo.ru tg.servgo.ru; do
+            code="$(curl -4 --noproxy '*' -sS -o /dev/null \
+              --connect-timeout 6 --max-time 18 \
+              --resolve "$host:443:89.125.90.101" \
+              -w '%{http_code}' "https://$host/")"
+            [[ -n "$code" && "$code" != 000 ]] || { echo "legacy_443_TLS_regressed=$host"; exit 1; }
+            echo "russian_original_443_TLS_preserved=$host"
+          done
+          echo "all_ru_to_foreign_original_certificates_verified=yes"
+          RUSSIAN
+          SSHPASS="$FOREIGN_PASS" sshpass -e ssh "${opts[@]}" "$server" \
+            "systemctl is-active --quiet nginx && \
+             systemctl is-active --quiet xray.service && \
+             systemctl is-active --quiet mnebydns-dot.service && \
+             systemctl is-active --quiet mnebydns-ru-access.service && \
+             systemctl is-active --quiet mnebydns-gemini.service && \
+             nginx -t >/dev/null 2>&1 && \
+             systemctl stop '$watchdog.timer' >/dev/null 2>&1"
+          installed=false
+          echo "three_discord_RU_access_hosts_pilot=LIVE"
+          echo "russian_HTTPS_TLS_tests=PASS"
+          echo "source_CA_DNS_all_four_RRtypes=PASS"
+          echo "original_Gemini_and_VPN_routes=PASS"
+          echo "recovery_watchdog_disarmed=yes"
+          echo "interactive_Android_app_access_still_requires_client_test=yes"
