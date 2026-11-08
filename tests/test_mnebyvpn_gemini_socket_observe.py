@@ -71,7 +71,7 @@ class SocketTracingContract(unittest.TestCase):
             foreign_user="   2: 0100007F:49FF 0200007F:9C41 01 0:0 00:0 00000000 0 0 9000\n"
             (root/"net"/"tcp").write_text(header+accepted+outbound+foreign_user)
             self.assertEqual(O.active_vpn_ingress_count(888,root),1)
-            assert (root/"888"/"fd"/"12").symlink_to("socket:[1700]")
+            (root/"888"/"fd"/"12").symlink_to("socket:[1700]")
             second="   3: 0100007F:49FF 0200007F:9C42 01 0:0 00:0 00000000 0 0 1700\n"
             (root/"net"/"tcp").write_text(header+accepted+outbound+foreign_user+second)
             self.assertEqual(O.active_vpn_ingress_count(888,root),2)
