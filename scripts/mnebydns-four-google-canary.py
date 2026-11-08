@@ -19,6 +19,12 @@ HOSTS = (
     "waa-pa.clients6.google.com",
     "www.googleapis.com",
     "optimizationguide-pa.googleapis.com",
+    # Three Android/Google candidates surfaced by earlier owner VPN socket study.
+    # Their identity is NOT established by the study (shared Google IPs).
+    # This is an explicitly time-limited TCP/443 experiment only.
+    "android.googleapis.com",
+    "firebaseinstallations.googleapis.com",
+    "gcm-http.googleapis.com",
     "www.youtube.com",
     "youtubei.googleapis.com",
     "i.ytimg.com",
