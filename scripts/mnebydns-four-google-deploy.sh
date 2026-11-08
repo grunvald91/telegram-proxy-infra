@@ -48,7 +48,7 @@ test -s "$base/proxy.pilot"
 # A separate service on loopback is required before introducing live SNI map.
 cat > "$base/pilot.service" <<'UNIT'
 [Unit]
-Description=MNEBYDNS four-Google-services time-limited owner-only TLS pilot
+Description=MNEBYDNS Google plus Claude time-limited owner-only TLS pilot
 After=network-online.target
 Wants=network-online.target
 StartLimitIntervalSec=60
@@ -116,7 +116,10 @@ echo "isolated_google_pilot_on_loopback=true"
 
 # Validate original Google certificate through the new SNI backend.
 # Avoid interpolating an arbitrary user supplied hostname in bash.
-for host in pki.google.com clients1.google.com notifications.google.com \
+for host in claude.ai claude.com platform.claude.com code.claude.com \
+  api.anthropic.com a-api.anthropic.com a.claude.ai assets.claude.ai \
+  bridge.claudeusercontent.com \
+  pki.google.com clients1.google.com notifications.google.com \
   android.googleapis.com firebaseinstallations.googleapis.com gcm-http.googleapis.com \
   www.youtube.com youtubei.googleapis.com i.ytimg.com \
   stitch.withgoogle.com accounts.google.com aistudio.google.com \
@@ -141,7 +144,7 @@ deadline="$(date -u -d '+30 minutes' +'%Y-%m-%d %H:%M:%S UTC')"
 systemd-analyze calendar "$deadline" >/dev/null
 cat > "$base/watchdog.service" <<UNIT
 [Unit]
-Description=Restore original MNEBYDNS DNS/SNI after scoped Google canary
+Description=Restore original MNEBYDNS DNS/SNI after scoped Google Claude canary
 
 [Service]
 Type=oneshot
