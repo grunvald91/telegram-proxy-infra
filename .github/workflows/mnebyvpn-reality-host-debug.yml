@@ -85,8 +85,10 @@ jobs:
           for name,host,port,mode,listen in options:
               socks={"listen":"127.0.0.1","port":listen,"protocol":"socks",
                      "settings":{"auth":"noauth","udp":False}}
-              out={"protocol":"vless","settings":{"vnext":[{"address":host,"port":port,
-                   "users":[{"id":cred,"encryption":"none",**({"flow":"xtls-rprx-vision"} if mode=="reality" else {})]}]}]}}
+              user={"id":cred,"encryption":"none"}
+              if mode=="reality":user["flow"]="xtls-rprx-vision"
+              out={"protocol":"vless","settings":{"vnext":[
+                {"address":host,"port":port,"users":[user]}]}}
               if mode=="ws":
                   out["streamSettings"]={"network":"ws","security":"tls",
                        "tlsSettings":{"serverName":"cdn.servgo.ru","allowInsecure":False},
