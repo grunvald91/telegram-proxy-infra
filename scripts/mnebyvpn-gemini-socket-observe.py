@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Single-client, read-only MNEBYVPN Xray socket observation for Gemini tests.
+"""Operator-attested, read-only MNEBYVPN Xray socket observation for Gemini.
 
 No packet payload capture, Xray reconfiguration, browser account data or
 credentials. No raw subscriber/source/destination IP address is printed.
 Destination hostnames are only DNS co-location CANDIDATES, not proven TLS SNI.
-Abort immediately if zero or multiple simultaneously enabled VPN accounts.
+All connections are aggregated; exclusive operator use must be attested before capture.
 No file on remote VPS is created by this collector.
 """
 from __future__ import annotations
@@ -286,7 +286,7 @@ def main() -> None:
     print("active_entitlement_count=" + str(count), flush=True)
     print("established_ingress_tunnels=" + str(inbound_at_start), flush=True)
     print("per_credential_identity_attribution=NOT_VERIFIED", flush=True)
-    print("capture_cannot_prove_process_or_exact_website=yes", flush=True)
+    print("capture_cannot_prove_client_app_or_exact_website=yes", flush=True)
     if sys.argv[1] == "preflight":
         return
     print("operator_exclusive_attribution=DECLARED_NOT_TECHNICALLY_PROVEN",flush=True)
