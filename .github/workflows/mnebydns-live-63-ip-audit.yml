@@ -88,8 +88,9 @@ jobs:
               print(f'live_{name}_state={state}',flush=True)
               if state!='PILOT':raise SystemExit('combined pilot not active')
           for unit in ('mnebydns-googlepilot.service','mnebydns-dot.service',
-                       'mnebydns-four-google-watchdog-42532077031.timer'):
+                       'mnebydns-four-google-watchdog-42533155025.timer'):
               p=subprocess.run(['systemctl','is-active',unit],capture_output=True,text=True,timeout=6)
               print('unit_'+unit+'='+p.stdout.strip(),flush=True)
+              if p.returncode:raise SystemExit('required 91-host live service or watchdog inactive: '+unit)
           print('remote_state_readonly=yes',flush=True)
           PY
