@@ -1,4 +1,4 @@
-name: MNEBYVPN REALITY: test real hostname vs direct node IP
+name: 'MNEBYVPN REALITY: test real hostname vs direct node IP'
 on:
   push:
     branches: ['diag/real-reality-address-20261108']
