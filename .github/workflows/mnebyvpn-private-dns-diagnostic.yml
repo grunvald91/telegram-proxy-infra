@@ -28,7 +28,7 @@ jobs:
                       with socket.create_connection((target,853),timeout=5) as raw:
                           with ssl.create_default_context().wrap_socket(raw,server_hostname=host) as conn:
                               conn.settimeout(5)
-                              question=b'\\x07example\\x03org\\x00'+struct.pack('!HH',1,1)
+                              question=b''.join(bytes([len(part)])+part.encode('ascii') for part in ('example','org'))+bytes([0])+struct.pack('!HH',1,1)
                               message=struct.pack('!HHHHHH',1234,256,1,0,0,0)+question
                               conn.sendall(struct.pack('!H',len(message))+message)
                               prefix=conn.recv(2)
@@ -37,7 +37,8 @@ jobs:
                               response=conn.recv(count)
                               if len(response)<12: raise ValueError('short_dns_reply')
                               rcode=response[3]&15
-                              print(target,attempt,'tls',conn.version(),'rcode',rcode,'ms',round((time.monotonic()-start)*1000))
+                              answer_count=struct.unpack('!H',response[6:8])[0]
+                              print(target,attempt,'tls',conn.version(),'rcode',rcode,'answers',answer_count,'ms',round((time.monotonic()-start)*1000))
                   except Exception as e:
                       print(target,attempt,'error',type(e).__name__)
                   time.sleep(1)
