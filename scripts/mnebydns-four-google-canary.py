@@ -26,10 +26,20 @@ HOSTS = (
     "firebaseinstallations.googleapis.com",
     "gcm-http.googleapis.com",
     # Android HTTPS-only endpoints per official Android Enterprise network table.
-    # Port-dependent FCM push and NTP names stay direct until multi-protocol relay exists.
+    # Port-dependent FCM/NTP are explicitly covered only for this temporary DNS test.
     "pki.google.com",
     "clients1.google.com",
     "notifications.google.com",
+    # ONE-OFF user-directed test: even non-443 Android system DNS names
+    # resolve to the German ingress. These protocols are NOT relayed by
+    # the current TCP/443-only server and may fail until automatic rollback.
+    "mtalk.google.com",
+    "mtalk4.google.com",
+    "time.google.com",
+    "fcm.googleapis.com",
+    "fcm-xmpp.googleapis.com",
+    "gcm-xmpp.googleapis.com",
+    "stun.l.google.com",
     "www.youtube.com",
     "youtubei.googleapis.com",
     "i.ytimg.com",
@@ -110,8 +120,7 @@ def validate() -> None:
     assert len(set(HOSTS)) == len(HOSTS)
     for host in HOSTS:
         assert re.fullmatch(r"[a-z0-9-]+(?:[.][a-z0-9-]+)+",host)
-        assert host not in {"mtalk.google.com","mtalk4.google.com",
-                            "time.google.com","stun.l.google.com"}
+        # Explicit temporary experiment includes FCM, NTP, STUN DNS names.
     assert VIDEO_NGINX.startswith("~*^")
 
 
@@ -277,7 +286,7 @@ def self_test()->None:
     print("four_google_services_canary_self_test=PASS")
     print("exact_hosts="+str(len(HOSTS)))
     print("dynamic_https_google_owned_suffixes="+",".join(DYNAMIC_SUFFIXES))
-    print("Android_non443_system_domains_not_in_suffixes=true")
+    print("Android_non443_system_domains_exact_DNS_only=true")
     print("dynamic_google_media_suffixes="+str(len(DYNAMIC_SUFFIXES)))
     print("no_live_network_change=yes")
 
