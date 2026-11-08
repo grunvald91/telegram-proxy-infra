@@ -18,7 +18,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: grunvald91/Mnebyvpn
-          ref: 6f47a396e1a050a480dbf84bb032456bb9c8ac4d
+          ref: b3711aa1952b2c3cfce95ecc13f13832d4e2d0cf
           path: mnebyvpn
           persist-credentials: false
       - name: Transactional Gemini-only DoT and HTTPS cutover, verify externally
