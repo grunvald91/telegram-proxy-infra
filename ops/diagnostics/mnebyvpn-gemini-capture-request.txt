@@ -1,0 +1,4 @@
+Purpose: one bounded, owner-approved Gemini voice/text network diagnostic.
+Mode: capture-exclusive
+Attestation: owner states all VPN sessions on node are theirs.
+Data: aggregated socket metadata only, 15s baseline + 90s test; no packet payload or credentials.
