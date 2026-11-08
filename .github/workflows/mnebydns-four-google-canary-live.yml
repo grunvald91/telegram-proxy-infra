@@ -1,9 +1,9 @@
-# User-directed 30m test of Google Claude Instagram Threads X and Grok DNS routes; existing FCM/NTP/STUN DNS-only scope remains. Auto-rollback required.
+# User-directed 30m additional Meta Instagram Threads TikTok Telegram DNS-only experiment, retaining Google Claude Grok X. MTProto direct IP is outside DNS interception. Auto-rollback required.
 # Fresh owner-authorized 2026-11-09 batch canary: run ID must be new (not a rerun attempt).
-name: MNEBYDNS owner 30-minute Google Claude Instagram Grok X Threads live canary
+name: MNEBYDNS owner 30-minute Meta TikTok Telegram plus existing live canary
 on:
   push:
-    branches: ['feature/mnebydns-instagram-grok-x-threads-30m-20261109']
+    branches: ['feature/mnebydns-meta-tiktok-telegram-30m-20261109']
     paths: ['.github/workflows/mnebydns-four-google-canary-live.yml']
 permissions:
   contents: read
@@ -62,7 +62,10 @@ jobs:
           echo "foreign_experimental_canary_activated=true"
           SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 'bash -se' <<'RU'
           set -Eeuo pipefail
-          for host in pki.google.com clients1.google.com notifications.google.com android.googleapis.com firebaseinstallations.googleapis.com gcm-http.googleapis.com www.youtube.com youtubei.googleapis.com i.ytimg.com stitch.withgoogle.com accounts.google.com aistudio.google.com generativelanguage.googleapis.com gemini.google.com cdn.servgo.ru tg.servgo.ru; do
+          for host in www.tiktok.com api.tiktokv.com tiktok.com \
+            t.me telegram.org api.telegram.org web.telegram.org \
+            instagram.com threads.com edge-mqtt.facebook.com \
+            pki.google.com clients1.google.com notifications.google.com android.googleapis.com firebaseinstallations.googleapis.com gcm-http.googleapis.com www.youtube.com youtubei.googleapis.com i.ytimg.com stitch.withgoogle.com accounts.google.com aistudio.google.com generativelanguage.googleapis.com gemini.google.com cdn.servgo.ru tg.servgo.ru; do
             code="$(curl --noproxy '*' -4 -sS -o /dev/null --connect-timeout 7 --max-time 16 --resolve "$host:443:89.125.90.101" -w '%{http_code}' "https://$host/" 2>/dev/null || true)"
             if [[ "$code" == 000 || -z "$code" ]]; then echo "ru_foreign_TLS_failed=$host"; exit 3; fi
             echo "ru_foreign_original_TLS=$host verified"
@@ -109,6 +112,21 @@ jobs:
                       "graph.facebook.com","connect.facebook.net",
                       "some-service.fbcdn.net","some-service.facebook.net",
                       "some-service.grok.com","some-service.x.ai",
+                      "meta.com","meta.ai","graph.threads.net",
+                      "edge-mqtt.facebook.com","rupload.facebook.com",
+                      "www.tiktok.com","api.tiktokv.com",
+                      "api16-normal-c-alisg.tiktokv.com",
+                      "api2.musical.ly","p16-tiktokcdn-com.akamaized.net",
+                      "p16-sign-va.tiktokcdn.com",
+                      "sf16-website-login.neutral.ttwstatic.com",
+                      "api19-normal-useast1a.tiktokv.com",
+                      "p16-ttcdn-tos.ipstatp.com",
+                      "some-service.byteoversea.com",
+                      "some-service.snssdk.com",
+                      "some-service.tiktokcdn-eu.com",
+                      "telegram.org","web.telegram.org","t.me","api.telegram.org",
+                      "some-service.telegram-cdn.org",
+                      "some-service.telegramusercontent.com",
                       "www.gstatic.com","fonts.gstatic.com",
                       "lh3.googleusercontent.com",
                       "r1---sn-dynamic.googlevideo.com"):
@@ -128,5 +146,5 @@ jobs:
           PY
           echo "russian_path_and_public_DNS_verified=true"
           echo "canary_active_with_reboot_persistent_30_minute_auto_rollback=true"
-          echo "known_google_claude_social_exact_hosts=121"
-          echo "dynamic_Google_Claude_social_suffix_groups=46"
+          echo "known_google_claude_meta_tiktok_telegram_exact_hosts=174"
+          echo "dynamic_Google_Claude_Meta_TikTok_Telegram_suffix_groups=97"
