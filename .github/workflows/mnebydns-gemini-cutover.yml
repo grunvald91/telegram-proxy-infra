@@ -14,6 +14,7 @@ jobs:
     timeout-minutes: 7
     env:
       SSH_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -66,20 +67,27 @@ jobs:
           # Validate live public DoT with trusted CA + exact hostname from external runner.
           python3 mnebyvpn/ops/smart-dns-poc/probe-gemini-canary.py \
             --ip 89.125.90.101 --port 853 --hostname dns.mnebyvpn.site
+          # The runner cannot reach foreign TCP443; RU VPS can, as verified
+          # by independent source-network preflight. Run TLS E2E from RU.
+          test -n "$RU_PASS" || { echo "RU_probe_secret_missing"; exit 2; }
+          SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 'bash -se' <<'RUSSIAN'
+          set -Eeuo pipefail
           code="$(curl --noproxy '*' -4 -sS -o /dev/null \
             --connect-timeout 6 --max-time 20 \
             --resolve gemini.google.com:443:89.125.90.101 \
             -w '%{http_code}' https://gemini.google.com/)"
-          [[ "$code" = 200 || "$code" = 302 ]] || { echo "external_Gemini_HTTPS_failed"; exit 1; }
-          # Existing public services on shared foreign 443 must still negotiate TLS.
+          [[ "$code" = 200 || "$code" = 302 ]] || { echo "ru_Gemini_HTTPS_failed"; exit 1; }
+          echo "ru_to_foreign_Gemini_TLS=verified"
           for host in cdn.servgo.ru tg.servgo.ru; do
             status="$(curl --noproxy '*' -4 -sS -o /dev/null \
               --connect-timeout 5 --max-time 12 \
               --resolve "$host:443:89.125.90.101" \
               -w '%{http_code}' "https://$host/" || true)"
             [[ -n "$status" && "$status" != 000 ]] ||
-              { echo "existing_443_vhost_unhealthy"; exit 1; }
+              { echo "ru_existing_443_vhost_unhealthy"; exit 1; }
+            echo "ru_existing_443_vhost_tls=$host"
           done
+          RUSSIAN
           sshpass -e ssh "${opts[@]}" "$server" \
             "systemctl stop '$watchdog.timer' >/dev/null 2>&1 || true; \
              systemctl is-active --quiet nginx && \
