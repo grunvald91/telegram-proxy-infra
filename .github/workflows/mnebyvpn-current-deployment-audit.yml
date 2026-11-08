@@ -167,6 +167,19 @@ jobs:
             -U mnebyvpn_stage -d mnebyvpn_stage <<'SQL'
           SELECT 'notice_'||kind||'_'||status||'='||count(*)::text
             FROM vpn_purchase_notifications GROUP BY kind,status ORDER BY kind,status;
+          SELECT 'trial_ready_'||status||'='||count(*)::text
+            FROM vpn_trial_ready_notifications GROUP BY status ORDER BY status;
+          SELECT 'trial_ready_node_verified_eligible='||count(*)::text
+            FROM trial_grants t
+            JOIN accounts a ON a.id=t.account_id
+            JOIN entitlements e ON e.source_order_id=t.order_id AND e.product='vpn'
+            JOIN provisioning_state p ON p.entitlement_id=e.id AND p.adapter='vpn'
+           WHERE t.telegram_user_id IS NOT NULL
+             AND a.telegram_user_id=t.telegram_user_id
+             AND t.activated_at IS NOT NULL
+             AND t.access_expires_at>clock_timestamp()
+             AND e.state='ACTIVE' AND e.expires_at>clock_timestamp()
+             AND p.applied_revision=e.revision AND p.last_observed_at IS NOT NULL;
           SELECT 'prodamus_paid_14d_telegram_linked='||count(*)::text
             FROM orders o JOIN accounts a ON a.id=o.account_id
            WHERE o.provider='prodamus' AND o.state='PAID'
@@ -176,6 +189,6 @@ jobs:
              AND o.created_at>clock_timestamp()-interval '14 days';
           SQL
           docker logs --tail 8 mnebyvpn-purchase-notices 2>&1 |
-            grep -E '^(vpn-purchase-notifications |MNEBYVPN_PURCHASE_NOTICE_WORKER_FAILURE)' || true
+            grep -E '^(vpn-purchase-notifications |vpn-trial-ready-notifications |MNEBYVPN_PURCHASE_NOTICE_WORKER_FAILURE)' || true
           echo 'purchase_notices_delivery_audit=end'
           REMOTE

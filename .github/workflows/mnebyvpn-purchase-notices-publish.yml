@@ -41,6 +41,8 @@ jobs:
           sha="$(git -C vpn rev-parse HEAD)"
           [[ "$sha" =~ ^[a-f0-9]{40}$ ]]
           test -f vpn/apps/service/src/purchase-notification-worker.ts
+          test -f vpn/packages/notifications/src/vpn-trial-ready.ts
+          test -f vpn/db/migrations/0106_telegram_trial_auto_ready.sql
           curl -fsSL --retry 2 --max-time 25 \
             'https://api.github.com/repos/grunvald91/Mnebyvpn/actions/workflows/offline-contracts.yml/runs?branch=main&status=success&per_page=8' \
             -o "$RUNNER_TEMP/ci.json"
