@@ -43,7 +43,7 @@ jobs:
                           status='TLS_CERT_VALID_'+tls.version()
                   except Exception as exc:
                       status='TCP_OK_TLS_FAILED_'+type(exc).__name__
-              return (host,status,round((time.monotonic()-t)*1000),tconn
+              return (host,status,round((time.monotonic()-t)*1000),tconn)
           with concurrent.futures.ThreadPoolExecutor(max_workers=6) as ex:
               rows=list(ex.map(probe,HOSTS))
           for host,status,ms,tconn in rows:
