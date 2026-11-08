@@ -8,5 +8,13 @@ if ! systemctl is-active --quiet mnebydns-dot.service; then
 fi
 systemctl restart mnebydns-dot.service
 systemctl is-active --quiet mnebydns-dot.service
-ss -H -lnt 'sport = :853' | grep -Fq '89.125.90.101:853'
+for attempt in {1..30}; do
+  if ss -H -lnt 'sport = :853' | grep -Fq '89.125.90.101:853'; then
+    echo "mnebydns_dot_cert_reloaded=yes"
+    exit 0
+  fi
+  sleep 0.2
+done
+echo "mnebydns_dot_listener_missing_after_reload" >&2
+exit 1
 echo "mnebydns_dot_cert_reloaded=yes"
