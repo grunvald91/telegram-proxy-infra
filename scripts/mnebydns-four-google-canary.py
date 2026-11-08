@@ -85,8 +85,8 @@ DYNAMIC_SUFFIXES = (
     "youtube-nocookie.com", "withgoogle.com", "googleapis.com",
 )
 VIDEO = r"(?i)^(?:[a-z0-9-]+[.])*(?:" + "|".join(
-    re.escape(x).replace(r"\\.", "[.]") for x in DYNAMIC_SUFFIXES) + r")[.]$"
-VIDEO_NGINX = r"~*^(?:[a-z0-9-]+\\.)*(?:" + "|".join(
+    re.escape(x) for x in DYNAMIC_SUFFIXES) + r")[.]$"
+VIDEO_NGINX = r"~*^(?:[a-z0-9-]+\.)*(?:" + "|".join(
     re.escape(x) for x in DYNAMIC_SUFFIXES) + r")$"
 MAP = re.compile(
     r"(map\s+\$ssl_preread_server_name\s+\$direct_mtproxy_backend\s*\{)"
@@ -115,7 +115,7 @@ def render_sni(nginx: str) -> str:
         raise ValueError("Original Gemini SNI entry not verified")
     if not re.search(r"(?m)^[ \t]*default[ \t]+\S+;",old):
         raise ValueError("Original shared SNI fallback missing")
-    if "15449" in nginx or any(re.search(r"(?m)^\\s*~\\*?.*"+re.escape(zone)+r".*\\S+;",old) for zone in DYNAMIC_SUFFIXES):
+    if "15449" in nginx or any(re.search(r"(?m)^\s*~\*?.*"+re.escape(zone)+r".*\S+;",old) for zone in DYNAMIC_SUFFIXES):
         raise ValueError("Conflicting prior experimental route")
     for host in HOSTS:
         if re.search(r"(?m)^[ \t]*"+re.escape(host)+r"[ \t]+\S+;", old):
@@ -220,6 +220,20 @@ def self_test()->None:
                      f"        {VIDEO_NGINX} {BACKEND};\n","")==old_nginx
     for kind in RR:
         assert "template IN "+kind+" . {" in nd
+    # CoreDNS uses RE2 and Nginx uses PCRE; both wildcard expansions must
+    # actually match real Google media hostnames (not literal backslashes).
+    for domain in ("r3---sn-abcd.googlevideo.com","i.ytimg.com",
+                   "fonts.gstatic.com","abc.googleusercontent.com",
+                   "youtube.com","stitch.withgoogle.com",
+                   "generativelanguage.googleapis.com"):
+        assert re.fullmatch(VIDEO,domain+".") is not None,domain
+        assert re.fullmatch(VIDEO_NGINX[2:],domain,re.IGNORECASE) is not None,domain
+    for domain in ("time.google.com","mtalk.google.com","stun.l.google.com",
+                   "cdn.servgo.ru","example.com","www.instagram.com"):
+        assert re.fullmatch(VIDEO,domain+".") is None,domain
+        assert re.fullmatch(VIDEO_NGINX[2:],domain,re.IGNORECASE) is None,domain
+    assert len(DYNAMIC_SUFFIXES)==9
+    assert len(HOSTS)>=50
     assert "default 127.0.0.1:1;" in proxy_config()
     for bad in (old_nginx.replace("gemini.google.com", "x.example"),
                 old_nginx.replace("default ","unknown ")):
