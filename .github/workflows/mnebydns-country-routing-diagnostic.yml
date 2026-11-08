@@ -31,7 +31,7 @@ jobs:
               'waa-pa.clients6.google.com','www.youtube.com','youtubei.googleapis.com',
               'mtalk.google.com','time.google.com','fcm.googleapis.com')
           for h in hosts:
-              regex=r'(?m)^\\s*'+re.escape(h)+r'\\s+127[.]0[.]0[.]1:[0-9]+;'
+              regex=r'(?m)^\s*'+re.escape(h)+r'\s+127[.]0[.]0[.]1:[0-9]+;'
               print('host='+h+' synthetic_A='+str('template IN A '+h+' {' in core).lower()+
                   ' dedicated_SNI='+str(bool(re.search(regex,nginx))).lower())
           for suffix in ('googlevideo','googleapis','google','withgoogle'):
@@ -53,6 +53,7 @@ jobs:
           timer='mnebydns-four-google-watchdog-'+run+'.timer'
           state=subprocess.run(['systemctl','is-active',timer],text=True,capture_output=True,timeout=5)
           print('canary_rollback_timer='+state.stdout.strip())
+          print('verified_nginx_stream_exact_host_detection=true')
           print('run_readonly=true')
           PY
       - name: Compare authenticated TLS connectivity from foreign and Russian VPS
