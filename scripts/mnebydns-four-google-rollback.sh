@@ -20,8 +20,9 @@ for component in nginx dns; do
     exit 3
   fi
 done
-systemctl stop mnebydns-googlepilot.service >/dev/null 2>&1 || true
-systemctl disable mnebydns-googlepilot.service >/dev/null 2>&1 || true
+# Restore shared 443 and DNS first. Existing clients still on synthetic DNS
+# require the isolated proxy until the pre-pilot resolvers are reactivated.
+# Never stop the working proxy before restoring the original routes.
 # Restore exactly the two files modified by this canary.
 if ! cmp -s "$base/nginx.before" "$nginx"; then
   cp -p "$base/nginx.before" "$nginx"
@@ -38,6 +39,8 @@ systemctl is-active --quiet nginx
 systemctl is-active --quiet mnebydns-dot.service
 systemctl is-active --quiet xray.service
 systemctl is-active --quiet mnebydns-gemini.service
+systemctl stop mnebydns-googlepilot.service >/dev/null 2>&1 || true
+systemctl disable mnebydns-googlepilot.service >/dev/null 2>&1 || true
 if [[ -f /etc/systemd/system/mnebydns-googlepilot.service ]]; then
   cmp -s "$base/pilot.service" /etc/systemd/system/mnebydns-googlepilot.service || {
     echo "rollback_refused_unowned_pilot_unit"; exit 3;
@@ -50,6 +53,23 @@ if [[ -d /etc/mnebydns-googlepilot ]]; then
   rm -f /etc/mnebydns-googlepilot/nginx.conf
   rmdir /etc/mnebydns-googlepilot
 fi
+# Persistent watchdog files are removed only after both shared configs
+# and all mandatory existing services have been restored.
+runid="${base##*/}"
+watchdog="mnebydns-four-google-watchdog-$runid"
+for kind in service timer; do
+  item="/etc/systemd/system/$watchdog.$kind"
+  if [[ -f "$item" ]]; then
+    cmp -s "$base/watchdog.$kind" "$item" || {
+      echo "rollback_refused_unowned_watchdog_$kind"; exit 3;
+    }
+  fi
+done
+systemctl disable --now "$watchdog.timer" >/dev/null 2>&1 || true
+for kind in service timer; do
+  file="/etc/systemd/system/$watchdog.$kind"
+  [[ ! -e "$file" ]] || rm -f "$file"
+done
 systemctl daemon-reload
 # The failed nginx -t probe may have created an empty directory prior to
 # systemd RuntimeDirectory ownership. Remove it only if empty.
