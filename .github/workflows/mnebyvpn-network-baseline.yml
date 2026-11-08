@@ -50,3 +50,5 @@ jobs:
             -o /dev/null -w 'download_bytes=%{size_download}\nduration_s=%{time_total}\nbytes_per_second=%{speed_download}\n' \
             'https://speed.cloudflare.com/__down?bytes=10000000' || true
           SH
+
+# Read-only repeat requested 2026-11-08; no configuration or credentials changed.
