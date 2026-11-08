@@ -52,7 +52,10 @@ jobs:
           trap rollback ERR
           bash -n "$destination"
           echo "certbot_renewal_dry_run_started=yes"
-          certbot renew --dry-run --cert-name dns.mnebyvpn.site --run-deploy-hooks
+          certbot renew --dry-run --cert-name dns.mnebyvpn.site
+          # Older Certbot lacks --run-deploy-hooks during --dry-run. Execute
+          # only this MNEBYDNS hook explicitly against its current certificate.
+          RENEWED_LINEAGE=/etc/letsencrypt/live/dns.mnebyvpn.site bash "$destination"
           test "$(systemctl is-active mnebydns-dot.service)" = active
           ss -H -lnt 'sport = :853' | grep -Fq '89.125.90.101:853'
           test "$(systemctl is-active nginx)" = active
