@@ -81,12 +81,13 @@ jobs:
           options=[('ws_domain','cdn.servgo.ru',8443,'ws',19101),
                    ('ws_ip','89.125.90.101',8443,'ws',19102),
                    ('reality_domain','cdn.servgo.ru',2053,'reality',19103),
-                   ('reality_ip','89.125.90.101',2053,'reality',19104)]
+                   ('reality_ip','89.125.90.101',2053,'reality',19104),
+                   ('reality_firefox','cdn.servgo.ru',2053,'firefox',19105)]
           for name,host,port,mode,listen in options:
               socks={"listen":"127.0.0.1","port":listen,"protocol":"socks",
                      "settings":{"auth":"noauth","udp":False}}
               user={"id":cred,"encryption":"none"}
-              if mode=="reality":user["flow"]="xtls-rprx-vision"
+              if mode!="ws":user["flow"]="xtls-rprx-vision"
               out={"protocol":"vless","settings":{"vnext":[
                 {"address":host,"port":port,"users":[user]}]}}
               if mode=="ws":
@@ -96,18 +97,18 @@ jobs:
               else:
                   out["streamSettings"]={"network":"tcp","security":"reality",
                        "realitySettings":{"serverName":"www.cloudflare.com",
-                       "fingerprint":"chrome","password":pub,"shortId":sid,"spiderX":"/"}}
+                       "fingerprint":("firefox" if mode=="firefox" else "chrome"),"password":pub,"shortId":sid,"spiderX":"/"}}
               (root/(name+".json")).write_text(json.dumps({
                 "log":{"loglevel":"warning"},"inbounds":[socks],"outbounds":[out]}))
           PY
-          for n in ws_domain ws_ip reality_domain reality_ip; do
+          for n in ws_domain ws_ip reality_domain reality_ip reality_firefox; do
             "$TMP/xray" run -test -config "$TMP/$n.json" >/dev/null 2>&1
             "$TMP/xray" run -config "$TMP/$n.json" >"$TMP/$n.log" 2>&1 &
             PIDS+=("$!")
           done
           sleep 1
           target=https://www.cloudflare.com/cdn-cgi/trace
-          for entry in ws_domain:19101 ws_ip:19102 reality_domain:19103 reality_ip:19104; do
+          for entry in ws_domain:19101 ws_ip:19102 reality_domain:19103 reality_ip:19104 reality_firefox:19105; do
             name="${entry%:*}"; port="${entry#*:}"
             echo "connection_variant=$name"
             for i in 1 2 3; do
