@@ -51,6 +51,9 @@ if [[ -d /etc/mnebydns-googlepilot ]]; then
   rmdir /etc/mnebydns-googlepilot
 fi
 systemctl daemon-reload
+# The failed nginx -t probe may have created an empty directory prior to
+# systemd RuntimeDirectory ownership. Remove it only if empty.
+rmdir /run/mnebydns-googlepilot >/dev/null 2>&1 || true
 test "$(ss -H -lnt 'sport = :15449' | wc -l)" -eq 0
 echo "canary_rollback_completed=true"
 echo "existing_Gemini_VPN_and_DoT_services_preserved=true"
