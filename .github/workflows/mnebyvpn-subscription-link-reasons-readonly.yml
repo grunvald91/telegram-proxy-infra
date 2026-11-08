@@ -1,0 +1,74 @@
+name: Classify stale unrevoked VPN subscription links without exposing tokens
+on:
+  push:
+    branches: [diag/reality-drops-subscription-visibility-20261108]
+    paths: ['.github/workflows/mnebyvpn-subscription-link-reasons-readonly.yml']
+permissions:
+  contents: read
+jobs:
+  classify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    env:
+      RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Read-only stale-link reasons aggregated by entitlement
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          SSHPASS="$RU_PASSWORD" sshpass -e ssh -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR \
+            root@188.120.254.223 'python3 -' <<'PY'
+          import subprocess
+          cmd=['docker','exec','mnebyvpn-stage-postgres','psql','-At','-X',
+               '-v','ON_ERROR_STOP=1','-U','mnebyvpn_stage','-d','mnebyvpn_stage']
+          def run(query):
+              p=subprocess.run([*cmd,'-c',query],capture_output=True,text=True,timeout=9)
+              if p.returncode:raise RuntimeError('Query failed')
+              return p.stdout.strip()
+          query="""SELECT
+            CASE
+             WHEN l.revoked_at IS NOT NULL THEN 'revoked'
+             WHEN e.id IS NULL THEN 'missing_entitlement'
+             WHEN e.product <> 'vpn' THEN 'other_product'
+             WHEN e.state <> 'ACTIVE' THEN 'state_'||e.state
+             WHEN e.expires_at <= clock_timestamp() THEN 'expired_deadline'
+             WHEN p.entitlement_id IS NULL THEN 'no_provisioning'
+             WHEN p.applied_revision <> e.revision THEN 'not_reconciled'
+             WHEN p.last_observed_at IS NULL THEN 'not_observed'
+             ELSE 'eligible'
+            END AS reason, COUNT(*)
+            FROM vpn_subscription_links l
+            LEFT JOIN entitlements e ON e.id=l.entitlement_id
+            LEFT JOIN provisioning_state p
+              ON p.entitlement_id=e.id AND p.adapter='vpn'
+            GROUP BY reason ORDER BY reason"""
+          print('link_reasons_aggregated_start')
+          for row in run(query).splitlines():
+              key,count=row.split('|')
+              print('link_reason_'+key+'='+count)
+          print('link_reasons_aggregated_end')
+          sql="""SELECT
+             count(DISTINCT e.account_id) AS active_accounts,
+             count(DISTINCT e.account_id) FILTER (
+                WHERE EXISTS (
+                  SELECT 1 FROM vpn_subscription_links l
+                  JOIN entitlements linked ON linked.id=l.entitlement_id
+                  WHERE l.revoked_at IS NULL
+                    AND linked.account_id=e.account_id
+                    AND linked.id=e.id
+                )
+             ) AS active_accounts_with_current_entitlement_links
+             FROM entitlements e
+             JOIN provisioning_state p ON p.entitlement_id=e.id AND p.adapter='vpn'
+             WHERE e.product='vpn' AND e.state='ACTIVE'
+               AND e.expires_at>clock_timestamp()
+               AND p.applied_revision=e.revision
+               AND p.last_observed_at IS NOT NULL"""
+          fields=run(sql).split('|')
+          if len(fields)!=2:raise RuntimeError('Unexpected active link summary')
+          print('valid_active_accounts='+fields[0])
+          print('active_accounts_with_unrevoked_link_to_current_entitlement='+fields[1])
+          print('no_identifiers_or_tokens_logged=true')
+          PY
