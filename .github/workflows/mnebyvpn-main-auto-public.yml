@@ -1,3 +1,4 @@
+# 2026-11-08: release Telegram trial auto-ready schema 0106 and vetted MNEBYVPN main 53c350894fbaec1b0b71120c6634e0ab2dc7d812 (CI 42456770518 SUCCESS).
 # MNEBYVPN 2026-11-07 isolated purchase notification worker source f842a257606f8913de86ef3963f2d92ca8fd77fe; green main CI 42415453537; site code unchanged, stage image needed for isolated process.
 # MNEBYVPN 2026-11-07 release P1-P2 purchase flow 7f3a6605d8a2707514dc42323887384bcbbd1fcc after verified main CI 42414741878; paid clock remains feature-gated OFF.
 # Payment incident P0 2026-11-07: deploy signed URL-encoded Prodamus webhook fix fc31c79f9b820fc382bfcf478395f5aa29c70abb, verified by green main CI 42410858586.
