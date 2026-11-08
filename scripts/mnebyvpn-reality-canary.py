@@ -24,6 +24,7 @@ CONF = ROOT / "config.json"
 XRAY = "/opt/xray/xray"
 UNIT = "mnebyvpn-reality-latency-canary.service"
 PORT = 18948
+LISTEN = "127.0.0.1"
 
 
 def run(args, *, timeout=15, check=True):
@@ -50,7 +51,9 @@ def setup():
         if run(["systemctl", "is-active", service], check=False).stdout.strip() != "active":
             raise SystemExit("preexisting_service_unhealthy")
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        if sock.connect_ex(("127.0.0.1", PORT)) == 0:
+        try:
+            sock.bind((LISTEN, PORT))
+        except OSError:
             raise SystemExit("canary_port_busy")
     output = run([XRAY, "x25519"])
     keys = output.stdout + "\n" + output.stderr
@@ -86,7 +89,7 @@ def setup():
     config = {
         "log": {"loglevel": "warning"},
         "inbounds": [{
-            "listen": "127.0.0.1", "port": PORT, "protocol": "vless",
+            "listen": LISTEN, "port": PORT, "protocol": "vless",
             "settings": {
                 "clients": [{"id": secret_id, "flow": "xtls-rprx-vision"}],
                 "decryption": "none",
@@ -140,11 +143,14 @@ def setup():
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2 or sys.argv[1] not in ("setup", "cleanup"):
-        raise SystemExit("usage: setup|cleanup")
+    if len(sys.argv) != 2 or sys.argv[1] not in ("setup", "setup-public", "cleanup"):
+        raise SystemExit("usage: setup|setup-public|cleanup")
     if sys.argv[1] == "cleanup":
         cleanup()
     else:
+        if sys.argv[1] == "setup-public":
+            PORT = 2053
+            LISTEN = "0.0.0.0"
         try:
             setup()
         except BaseException:
