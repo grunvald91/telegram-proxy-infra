@@ -68,10 +68,9 @@ def decode_endpoint(field: str, family: int) -> tuple[str, int]:
         ip = socket.inet_ntop(family, b"".join(b[i:i+4][::-1] for i in range(0,16,4)))
     return ip, int(port, 16)
 
-def proc_sockets(pid: int, root: pathlib.Path = PROC) -> set[tuple[str, str, int]]:
-    """Return only current global outgoing endpoints owned by Xray child."""
+def socket_inodes(pid: int, root: pathlib.Path = PROC) -> set[str]:
     fd = root / str(pid) / "fd"
-    inodes = set()
+    inodes: set[str] = set()
     for entry in fd.iterdir():
         try:
             link = os.readlink(entry)
@@ -80,6 +79,36 @@ def proc_sockets(pid: int, root: pathlib.Path = PROC) -> set[tuple[str, str, int
         match = re.fullmatch(r"socket:\[([0-9]+)\]", link)
         if match:
             inodes.add(match.group(1))
+    return inodes
+
+def active_vpn_ingress_count(pid: int, root: pathlib.Path = PROC) -> int:
+    """Count established socket sessions owned by dedicated Xray inbound.
+
+    A single established tunnel is a *correlation gate*, NOT cryptographic
+    verification of which subscriber owns the connection.
+    """
+    owned = socket_inodes(pid, root)
+    found: set[str] = set()
+    for name, family in (("tcp",socket.AF_INET),("tcp6",socket.AF_INET6)):
+        try:
+            lines = (root/"net"/name).read_text().splitlines()[1:]
+        except (FileNotFoundError, PermissionError):
+            continue
+        for line in lines:
+            parts=line.split()
+            if len(parts)<10 or parts[9] not in owned or parts[3]!="01":
+                continue
+            try:
+                _local, port=decode_endpoint(parts[1],family)
+                if port in (18943,2053):
+                    found.add(parts[9])
+            except (ValueError,IndexError):
+                continue
+    return len(found)
+
+def proc_sockets(pid: int, root: pathlib.Path = PROC) -> set[tuple[str, str, int]]:
+    """Return only current global outgoing endpoints owned by Xray child."""
+    inodes = socket_inodes(pid, root)
     if not inodes:
         return set()
     out = set()
@@ -162,13 +191,15 @@ def policy_preflight() -> tuple[int, int]:
         raise RuntimeError("Unknown Xray config")
     clients = main.get("settings", {}).get("clients", [])
     count = active_count()
-    if count != 1 or len(clients) != 1:
-        raise RuntimeError("Non-attributable VPN activity (requires exactly one enabled user)")
+    if count < 1 or len(clients) != count:
+        raise RuntimeError("Out-of-sync Xray and active entitlement counts")
     if data.get("log", {}).get("loglevel") not in ("warning", "error", "none"):
         raise RuntimeError("Unexpected verbose Xray config")
     if data.get("log", {}).get("access", "none") not in ("none", "", None):
         raise RuntimeError("Unexpected Xray access logging")
     pid = isolated_child_pid()
+    if active_vpn_ingress_count(pid) != 1:
+        raise RuntimeError("Require exactly one established Xray inbound tunnel")
     return pid, count
 
 def hostname_candidates() -> dict[str, set[str]]:
@@ -233,12 +264,14 @@ def main() -> None:
     except Exception as ex:
         # Don't print values from runtime configuration, identifiers or OS.
         print("preflight_status=NOT_READY", flush=True)
-        print("reason=" + (("client_count" if "attributable" in str(ex) else
-                           "node_runtime_or_policy_mismatch")), flush=True)
+        print("reason=" + ("active_tunnels_not_unique" if "inbound tunnel" in str(ex)
+              else "node_runtime_or_policy_mismatch"), flush=True)
         raise SystemExit(2)
     print("preflight_status=READY_SINGLE_ACTIVE_VPN_PROFILE", flush=True)
     print("outbound_pid_present=true", flush=True)
-    print("active_user_count=" + str(count), flush=True)
+    print("active_entitlement_count=" + str(count), flush=True)
+    print("established_ingress_tunnels=1", flush=True)
+    print("per_credential_identity_attribution=NOT_VERIFIED", flush=True)
     print("capture_cannot_prove_process_or_exact_website=yes", flush=True)
     if sys.argv[1] == "preflight":
         return
@@ -253,7 +286,7 @@ def main() -> None:
         out: set[tuple[str,str,int]] = set()
         end = time.monotonic() + seconds
         while time.monotonic() < end:
-            if active_count() != 1 or isolated_child_pid() != pid:
+            if active_count() != count or isolated_child_pid() != pid or active_vpn_ingress_count(pid) != 1:
                 print("capture_aborted_account_or_process_changed=true", flush=True)
                 raise SystemExit(3)
             try:
