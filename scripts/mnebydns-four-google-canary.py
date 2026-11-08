@@ -227,12 +227,14 @@ def self_test()->None:
         assert nd.count("template IN A "+host+" {")==1
     # Earlier exact SNI entries are preserved and never overridden.
     already="www.google.com 127.0.0.1:15445;"
-    existing=MATCH_EXACT_ROUTE=old_nginx.replace(
+    existing=old_nginx.replace(
         "discord.com 127.0.0.1:15401;",
         "discord.com 127.0.0.1:15401;\n"+already)
     new_with_existing=render_sni(existing)
     assert already in new_with_existing
     assert new_with_existing.count("www.google.com 127.0.0.1:15449;")==0
+    assert "www.google.com" in existing_exact_hosts(existing)
+    assert "www.google.com" not in existing_exact_hosts(old_nginx)
     assert nd.count("template IN A . {")==1
     assert 'answer "{{ .Name }} 20 IN A '+FOREIGN+'"' in nd
     assert ns.replace("\n"+"".join(f"        {host} {BACKEND};\n" for host in HOSTS)+
@@ -269,7 +271,26 @@ def self_test()->None:
     print("no_live_network_change=yes")
 
 
+def existing_exact_hosts(source: str) -> tuple[str,...]:
+    m=list(MAP.finditer(source))
+    if len(m)!=1:raise ValueError("Shared SNI map not found")
+    body=m[0].group(2)
+    result=[]
+    for host in HOSTS:
+        matches=re.findall(r"(?m)^[ \t]*"+re.escape(host)+r"[ \t]+([^;]+);",body)
+        if len(matches)>1:raise ValueError("Duplicate host in legacy SNI map")
+        if matches:result.append(host)
+    return tuple(result)
+
+
 def main()->None:
+    if len(sys.argv)==3 and sys.argv[1]=="audit-existing":
+        original=pathlib.Path(sys.argv[2])
+        if not original.is_file() or original.is_symlink():
+            raise ValueError("Invalid Nginx source")
+        for host in existing_exact_hosts(original.read_text()):
+            print(host)
+        return
     if len(sys.argv)==2 and sys.argv[1]=="self-test":
         return self_test()
     if len(sys.argv)!=5 or sys.argv[1]!="render":
