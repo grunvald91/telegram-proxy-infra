@@ -1,0 +1,106 @@
+name: Smoke refreshed Germany REALITY and WS profiles via existing HTTPS subscription
+on:
+  push:
+    branches: ['ops/reapply-vpn-ntp-expiry-20261108']
+    paths: ['.github/workflows/mnebyvpn-transport-refresh-live-smoke.yml']
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      SERVER188_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Run protected disposable subscription through localhost and CDN path
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$SERVER188_PASSWORD"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          export SSHPASS="$SERVER188_PASSWORD"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new \
+            -o LogLevel=ERROR root@188.120.254.223 'python3 -' <<'PY'
+          import base64
+          import hashlib
+          import json
+          import re
+          import secrets
+          import subprocess
+          import urllib.error
+          import urllib.request
+          from urllib.parse import urlsplit,parse_qs
+          DB=['docker','exec','mnebyvpn-stage-postgres','psql','-At','-X',
+               '-v','ON_ERROR_STOP=1','-U','mnebyvpn_stage','-d','mnebyvpn_stage']
+          def sql(query):
+              result=subprocess.run([*DB,'-c',query],capture_output=True,
+                                    text=True,timeout=10)
+              if result.returncode!=0:raise RuntimeError('Database query failed')
+              return result.stdout.strip()
+          entitlement=sql("""SELECT e.id::text FROM entitlements e
+               JOIN provisioning_state p ON p.entitlement_id=e.id AND p.adapter='vpn'
+               WHERE e.product='vpn' AND e.state='ACTIVE'
+                 AND e.expires_at>clock_timestamp()
+                 AND p.applied_revision=e.revision
+                 AND p.last_observed_at IS NOT NULL
+               ORDER BY e.expires_at DESC LIMIT 1""")
+          if not re.fullmatch(r'[0-9a-f-]{36}',entitlement):
+              raise RuntimeError('No verified active test entitlement')
+          token=secrets.token_urlsafe(32)
+          assert re.fullmatch('[A-Za-z0-9_-]{43}',token)
+          digest=hashlib.sha256(token.encode()).hexdigest()
+          inserted=False
+          try:
+              sql("INSERT INTO vpn_subscription_links(token_sha256,entitlement_id) "+
+                  "VALUES('"+digest+"','"+entitlement+"')")
+              inserted=True
+              for origin in ('http://127.0.0.1:8792','https://cdn.servgo.ru:8443'):
+                  name='internal_site' if origin.startswith('http:') else 'public_cdn'
+                  for client in ('legacy','incy','karing'):
+                      ending=('?client='+client) if client!='legacy' else ''
+                      url=origin+'/sub/'+token+ending
+                      req=urllib.request.Request(url,headers={'Cache-Control':'no-cache'})
+                      try:
+                          with urllib.request.urlopen(req,timeout=12) as response:
+                              status=response.status
+                              body=response.read(8192)
+                              mime=response.headers.get('content-type','')
+                      except urllib.error.HTTPError as error:
+                          status=error.code
+                          body=b''
+                          mime=''
+                      except Exception as exc:
+                          print(name+'_'+client+'_network_error='+type(exc).__name__)
+                          continue
+                      print(name+'_'+client+'_http='+str(status))
+                      if status!=200:continue
+                      try:
+                          decoded=base64.b64decode(body.strip(),validate=True).decode()
+                          uris=decoded.strip().splitlines()
+                          ports=[]
+                          for link in uris:
+                              assert link.startswith('vless://')
+                              parsed=urlsplit(link)
+                              assert parsed.hostname=='cdn.servgo.ru'
+                              assert parsed.scheme=='vless'
+                              assert parse_qs(parsed.query).get('encryption')==['none']
+                              ports.append(parsed.port)
+                          expect=[8443] if client=='karing' else [2053,8443]
+                          expected_labels=(
+                              ['Germany · REALITY Vision','Germany · WebSocket TLS']
+                              if client!='karing' else ['Germany · WebSocket TLS'])
+                          from urllib.parse import unquote
+                          labels=[unquote(urlsplit(link).fragment) for link in uris]
+                          label_match=all(label in text for label,text in zip(expected_labels,labels))
+                          print(name+'_'+client+'_labels_valid='+str(label_match).lower())
+                          print(name+'_'+client+'_profile_valid='+str(ports==expect).lower())
+                          print(name+'_'+client+'_profile_count='+str(len(ports)))
+                      except Exception:
+                          print(name+'_'+client+'_profile_valid=false')
+              print('temporary_token_never_logged=true')
+          finally:
+              if inserted:
+                  sql("DELETE FROM vpn_subscription_links WHERE token_sha256='"+digest+"'")
+                  assert sql("SELECT count(*) FROM vpn_subscription_links WHERE token_sha256='"+digest+"'")=='0'
+                  print('temporary_subscription_link_destroyed=true')
+          PY
