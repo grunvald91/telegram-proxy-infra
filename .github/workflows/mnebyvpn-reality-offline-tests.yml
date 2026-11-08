@@ -4,12 +4,14 @@ on:
     branches: ['feature/mnebyvpn-reality-fast-node-20261108']
     paths:
       - 'scripts/mnebyvpn-vpn-provisioner.py'
+      - 'scripts/mnebyvpn-reality-fast-node-install.sh'
       - 'tests/test_mnebyvpn_reality_contract.py'
       - '.github/workflows/mnebyvpn-reality-offline-tests.yml'
   pull_request:
     branches: [main]
     paths:
       - 'scripts/mnebyvpn-vpn-provisioner.py'
+      - 'scripts/mnebyvpn-reality-fast-node-install.sh'
       - 'tests/test_mnebyvpn_reality_contract.py'
       - '.github/workflows/mnebyvpn-reality-offline-tests.yml'
   workflow_dispatch:
@@ -22,4 +24,5 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: python3 -m py_compile scripts/mnebyvpn-vpn-provisioner.py
+      - run: bash -n scripts/mnebyvpn-reality-fast-node-install.sh
       - run: python3 -m unittest discover -v -s tests -p test_mnebyvpn_reality_contract.py
