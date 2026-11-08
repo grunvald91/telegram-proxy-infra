@@ -1,0 +1,85 @@
+name: MNEBYVPN owner real connections E2E without changing node or credentials
+on:
+  push:
+    branches: [diagnose/mnebyvpn-reality-karing-20261108]
+    paths: ['.github/workflows/mnebyvpn-reality-owner-connectivity.yml']
+permissions:
+  contents: read
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      FOREIGN_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Test current owner WS, REALITY Chrome and Firefox end to end without node writes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          TMP="$(mktemp -d)"
+          X_PID=""
+          cleanup(){ set +e; if [[ -n "$X_PID" ]]; then kill "$X_PID" 2>/dev/null || :; wait "$X_PID" 2>/dev/null || :; fi; rm -rf "$TMP"; }
+          trap cleanup EXIT
+          export SSHPASS="$RU_PASSWORD"
+          sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o LogLevel=ERROR root@188.120.254.223 'python3 -'              < scripts/mnebyvpn-reality-owner-readonly-export.py > "$TMP/operator.json"
+          python3 - "$TMP/operator.json" "$TMP/client.json" <<'PY'
+          import json,pathlib,sys,uuid
+          source,target=sys.argv[1:3]
+          node=json.loads(pathlib.Path(source).read_text())
+          cred=node["credential"]
+          uuid.UUID(cred)
+          reality={"network":"tcp","security":"reality",
+             "realitySettings":{"serverName":"www.cloudflare.com",
+               "fingerprint":"chrome","password":node["publicKey"],
+               "shortId":node["shortId"],"spiderX":"/"}}
+          outbounds=[]
+          outbounds.append({"protocol":"vless","tag":"ws","settings":{"vnext":[{
+            "address":"89.125.90.101","port":8443,
+            "users":[{"id":cred,"encryption":"none"}]}]},
+            "streamSettings":{"network":"ws","security":"tls",
+            "tlsSettings":{"serverName":"cdn.servgo.ru","allowInsecure":False},
+            "wsSettings":{"path":"/mnebyvpn-vpn/ws","headers":{"Host":"cdn.servgo.ru"}}}})
+          for fp in ("chrome","firefox"):
+            obj=json.loads(json.dumps(reality))
+            obj["realitySettings"]["fingerprint"]=fp
+            outbounds.append({"protocol":"vless","tag":"reality_"+fp,
+             "settings":{"vnext":[{"address":"89.125.90.101","port":2053,
+              "users":[{"id":cred,"encryption":"none","flow":"xtls-rprx-vision"}]}]},
+             "streamSettings":obj})
+          names=["ws","reality_chrome","reality_firefox"]
+          inbounds=[{"tag":"socks_"+name,"listen":"127.0.0.1","port":19083+i,
+                    "protocol":"socks","settings":{"auth":"noauth","udp":False}}
+                    for i,name in enumerate(names)]
+          routing={"rules":[{"type":"field","inboundTag":["socks_"+name],
+                             "outboundTag":name} for name in names]}
+          config={"log":{"loglevel":"warning"},"inbounds":inbounds,"outbounds":outbounds,
+                  "routing":routing}
+          pathlib.Path(target).write_text(json.dumps(config))
+          print("owner_profile_source=signed_node_inspect")
+          print("operator_credential_exposure=ephemeral_runner_only")
+          PY
+          export SSHPASS="$FOREIGN_PASSWORD"
+          sshpass -e scp -q -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o LogLevel=ERROR             root@89.125.90.101:/opt/xray/xray "$TMP/xray"
+          chmod 700 "$TMP/xray"
+          "$TMP/xray" run -test -config "$TMP/client.json" >/dev/null
+          "$TMP/xray" run -config "$TMP/client.json" >"$TMP/client.log" 2>&1 &
+          X_PID=$!
+          sleep 2
+          for spec in 'ws:19083' 'reality_chrome:19084' 'reality_firefox:19085'; do
+            mode="${spec%%:*}"
+            port="${spec##*:}"
+            for sample in 1 2; do
+              code="$(curl --noproxy '' --proxy "socks5h://127.0.0.1:$port"                 --connect-timeout 8 --max-time 14 -s -o /dev/null -w '%{http_code}'                 https://www.cloudflare.com/cdn-cgi/trace)"
+              if [[ "$code" != 200 ]]; then
+                echo "transport_$mode=failed_HTTP_$code"
+                exit 2
+              fi
+            done
+            echo "transport_$mode=HTTPS_200_two_of_two"
+          done
+          echo 'owner_reality_and_ws_nonintrusive_e2e=passed'
