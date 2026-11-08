@@ -155,7 +155,6 @@ def self_test()->None:
     assert ns != old_nginx and nd != old_dns
     assert ns.count("gemini.google.com 127.0.0.1:15443;")==1
     assert ns.count("discord.com 127.0.0.1:15401;")==1
-    assert old_nginx in ns.replace(ns[len(old_nginx.split("}\n",1)[0]):],"") if False else True
     assert len(HOSTS)==14
     for host in HOSTS:
         assert ns.count(host+" "+BACKEND+";")==1
