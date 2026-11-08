@@ -21,6 +21,8 @@ jobs:
               print('dns_ips',ips)
           except Exception as e:
               print('dns_lookup_error',type(e).__name__)
+          failures=0
+          successful=0
           for target in (host,'89.125.90.101'):
               for attempt in range(3):
                   try:
@@ -39,7 +41,12 @@ jobs:
                               rcode=response[3]&15
                               answer_count=struct.unpack('!H',response[6:8])[0]
                               print(target,attempt,'tls',conn.version(),'rcode',rcode,'answers',answer_count,'ms',round((time.monotonic()-start)*1000))
+                              if rcode!=0: failures+=1
+                              else: successful+=1
                   except Exception as e:
                       print(target,attempt,'error',type(e).__name__)
+                      failures+=1
                   time.sleep(1)
+          print('summary_successful',successful,'summary_failures',failures)
+          if failures: raise SystemExit(1)
           PY
