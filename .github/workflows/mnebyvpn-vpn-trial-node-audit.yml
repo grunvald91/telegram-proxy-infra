@@ -51,6 +51,19 @@ jobs:
           SELECT 'vpn_pricing_drafts_with_prices='||count(*) FROM pricing_drafts WHERE product='vpn' AND (rub_minor IS NOT NULL OR stars IS NOT NULL);
           SELECT 'vpn_entitlements_waiting_for_node='||count(*) FROM entitlements WHERE product='vpn' AND state='PAID_PENDING_PROVISIONING';
           SELECT 'vpn_entitlements_active='||count(*) FROM entitlements WHERE product='vpn' AND state='ACTIVE';
+          SELECT 'owner_link_match_count='||count(*) FROM vpn_subscription_links
+            WHERE token_sha256='65159196f6dc7ce18685dd61f958679927889b3a8db907ce80c6b57ce6154a4e';
+          SELECT 'owner_link_state='||e.state FROM vpn_subscription_links l
+            JOIN entitlements e ON e.id=l.entitlement_id
+            WHERE l.token_sha256='65159196f6dc7ce18685dd61f958679927889b3a8db907ce80c6b57ce6154a4e';
+          SELECT 'owner_link_expires_utc='||to_char(e.expires_at AT TIME ZONE 'UTC','YYYY-MM-DD HH24:MI:SS')
+            FROM vpn_subscription_links l JOIN entitlements e ON e.id=l.entitlement_id
+            WHERE l.token_sha256='65159196f6dc7ce18685dd61f958679927889b3a8db907ce80c6b57ce6154a4e';
+          SELECT 'owner_link_db_revision_synced='||
+                 (p.applied_revision=e.revision AND p.last_observed_at IS NOT NULL)::text
+            FROM vpn_subscription_links l JOIN entitlements e ON e.id=l.entitlement_id
+            LEFT JOIN provisioning_state p ON p.entitlement_id=e.id AND p.adapter='vpn'
+            WHERE l.token_sha256='65159196f6dc7ce18685dd61f958679927889b3a8db907ce80c6b57ce6154a4e';
           SELECT 'vpn_reconcile_outbox_pending='||count(*) FROM reconcile_outbox b JOIN entitlements e ON e.id=b.entitlement_id WHERE e.product='vpn' AND b.handled_at IS NULL;
           SQL
           python3 - <<'PY'
