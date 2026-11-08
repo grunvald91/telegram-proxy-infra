@@ -1,4 +1,4 @@
-name: Relay89 MTProxy connection churn diagnosis
+name: Relay89 verified clock recovery and conntrack observation
 on:
   push:
     paths: ['.github/workflows/relay89-egress-rootcause.yml']
@@ -15,51 +15,61 @@ jobs:
     env:
       SSHPASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
     steps:
-      - name: Identify MTProxy worker lifecycle and upstream failures
+      - name: Verify independent HTTPS time sources and recover MTProxy clock
         shell: bash
         run: |
           set -euo pipefail
           test -n "$SSHPASS"
           command -v sshpass >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq sshpass; }
           sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 root@89.125.90.101 'python3 -u -' <<'PY'
-          import subprocess,pathlib,re,time,json,collections,os
+          import subprocess,pathlib,time,urllib.request,email.utils,statistics,json,re,uuid,collections
           def run(cmd,t=15):
            try:
             p=subprocess.run(cmd,capture_output=True,text=True,timeout=t);return p.stdout+p.stderr
            except subprocess.TimeoutExpired:return 'TIMEOUT'
-          def clean(s):
-           s=re.sub(r'(?i)(password|passwd|secret|token|privatekey|presharedkey|uuid)\s*([=:]\s*|\s+)\S+',r'\1=<redacted>',s)
-           s=re.sub(r'\b[0-9a-fA-F]{32,}\b','<hex>',s)
-           return s
-          for unit in ['mtproxy','mtproxy-ru']:
-           print('UNIT',unit,run(['systemctl','show',unit,'-p','MainPID,ControlGroup,KillMode,NRestarts,ExecMainStartTimestamp,ActiveState']),flush=True)
-           print('JOURNAL',unit,clean(run(['journalctl','-u',unit,'-n','65','--no-pager','-o','short-iso']))[:18000],flush=True)
-           p=pathlib.Path('/etc/systemd/system')/(unit+'.service')
-           if p.exists():print('UNITFILE',unit,clean(p.read_text()),flush=True)
-          print('PS',run(['ps','-eo','pid,ppid,lstart,comm,pcpu','--sort=pid']),flush=True)
-          for pid in [640,804,3024039,3024042]:
-           p=pathlib.Path('/proc')/str(pid)
-           if p.exists():
-            print('CGROUP',pid,(p/'cgroup').read_text(),flush=True)
-            print('EXE',pid,str((p/'exe').resolve()),flush=True)
-          for path in ['/etc/mtproxy','/etc/mtproxy-ru']:
-           p=pathlib.Path(path)
-           if p.is_dir():
-            for f in p.iterdir():
-             if f.is_file():
-              print('FILEMETA',str(f),f.stat().st_size,f.stat().st_mtime,flush=True)
-              if 'config' in f.name and f.suffix!='.env':print('ROUTE_CONFIG',str(f),clean(f.read_text(errors='replace'))[:7000],flush=True)
-          for port in [2398,2399,8888,8889]:
-           s=run(['ss','-Hntp','state','established','sport',':'+str(port)])
-           print('INCOMING',port,'count',len(s.splitlines()),'processes',collections.Counter(re.findall(r'\("([^"]+)"',s)),flush=True)
-          print('COUNT',pathlib.Path('/proc/sys/net/netfilter/nf_conntrack_count').read_text(),flush=True)
-          print('MAX',pathlib.Path('/proc/sys/net/netfilter/nf_conntrack_max').read_text(),flush=True)
-          print('STATS',run(['conntrack','-S']),flush=True)
-          backup=pathlib.Path('/root/relay89-egress-fix-20261108')
-          rollback='#!/bin/sh\nset -eu\ncurrent=$(cat /proc/sys/net/netfilter/nf_conntrack_count)\nprevious=$(cat '+str(backup)+'/nf_conntrack_max.before)\n[ "$current" -lt "$previous" ] || { echo "Refusing rollback: current occupancy exceeds previous limit"; exit 1; }\n'
-          rollback+='if [ -f '+str(backup)+'/sysctl.before ]; then cp '+str(backup)+'/sysctl.before /etc/sysctl.d/99-z-relay89-conntrack.conf; else rm -f /etc/sysctl.d/99-z-relay89-conntrack.conf; fi\n'
-          rollback+='sysctl -w net.netfilter.nf_conntrack_max="$previous"\n'
-          (backup/'rollback.sh').write_text(rollback)
-          print('ROLLBACK_CORRECTED=true',flush=True)
+          def ct():return pathlib.Path('/proc/sys/net/netfilter/nf_conntrack_count').read_text().strip()
+          print('TIME_BEFORE',time.time(),flush=True)
+          print('TIMEDATE',run(['timedatectl','status']),flush=True)
+          print('TIMESYNC',run(['timedatectl','timesync-status']),flush=True)
+          print('TIMESYNC_JOURNAL',run(['journalctl','-u','systemd-timesyncd','-n','12','--no-pager']),flush=True)
+          # Provide headroom during clock recovery; never flush active connections.
+          limit=pathlib.Path('/proc/sys/net/netfilter/nf_conntrack_max')
+          limit.write_text('524288\n')
+          p=pathlib.Path('/etc/sysctl.d/99-z-relay89-conntrack.conf')
+          p.write_text('# Relay89 conntrack headroom during MTProxy clock repair.\nnet.netfilter.nf_conntrack_max = 524288\n')
+          def offsets():
+           vals=[]
+           for url in ['https://www.google.com/generate_204','https://www.cloudflare.com/cdn-cgi/trace','https://api.telegram.org/']:
+            try:
+             a=time.time()
+             with urllib.request.urlopen(url+'?clockcheck='+uuid.uuid4().hex,timeout=6) as r:date=r.headers.get('Date')
+             b=time.time()
+             epoch=email.utils.parsedate_to_datetime(date).timestamp()
+             offset=epoch-(a+b)/2
+             print('HTTPS_CLOCK',url,'offset',round(offset,3),'rtt',round(b-a,3),flush=True)
+             if b-a<3:vals.append(offset)
+            except Exception as e:print('CLOCK_ERROR',url,type(e).__name__,flush=True)
+           return vals
+          vals=offsets()
+          assert len(vals)>=2 and max(vals)-min(vals)<3,'HTTPS time sources disagree'
+          offset=statistics.median(vals)
+          print('CLOCK_OFFSET_MEDIAN',offset,flush=True)
+          if abs(offset)>5:
+           print('NTP_RESTART',run(['systemctl','restart','systemd-timesyncd']),flush=True)
+           time.sleep(12)
+           check=offsets()
+           assert len(check)>=2 and max(check)-min(check)<3
+           correction=statistics.median(check)
+           if abs(correction)>5:
+            assert abs(correction)<300,'clock correction exceeds bounded incident scope'
+            print('TIME_STEP',run(['date','-u','-s','@'+str(time.time()+correction)]),flush=True)
+          print('TIME_AFTER',time.time(),'COUNT',ct(),flush=True)
+          print('NTP_FINAL',run(['timedatectl','timesync-status']),flush=True)
+          for i in range(4):
+           s=run(['conntrack','-S'])
+           print('SAMPLE',i,'epoch',time.time(),'count',ct(),'stats',s.strip(),flush=True)
+           print('PORT8888_OWNERS',collections.Counter(re.findall(r'\("([^"]+)",pid=(\d+)',run(['ss','-Hntp','dst',':8888']))),flush=True)
+           if i<3:time.sleep(20)
+          print('CLOCK_FINAL_OFFSETS',offsets(),flush=True)
           
           PY
