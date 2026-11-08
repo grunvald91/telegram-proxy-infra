@@ -1,0 +1,73 @@
+name: Gemini regression baseline active-service reconciliation
+on:
+  push:
+    branches: ['feature/mnebydns-gemini-voice-audit-20261108']
+    paths: ['.github/workflows/mnebydns-gemini-rollback-reconcile.yml']
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-google-public-443-change
+  cancel-in-progress: false
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      FOREIGN_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: grunvald91/Mnebyvpn
+          ref: b2073552b7bad3c0d8fe06c1d556d545895cf03d
+          path: mnebyvpn
+          persist-credentials: false
+      - name: Reload only verified original configuration and verify external TLS
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$FOREIGN_PASS" && test -n "$RU_PASS"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          export SSHPASS="$FOREIGN_PASS"
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'bash -se' <<'REMOTE'
+          set -Eeuo pipefail
+          b=/opt/mnebydns-voice-backups/42464486729
+          exec 9>/run/lock/mnebyvpn-public-route.lock
+          flock -w 10 9
+          cmp -s "$b/nginx.before" /etc/nginx/nginx.conf
+          cmp -s "$b/dns.before" /opt/mnebydns-dot/Corefile
+          nginx -t >/dev/null 2>&1
+          systemctl reload nginx
+          systemctl restart mnebydns-dot.service
+          systemctl disable --now mnebydns-gemini-aux.service >/dev/null 2>&1 || true
+          test "$(systemctl is-active nginx)" = active
+          test "$(systemctl is-active mnebydns-dot.service)" = active
+          test "$(systemctl is-active mnebydns-gemini.service)" = active
+          test "$(ss -H -lnt 'sport = :853' | awk '{print $4}')" = 89.125.90.101:853
+          grep -Fq 'template IN A gemini.google.com {' /opt/mnebydns-dot/Corefile
+          grep -Fq 'gemini.google.com 127.0.0.1:15443;' /etc/nginx/nginx.conf
+          for h in jnn-pa.googleapis.com waa-pa.clients6.google.com; do
+            if grep -Fq "template IN A $h {" /opt/mnebydns-dot/Corefile; then exit 4; fi
+            if grep -Fq "$h 127.0.0.1:15444;" /etc/nginx/nginx.conf; then exit 4; fi
+          done
+          echo "baseline_services_reconciled=yes"
+          echo "previous_gemini_root_route_preserved=yes"
+          echo "auxiliary_live_routes_removed=yes"
+          REMOTE
+          python3 mnebyvpn/ops/smart-dns-poc/probe-gemini-canary.py \
+            --ip 89.125.90.101 --port 853 --hostname dns.mnebyvpn.site
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 'bash -se' <<'RUSSIAN'
+          set -Eeuo pipefail
+          for h in gemini.google.com cdn.servgo.ru tg.servgo.ru; do
+            code="$(curl -4 --noproxy '*' -sS -o /dev/null \
+              --connect-timeout 5 --max-time 12 \
+              --resolve "$h:443:89.125.90.101" \
+              -w '%{http_code}' "https://$h/")"
+            [[ -n "$code" && "$code" != 000 ]]
+            echo "from_RU_original_TLS_ok=$h"
+          done
+          RUSSIAN
+          echo "rollback_reconciled_external_checks=pass"

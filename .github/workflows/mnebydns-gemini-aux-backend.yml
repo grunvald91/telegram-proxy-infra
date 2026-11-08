@@ -1,0 +1,85 @@
+name: Gemini official RPC hosts dedicated SNI loopback egress
+on:
+  push:
+    branches: ['feature/mnebydns-gemini-voice-audit-20261108']
+    paths: ['.github/workflows/mnebydns-gemini-aux-backend.yml']
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-aux-foreign
+  cancel-in-progress: false
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: grunvald91/Mnebyvpn
+          ref: 8ab24eb86c64eefe376332e0e9fd5a8712f11a56
+          path: mnebyvpn
+          persist-credentials: false
+      - name: Deploy bounded loopback TLS egress, no public 443 change
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$PASSWORD"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          export SSHPASS="$PASSWORD"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
+            'test ! -e /etc/mnebydns-gemini-aux && test ! -e /etc/systemd/system/mnebydns-gemini-aux.service && test -z "$(ss -H -lnt sport = :15444)"'
+          tar -C mnebyvpn/ops/smart-dns-poc -czf - Gemini-Aux-SNI.nginx.conf mnebydns-gemini-aux.service |
+            sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
+              'mkdir -m 700 -p /tmp/mnebydns-gemini-aux-stage && tar -xzf - -C /tmp/mnebydns-gemini-aux-stage'
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'bash -se' <<'REMOTE'
+          set -Eeuo pipefail
+          install -d -m 755 -o root -g root /etc/mnebydns-gemini-aux
+          stage=/tmp/mnebydns-gemini-aux-stage
+          unit=/etc/systemd/system/mnebydns-gemini-aux.service
+          dest=/etc/mnebydns-gemini-aux/nginx.conf
+          installed=true
+          rollback() {
+            code="$?"
+            trap - ERR
+            systemctl disable --now mnebydns-gemini-aux.service >/dev/null 2>&1 || true
+            rm -f -- "$unit"
+            rm -rf -- /etc/mnebydns-gemini-aux
+            systemctl daemon-reload
+            echo "aux_backend_rollback_attempted=yes"
+            exit "$code"
+          }
+          trap rollback ERR
+          install -m 644 -o root -g root "$stage/Gemini-Aux-SNI.nginx.conf" "$dest"
+          install -m 644 -o root -g root "$stage/mnebydns-gemini-aux.service" "$unit"
+          systemd-analyze verify "$unit"
+          systemctl daemon-reload
+          systemctl start mnebydns-gemini-aux.service
+          for i in $(seq 1 50); do
+            [[ "$(ss -H -lnt 'sport = :15444' | awk '{print $4}')" == 127.0.0.1:15444 ]] && break
+            sleep 0.2
+          done
+          [[ "$(ss -H -lnt 'sport = :15444' | awk '{print $4}')" == 127.0.0.1:15444 ]]
+          for host in jnn-pa.googleapis.com waa-pa.clients6.google.com; do
+            code="$(curl -4 --noproxy '*' -sS -o /dev/null --connect-timeout 6 --max-time 15 \
+              --connect-to "$host:443:127.0.0.1:15444" -w '%{http_code}' "https://$host/" || true)"
+            [[ "$code" != 000 && -n "$code" ]] || { echo "aux_TLS_host_failed=$host"; exit 1; }
+            echo "aux_TLS_verified_host=$host"
+          done
+          if curl -4 --noproxy '*' -sS -o /dev/null --max-time 5 \
+            --connect-to "example.org:443:127.0.0.1:15444" https://example.org/ >/dev/null 2>&1; then
+            echo "aux_unknown_SNI_accepted_unexpectedly=yes"
+            exit 1
+          fi
+          systemctl enable mnebydns-gemini-aux.service >/dev/null
+          systemctl is-active --quiet nginx
+          nginx -t >/dev/null 2>&1
+          echo "aux_loopback_only=true"
+          echo "aux_unknown_sni_denied=true"
+          echo "existing_shared_443_untouched=true"
+          trap - ERR
+          rm -rf -- "$stage"
+          REMOTE
