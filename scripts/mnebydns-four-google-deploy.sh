@@ -198,9 +198,22 @@ for host in "${preexisting[@]}" www.youtube.com stitch.withgoogle.com aistudio.g
   echo "public_443_original_TLS_valid=$host"
 done
 cp -p "$base/dns.pilot" "$dns"
+echo "DNS_reconfiguration_started=true"
 systemctl restart mnebydns-dot.service
-systemctl is-active --quiet mnebydns-dot.service
-test "$(ss -H -lnt 'sport = :853' | awk '{print $4}')" = "89.125.90.101:853"
+dns_ready=no
+for attempt in $(seq 1 50); do
+  if systemctl is-active --quiet mnebydns-dot.service &&
+     ss -H -lnt 'sport = :853' | awk '{print $4}' | grep -Fxq '89.125.90.101:853'; then
+    dns_ready=yes
+    break
+  fi
+  sleep 0.2
+done
+if [[ "$dns_ready" != yes ]]; then
+  echo "MNEBYDNS_restart_or_port_not_ready=true"
+  exit 9
+fi
+echo "MNEBYDNS_DoT_ready_after_restart=true"
 test "$(systemctl is-active nginx)" = active
 test "$(systemctl is-active xray.service)" = active
 test "$(systemctl is-active mnebydns-gemini.service)" = active
