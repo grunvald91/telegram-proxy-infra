@@ -38,7 +38,15 @@ jobs:
             ('google','ssl.gstatic.com'),('google','oauth2.googleapis.com'),
             ('youtube','i.ytimg.com'),('youtube','accounts.youtube.com'),
             ('meta','api.instagram.com'),('meta','gateway.instagram.com'),
-            ('google_ai','gemini.google.com'),('google_ai','jnn-pa.googleapis.com')
+            # Gemini Android: official app-firewall candidates, exact-name only.
+            ('google_ai','gemini.google.com'),('google_ai','jnn-pa.googleapis.com'),
+            ('google_ai','waa-pa.clients6.google.com'),
+            ('google_ai','optimizationguide-pa.googleapis.com'),
+            ('google_ai','www.googleapis.com'),('google_ai','apis.google.com'),
+            ('google_ai','play.google.com'),
+            # YouTube thumbnails and shared account images (media is dynamic).
+            ('youtube_images','i.ytimg.com'),('youtube_images','yt3.ggpht.com'),
+            ('youtube_images','s.ytimg.com')
           ]
           def check(item):
               label,host=item
@@ -102,6 +110,10 @@ jobs:
             'Instagram':('www.instagram.com','api.instagram.com',
                          'gateway.instagram.com','static.cdninstagram.com',
                          'www.facebook.com'),
+            'GeminiAndroid':('jnn-pa.googleapis.com', 'waa-pa.clients6.google.com',
+                            'optimizationguide-pa.googleapis.com',
+                            'www.googleapis.com','apis.google.com','play.google.com'),
+            'YouTubeImages':('i.ytimg.com','yt3.ggpht.com','s.ytimg.com'),
           }
           ingress='89.125.90.101'
           def check(pair):
