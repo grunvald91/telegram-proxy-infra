@@ -1,0 +1,147 @@
+name: MNEBYVPN compare VLESS WS and REALITY Vision via same path
+on:
+  push:
+    branches: ['diag/vpn-latency-20261108']
+    paths:
+      - '.github/workflows/mnebyvpn-reality-compare.yml'
+      - 'scripts/mnebyvpn-reality-canary.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      FOREIGN_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare via identical SSH-forwarded route to foreign Xray
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASSWORD" && test -n "$FOREIGN_PASSWORD"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          TMP="$(mktemp -d)"
+          OPTS=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          ID="$(python3 -c 'import uuid;print(uuid.uuid4())')"
+          CREATED=0
+          REALITY=0
+          SSH_PID=""
+          XWS_PID=""
+          XREAL_PID=""
+          cleanup() {
+            set +e
+            for pid in "$XREAL_PID" "$XWS_PID" "$SSH_PID"; do
+              if [[ -n "$pid" ]]; then kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; fi
+            done
+            if [[ "$REALITY" == 1 ]]; then
+              SSHPASS="$FOREIGN_PASSWORD" sshpass -e ssh "${OPTS[@]}" root@89.125.90.101 \
+                'python3 - cleanup' < scripts/mnebyvpn-reality-canary.py \
+                >/dev/null && echo 'reality_canary_cleaned=true' || echo 'reality_canary_cleanup_failed=true'
+            fi
+            if [[ "$CREATED" == 1 ]]; then
+              SSHPASS="$RU_PASSWORD" sshpass -e ssh "${OPTS[@]}" root@188.120.254.223 \
+                "python3 - revoke $ID" < scripts/mnebyvpn-benchmark-ephemeral.py \
+                >/dev/null && echo 'baseline_ephemeral_revoked=true' || echo 'baseline_ephemeral_revocation_failed=true'
+            fi
+            rm -rf "$TMP"
+          }
+          trap cleanup EXIT
+          PROFILE_JSON="$(SSHPASS="$RU_PASSWORD" sshpass -e ssh "${OPTS[@]}" root@188.120.254.223 \
+            "python3 - create $ID" < scripts/mnebyvpn-benchmark-ephemeral.py)"
+          CREATED=1
+          WS_CRED="$(printf '%s' "$PROFILE_JSON" | python3 -c 'import sys,json;print(json.load(sys.stdin)["credential"])')"
+          echo "::add-mask::$WS_CRED"
+          CANARY_JSON="$(SSHPASS="$FOREIGN_PASSWORD" sshpass -e ssh "${OPTS[@]}" root@89.125.90.101 \
+            'python3 - setup' < scripts/mnebyvpn-reality-canary.py)"
+          REALITY=1
+          export CANARY_JSON
+          REAL_CRED="$(python3 -c 'import json,os;print(json.loads(os.environ["CANARY_JSON"])["credential"])')"
+          REAL_PUB="$(python3 -c 'import json,os;print(json.loads(os.environ["CANARY_JSON"])["password"])')"
+          REAL_SID="$(python3 -c 'import json,os;print(json.loads(os.environ["CANARY_JSON"])["shortId"])')"
+          echo "::add-mask::$REAL_CRED"
+          echo "::add-mask::$REAL_PUB"
+          echo "::add-mask::$REAL_SID"
+          SSHPASS="$FOREIGN_PASSWORD" sshpass -e scp -q "${OPTS[@]}" \
+            root@89.125.90.101:/opt/xray/xray "$TMP/xray"
+          chmod 700 "$TMP/xray"
+          SSHPASS="$FOREIGN_PASSWORD" sshpass -e ssh "${OPTS[@]}" \
+            -o ExitOnForwardFailure=yes -o ServerAliveInterval=10 \
+            -L 127.0.0.1:18443:127.0.0.1:8443 \
+            -L 127.0.0.1:18444:127.0.0.1:18948 \
+            -N root@89.125.90.101 &
+          SSH_PID=$!
+          python3 - "$TMP/ws.json" "$TMP/reality.json" "$WS_CRED" "$REAL_CRED" "$REAL_PUB" "$REAL_SID" <<'PY'
+          import json, pathlib, sys, uuid
+          ws, reality, ws_id, reality_id, pub, sid = sys.argv[1:]
+          uuid.UUID(ws_id); uuid.UUID(reality_id)
+          def socks(port):
+              return {"listen":"127.0.0.1","port":port,"protocol":"socks",
+                      "settings":{"auth":"noauth","udp":False}}
+          common={"log":{"loglevel":"warning"}}
+          ws_out={"protocol":"vless","tag":"via-ws","settings":{"vnext":[{
+                  "address":"127.0.0.1","port":18443,"users":[{
+                  "id":ws_id,"encryption":"none"}]}]},
+                  "streamSettings":{"network":"ws","security":"tls",
+                    "tlsSettings":{"serverName":"cdn.servgo.ru","allowInsecure":False},
+                    "wsSettings":{"path":"/mnebyvpn-vpn/ws",
+                     "headers":{"Host":"cdn.servgo.ru"}}}}
+          reality_out={"protocol":"vless","tag":"via-reality",
+                       "settings":{"vnext":[{"address":"127.0.0.1","port":18444,
+                         "users":[{"id":reality_id,"encryption":"none",
+                                   "flow":"xtls-rprx-vision"}]}]},
+                       "streamSettings":{"network":"tcp","security":"reality",
+                         "realitySettings":{"serverName":"www.cloudflare.com",
+                           "fingerprint":"chrome","password":pub,
+                           "shortId":sid,"spiderX":"/"}}}
+          pathlib.Path(ws).write_text(json.dumps({**common,"inbounds":[socks(19083)],"outbounds":[ws_out]}))
+          pathlib.Path(reality).write_text(json.dumps({**common,"inbounds":[socks(19084)],"outbounds":[reality_out]}))
+          PY
+          "$TMP/xray" run -test -config "$TMP/ws.json" >/dev/null
+          "$TMP/xray" run -test -config "$TMP/reality.json" >/dev/null
+          "$TMP/xray" run -config "$TMP/ws.json" > "$TMP/ws.log" 2>&1 &
+          XWS_PID=$!
+          "$TMP/xray" run -config "$TMP/reality.json" > "$TMP/reality.log" 2>&1 &
+          XREAL_PID=$!
+          for port in 18443 18444 19083 19084; do
+            found=0
+            for i in $(seq 1 25); do
+              if python3 -c "import socket; c=socket.create_connection(('127.0.0.1', $port), .3);c.close()" 2>/dev/null; then found=1; break; fi
+              sleep .2
+            done
+            test "$found" == 1
+          done
+          echo 'measurement_scope=external_runner_same_SSH_forward_to_89_localhost_existing_WS_vs_temporary_REALITY'
+          TARGET='https://www.cloudflare.com/cdn-cgi/trace'
+          : > "$TMP/measure.csv"
+          for i in $(seq 1 8); do
+            for route in direct ws reality; do
+              opts=(--noproxy '*')
+              case "$route" in
+                ws) opts=(--noproxy '' --proxy socks5h://127.0.0.1:19083);;
+                reality) opts=(--noproxy '' --proxy socks5h://127.0.0.1:19084);;
+              esac
+              value="$(curl "${opts[@]}" --silent --show-error --fail \
+                  --connect-timeout 7 --max-time 13 -o /dev/null \
+                  -w '%{time_total}' "$TARGET")" || value=fail
+              echo "$i,$route,$value" >> "$TMP/measure.csv"
+              echo "sample=$i route=$route total_seconds=$value"
+            done
+          done
+          python3 - "$TMP/measure.csv" <<'PY'
+          import collections, pathlib, statistics, sys
+          groups=collections.defaultdict(list)
+          for row in pathlib.Path(sys.argv[1]).read_text().splitlines():
+              _, route, val=row.split(",")
+              if val!="fail":groups[route].append(float(val)*1000)
+          for route in ("direct","ws","reality"):
+              values=groups[route]
+              print(f"route={route} successful={len(values)}/8 median_ms={statistics.median(values):.1f}" if values else f"route={route} successful=0/8")
+          assert len(groups["ws"])>=7 and len(groups["reality"])>=7, "Cannot trust low sample count"
+          delta=statistics.median(groups["ws"])-statistics.median(groups["reality"])
+          print(f"reality_advantage_ms={delta:.1f}")
+          PY
+          echo 'canary_services_unchanged=true'
