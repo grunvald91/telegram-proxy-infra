@@ -14,6 +14,8 @@ dns=/opt/mnebydns-dot/Corefile
 pilot=/etc/mnebydns-googlepilot
 unit=/etc/systemd/system/mnebydns-googlepilot.service
 watchdog="mnebydns-four-google-watchdog-$runid"
+watchdog_service="/etc/systemd/system/$watchdog.service"
+watchdog_timer="/etc/systemd/system/$watchdog.timer"
 
 exec 9>/run/lock/mnebyvpn-public-route.lock
 flock -n 9 || { echo "shared_443_route_lock_occupied=true"; exit 2; }
@@ -22,6 +24,7 @@ for file in mnebydns-four-google-canary.py mnebydns-four-google-rollback.sh; do
 done
 python3 "$work/mnebydns-four-google-canary.py" self-test
 test ! -e "$base" && test ! -e "$unit" && test ! -e "$pilot"
+test ! -e "$watchdog_service" && test ! -e "$watchdog_timer"
 test -z "$(ss -H -lnt 'sport = :15449')"
 for file in "$nginx" "$dns"; do
   test -f "$file" && test ! -L "$file"
@@ -113,7 +116,10 @@ echo "isolated_google_pilot_on_loopback=true"
 # Avoid interpolating an arbitrary user supplied hostname in bash.
 for host in www.youtube.com youtubei.googleapis.com i.ytimg.com \
   stitch.withgoogle.com accounts.google.com aistudio.google.com \
-  generativelanguage.googleapis.com jnn-pa.googleapis.com; do
+  generativelanguage.googleapis.com jnn-pa.googleapis.com \
+  www.googleapis.com optimizationguide-pa.googleapis.com \
+  www.gstatic.com fonts.gstatic.com ssl.gstatic.com \
+  www.google.com labs.google; do
   code="$(curl -4 --noproxy '*' -sS -o /dev/null -w '%{http_code}' \
        --connect-timeout 4 --max-time 11 \
        --connect-to "$host:443:127.0.0.1:15449" \
@@ -124,11 +130,47 @@ for host in www.youtube.com youtubei.googleapis.com i.ytimg.com \
 done
 
 # Arm independent timer before changing shared ingress and DNS.
-systemd-run --unit="$watchdog" --on-active=1800s --collect \
-  /bin/bash "$base/rollback.sh" "$base" >/dev/null
+# Persistent OnCalendar timer survives VPS reboot; missed deadlines are
+# enforced on boot, unlike transient systemd-run monotonic timers.
+# A fixed UTC calendar timestamp is computed once, after backend TLS passes.
+deadline="$(date -u -d '+30 minutes' +'%Y-%m-%d %H:%M:%S UTC')"
+systemd-analyze calendar "$deadline" >/dev/null
+cat > "$base/watchdog.service" <<UNIT
+[Unit]
+Description=Restore original MNEBYDNS DNS/SNI after scoped Google canary
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash $base/rollback.sh $base
+UNIT
+cat > "$base/watchdog.timer" <<UNIT
+[Unit]
+Description=Persistent 30 minute MNEBYDNS pilot rollback deadline
+
+[Timer]
+OnCalendar=$deadline
+Persistent=true
+AccuracySec=1s
+Unit=$watchdog.service
+
+[Install]
+WantedBy=timers.target
+UNIT
+chmod 600 "$base/watchdog.service" "$base/watchdog.timer"
+install -m 644 "$base/watchdog.service" "$watchdog_service"
+install -m 644 "$base/watchdog.timer" "$watchdog_timer"
+systemctl daemon-reload
+systemctl enable --now "$watchdog.timer" >/dev/null
+systemctl is-active --quiet "$watchdog.timer"
 echo "automatic_rollback_seconds=1800"
+echo "automatic_rollback_persists_after_reboot=true"
+echo "automatic_rollback_calendar_UTC=$deadline"
 echo "automatic_rollback_unit=$watchdog.timer"
 test -s "$base/nginx.pilot" && test -s "$base/dns.pilot"
+# Syntax-check staged shared Nginx before touching the active config.
+nginx -t -c "$base/nginx.pilot" >/dev/null 2>&1 || {
+  echo "staged_shared_443_nginx_invalid=yes"; exit 6;
+}
 # Preserve metadata for original production configs.
 chown --reference="$nginx" "$base/nginx.pilot"
 chmod --reference="$nginx" "$base/nginx.pilot"
