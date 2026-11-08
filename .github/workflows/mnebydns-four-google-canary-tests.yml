@@ -1,7 +1,7 @@
 name: Validate MNEBYDNS experimental four-service canary offline
 on:
   push:
-    branches: ['feature/mnebydns-claude-google-combined-30m-20261109']
+    branches: ['feature/mnebydns-instagram-grok-x-threads-30m-20261109']
     paths:
       - 'scripts/mnebydns-four-google-canary.py'
       - 'scripts/mnebydns-four-google-deploy.sh'
@@ -29,11 +29,11 @@ jobs:
           spec.loader.exec_module(m)
           added=('android.googleapis.com','firebaseinstallations.googleapis.com','gcm-http.googleapis.com')
           assert all(h in m.HOSTS for h in added)
-          assert len(m.HOSTS)==91 and len(set(m.HOSTS))==91
+          assert len(m.HOSTS)==121 and len(set(m.HOSTS))==121
           safe_443=('pki.google.com','clients1.google.com','notifications.google.com')
           assert all(h in m.HOSTS for h in safe_443)
           assert all(h in m.DYNAMIC_SUFFIXES for h in ('googleapis.com','google.com'))
-          assert len(m.DYNAMIC_SUFFIXES)==23
+          assert len(m.DYNAMIC_SUFFIXES)==46
           # Owner-directed temporary DNS-only redirect includes all system names.
           android_system=('mtalk.google.com','mtalk4.google.com','time.google.com',
                           'fcm.googleapis.com','fcm-xmpp.googleapis.com',
@@ -51,6 +51,19 @@ jobs:
                   'bridge.claudeusercontent.com','claudeusercontent.com',
                   'claudemcpcontent.com','claude.app')
           assert len(claude)==18 and all(h in m.HOSTS for h in claude)
+          social=('instagram.com','www.instagram.com','graph.instagram.com',
+                  'api.instagram.com','cdninstagram.com','ig.me','instagr.am',
+                  'threads.com','www.threads.com','threads.net',
+                  'x.com','api.x.com','twitter.com','api.twitter.com','t.co',
+                  'twimg.com','pbs.twimg.com','video.twimg.com',
+                  'grok.com','grok.x.ai','x.ai','api.x.ai',
+                  'graph.facebook.com','connect.facebook.net')
+          assert all(h in m.HOSTS for h in social)
+          social_suffix=('instagram.com','cdninstagram.com','threads.com',
+                         'threads.net','facebook.com','facebook.net','fbcdn.net',
+                         'x.com','twitter.com','twimg.com','t.co',
+                         'grok.com','x.ai','grokusercontent.com')
+          assert all(h in m.DYNAMIC_SUFFIXES for h in social_suffix)
           assert all(z in m.DYNAMIC_SUFFIXES for z in (
               'claude.ai','claude.com','anthropic.com',
               'claudeusercontent.com','claudemcpcontent.com','claude.app'))
@@ -60,8 +73,8 @@ jobs:
           }
           '''
           rendered=m.render_dot(fixture)
-          assert all(('template IN A '+h+' {') in rendered for h in (*android_system,*claude))
-          print('Android_Google_Claude_91_exact_23_suffixes=PASS')
+          assert all(('template IN A '+h+' {') in rendered for h in (*android_system,*claude,*social))
+          print('Android_Google_Claude_social_121_exact_46_suffixes=PASS')
           PY
           bash -n scripts/mnebydns-four-google-deploy.sh
           bash -n scripts/mnebydns-four-google-rollback.sh
