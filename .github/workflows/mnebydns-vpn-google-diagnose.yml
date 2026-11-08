@@ -101,6 +101,42 @@ jobs:
               else:print(name+'_result=timeout')
           print('foreign_diagnostics_read_only=yes')
           PY
+      - name: Verify existing Nginx stream SNI routing feasibility and Google DNS RR data (read only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$RELAY_PASS" || exit 2
+          export SSHPASS="$RELAY_PASS"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@89.125.90.101 'python3 -' <<'PY'
+          import subprocess,re,pathlib
+          def run(args):
+              return subprocess.run(args,capture_output=True,text=True,timeout=14)
+          v=run(['nginx','-V'])
+          flags=v.stderr
+          print('nginx_stream_ssl_preread_compiled='+str('--with-stream_ssl_preread_module' in flags).lower())
+          print('nginx_stream_dynamic='+str('--with-stream=dynamic' in flags).lower())
+          p=pathlib.Path('/usr/lib/nginx/modules/ngx_stream_module.so')
+          print('nginx_stream_module_file_exists='+str(p.exists()).lower())
+          r=run(['nginx','-T'])
+          print('nginx_syntax_ok='+str(r.returncode==0).lower())
+          content=r.stdout
+          print('nginx_stream_preread_enabled='+str('ssl_preread on;' in content).lower())
+          print('nginx_stream_map_count='+str(len(re.findall(r'map\s+\$ssl_preread_server_name\s+\$[\w]+\s*\{',content))))
+          print('nginx_stream_include_count='+str(len(re.findall(r'include\s+[^;\n]*stream[^;\n]*;',content))))
+          print('nginx_stream_google_specific_existing='+str(bool(re.search(r'(?i)(gemini\.google\.com|aistudio\.google\.com)',content))).lower())
+          print('nginx_candidate_routes_changed=no')
+          PY
+          python3 - <<'PY'
+          import subprocess
+          targets=['gemini.google.com','aistudio.google.com','accounts.google.com','generativelanguage.googleapis.com','labs.google','www.youtube.com','www.gstatic.com','www.google.com']
+          for name in targets:
+              for rr in ['A','AAAA','HTTPS','CNAME']:
+                  p=subprocess.run(['dig','@1.1.1.1','+time=2','+tries=1','+short',name,rr],capture_output=True,text=True,timeout=5)
+                  rows=p.stdout.splitlines()
+                  print(name.replace('.','_')+'_'+rr+'_count='+str(len(rows)))
+                  if rr=='HTTPS':
+                      print(name.replace('.','_')+'_HTTPS_ech_published='+str(any('ech=' in line or 'echconfig=' in line for line in rows)).lower())
+          PY
       - name: RU-side encrypted DoT reachability over regular outbound network
         shell: bash
         run: |
