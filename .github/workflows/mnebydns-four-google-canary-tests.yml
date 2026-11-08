@@ -29,11 +29,11 @@ jobs:
           spec.loader.exec_module(m)
           added=('android.googleapis.com','firebaseinstallations.googleapis.com','gcm-http.googleapis.com')
           assert all(h in m.HOSTS for h in added)
-          assert len(m.HOSTS)==173 and len(set(m.HOSTS))==173
+          assert len(m.HOSTS)==174 and len(set(m.HOSTS))==174
           safe_443=('pki.google.com','clients1.google.com','notifications.google.com')
           assert all(h in m.HOSTS for h in safe_443)
           assert all(h in m.DYNAMIC_SUFFIXES for h in ('googleapis.com','google.com'))
-          assert len(m.DYNAMIC_SUFFIXES)==92
+          assert len(m.DYNAMIC_SUFFIXES)==97
           # Owner-directed temporary DNS-only redirect includes all system names.
           android_system=('mtalk.google.com','mtalk4.google.com','time.google.com',
                           'fcm.googleapis.com','fcm-xmpp.googleapis.com',
@@ -89,7 +89,7 @@ jobs:
           '''
           rendered=m.render_dot(fixture)
           assert all(('template IN A '+h+' {') in rendered for h in (*android_system,*claude,*social,*meta_extra,*tiktok,*telegram))
-          print('Android_Google_Claude_Meta_TikTok_Telegram_173_exact_92_suffixes=PASS')
+          print('Android_Google_Claude_Meta_TikTok_Telegram_174_exact_97_suffixes=PASS')
           PY
           bash -n scripts/mnebydns-four-google-deploy.sh
           bash -n scripts/mnebydns-four-google-rollback.sh
