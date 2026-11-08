@@ -95,6 +95,7 @@ jobs:
                           print(name+'_'+client+'_labels_valid='+str(label_match).lower())
                           print(name+'_'+client+'_profile_valid='+str(ports==expect).lower())
                           print(name+'_'+client+'_profile_count='+str(len(ports)))
+                          assert ports==expect and label_match, 'Subscription transport names or ports invalid'
                       except Exception:
                           print(name+'_'+client+'_profile_valid=false')
               print('temporary_token_never_logged=true')
