@@ -1,7 +1,7 @@
 name: Validate MNEBYDNS experimental four-service canary offline
 on:
   push:
-    branches: ['feature/mnebydns-android-three-candidate-canary-20261109']
+    branches: ['feature/mnebydns-android-https-only-extension-20261109']
     paths:
       - 'scripts/mnebydns-four-google-canary.py'
       - 'scripts/mnebydns-four-google-deploy.sh'
@@ -28,8 +28,10 @@ jobs:
           m=importlib.util.module_from_spec(spec)
           spec.loader.exec_module(m)
           added=('android.googleapis.com','firebaseinstallations.googleapis.com','gcm-http.googleapis.com')
-          assert all(h in m.HOSTS for h in added)
-          assert len(m.HOSTS)==63 and len(set(m.HOSTS))==63
+          assert all(h in m.HOSTS for h in (*added,*safe_443))
+          assert len(m.HOSTS)==66 and len(set(m.HOSTS))==66
+          safe_443=('pki.google.com','clients1.google.com','notifications.google.com')
+          assert all(h in m.HOSTS for h in safe_443)
           assert not any(h in m.DYNAMIC_SUFFIXES for h in ('googleapis.com','google.com'))
           # Do not proxy FCM's known non-443 endpoints.
           assert not any(h in m.HOSTS for h in ('fcm.googleapis.com','mtalk.google.com','mtalk4.google.com','time.google.com'))
