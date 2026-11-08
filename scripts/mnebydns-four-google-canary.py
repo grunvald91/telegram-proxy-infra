@@ -25,6 +25,11 @@ HOSTS = (
     "android.googleapis.com",
     "firebaseinstallations.googleapis.com",
     "gcm-http.googleapis.com",
+    # Android HTTPS-only endpoints per official Android Enterprise network table.
+    # Port-dependent FCM push and NTP names stay direct until multi-protocol relay exists.
+    "pki.google.com",
+    "clients1.google.com",
+    "notifications.google.com",
     "www.youtube.com",
     "youtubei.googleapis.com",
     "i.ytimg.com",
