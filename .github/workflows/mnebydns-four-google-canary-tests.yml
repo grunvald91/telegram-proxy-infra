@@ -1,7 +1,7 @@
 name: Validate MNEBYDNS experimental four-service canary offline
 on:
   push:
-    branches: ['feature/mnebydns-google-four-services-preflight-20261108']
+    branches: ['feature/mnebydns-android-three-candidate-canary-20261109']
     paths:
       - 'scripts/mnebydns-four-google-canary.py'
       - 'scripts/mnebydns-four-google-deploy.sh'
@@ -21,6 +21,21 @@ jobs:
           set -Eeuo pipefail
           python3 -m py_compile scripts/mnebydns-four-google-canary.py
           python3 scripts/mnebydns-four-google-canary.py self-test
+          python3 - <<'PY'
+          import importlib.util,pathlib
+          path=pathlib.Path('scripts/mnebydns-four-google-canary.py')
+          spec=importlib.util.spec_from_file_location('canary',path)
+          m=importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(m)
+          added=('android.googleapis.com','firebaseinstallations.googleapis.com','gcm-http.googleapis.com')
+          assert all(h in m.HOSTS for h in added)
+          assert len(m.HOSTS)==63 and len(set(m.HOSTS))==63
+          assert not any(h in m.DYNAMIC_SUFFIXES for h in ('googleapis.com','google.com'))
+          # Do not proxy FCM's known non-443 endpoints.
+          assert not any(h in m.HOSTS for h in ('fcm.googleapis.com','mtalk.google.com','mtalk4.google.com','time.google.com'))
+          assert all(('template IN A '+h+' {') in m.render_dot('tls://.:853 {\\n    template IN A gemini.google.com { match x }\\n    cache 30\\n}\\n') for h in added)
+          print('three_trace_candidates_exact_only=PASS')
+          PY
           bash -n scripts/mnebydns-four-google-deploy.sh
           bash -n scripts/mnebydns-four-google-rollback.sh
           python3 - <<'PY'
