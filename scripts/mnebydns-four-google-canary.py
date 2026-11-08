@@ -163,6 +163,7 @@ HOSTS = (
     "api.tiktokv.com",
     "api16-normal-c-useast1a.tiktokv.com",
     "api16-core-c-alisg.tiktokv.com",
+    "api16-normal-c-alisg.tiktokv.com",
     "api16-normal-useast5.us.tiktokv.com",
     "tiktokv.com",
     "tiktokcdn.com",
@@ -271,6 +272,8 @@ DYNAMIC_SUFFIXES = (
     "tiktokd.net",
     "tiktokd.org",
     "tiktokmusic.app",
+    "pstatp.com", "ipstatp.com", "byteimg.com",
+    "sgpstatp.com", "tik-tokapi.com",
     "ttoverseaus.net",
     "telegram.org",
     "telegram.me",
@@ -477,7 +480,7 @@ def self_test()->None:
     for domain in ("cdn.servgo.ru","example.com","www.whatsapp.com"):
         assert re.fullmatch(VIDEO,domain+".") is None,domain
         assert re.fullmatch(VIDEO_NGINX[2:],domain,re.IGNORECASE) is None,domain
-    assert len(DYNAMIC_SUFFIXES)==92
+    assert len(DYNAMIC_SUFFIXES)==97
     assert len(HOSTS)>=50
     assert "default 127.0.0.1:1;" in proxy_config()
     for bad in (old_nginx.replace("gemini.google.com", "x.example"),
