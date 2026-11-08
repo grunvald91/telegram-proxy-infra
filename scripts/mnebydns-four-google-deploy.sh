@@ -116,7 +116,8 @@ echo "isolated_google_pilot_on_loopback=true"
 
 # Validate original Google certificate through the new SNI backend.
 # Avoid interpolating an arbitrary user supplied hostname in bash.
-for host in android.googleapis.com firebaseinstallations.googleapis.com gcm-http.googleapis.com \
+for host in pki.google.com clients1.google.com notifications.google.com \
+  android.googleapis.com firebaseinstallations.googleapis.com gcm-http.googleapis.com \
   www.youtube.com youtubei.googleapis.com i.ytimg.com \
   stitch.withgoogle.com accounts.google.com aistudio.google.com \
   generativelanguage.googleapis.com jnn-pa.googleapis.com \
