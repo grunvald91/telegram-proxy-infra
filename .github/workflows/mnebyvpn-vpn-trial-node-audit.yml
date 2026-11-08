@@ -45,7 +45,7 @@ jobs:
           export SSHPASS="$RU_PASSWORD"
           sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o LogLevel=ERROR "root@$RU_HOST" 'bash -s' <<'SH'
           set -euo pipefail
-          docker exec mnebyvpn-stage-postgres psql -At -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage <<'SQL'
+          docker exec -i mnebyvpn-stage-postgres psql -At -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage <<'SQL'
           SELECT 'vpn_trial_enabled='||enabled FROM trial_offers WHERE product='vpn';
           SELECT 'vpn_paid_plans_live='||count(*) FROM billing_plans WHERE product='vpn' AND enabled AND stars IS NOT NULL;
           SELECT 'vpn_pricing_drafts_with_prices='||count(*) FROM pricing_drafts WHERE product='vpn' AND (rub_minor IS NOT NULL OR stars IS NOT NULL);
