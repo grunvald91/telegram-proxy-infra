@@ -115,6 +115,37 @@ HOSTS = (
     "www.google.ru",
     "www.google.de",
     "www.google.co.uk",
+    # Time-limited Android-app candidate routes: Instagram, Threads, X and Grok.
+    "instagram.com",
+    "www.instagram.com",
+    "graph.instagram.com",
+    "api.instagram.com",
+    "i.instagram.com",
+    "cdninstagram.com",
+    "ig.me",
+    "instagr.am",
+    "threads.com",
+    "www.threads.com",
+    "threads.net",
+    "www.threads.net",
+    "x.com",
+    "api.x.com",
+    "twitter.com",
+    "api.twitter.com",
+    "t.co",
+    "twimg.com",
+    "pbs.twimg.com",
+    "video.twimg.com",
+    "grok.com",
+    "www.grok.com",
+    "grok.x.ai",
+    "x.ai",
+    "api.x.ai",
+    "grokusercontent.com",
+    "graph.facebook.com",
+    "b-graph.facebook.com",
+    "connect.facebook.net",
+    "mqtt-ig-p4.facebook.com",
 )
 # ONE-OFF 30-minute all-known-Android experiment, INCLUDING system non-443.
 # Broad Google + related service DNS suffixes are intentionally redirected to
@@ -129,6 +160,29 @@ DYNAMIC_SUFFIXES = (
     "doubleclick.net", "googleadservices.com",
     "claude.ai", "claude.com", "anthropic.com",
     "claudeusercontent.com", "claudemcpcontent.com", "claude.app",
+    "instagram.com",
+    "cdninstagram.com",
+    "instagr.am",
+    "ig.me",
+    "igsonar.com",
+    "threads.com",
+    "threads.net",
+    "facebook.com",
+    "facebook.net",
+    "fbcdn.net",
+    "fbsbx.com",
+    "fb.com",
+    "x.com",
+    "twitter.com",
+    "twimg.com",
+    "t.co",
+    "pscp.tv",
+    "ads-twitter.com",
+    "twtrdns.net",
+    "grok.com",
+    "x.ai",
+    "grokusercontent.com",
+    "grokipedia.com",
 )
 VIDEO = r"(?i)^(?:[a-z0-9-]+[.])*(?:" + "|".join(
     re.escape(x) for x in DYNAMIC_SUFFIXES) + r")[.]$"
@@ -306,10 +360,17 @@ def self_test()->None:
                    "sandbox.livepreview.claude.app"):
         assert re.fullmatch(VIDEO,domain+".") is not None,domain
         assert re.fullmatch(VIDEO_NGINX[2:],domain,re.IGNORECASE) is not None,domain
-    for domain in ("cdn.servgo.ru","example.com","www.instagram.com"):
+    for domain in ("instagram.com","scontent.cdninstagram.com",
+                   "graphql.facebook.com","mqtt-ig-p4.facebook.com",
+                   "www.threads.com","threads.net",
+                   "api.x.com","pbs.twimg.com","mobile.twitter.com",
+                   "grok.com","api.x.ai","auth.grok.com"):
+        assert re.fullmatch(VIDEO,domain+".") is not None,domain
+        assert re.fullmatch(VIDEO_NGINX[2:],domain,re.IGNORECASE) is not None,domain
+    for domain in ("cdn.servgo.ru","example.com","www.whatsapp.com"):
         assert re.fullmatch(VIDEO,domain+".") is None,domain
         assert re.fullmatch(VIDEO_NGINX[2:],domain,re.IGNORECASE) is None,domain
-    assert len(DYNAMIC_SUFFIXES)==23
+    assert len(DYNAMIC_SUFFIXES)==46
     assert len(HOSTS)>=50
     assert "default 127.0.0.1:1;" in proxy_config()
     for bad in (old_nginx.replace("gemini.google.com", "x.example"),
