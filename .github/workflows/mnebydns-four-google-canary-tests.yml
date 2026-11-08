@@ -28,7 +28,7 @@ jobs:
           m=importlib.util.module_from_spec(spec)
           spec.loader.exec_module(m)
           added=('android.googleapis.com','firebaseinstallations.googleapis.com','gcm-http.googleapis.com')
-          assert all(h in m.HOSTS for h in (*added,*safe_443))
+          assert all(h in m.HOSTS for h in added)
           assert len(m.HOSTS)==66 and len(set(m.HOSTS))==66
           safe_443=('pki.google.com','clients1.google.com','notifications.google.com')
           assert all(h in m.HOSTS for h in safe_443)
@@ -41,7 +41,7 @@ jobs:
           }
           '''
           rendered=m.render_dot(fixture)
-          assert all(('template IN A '+h+' {') in rendered for h in added)
+          assert all(('template IN A '+h+' {') in rendered for h in (*added,*safe_443))
           print('three_trace_candidates_exact_only=PASS')
           PY
           bash -n scripts/mnebydns-four-google-deploy.sh
