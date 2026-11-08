@@ -1,7 +1,7 @@
 name: Validate MNEBYDNS experimental four-service canary offline
 on:
   push:
-    branches: ['feature/mnebydns-instagram-grok-x-threads-30m-20261109']
+    branches: ['feature/mnebydns-meta-tiktok-telegram-30m-20261109']
     paths:
       - 'scripts/mnebydns-four-google-canary.py'
       - 'scripts/mnebydns-four-google-deploy.sh'
@@ -29,11 +29,11 @@ jobs:
           spec.loader.exec_module(m)
           added=('android.googleapis.com','firebaseinstallations.googleapis.com','gcm-http.googleapis.com')
           assert all(h in m.HOSTS for h in added)
-          assert len(m.HOSTS)==121 and len(set(m.HOSTS))==121
+          assert len(m.HOSTS)==173 and len(set(m.HOSTS))==173
           safe_443=('pki.google.com','clients1.google.com','notifications.google.com')
           assert all(h in m.HOSTS for h in safe_443)
           assert all(h in m.DYNAMIC_SUFFIXES for h in ('googleapis.com','google.com'))
-          assert len(m.DYNAMIC_SUFFIXES)==46
+          assert len(m.DYNAMIC_SUFFIXES)==92
           # Owner-directed temporary DNS-only redirect includes all system names.
           android_system=('mtalk.google.com','mtalk4.google.com','time.google.com',
                           'fcm.googleapis.com','fcm-xmpp.googleapis.com',
@@ -59,6 +59,21 @@ jobs:
                   'grok.com','grok.x.ai','x.ai','api.x.ai',
                   'graph.facebook.com','connect.facebook.net')
           assert all(h in m.HOSTS for h in social)
+          meta_extra=('meta.com','meta.ai','graph.threads.net',
+                      'edge-mqtt.facebook.com','rupload.facebook.com',
+                      'instagramstatic-a.akamaihd.net')
+          tiktok=('tiktok.com','api.tiktokv.com','api16-normal-c-alisg.tiktokv.com',
+                  'tiktokcdn.com','tiktokcdn-us.com','musical.ly',
+                  'api2.musical.ly','byteoversea.com','snssdk.com',
+                  'ibytedtos.com','ibyteimg.com','tiktokw.eu')
+          telegram=('telegram.org','web.telegram.org','api.telegram.org',
+                    't.me','telegra.ph','telegram.me','telegram.dog',
+                    'telegram-cdn.org','telegramusercontent.com')
+          assert all(h in m.HOSTS for h in (*meta_extra,*tiktok,*telegram))
+          assert all(z in m.DYNAMIC_SUFFIXES for z in (
+              'meta.ai','instagramstatic.com','tiktok.com','tiktokv.com',
+              'tiktokcdn.com','musical.ly','byteoversea.com',
+              'telegram.org','telegram-cdn.org','telegramusercontent.com'))
           social_suffix=('instagram.com','cdninstagram.com','threads.com',
                          'threads.net','facebook.com','facebook.net','fbcdn.net',
                          'x.com','twitter.com','twimg.com','t.co',
@@ -73,8 +88,8 @@ jobs:
           }
           '''
           rendered=m.render_dot(fixture)
-          assert all(('template IN A '+h+' {') in rendered for h in (*android_system,*claude,*social))
-          print('Android_Google_Claude_social_121_exact_46_suffixes=PASS')
+          assert all(('template IN A '+h+' {') in rendered for h in (*android_system,*claude,*social,*meta_extra,*tiktok,*telegram))
+          print('Android_Google_Claude_Meta_TikTok_Telegram_173_exact_92_suffixes=PASS')
           PY
           bash -n scripts/mnebydns-four-google-deploy.sh
           bash -n scripts/mnebydns-four-google-rollback.sh
@@ -102,10 +117,10 @@ jobs:
           assert 'bash "$work/mnebydns-four-google-deploy.sh" "$work"' in h
           assert 'cmp -s "$old/nginx.before" "$nginx"' in h
           assert 'cmp -s "$old/dns.before" "$dns"' in h
-          assert 'systemctl is-active --quiet mnebydns-four-google-watchdog-42533155025.timer' in h
+          assert 'systemctl is-active --quiet mnebydns-four-google-watchdog-42534478710.timer' in h
           assert 'api.anthropic.com' in d and 'bridge.claudeusercontent.com' in d
           for hst in ('instagram.com','threads.com','x.com','grok.com','api.x.ai'):
               assert hst in d
-          assert '/opt/mnebydns-googlepilot-backups/42533155025' in h
+          assert '/opt/mnebydns-googlepilot-backups/42534478710' in h
           print('transactional_auto_rollback_contract=PASS')
           PY
