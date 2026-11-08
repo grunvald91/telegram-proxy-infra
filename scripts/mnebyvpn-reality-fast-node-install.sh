@@ -20,13 +20,14 @@ test -s "$AGENT"
 test -s "$CONF"
 test ! -e "$PUBLIC"
 test ! -e "$ANNOUNCE"
-test "$("$XRAY" version >/dev/null 2>&1; echo $?)" = 0
+"$XRAY" version >/dev/null
 test "$(systemctl is-active "$SERVICE")" = active
 test "$(systemctl is-active xray.service)" = active
 ss -H -lnt | awk '{print $4}' | grep -Eq ':2053$' && {
   echo "reality_port_2053_in_use"; exit 2;
 } || true
 python3 -m py_compile "$SOURCE"
+mkdir -p /opt/mnebyvpn/backups
 BACKUP="$(mktemp -d /opt/mnebyvpn/backups/reality-fast-XXXXXXXX)"
 chmod 700 "$BACKUP"
 cp -p "$AGENT" "$BACKUP/agent"
@@ -35,6 +36,7 @@ STAGE="$(mktemp -d /etc/mnebyvpn/.reality-fast-stage-XXXXXXXX)"
 chmod 700 "$STAGE"
 restore(){
   set +e
+  systemctl stop "$SERVICE" >/dev/null 2>&1 || true
   cp -p "$BACKUP/agent" "$AGENT"
   cp -p "$BACKUP/config" "$CONF"
   rm -f "$PUBLIC" "$ANNOUNCE"
