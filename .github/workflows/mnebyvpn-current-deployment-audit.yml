@@ -1,3 +1,4 @@
+# Post-release verification 2026-11-08: trial-ready sender SHA 53c350894fbaec1b0b71120c6634e0ab2dc7d812, deployed and isolated (run 42457047411).
 # Post-cutover read-only verification: paid VPN node clock enabled by 42419605395; no mutations to customer records.
 name: MNEBYVPN read-only deployment inventory via existing 188 channel
 on:
