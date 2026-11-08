@@ -1,3 +1,4 @@
+# Code-review postrelease read-only audit: trial-ready fixes bd4930ada4833601b3012c5672e6abd31b12282c included in green 06cce510c742b94347762bc94d4f93f46280c347, independent sender release 42459418927.
 # Post-release verification 2026-11-08: trial-ready sender SHA 53c350894fbaec1b0b71120c6634e0ab2dc7d812, deployed and isolated (run 42457047411).
 # Post-cutover read-only verification: paid VPN node clock enabled by 42419605395; no mutations to customer records.
 name: MNEBYVPN read-only deployment inventory via existing 188 channel
@@ -162,7 +163,7 @@ jobs:
           fi
           echo 'paid_vpn_60_recent_readonly=end'
           echo 'purchase_notices_delivery_audit=begin'
-          docker inspect --format 'purchase_notices_container={{.State.Status}} restarts={{.RestartCount}}' \
+          docker inspect --format 'purchase_notices_container={{.State.Status}} restarts={{.RestartCount}} image={{.Config.Image}}' \
             mnebyvpn-purchase-notices 2>/dev/null || true
           docker exec -i mnebyvpn-stage-postgres psql -qAt -X -v ON_ERROR_STOP=1 \
             -U mnebyvpn_stage -d mnebyvpn_stage <<'SQL'
