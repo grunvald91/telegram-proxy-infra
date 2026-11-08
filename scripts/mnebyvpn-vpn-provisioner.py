@@ -8,6 +8,7 @@
 - One-second offline expiry sweep removes expired users, disconnecting sessions.
 - Only the dedicated MNEBYVPN Xray config is changed; no shared Xray instance.
 """
+import base64
 import copy
 import datetime as dt
 import hashlib
@@ -37,6 +38,9 @@ XRAY = '/opt/xray/xray'
 WG = '10.66.77.1'
 PORT = 18944
 SOCK_PORT = 18943
+REALITY_PORT = 2053
+REALITY_PUBLIC = ETC / 'reality-public.json'
+REALITY_ANNOUNCE = ETC / 'reality-announce-enabled'
 
 def utcnow() -> dt.datetime:
     return dt.datetime.now(dt.timezone.utc)
@@ -64,6 +68,50 @@ def atomic_json(path: pathlib.Path, obj: Any, mode: int = 0o600) -> None:
     finally:
         temp.unlink(missing_ok=True)
 
+def verified_reality_public(template: dict) -> dict | None:
+    inbounds = template.get('inbounds', [])
+    if not isinstance(inbounds, list) or len(inbounds) not in (1, 2):
+        raise RuntimeError('Unexpected Xray inbounds')
+    if len(inbounds) == 1:
+        return None
+    candidate = inbounds[1]
+    stream = candidate.get('streamSettings', {})
+    settings = stream.get('realitySettings', {})
+    if (candidate.get('tag') != 'mnebyvpn-reality-inbound' or
+            candidate.get('listen') != '0.0.0.0' or
+            candidate.get('port') != REALITY_PORT or
+            candidate.get('protocol') != 'vless' or
+            stream.get('security') != 'reality' or
+            stream.get('network') not in ('tcp', 'raw') or
+            settings.get('serverNames') != ['www.cloudflare.com']):
+        raise RuntimeError('Unexpected optional REALITY inbound')
+    if not REALITY_PUBLIC.is_file():
+        raise RuntimeError('REALITY public metadata missing')
+    published = json.loads(REALITY_PUBLIC.read_text())
+    if (not isinstance(published, dict) or
+            published.get('port') != REALITY_PORT or
+            not isinstance(published.get('publicKey'), str) or
+            not re.fullmatch(r'[A-Za-z0-9_-]{43}', published['publicKey']) or
+            not isinstance(published.get('shortId'), str) or
+            not re.fullmatch(r'[0-9a-f]{16}', published['shortId']) or
+            settings.get('shortIds') != [published['shortId']]):
+        raise RuntimeError('REALITY public metadata mismatch')
+    private = settings.get('privateKey')
+    if not isinstance(private, str) or not re.fullmatch(r'[A-Za-z0-9_-]{43}', private):
+        raise RuntimeError('Invalid REALITY private key')
+    secret = base64.urlsafe_b64decode(private + '==')
+    pkcs8 = bytes.fromhex('302e020100300506032b656e04220420') + secret
+    derived = subprocess.run(
+        ['openssl', 'pkey', '-inform', 'DER', '-pubout', '-outform', 'DER'],
+        input=pkcs8, capture_output=True, check=True, timeout=8).stdout
+    prefix = bytes.fromhex('302a300506032b656e032100')
+    if (not derived.startswith(prefix) or
+            base64.urlsafe_b64encode(derived[len(prefix):]).rstrip(b'=').decode()
+            != published['publicKey']):
+        raise RuntimeError('REALITY keypair verification failed')
+    return {'publicKey': published['publicKey'],
+            'shortId': published['shortId'], 'port': REALITY_PORT}
+
 class Agent:
     def __init__(self) -> None:
         DATA.mkdir(parents=True, exist_ok=True)
@@ -74,8 +122,7 @@ class Agent:
         if len(self.key) != 32:
             raise RuntimeError('Missing 256-bit agent key')
         self.template = json.loads(CONF.read_text())
-        if len(self.template.get('inbounds', [])) != 1:
-            raise RuntimeError('Unexpected Xray config')
+        self.reality_public = verified_reality_public(self.template)
         self.state = json.loads(STATE.read_text()) if STATE.is_file() else {}
         if not isinstance(self.state, dict):
             raise RuntimeError('Invalid state')
@@ -100,6 +147,9 @@ class Agent:
             if item.get('enabled') and normalized_datetime(item['expiresAt']) > utcnow():
                 clients.append({'id': item['credential'], 'level': 0})
         cfg['inbounds'][0]['settings']['clients'] = clients
+        if self.reality_public is not None:
+            cfg['inbounds'][1]['settings']['clients'] = [
+                {**item, 'flow': 'xtls-rprx-vision'} for item in clients]
         atomic_json(CONF, cfg, 0o640)
         checked = subprocess.run(
             [XRAY, 'run', '-test', '-config', str(CONF)],
@@ -174,12 +224,17 @@ class Agent:
                     return {'revision': 0, 'enabled': False, 'expiresAt': None}
                 active = bool(current['enabled']) and normalized_datetime(
                     current['expiresAt']) > utcnow() and self.child is not None and self.child.poll() is None
-                return {
+                result = {
                     'revision': current['revision'],
                     'enabled': active,
                     'expiresAt': current['expiresAt'] if active else None,
                     'credential': current['credential'] if active else None,
                 }
+                # ANNOUNCE is enabled only after independent network and
+                # revocation tests. Removing it immediately hides fast URLs.
+                if active and self.reality_public is not None and REALITY_ANNOUNCE.is_file():
+                    result['reality'] = self.reality_public
+                return result
             rev = body.get('revision')
             enabled = body.get('enabled')
             if not isinstance(rev, int) or isinstance(rev, bool) or rev < 1 or rev > 1000000000:
