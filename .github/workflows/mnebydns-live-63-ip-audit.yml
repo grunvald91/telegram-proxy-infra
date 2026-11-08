@@ -1,7 +1,7 @@
-name: MNEBYDNS Google Claude Instagram Grok X Threads 121-host live DNS audit
+name: MNEBYDNS Meta TikTok Telegram 174-host live DNS audit
 on:
   push:
-    branches: ['feature/mnebydns-instagram-grok-x-threads-30m-20261109']
+    branches: ['feature/mnebydns-meta-tiktok-telegram-30m-20261109']
     paths: ['.github/workflows/mnebydns-live-63-ip-audit.yml']
   workflow_dispatch:
 permissions:
@@ -20,7 +20,7 @@ jobs:
           ref: 0dbe6e4e35c2923228c250bf6cfc870ce71198d6
           path: vpn
           persist-credentials: false
-      - name: Read current 121 exact-host public DNS answers over authenticated DoT
+      - name: Read current 174 exact-host public DNS answers over authenticated DoT
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -37,8 +37,8 @@ jobs:
           dns=load('dns','vpn/ops/smart-dns-poc/probe-gemini-canary.py')
           expected='89.125.90.101'
           assert route.FOREIGN==expected
-          assert len(route.HOSTS)==121 and len(set(route.HOSTS))==121
-          assert len(route.DYNAMIC_SUFFIXES)==46
+          assert len(route.HOSTS)==174 and len(set(route.HOSTS))==174
+          assert len(route.DYNAMIC_SUFFIXES)==97
           def check(host):
               last="no_success"
               for attempt in range(3):
@@ -62,13 +62,21 @@ jobs:
                         'sub.dynamic.threads.com','sub.dynamic.facebook.com',
                         'sub.dynamic.fbcdn.net','sub.dynamic.x.com',
                         'sub.dynamic.twitter.com','sub.dynamic.twimg.com',
-                        'sub.dynamic.grok.com','sub.dynamic.x.ai')))
+                        'sub.dynamic.grok.com','sub.dynamic.x.ai',
+                        'sub.dynamic.meta.com','sub.dynamic.instagramstatic.com',
+                        'sub.dynamic.tiktok.com','api16-normal-c-useast1a.tiktokv.com',
+                        'p16-tiktok-sign-va.tiktokcdn.com',
+                        'sub.dynamic.tiktokcdn-us.com','sub.dynamic.ibytedtos.com',
+                        'sub.dynamic.ttwstatic.com','sub.dynamic.byteoversea.com',
+                        'sub.dynamic.pstatp.com','sub.dynamic.t.me',
+                        'sub.dynamic.telegram.org','sub.dynamic.telegram-cdn.org',
+                        'sub.dynamic.telegramusercontent.com')))
           total=len(results); good=sum(ok for _,ok,_,_ in results)
           for host,ok,addresses,code in results:
               print(f'domain={host} german_ip_returned={str(ok).lower()} answer={",".join(addresses) or "NONE"} status={code}',flush=True)
-          print('exact_candidate_hosts_rewritten='+str(sum(ok for _,ok,_,_ in results[:121]))+'/121',flush=True)
-          print(f'gemini_base_also_rewritten={str(results[121][1]).lower()}',flush=True)
-          print(f'all_142_dns_checks_pass={str(good==total).lower()}',flush=True)
+          print('exact_candidate_hosts_rewritten='+str(sum(ok for _,ok,_,_ in results[:174]))+'/174',flush=True)
+          print(f'gemini_base_also_rewritten={str(results[174][1]).lower()}',flush=True)
+          print(f'all_DNS_checks_pass={str(good==total).lower()} count={total}',flush=True)
           if good!=total:raise SystemExit(2)
           # Android push, unrelated domains must NOT be falsely routed by synthetic DNS.
           for host in ('example.org',):
@@ -78,7 +86,7 @@ jobs:
               print('non_target_direct='+host,flush=True)
           print('public_DoT_certificate_validated=yes',flush=True)
           PY
-      - name: Read-only check exact live Nginx and DNS snapshot vs timed 121-host Google Claude Social configuration
+      - name: Read-only check exact live Nginx and DNS snapshot vs timed 174-host Google Claude Meta TikTok Telegram configuration
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -88,7 +96,7 @@ jobs:
           export SSHPASS="$FOREIGN_PASSWORD"
           sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@89.125.90.101 'python3 -' <<'PY'
           import pathlib,subprocess
-          base=pathlib.Path('/opt/mnebydns-googlepilot-backups/42534478710')
+          base=pathlib.Path('/opt/mnebydns-googlepilot-backups/42536213503')
           for name,path in (('nginx','/etc/nginx/nginx.conf'),('dns','/opt/mnebydns-dot/Corefile')):
               current=pathlib.Path(path).read_bytes()
               pilot=base/(name+'.pilot')
@@ -98,9 +106,9 @@ jobs:
               print(f'live_{name}_state={state}',flush=True)
               if state!='PILOT':raise SystemExit('combined pilot not active')
           for unit in ('mnebydns-googlepilot.service','mnebydns-dot.service',
-                       'mnebydns-four-google-watchdog-42534478710.timer'):
+                       'mnebydns-four-google-watchdog-42536213503.timer'):
               p=subprocess.run(['systemctl','is-active',unit],capture_output=True,text=True,timeout=6)
               print('unit_'+unit+'='+p.stdout.strip(),flush=True)
-              if p.returncode:raise SystemExit('required 121-host live service or watchdog inactive: '+unit)
+              if p.returncode:raise SystemExit('required 174-host live service or watchdog inactive: '+unit)
           print('remote_state_readonly=yes',flush=True)
           PY
