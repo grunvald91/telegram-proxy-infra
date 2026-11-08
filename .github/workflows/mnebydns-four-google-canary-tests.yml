@@ -42,7 +42,7 @@ jobs:
                           'pki.google.com','clients1.google.com',
                           'notifications.google.com','stun.l.google.com')
           assert len(android_system)==13
-          assert all(h in m.HOSTS for h in (*android_system,*claude))
+          assert all(h in m.HOSTS for h in android_system)
           claude=('claude.ai','a.claude.ai','a-cdn.claude.ai',
                   'assets.claude.ai','downloads.claude.ai','claude.com',
                   'code.claude.com','platform.claude.com','api.anthropic.com',
@@ -60,7 +60,7 @@ jobs:
           }
           '''
           rendered=m.render_dot(fixture)
-          assert all(('template IN A '+h+' {') in rendered for h in android_system)
+          assert all(('template IN A '+h+' {') in rendered for h in (*android_system,*claude))
           print('Android_Google_Claude_91_exact_23_suffixes=PASS')
           PY
           bash -n scripts/mnebydns-four-google-deploy.sh
