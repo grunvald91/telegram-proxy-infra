@@ -82,7 +82,7 @@ HOSTS = (
 DYNAMIC_SUFFIXES = (
     "googlevideo.com", "ytimg.com", "ggpht.com",
     "gstatic.com", "googleusercontent.com", "youtube.com",
-    "youtube-nocookie.com", "withgoogle.com", "googleapis.com",
+    "youtube-nocookie.com", "withgoogle.com",
 )
 VIDEO = r"(?i)^(?:[a-z0-9-]+[.])*(?:" + "|".join(
     re.escape(x) for x in DYNAMIC_SUFFIXES) + r")[.]$"
@@ -229,10 +229,12 @@ def self_test()->None:
         assert re.fullmatch(VIDEO,domain+".") is not None,domain
         assert re.fullmatch(VIDEO_NGINX[2:],domain,re.IGNORECASE) is not None,domain
     for domain in ("time.google.com","mtalk.google.com","stun.l.google.com",
+                   "firebaseinstallations.googleapis.com",
+                   "fcm.googleapis.com","gcm-http.googleapis.com",
                    "cdn.servgo.ru","example.com","www.instagram.com"):
         assert re.fullmatch(VIDEO,domain+".") is None,domain
         assert re.fullmatch(VIDEO_NGINX[2:],domain,re.IGNORECASE) is None,domain
-    assert len(DYNAMIC_SUFFIXES)==9
+    assert len(DYNAMIC_SUFFIXES)==8
     assert len(HOSTS)>=50
     assert "default 127.0.0.1:1;" in proxy_config()
     for bad in (old_nginx.replace("gemini.google.com", "x.example"),
