@@ -1,3 +1,4 @@
+# Release 2026-11-08: deploy CI-verified MNEBYVPN 06cce510c742b94347762bc94d4f93f46280c347, adding authenticated optional REALITY Vision profile with WS fallback. Site SHA confirmed 42459159685.
 name: MNEBYVPN deploy signed Xray worker and Telegram VPN profiles on 188
 # Explicit release after green main 454c658 and verified staging on server188.
 on:
