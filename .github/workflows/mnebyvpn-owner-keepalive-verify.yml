@@ -1,0 +1,46 @@
+name: Verify owner VPN auto-renewal timer and existing link (read-only)
+on:
+  push:
+    branches: [ops/mnebyvpn-owner-rolling-access-20261108]
+    paths: ['.github/workflows/mnebyvpn-owner-keepalive-verify.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      HOST: 188.120.254.223
+      SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Read back installed timer, node sync, and active token SHA only
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          export SSHPASS="$SSH_PASSWORD"
+          sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o LogLevel=ERROR "root@$HOST" 'bash -se' <<'REMOTE'
+          set -euo pipefail
+          systemctl is-enabled --quiet mnebyvpn-owner-keepalive.timer
+          systemctl is-active --quiet mnebyvpn-owner-keepalive.timer
+          echo 'owner_renewal_timer=enabled_and_active'
+          systemctl list-timers --all --no-pager mnebyvpn-owner-keepalive.timer
+          systemctl show mnebyvpn-owner-keepalive.timer -p NextElapseUSecRealtime -p NextElapseUSecMonotonic
+          echo 'owner_renewal_service_last_result='$(systemctl show mnebyvpn-owner-keepalive.service -p Result --value)
+          docker exec -i mnebyvpn-stage-postgres psql -qAtX -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage <<'SQL'
+          SELECT 'owner_access_active='||(e.state='ACTIVE' AND e.expires_at>clock_timestamp() AND l.revoked_at IS NULL)
+          FROM vpn_subscription_links l JOIN entitlements e ON e.id=l.entitlement_id
+          WHERE l.token_sha256='65159196f6dc7ce18685dd61f958679927889b3a8db907ce80c6b57ce6154a4e';
+          SELECT 'owner_expiry_utc='||to_char(e.expires_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"')
+          FROM vpn_subscription_links l JOIN entitlements e ON e.id=l.entitlement_id
+          WHERE l.token_sha256='65159196f6dc7ce18685dd61f958679927889b3a8db907ce80c6b57ce6154a4e';
+          SELECT 'owner_db_node_revision_synced='||(e.revision=p.applied_revision)
+          FROM vpn_subscription_links l JOIN entitlements e ON e.id=l.entitlement_id
+          JOIN provisioning_state p ON p.entitlement_id=e.id AND p.adapter='vpn'
+          WHERE l.token_sha256='65159196f6dc7ce18685dd61f958679927889b3a8db907ce80c6b57ce6154a4e';
+          SELECT 'owner_operator_grant_present='||(g.revoked_at IS NULL)
+          FROM vpn_operator_test_grants g
+          WHERE g.token_sha256='65159196f6dc7ce18685dd61f958679927889b3a8db907ce80c6b57ce6154a4e';
+          SQL
+          REMOTE
