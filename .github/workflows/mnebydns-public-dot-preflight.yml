@@ -77,3 +77,53 @@ jobs:
           print('systemd_running='+str(pathlib.Path('/run/systemd/system').exists()).lower())
           print('audit_complete=yes')
           PY
+
+      - name: Inspect HTTP challenge feasibility and existing TLS renewal read-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$FOREIGN_PASS"
+          export SSHPASS="$FOREIGN_PASS"
+          sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o LogLevel=ERROR root@89.125.90.101 'python3 -' <<'PY'
+          import pathlib,subprocess,ssl,os,datetime
+          def run(args,timeout=9):
+              try:
+                  p=subprocess.run(args,capture_output=True,text=True,timeout=timeout)
+                  return p.returncode,p.stdout,p.stderr
+              except Exception:
+                  return 999,'',''
+          rc,ns,_=run(['getent','ahostsv4','dns.mnebyvpn.site'])
+          print('foreign_host_resolves_dns_name='+str(rc==0).lower())
+          rc,nginx,_=run(['nginx','-T'],timeout=12)
+          print('nginx_config_valid='+str(rc==0).lower())
+          if rc==0:
+              print('nginx_mentions_candidate_hostname='+str('dns.mnebyvpn.site' in nginx).lower())
+              print('nginx_has_acme_location='+str('acme-challenge' in nginx).lower())
+              print('nginx_includes_conf_d='+str('include /etc/nginx/conf.d/' in nginx).lower())
+              print('nginx_includes_sites_enabled='+str('include /etc/nginx/sites-enabled/' in nginx).lower())
+              print('nginx_config_server_block_count='+str(nginx.count('server {')))
+          rc,net,_=run(['ss','-H','-lntp','sport = :80'])
+          print('port80_listener_nginx='+str('nginx' in net).lower())
+          print('port80_listener_caddy='+str('caddy' in net).lower())
+          print('port80_listener_other='+str(rc==0 and bool(net) and 'nginx' not in net and 'caddy' not in net).lower())
+          rc,net,_=run(['ss','-H','-lntp','sport = :443'])
+          print('port443_listener_nginx='+str('nginx' in net).lower())
+          print('port443_listener_caddy='+str('caddy' in net).lower())
+          live=pathlib.Path('/etc/letsencrypt/live')
+          seen=0
+          for folder in live.iterdir() if live.is_dir() else []:
+              cert=folder/'fullchain.pem'
+              if not cert.is_file():continue
+              try:
+                  x=ssl._ssl._test_decode_cert(str(cert))
+                  san=[v for k,v in x.get('subjectAltName',[]) if k=='DNS']
+                  if 'dns.mnebyvpn.site' in san or '*.mnebyvpn.site' in san:
+                      seen+=1
+                      print('candidate_cert_found_in_existing_lineage=yes')
+                      print('candidate_cert_expires='+str(x.get('notAfter','unknown')))
+              except Exception:pass
+          if not seen:print('candidate_cert_found_in_existing_lineage=no')
+          rc,out,_=run(['curl','-sS','--max-time','7','-o','/dev/null','-w','%{http_code}','--resolve','dns.mnebyvpn.site:80:89.125.90.101','http://dns.mnebyvpn.site/.well-known/acme-challenge/mnebydns-audit-does-not-exist'])
+          print('acme_unknown_path_http_status='+out.strip() if rc==0 else 'unavailable')
+          print('http_audit_read_only_done=yes')
+          PY
