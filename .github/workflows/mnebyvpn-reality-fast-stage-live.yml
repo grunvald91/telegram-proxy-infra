@@ -1,0 +1,39 @@
+name: Stage isolated MNEBYVPN Reality 2053 under node expiry agent
+on:
+  push:
+    branches: ['feature/mnebyvpn-reality-fast-node-20261108']
+    paths: ['.github/workflows/mnebyvpn-reality-fast-stage-live.yml']
+permissions:
+  contents: read
+concurrency:
+  group: mnebyvpn-node-reality-staging
+  cancel-in-progress: false
+jobs:
+  stage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      FOREIGN_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stage gated Reality inbound with backup and automatic failure rollback
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$FOREIGN_PASSWORD"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          export SSHPASS="$FOREIGN_PASSWORD"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          host=root@89.125.90.101
+          sshpass -e scp -q "${opts[@]}" scripts/mnebyvpn-vpn-provisioner.py \
+            "$host:/tmp/mnebyvpn-vpn-provisioner-reality.py"
+          sshpass -e scp -q "${opts[@]}" scripts/mnebyvpn-reality-fast-node-install.sh \
+            "$host:/tmp/mnebyvpn-reality-fast-node-install.sh"
+          sshpass -e ssh "${opts[@]}" "$host" '
+            set -Eeuo pipefail
+            chmod 600 /tmp/mnebyvpn-vpn-provisioner-reality.py /tmp/mnebyvpn-reality-fast-node-install.sh
+            trap '\''rm -f /tmp/mnebyvpn-vpn-provisioner-reality.py /tmp/mnebyvpn-reality-fast-node-install.sh'\'' EXIT
+            bash /tmp/mnebyvpn-reality-fast-node-install.sh
+          '
+          echo 'reality_staged_without_subscription_advertising=true'
