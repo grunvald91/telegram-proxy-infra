@@ -1,0 +1,80 @@
+name: MNEBYDNS Gemini app endpoint connectivity differential (read only)
+on:
+  push:
+    branches: ['feature/mnebydns-gemini-voice-audit-20261108']
+    paths: ['.github/workflows/mnebydns-gemini-voice-audit.yml']
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-gemini-voice-audit
+  cancel-in-progress: false
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      FOREIGN_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Inspect official Gemini endpoint HTTPS/TLS from foreign and Russian VPS without user data
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$FOREIGN_PASS"
+          test -n "$RU_PASS"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          python3 - <<'PY' > /tmp/connection-only-gemini-audit.py
+          import socket,ssl,time
+          from concurrent.futures import ThreadPoolExecutor
+          HOSTS=[
+            'gemini.google.com',
+            'jnn-pa.googleapis.com',
+            'waa-pa.clients6.google.com',
+            'www.googleapis.com',
+            'optimizationguide-pa.googleapis.com',
+            'apis.google.com',
+            'accounts.google.com',
+            'ogs.google.com',
+            'ssl.gstatic.com',
+            'www.gstatic.com',
+            'play.google.com',
+            'generativelanguage.googleapis.com',
+          ]
+          def check(host):
+            t0=time.monotonic()
+            try:
+              context=ssl.create_default_context()
+              with socket.create_connection((host,443),timeout=5) as tcp:
+                tcp.settimeout(5)
+                with context.wrap_socket(tcp,server_hostname=host) as tls:
+                  return (host,'tls_ok',round((time.monotonic()-t0)*1000),tls.version())
+            except Exception as e:
+              return (host,type(e).__name__,round((time.monotonic()-t0)*1000),'-')
+          with ThreadPoolExecutor(max_workers=8) as pool:
+            for name,status,elapsed,protocol in pool.map(check,HOSTS):
+              print('gemini_endpoint='+name+' status='+status+' elapsed_ms='+str(elapsed)+' protocol='+protocol)
+          PY
+          chmod 644 /tmp/connection-only-gemini-audit.py
+          export SSHPASS="$FOREIGN_PASS"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@89.125.90.101 'python3 -' < /tmp/connection-only-gemini-audit.py | sed 's/^/foreign_/'
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@188.120.254.223 'python3 -' < /tmp/connection-only-gemini-audit.py | sed 's/^/ru_/'
+          echo "endpoint_comparison_read_only=yes"
+      - name: Verify live Google Gemini DNS synthetic answer is still enabled (no changes)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$FOREIGN_PASS"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@89.125.90.101 'python3 -' <<'PY'
+          import pathlib,subprocess,re
+          core=pathlib.Path('/opt/mnebydns-dot/Corefile').read_text()
+          config=pathlib.Path('/etc/nginx/nginx.conf').read_text()
+          relay=pathlib.Path('/etc/mnebydns-gemini/nginx.conf').read_text()
+          print('gemini_root_dns_rewrite_live='+str('template IN A gemini.google.com' in core).lower())
+          print('gemini_root_sni_live='+str(bool(re.search(r'(?m)^\s*gemini.google.com\s+127\.0\.0\.1:15443;',config))).lower())
+          print('backend_sni_known_hosts_count='+str(len(re.findall(r'(?m)^\s+[a-zA-Z0-9.-]+\s+[a-zA-Z0-9.-]+:443;',relay))))
+          print('dns_service_active='+str(subprocess.run(['systemctl','is-active','mnebydns-dot.service'],capture_output=True).returncode==0).lower())
+          print('nginx_service_active='+str(subprocess.run(['systemctl','is-active','nginx'],capture_output=True).returncode==0).lower())
+          print('http_request_contents_logged=no')
+          PY
