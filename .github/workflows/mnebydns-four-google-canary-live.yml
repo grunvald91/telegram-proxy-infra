@@ -1,9 +1,9 @@
-# 2026-11-09: User-directed temporary all-known Android and broad Google DNS route experiment. TCP/443 proxy remains limited; non443 FCM/NTP/STUN connectivity may fail. No permanent promotion. Must retain the 30-minute watchdog.
+# User-directed 30m test of Google Claude Instagram Threads X and Grok DNS routes; existing FCM/NTP/STUN DNS-only scope remains. Auto-rollback required.
 # Fresh owner-authorized 2026-11-09 batch canary: run ID must be new (not a rerun attempt).
-name: MNEBYDNS owner 30-minute combined Google and Claude routing live experiment
+name: MNEBYDNS owner 30-minute Google Claude Instagram Grok X Threads live canary
 on:
   push:
-    branches: ['feature/mnebydns-claude-google-combined-30m-20261109']
+    branches: ['feature/mnebydns-instagram-grok-x-threads-30m-20261109']
     paths: ['.github/workflows/mnebydns-four-google-canary-live.yml']
 permissions:
   contents: read
@@ -99,6 +99,16 @@ jobs:
                       "some-new-service.claude.com",
                       "some-new-service.claudeusercontent.com",
                       "some-new-service.claudemcpcontent.com",
+                      "instagram.com","www.instagram.com","graph.instagram.com",
+                      "api.instagram.com","i.instagram.com",
+                      "scontent-nrt1-1.cdninstagram.com","ig.me",
+                      "threads.com","www.threads.com","threads.net",
+                      "x.com","api.x.com","twitter.com","api.twitter.com",
+                      "t.co","pbs.twimg.com","video.twimg.com",
+                      "grok.com","api.x.ai","grok.x.ai",
+                      "graph.facebook.com","connect.facebook.net",
+                      "some-service.fbcdn.net","some-service.facebook.net",
+                      "some-service.grok.com","some-service.x.ai",
                       "www.gstatic.com","fonts.gstatic.com",
                       "lh3.googleusercontent.com",
                       "r1---sn-dynamic.googlevideo.com"):
@@ -118,5 +128,5 @@ jobs:
           PY
           echo "russian_path_and_public_DNS_verified=true"
           echo "canary_active_with_reboot_persistent_30_minute_auto_rollback=true"
-          echo "known_google_claude_exact_hosts=91"
-          echo "dynamic_Google_Claude_suffix_groups=23"
+          echo "known_google_claude_social_exact_hosts=121"
+          echo "dynamic_Google_Claude_social_suffix_groups=46"
