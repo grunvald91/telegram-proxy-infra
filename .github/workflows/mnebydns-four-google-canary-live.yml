@@ -1,0 +1,88 @@
+name: MNEBYDNS owner 30-minute Google routing live experiment
+on:
+  push:
+    branches: ['feature/mnebydns-google-four-services-preflight-20261108']
+    paths: ['.github/workflows/mnebydns-four-google-canary-live.yml']
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-google-public-443-change
+  cancel-in-progress: false
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      FOREIGN_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: grunvald91/Mnebyvpn
+          ref: 525cdfd5ae5f810d5b778e51327573fc518dffa9
+          path: vpn
+          persist-credentials: false
+      - name: Activate 30-minute automatic-rollback Google DNS and SNI canary
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$FOREIGN_PASS" && test -n "$RU_PASS"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          python3 scripts/mnebydns-four-google-canary.py self-test
+          bash -n scripts/mnebydns-four-google-deploy.sh
+          bash -n scripts/mnebydns-four-google-rollback.sh
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          host=root@89.125.90.101
+          work="/tmp/mnebydns-ci-$GITHUB_RUN_ID"
+          backup="/opt/mnebydns-googlepilot-backups/$GITHUB_RUN_ID"
+          changed=no
+          cleanup() {
+            rc=$?
+            trap - EXIT
+            if [[ "$rc" != 0 && "$changed" == yes ]]; then
+              echo "canary_failed_attempt_scoped_rollback=yes"
+              SSHPASS="$FOREIGN_PASS" sshpass -e ssh "${opts[@]}" "$host" "test -s '$backup/rollback.sh' && bash '$backup/rollback.sh' '$backup'" || echo "rollback_unconfirmed_watchdog_armed=yes"
+            fi
+            SSHPASS="$FOREIGN_PASS" sshpass -e ssh "${opts[@]}" "$host" "rm -rf -- '$work'" >/dev/null 2>&1 || true
+            exit "$rc"
+          }
+          trap cleanup EXIT
+          SSHPASS="$FOREIGN_PASS" sshpass -e ssh "${opts[@]}" "$host" "test ! -e '$work' && mkdir -m 700 -- '$work'"
+          tar -czf - -C scripts mnebydns-four-google-canary.py mnebydns-four-google-deploy.sh mnebydns-four-google-rollback.sh | SSHPASS="$FOREIGN_PASS" sshpass -e ssh "${opts[@]}" "$host" "tar -xzf - -C '$work'"
+          changed=yes
+          SSHPASS="$FOREIGN_PASS" sshpass -e ssh "${opts[@]}" "$host" "bash '$work/mnebydns-four-google-deploy.sh' '$work'"
+          echo "foreign_experimental_canary_activated=true"
+          SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 'bash -se' <<'RU'
+          set -Eeuo pipefail
+          for host in www.youtube.com youtubei.googleapis.com i.ytimg.com stitch.withgoogle.com accounts.google.com aistudio.google.com generativelanguage.googleapis.com gemini.google.com cdn.servgo.ru tg.servgo.ru; do
+            code="$(curl --noproxy '*' -4 -sS -o /dev/null --connect-timeout 7 --max-time 16 --resolve "$host:443:89.125.90.101" -w '%{http_code}' "https://$host/" 2>/dev/null || true)"
+            if [[ "$code" == 000 || -z "$code" ]]; then echo "ru_foreign_TLS_failed=$host"; exit 3; fi
+            echo "ru_foreign_original_TLS=$host verified"
+          done
+          RU
+          python3 - <<'PY'
+          import importlib.util,pathlib,socket
+          p=pathlib.Path("vpn/ops/smart-dns-poc/probe-gemini-canary.py")
+          spec=importlib.util.spec_from_file_location("dnsprobe",p)
+          assert spec and spec.loader
+          m=importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(m)
+          ip="89.125.90.101"
+          for name in ("www.youtube.com","youtubei.googleapis.com","i.ytimg.com","stitch.withgoogle.com","accounts.google.com","aistudio.google.com","generativelanguage.googleapis.com","r1---sn-dynamic.googlevideo.com"):
+            code,count,rows=m.query(name,1,ip,853,"dns.mnebyvpn.site",None)
+            answers=[socket.inet_ntoa(raw) for typ,ttl,raw in rows if typ==1]
+            if code!=0 or answers!=[ip]:raise AssertionError("Public synthetic DoT failed: "+name)
+            for typ in (28,64,65):
+              rcode,n,rr=m.query(name,typ,ip,853,"dns.mnebyvpn.site",None)
+              if rcode!=0 or n!=0:raise AssertionError("DoT address-family bypass: "+name)
+            print("public_DNS_route_pass="+name)
+          for name in ("gemini.google.com","discord.com","gateway.discord.gg","cdn.discordapp.com"):
+            code,count,rows=m.query(name,1,ip,853,"dns.mnebyvpn.site",None)
+            answers=[socket.inet_ntoa(raw) for typ,ttl,raw in rows if typ==1]
+            if code!=0 or ip not in answers:raise AssertionError("Legacy DNS regression: "+name)
+            print("original_DNS_preserved="+name)
+          PY
+          echo "russian_path_and_public_DNS_verified=true"
+          echo "canary_active_with_30_minute_automatic_rollback=true"
