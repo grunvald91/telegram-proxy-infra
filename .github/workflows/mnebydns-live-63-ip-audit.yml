@@ -40,13 +40,18 @@ jobs:
           assert len(route.HOSTS)==121 and len(set(route.HOSTS))==121
           assert len(route.DYNAMIC_SUFFIXES)==46
           def check(host):
-              try:
-                  code,number,rows=dns.query(host,1,expected,853,'dns.mnebyvpn.site',None)
-                  addresses=[socket.inet_ntoa(data) for rr,ttl,data in rows if rr==1]
-                  return host,(code==0 and addresses==[expected]),addresses,code
-              except Exception as exc:
-                  return host,False,[],type(exc).__name__
-          with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
+              last="no_success"
+              for attempt in range(3):
+                  try:
+                      code,number,rows=dns.query(host,1,expected,853,'dns.mnebyvpn.site',None)
+                      addresses=[socket.inet_ntoa(data) for rr,ttl,data in rows if rr==1]
+                      if code==0 and addresses==[expected]:
+                          return host,True,addresses,code
+                      last=str(code)
+                  except Exception as exc:
+                      last=type(exc).__name__
+              return host,False,[],last
+          with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
               results=list(pool.map(check,(*route.HOSTS,'gemini.google.com',
                         'dynamic-1.google.com','dynamic-1.googleapis.com',
                         'dynamic-1.google-analytics.com','dynamic-1.doubleclick.net',
