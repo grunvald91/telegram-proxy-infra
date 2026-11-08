@@ -198,8 +198,9 @@ def policy_preflight() -> tuple[int, int]:
     if data.get("log", {}).get("access", "none") not in ("none", "", None):
         raise RuntimeError("Unexpected Xray access logging")
     pid = isolated_child_pid()
-    if active_vpn_ingress_count(pid) != 1:
-        raise RuntimeError("Require exactly one established Xray inbound tunnel")
+    tunnel_count = active_vpn_ingress_count(pid)
+    if tunnel_count != 1:
+        raise RuntimeError("Require exactly one established Xray inbound tunnel count="+str(tunnel_count))
     return pid, count
 
 def hostname_candidates() -> dict[str, set[str]]:
@@ -266,8 +267,13 @@ def main() -> None:
         print("preflight_status=NOT_READY", flush=True)
         print("reason=" + ("active_tunnels_not_unique" if "inbound tunnel" in str(ex)
               else "node_runtime_or_policy_mismatch"), flush=True)
+        if "inbound tunnel count=" in str(ex):
+            print("established_ingress_tunnels="+str(ex).rsplit("=",1)[1],flush=True)
+        if sys.argv[1] == "preflight":
+            print("preflight_report_only_no_changes=true",flush=True)
+            return
         raise SystemExit(2)
-    print("preflight_status=READY_SINGLE_ACTIVE_VPN_PROFILE", flush=True)
+    print("preflight_status=READY_SINGLE_ESTABLISHED_TUNNEL", flush=True)
     print("outbound_pid_present=true", flush=True)
     print("active_entitlement_count=" + str(count), flush=True)
     print("established_ingress_tunnels=1", flush=True)
