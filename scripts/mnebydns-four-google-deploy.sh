@@ -48,7 +48,7 @@ test -s "$base/proxy.pilot"
 # A separate service on loopback is required before introducing live SNI map.
 cat > "$base/pilot.service" <<'UNIT'
 [Unit]
-Description=MNEBYDNS Google plus Claude time-limited owner-only TLS pilot
+Description=MNEBYDNS Google Claude Instagram X Grok Threads timed pilot
 After=network-online.target
 Wants=network-online.target
 StartLimitIntervalSec=60
@@ -116,7 +116,11 @@ echo "isolated_google_pilot_on_loopback=true"
 
 # Validate original Google certificate through the new SNI backend.
 # Avoid interpolating an arbitrary user supplied hostname in bash.
-for host in claude.ai claude.com platform.claude.com code.claude.com \
+for host in instagram.com www.instagram.com graph.instagram.com \
+  threads.com threads.net www.threads.com \
+  x.com twitter.com pbs.twimg.com t.co \
+  grok.com api.x.ai x.ai \
+  claude.ai claude.com platform.claude.com code.claude.com \
   api.anthropic.com a-api.anthropic.com a.claude.ai assets.claude.ai \
   bridge.claudeusercontent.com \
   pki.google.com clients1.google.com notifications.google.com \
