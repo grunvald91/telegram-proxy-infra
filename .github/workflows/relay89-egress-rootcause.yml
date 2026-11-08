@@ -1,0 +1,61 @@
+name: Relay89 egress root cause diagnosis
+on:
+  push:
+    paths: ['.github/workflows/relay89-egress-rootcause.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: relay89-egress-rootcause
+  cancel-in-progress: false
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      SSHPASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Inspect rules DNS and TCP without production changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SSHPASS"
+          command -v sshpass >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq sshpass; }
+          sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 root@89.125.90.101 'python3 -u -' <<'PY'
+          import subprocess, pathlib, re, time, concurrent.futures, json
+          def run(cmd,t=12):
+           try:
+            p=subprocess.run(cmd,capture_output=True,text=True,timeout=t)
+            return (p.stdout+p.stderr).strip()
+           except subprocess.TimeoutExpired:return "TIMEOUT"
+          def red(s):
+           s=re.sub(r'(?i)(password|passwd|secret|token|privatekey|presharedkey|uuid)(\\s*[=:]\\s*|\\s+)\\S+',r'\\1=<redacted>',s)
+           s=re.sub(r'\\b[0-9a-fA-F]{32,}\\b','<hex>',s)
+           return s
+          for cmd in [
+           ['date','-Is'],['uptime'],['ip','-s','link','show','eth0'],['ip','rule'],['ip','route','show','table','all'],
+           ['nft','-a','list','ruleset'],['iptables-save','-c'],['cat','/proc/net/netfilter/nfnetlink_queue'],
+           ['systemctl','show','telegram-foreign-nfqws','-p','ActiveState,SubState,NRestarts,ExecMainStartTimestamp'],
+           ['cat','/etc/resolv.conf'],['cat','/etc/nsswitch.conf'],
+           ['journalctl','-k','--since','2026-11-07','--no-pager','-n','80'],
+           ['tc','-s','qdisc','show','dev','eth0']]:
+           print('COMMAND',cmd,flush=True);print(red(run(cmd))[:24000],flush=True)
+          for path in ['/usr/local/sbin/telegram-foreign-nfqws-rules','/etc/zapret2/telegram-nfqws.conf','/etc/systemd/system/telegram-foreign-nfqws.service']:
+           p=pathlib.Path(path)
+           if p.is_file():print('FILE',path,red(p.read_text())[:10000],flush=True)
+          def probe(host):
+           out=[]
+           for i in range(8):
+            cmd=['curl','-4','-sS','-o','/dev/null','--connect-timeout','3','--max-time','6','-w','ip=%{remote_ip} dns=%{time_namelookup} tcp=%{time_connect} tls=%{time_appconnect} total=%{time_total} http=%{http_code}','https://'+host+'/']
+            out.append(run(cmd,8))
+           return host,out
+          with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+           for host,out in pool.map(probe,['api.telegram.org','www.cloudflare.com','example.com']):
+            print('HTTPS',host,json.dumps(out),flush=True)
+          for resolver in ['8.8.8.8','1.1.1.1','9.9.9.9']:
+           for i in range(6):
+            print('DNS',resolver,i,run(['dig','@'+resolver,'api.telegram.org','A','+tries=1','+time=2','+noall','+answer','+comments'],4),flush=True)
+          print('NETSTAT',run(['nstat','-az']),flush=True)
+          print('READ_ONLY=true',flush=True)
+          
+          PY
