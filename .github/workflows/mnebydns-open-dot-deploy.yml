@@ -1,0 +1,67 @@
+name: MNEBYDNS open DoT pilot deployment (bounded)
+on:
+  push:
+    branches: ['feature/mnebydns-public-dot-preflight-20261108']
+    paths: ['.github/workflows/mnebydns-open-dot-deploy.yml']
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-open-dot-foreign
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      SSHPASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: grunvald91/Mnebyvpn
+          ref: 71afee9bd4345d967448edb6a26790118fbe2961
+          path: mnebyvpn-source
+          persist-credentials: false
+      - name: Deploy only new MNEBYDNS TCP853 pilot and verify from outside
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$SSHPASS" || { echo "Missing existing SSH access"; exit 2; }
+          [[ "$GITHUB_RUN_ID" =~ ^[0-9]+$ ]] || exit 2
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          server="root@89.125.90.101"
+          dir="/tmp/mnebydns-ci-$GITHUB_RUN_ID"
+          opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o LogLevel=ERROR)
+          remote() { sshpass -e ssh "${opts[@]}" "$server" "$"; }
+          installed=false
+          cleanup() {
+            code=$?
+            trap - EXIT
+            if [[ "$installed" == true && "$code" != 0 ]]; then
+              echo "E2E_failed_attempting_scoped_rollback=yes"
+              remote "bash '$dir/rollback-open-dot-pilot.sh'" || echo "rollback_unconfirmed=yes"
+            fi
+            remote "rm -rf -- '$dir'" >/dev/null 2>&1 || echo "temporary_cleanup_unconfirmed=yes"
+            exit "$code"
+          }
+          trap cleanup EXIT
+          docker pull coredns/coredns:1.15.0 >/dev/null
+          container="$(docker create coredns/coredns:1.15.0)"
+          docker cp "$container:/coredns" mnebyvpn-source/ops/smart-dns-poc/coredns
+          docker rm "$container" >/dev/null
+          chmod 755 mnebyvpn-source/ops/smart-dns-poc/coredns
+          remote "mkdir -m 700 -- '$dir'"
+          tar -C mnebyvpn-source/ops/smart-dns-poc -czf - \
+            coredns Corefile.open-pilot mnebydns-dot.service \
+            deploy-open-dot-pilot.sh rollback-open-dot-pilot.sh |
+            sshpass -e ssh "${opts[@]}" "$server" "tar -xzf - -C '$dir'"
+          installed=true
+          remote "bash '$dir/deploy-open-dot-pilot.sh' '$dir'"
+          python3 mnebyvpn-source/ops/smart-dns-poc/probe-public-dot.py \
+            --hostname dns.mnebyvpn.site --server-ip 89.125.90.101
+          remote "systemctl enable mnebydns-dot.service >/dev/null && \
+            systemctl is-active mnebydns-dot.service && nginx -t >/dev/null 2>&1 && \
+            test -n \"$(ss -H -lnt 'sport = :853')\""
+          echo "external_tls_and_dns=pass"
+          echo "public_dns_enabled=yes"
+          echo "smart_https_proxy=not_enabled"
