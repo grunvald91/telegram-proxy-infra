@@ -117,10 +117,21 @@ def render_sni(nginx: str) -> str:
         raise ValueError("Original shared SNI fallback missing")
     if "15449" in nginx or any(re.search(r"(?m)^\s*~\*?.*"+re.escape(zone)+r".*\S+;",old) for zone in DYNAMIC_SUFFIXES):
         raise ValueError("Conflicting prior experimental route")
+    # Preserve existing exact names byte-for-byte, rather than attempting to
+    # redirect a name already owned by another verified localhost backend.
+    # The deployer must test public original TLS for every pre-existing host.
+    missing = []
     for host in HOSTS:
-        if re.search(r"(?m)^[ \t]*"+re.escape(host)+r"[ \t]+\S+;", old):
-            raise ValueError("Target SNI route already present: "+host)
-    insertion = "\n" + "".join(f"        {host} {BACKEND};\n" for host in HOSTS)
+        present=re.findall(r"(?m)^[ \t]*"+re.escape(host)+r"[ \t]+([^;]+);",old)
+        if len(present)>1:
+            raise ValueError("Duplicate existing exact SNI route: "+host)
+        if present:
+            backend=present[0].strip()
+            if not re.fullmatch(r"127[.]0[.]0[.]1:[0-9]{2,5}",backend):
+                raise ValueError("Unsafe existing exact SNI owner: "+host)
+        else:
+            missing.append(host)
+    insertion = "\n" + "".join(f"        {host} {BACKEND};\n" for host in missing)
     insertion += f"        {VIDEO_NGINX} {BACKEND};\n"
     # Insert exact hosts BEFORE regex matching to avoid shadow by broad masks.
     result = nginx[:section.end(2)] + insertion + nginx[section.end(2):]
@@ -214,6 +225,14 @@ def self_test()->None:
     for host in HOSTS:
         assert ns.count("\n        "+host+" "+BACKEND+";")==1
         assert nd.count("template IN A "+host+" {")==1
+    # Earlier exact SNI entries are preserved and never overridden.
+    already="www.google.com 127.0.0.1:15445;"
+    existing=MATCH_EXACT_ROUTE=old_nginx.replace(
+        "discord.com 127.0.0.1:15401;",
+        "discord.com 127.0.0.1:15401;\n"+already)
+    new_with_existing=render_sni(existing)
+    assert already in new_with_existing
+    assert new_with_existing.count("www.google.com 127.0.0.1:15449;")==0
     assert nd.count("template IN A . {")==1
     assert 'answer "{{ .Name }} 20 IN A '+FOREIGN+'"' in nd
     assert ns.replace("\n"+"".join(f"        {host} {BACKEND};\n" for host in HOSTS)+
