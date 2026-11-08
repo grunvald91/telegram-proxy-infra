@@ -1,0 +1,43 @@
+name: MNEBYVPN Russian-route WS vs Reality signed owner stability A-B
+on:
+  push:
+    branches: [diag/mnebyvpn-karing-reality-flap-20261109]
+    paths: ['.github/workflows/mnebyvpn-reality-ru-stability.yml']
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 11
+    env:
+      RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      FOREIGN_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Live 12 samples from Russian host via authenticated existing owner node, without server reconfiguration
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASSWORD" && test -n "$FOREIGN_PASSWORD"
+          python3 -m py_compile scripts/mnebyvpn-reality-ru-stability-probe.py
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          umask 077
+          WORK="$(mktemp -d)"
+          cleanup(){
+            set +e
+            if [[ -n "$RU_PASSWORD" ]]; then
+              SSHPASS="$RU_PASSWORD" sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8                 -o LogLevel=ERROR root@188.120.254.223                 'rm -f /root/.mnebyvpn-reality-probe-xray /root/.mnebyvpn-reality-probe.py' >/dev/null 2>&1
+            fi
+            rm -rf "$WORK"
+          }
+          trap cleanup EXIT
+          export SSHPASS="$FOREIGN_PASSWORD"
+          sshpass -e scp -q -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12             -o LogLevel=ERROR root@89.125.90.101:/opt/xray/xray "$WORK/xray"
+          test -s "$WORK/xray"
+          export SSHPASS="$RU_PASSWORD"
+          sshpass -e scp -q -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12             -o LogLevel=ERROR "$WORK/xray" root@188.120.254.223:/root/.mnebyvpn-reality-probe-xray
+          sshpass -e scp -q -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12             -o LogLevel=ERROR scripts/mnebyvpn-reality-ru-stability-probe.py             root@188.120.254.223:/root/.mnebyvpn-reality-probe.py
+          sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12             -o LogLevel=ERROR root@188.120.254.223             'python3 /root/.mnebyvpn-reality-probe.py /root/.mnebyvpn-reality-probe-xray'
+          echo 'authenticated_RU_owner_protocol_comparison=finished_no_node_config_changes' >> "$GITHUB_STEP_SUMMARY"
