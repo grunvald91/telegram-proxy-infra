@@ -3,11 +3,14 @@
 name: MNEBYVPN Gemini one-client route diagnostics (private metadata)
 on:
   push:
-    branches: ['feature/mnebyvpn-gemini-private-route-trace-20261108']
+    branches:
+      - feature/mnebyvpn-gemini-private-route-trace-20261108
+      - diagnostics/mnebyvpn-gemini-on-demand
     paths:
       - '.github/workflows/mnebyvpn-gemini-route-diagnostics.yml'
       - 'scripts/mnebyvpn-gemini-socket-observe.py'
       - 'tests/test_mnebyvpn_gemini_socket_observe.py'
+      - 'ops/diagnostics/mnebyvpn-gemini-capture-request.txt'
   workflow_dispatch:
     inputs:
       mode:
@@ -16,8 +19,16 @@ on:
         type: choice
         options:
           - preflight
-          - capture
+          - capture-exclusive
         default: preflight
+      exclusive_confirmed:
+        description: 'I confirm that ALL active MNEBYVPN sessions are mine during this test'
+        required: true
+        type: choice
+        options:
+          - 'no'
+          - 'yes'
+        default: 'no'
 permissions:
   contents: read
 concurrency:
@@ -31,6 +42,8 @@ jobs:
       SSHPASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
       RUN_EVENT: ${{ github.event_name }}
       REQUESTED_MODE: ${{ inputs.mode }}
+      EXCLUSIVE_CONFIRMED: ${{ inputs.exclusive_confirmed }}
+      HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
     steps:
       - uses: actions/checkout@v4
       - name: Verify privacy policy, syntax and socket parser contracts locally
@@ -47,10 +60,18 @@ jobs:
           test -n "$SSHPASS"
           if [[ "$RUN_EVENT" == push ]]; then
             MODE=preflight
+            if [[ "$GITHUB_REF" == refs/heads/diagnostics/mnebyvpn-gemini-on-demand &&
+                  "$HEAD_COMMIT_MESSAGE" == '[gemini-capture] owner confirmed exclusive test' ]]; then
+              MODE=capture-exclusive
+            fi
           else
             MODE="$REQUESTED_MODE"
+            if [[ "$MODE" == capture-exclusive && "$EXCLUSIVE_CONFIRMED" != yes ]]; then
+              echo 'explicit_operator_exclusivity_confirmation_missing=true'
+              exit 3
+            fi
           fi
-          [[ "$MODE" == preflight || "$MODE" == capture ]] || exit 3
+          [[ "$MODE" == preflight || "$MODE" == capture-exclusive ]] || exit 3
           echo "diagnostic_request=$MODE"
           echo "captures_permanent_user_data=false"
           echo "collects_raw_addresses_or_credentials=false"
