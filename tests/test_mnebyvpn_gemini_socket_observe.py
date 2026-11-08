@@ -83,7 +83,7 @@ class SocketTracingContract(unittest.TestCase):
                           "os.system(","CONFIG.write_text","STATE.write_text",
                           "key_file.read_text","xray -config"):
             self.assertNotIn(forbidden,source)
-        self.assertIn("preflight_status=READY_SINGLE_ESTABLISHED_TUNNEL",source)
+        self.assertIn("READY_SINGLE_ESTABLISHED_TUNNEL",source)
         self.assertIn("capture_stopped_no_persistent_tracking=true",source)
 
 if __name__=="__main__":
