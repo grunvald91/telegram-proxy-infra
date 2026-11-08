@@ -50,6 +50,7 @@ jobs:
           assert re.fullmatch('[A-Za-z0-9_-]{43}',token)
           digest=hashlib.sha256(token.encode()).hexdigest()
           inserted=False
+          failures=[]
           try:
               sql("INSERT INTO vpn_subscription_links(token_sha256,entitlement_id) "+
                   "VALUES('"+digest+"','"+entitlement+"')")
@@ -71,9 +72,12 @@ jobs:
                           mime=''
                       except Exception as exc:
                           print(name+'_'+client+'_network_error='+type(exc).__name__)
+                          failures.append(name+'_'+client+'_network_error')
                           continue
                       print(name+'_'+client+'_http='+str(status))
-                      if status!=200:continue
+                      if status!=200:
+                          failures.append(name+'_'+client+'_http_error')
+                          continue
                       try:
                           decoded=base64.b64decode(body.strip(),validate=True).decode()
                           uris=decoded.strip().splitlines()
@@ -98,10 +102,14 @@ jobs:
                           assert ports==expect and label_match, 'Subscription transport names or ports invalid'
                       except Exception:
                           print(name+'_'+client+'_profile_valid=false')
+                          failures.append(name+'_'+client+'_profile_invalid')
               print('temporary_token_never_logged=true')
           finally:
               if inserted:
                   sql("DELETE FROM vpn_subscription_links WHERE token_sha256='"+digest+"'")
                   assert sql("SELECT count(*) FROM vpn_subscription_links WHERE token_sha256='"+digest+"'")=='0'
                   print('temporary_subscription_link_destroyed=true')
+          if failures:
+              raise SystemExit('Subscription smoke failed: '+str(len(failures))+' paths')
+          print('all_subscription_variants_verified=true')
           PY
