@@ -1,0 +1,52 @@
+name: Assess independent HTTPS subscription origin reachability
+on:
+  push:
+    branches: [diag/reality-drops-subscription-visibility-20261108]
+    paths: ['.github/workflows/mnebyvpn-independent-subscription-origin.yml']
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Compare canonical site and foreign CDN reachability without tokens
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          OPTS=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          origin="$(SSHPASS="$RU_PASSWORD" sshpass -e ssh "${OPTS[@]}" root@188.120.254.223 \
+            "docker exec mnebyvpn-public-web printenv WEB_BASE_URL")"
+          export ORIGIN="$origin"
+          python3 - <<'PY'
+          import os,urllib.parse
+          url=urllib.parse.urlsplit(os.environ['ORIGIN'])
+          assert url.scheme=='https' and url.hostname and not url.username and not url.password
+          assert not url.path or url.path=='/'
+          print('site_https_host='+url.hostname)
+          print('site_https_port='+str(url.port or 443))
+          PY
+          for path in /healthz /sub/invalid-token; do
+            for base in "$origin" "https://cdn.servgo.ru:8443"; do
+              name=canonical
+              if [[ "$base" == *cdn.servgo.ru* ]]; then name=cdn; fi
+              echo "probe_origin=$name path=$path"
+              curl --noproxy '*' -sS -o /dev/null \
+                --connect-timeout 5 --max-time 9 \
+                -w 'http=%{http_code} resolved=%{remote_ip} tcp_s=%{time_connect} tls_s=%{time_appconnect} total_s=%{time_total}\n' \
+                "${base%/}$path" || echo "https_probe_failed=true"
+            done
+          done
+          SSHPASS="$RU_PASSWORD" sshpass -e ssh "${OPTS[@]}" root@188.120.254.223 \
+             "ORIGIN='$origin' python3 -" <<'PY'
+          import os,socket,urllib.parse
+          v=urllib.parse.urlsplit(os.environ['ORIGIN'])
+          print('ru_origin_hostname='+str(v.hostname))
+          try:
+              print('ru_origin_ips='+','.join(sorted({x[4][0] for x in socket.getaddrinfo(v.hostname,443,family=socket.AF_INET)})))
+          except OSError as exc:print('ru_origin_dns_error='+type(exc).__name__)
+          PY
