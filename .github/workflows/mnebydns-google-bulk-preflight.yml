@@ -1,3 +1,4 @@
+# Post-watchdog validation: 2026-11-08 22:11:43 UTC rollback deadline passed.
 # Repeat safe live preflight before 90-second-capture-derived candidate routing, 2026-11-09.
 name: MNEBYDNS Google batch production preflight (read only)
 on:
