@@ -27,8 +27,8 @@ jobs:
           from pathlib import Path
           r=Path('scripts/mnebydns-four-google-rollback.sh').read_text()
           d=Path('scripts/mnebydns-four-google-deploy.sh').read_text()
-          assert 'cmp -s "$base/nginx.pilot"' in r
-          assert 'cmp -s "$base/dns.pilot"' in r
+          assert 'cmp -s "$base/$component.pilot" "$live"' in r
+          assert 'cmp -s "$base/$component.before" "$live"' in r
           assert 'systemd-run --unit="$watchdog" --on-active=1800s' in d
           assert 'nginx -t' in d
           assert 'systemctl reload nginx' in d
