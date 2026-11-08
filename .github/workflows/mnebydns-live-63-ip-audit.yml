@@ -1,7 +1,7 @@
-name: MNEBYDNS live 63-address German IP DNS audit (read-only)
+name: MNEBYDNS live 73 exact + 17 suffix German DNS audit (read-only)
 on:
   push:
-    branches: ['feature/mnebydns-android-three-candidate-canary-20261109']
+    branches: ['feature/mnebydns-entire-android-dns-30m-20261109']
     paths: ['.github/workflows/mnebydns-live-63-ip-audit.yml']
   workflow_dispatch:
 permissions:
@@ -20,7 +20,7 @@ jobs:
           ref: 0dbe6e4e35c2923228c250bf6cfc870ce71198d6
           path: vpn
           persist-credentials: false
-      - name: Read current 63 exact-host public DNS answers over authenticated DoT
+      - name: Read current 73 exact-host public DNS answers over authenticated DoT
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -37,7 +37,8 @@ jobs:
           dns=load('dns','vpn/ops/smart-dns-poc/probe-gemini-canary.py')
           expected='89.125.90.101'
           assert route.FOREIGN==expected
-          assert len(route.HOSTS)==63 and len(set(route.HOSTS))==63
+          assert len(route.HOSTS)==73 and len(set(route.HOSTS))==73
+          assert len(route.DYNAMIC_SUFFIXES)==17
           def check(host):
               try:
                   code,number,rows=dns.query(host,1,expected,853,'dns.mnebyvpn.site',None)
@@ -46,16 +47,18 @@ jobs:
               except Exception as exc:
                   return host,False,[],type(exc).__name__
           with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
-              results=list(pool.map(check,(*route.HOSTS,'gemini.google.com')))
+              results=list(pool.map(check,(*route.HOSTS,'gemini.google.com',
+                        'dynamic-1.google.com','dynamic-1.googleapis.com',
+                        'dynamic-1.google-analytics.com','dynamic-1.doubleclick.net')))
           total=len(results); good=sum(ok for _,ok,_,_ in results)
           for host,ok,addresses,code in results:
               print(f'domain={host} german_ip_returned={str(ok).lower()} answer={",".join(addresses) or "NONE"} status={code}',flush=True)
-          print(f'exact_candidate_hosts_rewritten={good-int(results[-1][1])}/63',flush=True)
-          print(f'gemini_base_also_rewritten={str(results[-1][1]).lower()}',flush=True)
-          print(f'all_64_dns_checks_pass={str(good==total).lower()}',flush=True)
+          print('exact_candidate_hosts_rewritten='+str(sum(ok for _,ok,_,_ in results[:73]))+'/73',flush=True)
+          print(f'gemini_base_also_rewritten={str(results[73][1]).lower()}',flush=True)
+          print(f'all_78_dns_checks_pass={str(good==total).lower()}',flush=True)
           if good!=total:raise SystemExit(2)
           # Android push, unrelated domains must NOT be falsely routed by synthetic DNS.
-          for host in ('mtalk.google.com','fcm.googleapis.com','time.google.com','example.org'):
+          for host in ('example.org',):
               code,count,rows=dns.query(host,1,expected,853,'dns.mnebyvpn.site',None)
               ips=[socket.inet_ntoa(data) for rr,ttl,data in rows if rr==1]
               if expected in ips:raise AssertionError('unexpected_synthetic_domain='+host)
@@ -72,7 +75,7 @@ jobs:
           export SSHPASS="$FOREIGN_PASSWORD"
           sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@89.125.90.101 'python3 -' <<'PY'
           import pathlib,subprocess
-          base=pathlib.Path('/opt/mnebydns-googlepilot-backups/42529221453')
+          base=pathlib.Path('/opt/mnebydns-googlepilot-backups/42532077031')
           for name,path in (('nginx','/etc/nginx/nginx.conf'),('dns','/opt/mnebydns-dot/Corefile')):
               current=pathlib.Path(path).read_bytes()
               pilot=base/(name+'.pilot')
@@ -81,7 +84,7 @@ jobs:
                      'BASELINE' if before.is_file() and before.read_bytes()==current else 'OTHER')
               print(f'live_{name}_state={state}',flush=True)
           for unit in ('mnebydns-googlepilot.service','mnebydns-dot.service',
-                       'mnebydns-four-google-watchdog-42529221453.timer'):
+                       'mnebydns-four-google-watchdog-42532077031.timer'):
               p=subprocess.run(['systemctl','is-active',unit],capture_output=True,text=True,timeout=6)
               print('unit_'+unit+'='+p.stdout.strip(),flush=True)
           print('remote_state_readonly=yes',flush=True)
