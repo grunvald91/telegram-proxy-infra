@@ -17,7 +17,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: grunvald91/Mnebyvpn
-          ref: 744947e11ebb233ecb163196e505120dab25b122
+          ref: 6b47c8521ead6bd134ac567c6aa0f411d49e80e6
           persist-credentials: false
       - name: Run guarded 120-second loopback-only remote test
         shell: bash
@@ -30,10 +30,19 @@ jobs:
           host=root@89.125.90.101
           dir="/tmp/mnebydns-ci-$GITHUB_RUN_ID"
           opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o LogLevel=ERROR)
-          echo "phase=foreign_preflight_and_isolated_test"
+          echo "phase=foreign_native_test_no_docker_on_vps"
+          docker pull coredns/coredns:1.15.0
+          image_container="$(docker create coredns/coredns:1.15.0)"
+          docker cp "$image_container:/coredns" ops/smart-dns-poc/coredns
+          docker rm "$image_container"
+          chmod 755 ops/smart-dns-poc/coredns
           sshpass -e ssh "${opts[@]}" "$host" "mkdir -m 700 -- '$dir'"
-          tar -C ops/smart-dns-poc -czf - Corefile.foreign compose.foreign.yaml make-local-cert.sh probe-dot.py run-foreign-smoke.sh |
+          tar -C ops/smart-dns-poc -czf - Corefile.foreign make-local-cert.sh probe-dot.py run-foreign-native-smoke.sh coredns |
             sshpass -e ssh "${opts[@]}" "$host" "tar -xzf - -C '$dir'"
           sshpass -e ssh "${opts[@]}" "$host" \
-            "cd '$dir' && MNEBYDNS_PROJECT='mnebydns-ci-$GITHUB_RUN_ID' timeout --signal=TERM --kill-after=15s 120 bash run-foreign-smoke.sh"
-          echo "foreign_runtime_smoke=completed"
+            "cd '$dir' && timeout --signal=TERM --kill-after=15s 120 bash run-foreign-native-smoke.sh"
+          sshpass -e ssh "${opts[@]}" "$host" \
+            "if ss -H -lnt 'sport = :1853' | grep -q .; then echo leftover_dns_listener=yes; exit 1; fi; echo leftover_dns_listener=no"
+          sshpass -e ssh "${opts[@]}" "$host" \
+            "cd '$dir' && rm -f -- coredns Corefile.foreign Corefile.native make-local-cert.sh probe-dot.py run-foreign-native-smoke.sh coredns.log && cd / && rmdir -- '$dir'"
+          echo "foreign_runtime_smoke=completed_and_temp_files_removed"
