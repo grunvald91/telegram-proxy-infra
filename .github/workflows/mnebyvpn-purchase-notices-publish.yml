@@ -1,3 +1,4 @@
+# 2026-11-08: publish reviewed P1 trial-ready retry fixes from green main bd4930ada4833601b3012c5672e6abd31b12282c (CI 42458907376, staged 42458991642).
 # Approved isolated sender release: MNEBYVPN main f842a257606f8913de86ef3963f2d92ca8fd77fe passed CI 42415453537 and staged via public release 42415564796.
 name: Publish isolated MNEBYVPN purchase Telegram notifications
 on:
