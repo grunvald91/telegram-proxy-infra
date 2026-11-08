@@ -1,0 +1,108 @@
+name: Check REALITY drops, Xray restarts, subscription 5xx
+on:
+  push:
+    branches: [diag/reality-drops-subscription-visibility-20261108]
+    paths: ['.github/workflows/mnebyvpn-reality-disconnect-readonly.yml']
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      FOREIGN_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Read-only live check without issuing or revoking any VPN keys
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          echo 'FOREIGN_VPN_NODE:'
+          SSHPASS="$FOREIGN_PASSWORD" sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY'
+          import datetime as dt,json,os,pathlib,re,socket,subprocess,time
+          def run(args):
+              return subprocess.run(args,capture_output=True,text=True,timeout=8)
+          for service in ('mnebyvpn-vpn-provisioner.service','xray.service','nginx.service'):
+              s=run(['systemctl','is-active',service]).stdout.strip()
+              print('service_'+service.split('.')[0]+'='+s)
+          config=pathlib.Path('/etc/mnebyvpn/xray-canary.json')
+          state=pathlib.Path('/var/lib/mnebyvpn-vpn/state.json')
+          for name,path in [('config',config),('state',state)]:
+              if path.exists():
+                  print(name+'_last_write_utc='+dt.datetime.fromtimestamp(path.stat().st_mtime,dt.timezone.utc).isoformat(timespec='seconds'))
+          pids=run(['pgrep','-af','/opt/xray/xray run -config']).stdout.splitlines()
+          safe=[]
+          for entry in pids:
+              fields=entry.split()
+              if len(fields)<2:continue
+              pid=fields[0]
+              if not pid.isdigit():continue
+              try:
+                  res=run(['ps','-p',pid,'-o','lstart=,etime='])
+                  if res.stdout.strip():safe.append(res.stdout.strip())
+              except:pass
+          print('xray_isolated_child_process_count='+str(len(safe)))
+          for n,val in enumerate(safe[:3]):
+              print('xray_isolated_child_'+str(n+1)+'_started_elapsed='+val)
+          if config.exists():
+              j=json.loads(config.read_text())
+              print('listener_ports='+','.join(str(x.get('port')) for x in j.get('inbounds',[])))
+          assert pathlib.Path('/etc/mnebyvpn/reality-announce-enabled').exists()
+          logs=run(['journalctl','-u','mnebyvpn-vpn-provisioner.service',
+                    '--since','3 hours ago','--no-pager','-o','short-iso']).stdout
+          terms=['Started','Stopped','Restart','Failed','Error','Traceback','Xray','commit']
+          print('agent_journal_recent_lines='+str(len(logs.splitlines())))
+          for term in terms:
+              print('agent_journal_'+term.lower()+'_lines='+str(logs.lower().count(term.lower())))
+          for port in (2053,8443):
+              hits=run(['ss','-H','-tn','state','established','(', 'sport', '=', ':'+str(port),')'])
+              print('established_inbound_'+str(port)+'_count='+str(len(hits.stdout.splitlines())))
+          access=pathlib.Path('/var/log/nginx/access.log')
+          if access.exists():
+              lines=access.read_text(errors='replace').splitlines()[-8000:]
+              sub=[x for x in lines if re.search(r'(GET|HEAD)\s+/sub/[A-Za-z0-9_-]+',x)]
+              print('nginx_subscription_requests_recent_log_window='+str(len(sub)))
+              for family in ('2','3','4','5'):
+                  print('nginx_subscription_http_'+family+'xx='+str(sum(bool(re.search(r'"\s+'+family+r'\d\d\s',x)) for x in sub)))
+          else:
+              print('nginx_access_log_not_found=true')
+          PY
+          echo 'RUSSIAN_NODE:'
+          SSHPASS="$RU_PASSWORD" sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -' <<'PY'
+          import datetime as dt,pathlib,subprocess,urllib.request
+          for name,uri in [
+              ('site','http://127.0.0.1:8792/healthz'),
+              ('worker','http://127.0.0.1:8794/readyz'),
+              ('node','http://10.66.77.1:18944/healthz')]:
+              try:
+                  with urllib.request.urlopen(uri,timeout=5) as r:
+                      print(name+'_health_http='+str(r.status))
+              except Exception as e:
+                  print(name+'_health_error='+type(e).__name__)
+          for name,p in [('public_sha','/opt/mnebyvpn/public/active_sha')]:
+              path=pathlib.Path(p)
+              if path.exists():print(name+'='+path.read_text().strip()[:12])
+          cmd=['docker','inspect','-f','{{.Config.Image}}','mnebyvpn-vpn-worker']
+          print('worker_image_version='+subprocess.run(cmd,capture_output=True,text=True).stdout.strip().rsplit(':',1)[-1][:12])
+          PY
+          echo 'external_connect:'
+          python3 - <<'PY'
+          import socket,statistics,time
+          for host in ['cdn.servgo.ru','89.125.90.101']:
+              print('host_type='+('domain' if host.startswith('cdn') else 'ip'))
+              for port in (2053,8443):
+                  samples=[];fail=0
+                  for i in range(8):
+                      t=time.monotonic()
+                      try:
+                          with socket.create_connection((host,port),timeout=3):
+                              samples.append((time.monotonic()-t)*1000)
+                      except OSError:fail+=1
+                      time.sleep(.1)
+                  print('port='+str(port)+' tcp_ok='+str(len(samples))+'/8'+
+                        (' median_ms='+str(round(statistics.median(samples),1)) if samples else '')+
+                        ' failures='+str(fail))
+          PY
