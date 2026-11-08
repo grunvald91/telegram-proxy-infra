@@ -6,6 +6,7 @@ production Xray, VPN provisioner, Nginx, firewall, or subscriber credentials.
 The transient systemd unit expires automatically; explicit cleanup removes
 the temporary configuration, including the REALITY private key.
 """
+import base64
 import json
 import os
 import pathlib
@@ -55,9 +56,26 @@ def setup():
     keys = output.stdout + "\n" + output.stderr
     private_match = re.search(r"(?im)^\s*private\s*key\s*:\s*(\S+)", keys)
     public_match = re.search(r"(?im)^\s*(?:public\s*key|password)\s*:\s*(\S+)", keys)
-    if not private_match or not public_match:
-        raise SystemExit(f"reality_key_output_unrecognized private={bool(private_match)} public={bool(public_match)} stdout_lines={len(output.stdout.splitlines())} stderr_lines={len(output.stderr.splitlines())}")
-    private_key, public_key = private_match.group(1), public_match.group(1)
+    if not private_match:
+        raise SystemExit("reality_private_key_missing")
+    private_key = private_match.group(1)
+    if public_match:
+        public_key = public_match.group(1)
+    else:
+        # Some Xray releases only print the private key and a renamed
+        # verification token. Derive the X25519 public key using OpenSSL.
+        secret = base64.urlsafe_b64decode(private_key + "==")
+        if len(secret) != 32:
+            raise SystemExit("x25519_private_key_length_invalid")
+        pkcs8 = bytes.fromhex("302e020100300506032b656e04220420") + secret
+        exported = subprocess.run(
+            ["openssl", "pkey", "-inform", "DER", "-pubout", "-outform", "DER"],
+            input=pkcs8, capture_output=True, check=True, timeout=8,
+        ).stdout
+        prefix = bytes.fromhex("302a300506032b656e032100")
+        if not exported.startswith(prefix) or len(exported) != len(prefix) + 32:
+            raise SystemExit("x25519_public_key_derivation_failed")
+        public_key = base64.urlsafe_b64encode(exported[len(prefix):]).rstrip(b"=").decode()
     if not re.fullmatch(r"[A-Za-z0-9_-]{43}", private_key) or not re.fullmatch(r"[A-Za-z0-9_-]{43}", public_key):
         raise SystemExit("invalid_reality_key_format")
     secret_id = str(uuid.uuid4())
