@@ -76,7 +76,7 @@ jobs:
                       "settings":{"auth":"noauth","udp":False}}
           common={"log":{"loglevel":"warning"}}
           ws_out={"protocol":"vless","tag":"via-ws","settings":{"vnext":[{
-                  "address":"127.0.0.1","port":18443,"users":[{
+                  "address":"89.125.90.101","port":8443,"users":[{
                   "id":ws_id,"encryption":"none"}]}]},
                   "streamSettings":{"network":"ws","security":"tls",
                     "tlsSettings":{"serverName":"cdn.servgo.ru","allowInsecure":False},
