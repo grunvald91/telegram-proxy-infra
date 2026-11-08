@@ -86,8 +86,10 @@ abort(){
   code="$?"
   trap - EXIT
   flock -u 9 || true
-  if test -s "$base/rollback.sh"; then
+  if test -s "$base/rollback.sh" && test -s "$base/nginx.pilot" && test -s "$base/dns.pilot"; then
     bash "$base/rollback.sh" "$base" || echo "canary_auto_rollback_NOT_CONFIRMED=true"
+  else
+    echo "canary_no_live_swap_completed_no_config_rollback_needed=true"
   fi
   exit "$code"
 }
@@ -181,7 +183,12 @@ nginx -t >/dev/null 2>&1 || { echo "shared_nginx_canary_validation_failed=yes"; 
 systemctl reload nginx
 systemctl is-active --quiet nginx
 # Before DNS cutover, confirm foreign 443 reaches original Google TLS.
-for host in www.youtube.com stitch.withgoogle.com aistudio.google.com accounts.google.com; do
+# Existing exact Google SNI entries are owned by old services: only reuse
+# after verifying their public original TLS remains valid before DNS cutover.
+mapfile -t preexisting < <(python3 "$work/mnebydns-four-google-canary.py" \
+    audit-existing "$base/nginx.before")
+echo "preexisting_unchanged_exact_google_routes=${#preexisting[@]}"
+for host in "${preexisting[@]}" www.youtube.com stitch.withgoogle.com aistudio.google.com accounts.google.com; do
   code="$(curl -4 --noproxy '*' -sS -o /dev/null -w '%{http_code}' \
        --connect-timeout 4 --max-time 10 \
        --resolve "$host:443:89.125.90.101" \
