@@ -22,7 +22,7 @@ retains step output under the repository's configured Actions retention
 policy; no persistent monitoring service, telemetry daemon or logfile is
 installed on the foreign VPS.
 
-## How to run (AFTER this reviewed workflow is merged to default branch)
+## How to run (installed in default branch)
 
 Use the manually dispatched workflow:
 `Actions → MNEBYVPN Gemini one-client route diagnostics (private metadata) → Run workflow`.
@@ -41,10 +41,11 @@ Use the manually dispatched workflow:
   destinations newly seen during the activity window. Existing reused sockets
   may be invisible in the newly seen set. There is no capture after 90s.
 - Future tests use the same manual workflow, or an owner-confirmed one-off commit titled `[gemini-capture] owner confirmed exclusive test` to `ops/diagnostics/mnebyvpn-gemini-capture-request.txt` on branch `diagnostics/mnebyvpn-gemini-on-demand`. The diagnostics branch must be created after the workflow merges into `main`. No VPN service restart is needed.
-- Do not test on an account used simultaneously by additional devices or
-  apps. Background Android Play Services can still generate traffic.
-  The test **cannot prove per-Android-app attribution**, despite only one
-  active subscriber being configured.
+- Keep unrelated Android apps closed where practical. Many simultaneous
+  tunnels can belong to one VPN app. Background Google Play Services can
+  still generate traffic. The test **cannot prove per-Android-app or
+  per-subscriber attribution**, so the operator must confirm exclusive use
+  before every capture.
 
 ## Results to compare
 
@@ -67,12 +68,14 @@ Use the manually dispatched workflow:
 - Child process identity and configuration topology verified; no global
   tcpdump, pcaps, system logs or all-account log scan.
 - No persistent on-server file, daemon, firewall change, config reload or
-  secret leakage; manual GitHub job is the only invocation.
+  secret leakage; only explicit GitHub manual dispatch or an owner-confirmed
+  one-off diagnostic branch commit can start capture.
 - Without encrypted-client-to-destination metadata or opt-in per-client
   Xray sniffing, the final **exact** Google hostname corresponding to each
   socket is not guaranteed by IP correlation. Do not assert more than observed.
-- Until the job is merged into `main`, `workflow_dispatch` on GitHub will
-  **not be available** from its branch-only definition.
+- The workflow is now on `main`, and the
+  `diagnostics/mnebyvpn-gemini-on-demand` branch is available for subsequent
+  owner-confirmed one-off tests.
 - Some addresses may be reused or accessed directly on Android rather than
   through this VPN; no server-only detector can prove that they are used by
   Gemini itself.
@@ -81,3 +84,8 @@ Code references:
 `scripts/mnebyvpn-gemini-socket-observe.py`,
 `tests/test_mnebyvpn_gemini_socket_observe.py`,
 `.github/workflows/mnebyvpn-gemini-route-diagnostics.yml`.
+
+## Deployment evidence
+
+- [Verified CI and live socket count](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/42514440410): six offline tests PASS; live preflight returned NOT_READY for single-tunnel mode because multiple simultaneous Xray connections existed. This is **not** an observed Gemini session.
+- [Merged safe diagnostic code PR #46](https://github.com/grunvald91/telegram-proxy-infra/pull/46); no server process or configuration changes.
