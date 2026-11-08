@@ -24,7 +24,7 @@ jobs:
           test -n "$RU_PASS"
           sudo apt-get update -qq
           sudo apt-get install -qq -y sshpass
-          python3 - <<'PY' > /tmp/connection-only-gemini-audit.py
+          cat <<'PY' > /tmp/connection-only-gemini-audit.py
           import socket,ssl,time
           from concurrent.futures import ThreadPoolExecutor
           HOSTS=[
