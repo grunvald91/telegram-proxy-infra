@@ -53,6 +53,19 @@ jobs:
           SELECT 'vpn_entitlements_active='||count(*) FROM entitlements WHERE product='vpn' AND state='ACTIVE';
           SELECT 'owner_link_match_count='||count(*) FROM vpn_subscription_links
             WHERE token_sha256='65159196f6dc7ce18685dd61f958679927889b3a8db907ce80c6b57ce6154a4e';
+          SELECT 'owner_source_provider='||o.provider
+            FROM vpn_subscription_links l JOIN entitlements e ON e.id=l.entitlement_id
+            LEFT JOIN orders o ON o.id=e.source_order_id
+            WHERE l.token_sha256='65159196f6dc7ce18685dd61f958679927889b3a8db907ce80c6b57ce6154a4e';
+          SELECT 'owner_has_trial_grant='||(t.order_id IS NOT NULL)::text,
+                 'owner_trial_deadline='||COALESCE(t.access_expires_at::text,'none')
+            FROM vpn_subscription_links l JOIN entitlements e ON e.id=l.entitlement_id
+            LEFT JOIN trial_grants t ON t.order_id=e.source_order_id
+            WHERE l.token_sha256='65159196f6dc7ce18685dd61f958679927889b3a8db907ce80c6b57ce6154a4e';
+          SELECT 'owner_paid_credit_count='||count(*) FROM vpn_subscription_links l
+            JOIN entitlement_credits c ON c.entitlement_id=l.entitlement_id
+            JOIN orders o ON o.id=c.order_id WHERE l.token_sha256='65159196f6dc7ce18685dd61f958679927889b3a8db907ce80c6b57ce6154a4e'
+              AND o.provider IN ('prodamus','telegram_stars') AND c.refunded_at IS NULL;
           SELECT 'owner_link_state='||e.state FROM vpn_subscription_links l
             JOIN entitlements e ON e.id=l.entitlement_id
             WHERE l.token_sha256='65159196f6dc7ce18685dd61f958679927889b3a8db907ce80c6b57ce6154a4e';
