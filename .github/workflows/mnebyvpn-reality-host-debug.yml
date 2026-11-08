@@ -1,0 +1,126 @@
+name: MNEBYVPN REALITY: test real hostname vs direct node IP
+on:
+  push:
+    branches: ['diag/real-reality-address-20261108']
+    paths: ['.github/workflows/mnebyvpn-reality-host-debug.yml']
+permissions:
+  contents: read
+concurrency:
+  group: mnebyvpn-live-ephemeral-protocol-test
+  cancel-in-progress: false
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      FOREIGN_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: DNS, public reachability, REALITY and WS with actual issued credentials
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASSWORD" && test -n "$FOREIGN_PASSWORD"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          TMP="$(mktemp -d)"
+          OPTS=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          ID="$(python3 -c 'import uuid;print(uuid.uuid4())')"
+          CREATED=0
+          PIDS=()
+          cleanup(){
+            set +e
+            for pid in "${PIDS[@]}"; do kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; done
+            if [[ "$CREATED" == 1 ]]; then
+              SSHPASS="$RU_PASSWORD" sshpass -e ssh "${OPTS[@]}" root@188.120.254.223 \
+                "python3 - revoke $ID" < scripts/mnebyvpn-benchmark-ephemeral.py \
+                >/dev/null && echo 'temporary_test_key_revoked=true' || echo 'temporary_test_key_revocation_failed=true'
+            fi
+            rm -rf "$TMP"
+          }
+          trap cleanup EXIT
+          echo 'dns_external:'
+          python3 - <<'PY'
+          import socket
+          for host in ('cdn.servgo.ru','89.125.90.101'):
+              try:
+                  result=sorted({x[4][0] for x in socket.getaddrinfo(host,None,family=socket.AF_INET)})
+                  print('host='+host+' ipv4='+','.join(result))
+              except OSError as ex:
+                  print('host='+host+' dns_error='+type(ex).__name__)
+          for host in ('cdn.servgo.ru','89.125.90.101'):
+              for port in (8443,2053):
+                  try:
+                      with socket.create_connection((host,port),timeout=4) as sock:
+                          print('tcp='+host+':'+str(port)+' reachable=true target='+sock.getpeername()[0])
+                  except OSError as ex:
+                      print('tcp='+host+':'+str(port)+' reachable=false error='+type(ex).__name__)
+          PY
+          echo 'dns_from_russian_node:'
+          SSHPASS="$RU_PASSWORD" sshpass -e ssh "${OPTS[@]}" root@188.120.254.223 \
+            'getent ahostsv4 cdn.servgo.ru | awk "{print \$1}" | sort -u; printf "node89="; getent ahostsv4 89.125.90.101 | head -1 | awk "{print \$1}"' || true
+          PUBLIC_JSON="$(SSHPASS="$FOREIGN_PASSWORD" sshpass -e ssh "${OPTS[@]}" root@89.125.90.101 \
+             'set -e; test "$(systemctl is-active mnebyvpn-vpn-provisioner.service)" = active; test -e /etc/mnebyvpn/reality-announce-enabled; cat /etc/mnebyvpn/reality-public.json')"
+          export PUBLIC_JSON
+          REAL_PUB="$(python3 -c 'import os,json;print(json.loads(os.environ["PUBLIC_JSON"])["publicKey"])')"
+          REAL_SID="$(python3 -c 'import os,json;print(json.loads(os.environ["PUBLIC_JSON"])["shortId"])')"
+          echo "::add-mask::$REAL_PUB"
+          echo "::add-mask::$REAL_SID"
+          PROFILE_JSON="$(SSHPASS="$RU_PASSWORD" sshpass -e ssh "${OPTS[@]}" root@188.120.254.223 \
+            "python3 - create $ID" < scripts/mnebyvpn-benchmark-ephemeral.py)"
+          CREATED=1
+          CREDENTIAL="$(printf '%s' "$PROFILE_JSON" | python3 -c 'import json,sys;print(json.load(sys.stdin)["credential"])')"
+          echo "::add-mask::$CREDENTIAL"
+          SSHPASS="$FOREIGN_PASSWORD" sshpass -e scp -q "${OPTS[@]}" \
+             root@89.125.90.101:/opt/xray/xray "$TMP/xray"
+          chmod 700 "$TMP/xray"
+          python3 - "$TMP" "$CREDENTIAL" "$REAL_PUB" "$REAL_SID" <<'PY'
+          import json,pathlib,sys
+          root=pathlib.Path(sys.argv[1]);cred,pub,sid=sys.argv[2:]
+          options=[('ws_domain','cdn.servgo.ru',8443,'ws',19101),
+                   ('ws_ip','89.125.90.101',8443,'ws',19102),
+                   ('reality_domain','cdn.servgo.ru',2053,'reality',19103),
+                   ('reality_ip','89.125.90.101',2053,'reality',19104)]
+          for name,host,port,mode,listen in options:
+              socks={"listen":"127.0.0.1","port":listen,"protocol":"socks",
+                     "settings":{"auth":"noauth","udp":False}}
+              out={"protocol":"vless","settings":{"vnext":[{"address":host,"port":port,
+                   "users":[{"id":cred,"encryption":"none",**({"flow":"xtls-rprx-vision"} if mode=="reality" else {})]}]}]}}
+              if mode=="ws":
+                  out["streamSettings"]={"network":"ws","security":"tls",
+                       "tlsSettings":{"serverName":"cdn.servgo.ru","allowInsecure":False},
+                       "wsSettings":{"path":"/mnebyvpn-vpn/ws","headers":{"Host":"cdn.servgo.ru"}}}
+              else:
+                  out["streamSettings"]={"network":"tcp","security":"reality",
+                       "realitySettings":{"serverName":"www.cloudflare.com",
+                       "fingerprint":"chrome","password":pub,"shortId":sid,"spiderX":"/"}}
+              (root/(name+".json")).write_text(json.dumps({
+                "log":{"loglevel":"warning"},"inbounds":[socks],"outbounds":[out]}))
+          PY
+          for n in ws_domain ws_ip reality_domain reality_ip; do
+            "$TMP/xray" run -test -config "$TMP/$n.json" >/dev/null 2>&1
+            "$TMP/xray" run -config "$TMP/$n.json" >"$TMP/$n.log" 2>&1 &
+            PIDS+=("$!")
+          done
+          sleep 1
+          target=https://www.cloudflare.com/cdn-cgi/trace
+          for entry in ws_domain:19101 ws_ip:19102 reality_domain:19103 reality_ip:19104; do
+            name="${entry%:*}"; port="${entry#*:}"
+            echo "connection_variant=$name"
+            for i in 1 2 3; do
+              set +e
+              curl --noproxy '' --proxy "socks5h://127.0.0.1:$port" \
+                -s -o /dev/null --connect-timeout 6 --max-time 10 \
+                -w "sample=$i code=%{http_code} connect_s=%{time_connect} tls_s=%{time_appconnect} total_s=%{time_total}\n" "$target"
+              status=$?
+              set -e
+              echo "sample=$i curl_exit=$status"
+            done
+            if grep -Ei 'failed|error|timeout|REALITY' "$TMP/$name.log" >/dev/null; then
+              echo "xray_errors_variant=$name"
+              grep -Ei 'failed|error|timeout|REALITY' "$TMP/$name.log" | \
+                sed -E 's/[0-9a-f]{8}-[0-9a-f-]{27,}/[uuid-redacted]/g' | tail -4 || true
+            fi
+          done
+          echo 'diagnosis_finished=true'
