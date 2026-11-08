@@ -5,7 +5,7 @@ Runs on server188 only. Increases DB entitlement revision (never rotates keys)
 and queues normal signed Xray provisioning. Existing isolated Xray process
 restarts during per-entitlement apply, intentionally disconnecting clients.
 
-Hard limits: exactly two active VPN users, same account, DB/node revision match,
+Hard limits: exactly two active VPN users across two test accounts, DB/node revision match,
 old node expiry -30..-34 seconds, no expired access or unsolicited entitlement.
 No personal identifiers, credentials, raw URLs or IDs are printed.
 """
@@ -106,8 +106,8 @@ def main():
         print("preflight_active_vpn_count="+str(all_active))
         print("preflight_verified_vpn_count="+str(len(rows)))
         print("preflight_distinct_owner_accounts="+str(len({r[3] for r in rows})))
-        if all_active!="2" or len(rows)!=2 or len({r[3] for r in rows})!=1:
-            raise RuntimeError("Expected exactly two active VPN entitlements under one account")
+        if all_active!="2" or len(rows)!=2 or len({r[3] for r in rows})!=2:
+            raise RuntimeError("Expected exactly two active VPN entitlements across the two known test accounts")
         if any(rev!=applied or rev<1 for _,rev,_,_,applied in rows):
             raise RuntimeError("Existing provisioning revisions disagree")
         credential_hashes={}
@@ -126,7 +126,7 @@ def main():
             if not worker_profile(id_,key):
                 raise RuntimeError("Before: profile not issued")
         print("preflight_active_entitlements=2")
-        print("preflight_same_account=true")
+        print("preflight_two_test_accounts=true")
         print("preflight_signed_revisions_and_legacy_expiries_valid=true")
         print("preflight_profile_access_ready=true")
         ids=",".join("'"+r[0]+"'::uuid" for r in rows)
