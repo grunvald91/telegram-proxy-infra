@@ -224,12 +224,12 @@ def self_test()->None:
     # actually match real Google media hostnames (not literal backslashes).
     for domain in ("r3---sn-abcd.googlevideo.com","i.ytimg.com",
                    "fonts.gstatic.com","abc.googleusercontent.com",
-                   "youtube.com","stitch.withgoogle.com",
-                   "generativelanguage.googleapis.com"):
+                   "youtube.com","stitch.withgoogle.com"):
         assert re.fullmatch(VIDEO,domain+".") is not None,domain
         assert re.fullmatch(VIDEO_NGINX[2:],domain,re.IGNORECASE) is not None,domain
     for domain in ("time.google.com","mtalk.google.com","stun.l.google.com",
                    "firebaseinstallations.googleapis.com",
+                   "generativelanguage.googleapis.com",
                    "fcm.googleapis.com","gcm-http.googleapis.com",
                    "cdn.servgo.ru","example.com","www.instagram.com"):
         assert re.fullmatch(VIDEO,domain+".") is None,domain
