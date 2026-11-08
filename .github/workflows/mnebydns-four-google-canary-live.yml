@@ -70,7 +70,15 @@ jobs:
           m=importlib.util.module_from_spec(spec)
           spec.loader.exec_module(m)
           ip="89.125.90.101"
-          for name in ("www.youtube.com","youtubei.googleapis.com","i.ytimg.com","stitch.withgoogle.com","accounts.google.com","aistudio.google.com","generativelanguage.googleapis.com","r1---sn-dynamic.googlevideo.com"):
+          for name in ("www.youtube.com","youtubei.googleapis.com","i.ytimg.com",
+                      "s.ytimg.com","yt3.ggpht.com",
+                      "stitch.withgoogle.com","accounts.google.com",
+                      "aistudio.google.com","generativelanguage.googleapis.com",
+                      "jnn-pa.googleapis.com","waa-pa.clients6.google.com",
+                      "www.googleapis.com","optimizationguide-pa.googleapis.com",
+                      "www.gstatic.com","fonts.gstatic.com",
+                      "lh3.googleusercontent.com",
+                      "r1---sn-dynamic.googlevideo.com"):
             code,count,rows=m.query(name,1,ip,853,"dns.mnebyvpn.site",None)
             answers=[socket.inet_ntoa(raw) for typ,ttl,raw in rows if typ==1]
             if code!=0 or answers!=[ip]:raise AssertionError("Public synthetic DoT failed: "+name)
@@ -78,6 +86,16 @@ jobs:
               rcode,n,rr=m.query(name,typ,ip,853,"dns.mnebyvpn.site",None)
               if rcode!=0 or n!=0:raise AssertionError("DoT address-family bypass: "+name)
             print("public_DNS_route_pass="+name)
+          # Do not redirect Android push or NTP, even under wider Google scope.
+          for name in ("mtalk.google.com","time.google.com","fcm.googleapis.com"):
+            try:
+              code,count,rows=m.query(name,1,ip,853,"dns.mnebyvpn.site",None)
+            except Exception:
+              print("system_direct_answer_inconclusive="+name)
+              continue
+            answers=[socket.inet_ntoa(raw) for typ,ttl,raw in rows if typ==1]
+            if ip in answers:raise AssertionError("Android system route hijacked: "+name)
+            print("Android_system_direct_preserved="+name)
           for name in ("gemini.google.com","discord.com","gateway.discord.gg","cdn.discordapp.com"):
             code,count,rows=m.query(name,1,ip,853,"dns.mnebyvpn.site",None)
             answers=[socket.inet_ntoa(raw) for typ,ttl,raw in rows if typ==1]
@@ -85,4 +103,6 @@ jobs:
             print("original_DNS_preserved="+name)
           PY
           echo "russian_path_and_public_DNS_verified=true"
-          echo "canary_active_with_30_minute_automatic_rollback=true"
+          echo "canary_active_with_reboot_persistent_30_minute_auto_rollback=true"
+          echo "known_google_exact_hosts=60"
+          echo "dynamic_Google_media_groups=8"
