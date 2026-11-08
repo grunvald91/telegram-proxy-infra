@@ -48,7 +48,7 @@ test -s "$base/proxy.pilot"
 # A separate service on loopback is required before introducing live SNI map.
 cat > "$base/pilot.service" <<'UNIT'
 [Unit]
-Description=MNEBYDNS Google Claude Instagram X Grok Threads timed pilot
+Description=MNEBYDNS Google Claude Meta TikTok Telegram short diagnostic pilot
 After=network-online.target
 Wants=network-online.target
 StartLimitIntervalSec=60
@@ -116,7 +116,11 @@ echo "isolated_google_pilot_on_loopback=true"
 
 # Validate original Google certificate through the new SNI backend.
 # Avoid interpolating an arbitrary user supplied hostname in bash.
-for host in instagram.com www.instagram.com graph.instagram.com \
+for host in www.tiktok.com tiktok.com api.tiktokv.com \
+  api16-normal-c-alisg.tiktokv.com api2.musical.ly \
+  telegram.org web.telegram.org api.telegram.org t.me \
+  meta.com meta.ai graph.threads.net edge-mqtt.facebook.com \
+  instagram.com www.instagram.com graph.instagram.com \
   threads.com threads.net www.threads.com \
   x.com twitter.com pbs.twimg.com t.co \
   grok.com api.x.ai x.ai \
@@ -148,7 +152,7 @@ deadline="$(date -u -d '+30 minutes' +'%Y-%m-%d %H:%M:%S UTC')"
 systemd-analyze calendar "$deadline" >/dev/null
 cat > "$base/watchdog.service" <<UNIT
 [Unit]
-Description=Restore original MNEBYDNS DNS/SNI after scoped Google Claude canary
+Description=Restore original MNEBYDNS DNS/SNI after scoped Meta TikTok Telegram test
 
 [Service]
 Type=oneshot
