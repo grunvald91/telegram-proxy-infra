@@ -1,0 +1,37 @@
+name: Install rolling owner VPN grant on production
+on:
+  push:
+    branches: [ops/mnebyvpn-owner-rolling-access-20261108]
+    paths:
+      - '.github/workflows/mnebyvpn-owner-keepalive-live.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebyvpn-owner-keepalive-prod
+  cancel-in-progress: false
+jobs:
+  install:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      HOST: 188.120.254.223
+      SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Preflight local scripts
+        run: |
+          set -euo pipefail
+          test -n "$SSH_PASSWORD"
+          python3 -m py_compile scripts/mnebyvpn-owner-keepalive.py
+          bash -n scripts/mnebyvpn-owner-keepalive-install.sh
+      - name: Install and verify on dedicated owner server
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          export SSHPASS="$SSH_PASSWORD"
+          sshpass -e scp -o StrictHostKeyChecking=accept-new scripts/mnebyvpn-owner-keepalive.py "root@$HOST:/root/mnebyvpn-owner-keepalive.py"
+          sshpass -e scp -o StrictHostKeyChecking=accept-new scripts/mnebyvpn-owner-keepalive-install.sh "root@$HOST:/root/mnebyvpn-owner-keepalive-install.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=accept-new "root@$HOST" "bash /root/mnebyvpn-owner-keepalive-install.sh /root/mnebyvpn-owner-keepalive.py"
