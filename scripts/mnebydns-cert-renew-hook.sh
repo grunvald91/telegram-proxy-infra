@@ -17,4 +17,3 @@ for attempt in {1..30}; do
 done
 echo "mnebydns_dot_listener_missing_after_reload" >&2
 exit 1
-echo "mnebydns_dot_cert_reloaded=yes"
