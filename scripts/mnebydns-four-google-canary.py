@@ -29,11 +29,65 @@ HOSTS = (
     "aistudio.google.com",
     "generativelanguage.googleapis.com",
     "oauth2.googleapis.com",
+    "lh5.googleusercontent.com",
+    "ssl.gstatic.com",
+    "fonts.googleapis.com",
+    "play.google.com",
+    "ogs.google.com",
+    "www.google.com",
+    "apis.google.com",
+    "lh3.googleusercontent.com",
+    "maps.gstatic.com",
+    "lh3.google.com",
+    "ogads-pa.clients6.google.com",
+    "csp.withgoogle.com",
+    "www.googletagmanager.com",
+    "fonts.gstatic.com",
+    "maps.googleapis.com",
+    "static.doubleclick.net",
+    "www.gstatic.com",
+    "td.doubleclick.net",
+    "googleads.g.doubleclick.net",
+    "www.google-analytics.com",
+    "encrypted-tbn0.gstatic.com",
+    "encrypted-tbn1.gstatic.com",
+    "encrypted-tbn2.gstatic.com",
+    "encrypted-tbn3.gstatic.com",
+    "streetviewpixels-pa.googleapis.com",
+    "content-autofill.googleapis.com",
+    "labs.google",
+    "youtube.com",
+    "m.youtube.com",
+    "youtu.be",
+    "accounts.youtube.com",
+    "www.youtube-nocookie.com",
+    "mail.google.com",
+    "drive.google.com",
+    "docs.google.com",
+    "sheets.google.com",
+    "calendar.google.com",
+    "photos.google.com",
+    "maps.google.com",
+    "myaccount.google.com",
+    "people.googleapis.com",
+    "storage.googleapis.com",
+    "youtube-nocookie.com",
+    "www.google.ru",
+    "www.google.de",
+    "www.google.co.uk",
 )
-# Google video CDN dynamically chooses hostnames, so exact-name DNS rewrites
-# cannot handle video playback. Restrict this wildcard to googlevideo.com only.
-VIDEO = r"(?i)^(?:[a-z0-9-]+[.])*googlevideo[.]com[.]$"
-VIDEO_NGINX = r"~*^(?:[a-z0-9-]+\.)*googlevideo\.com$"
+# Finite, Google-owned HTTPS media/service suffix families (pilot only).
+# Unsafe system endpoints such as mtalk.google.com, time.google.com and
+# stun.l.google.com are NOT matched by these suffixes.
+DYNAMIC_SUFFIXES = (
+    "googlevideo.com", "ytimg.com", "ggpht.com",
+    "gstatic.com", "googleusercontent.com", "youtube.com",
+    "youtube-nocookie.com", "withgoogle.com", "googleapis.com",
+)
+VIDEO = r"(?i)^(?:[a-z0-9-]+[.])*(?:" + "|".join(
+    re.escape(x).replace(r"\\.", "[.]") for x in DYNAMIC_SUFFIXES) + r")[.]$"
+VIDEO_NGINX = r"~*^(?:[a-z0-9-]+\\.)*(?:" + "|".join(
+    re.escape(x) for x in DYNAMIC_SUFFIXES) + r")$"
 MAP = re.compile(
     r"(map\s+\$ssl_preread_server_name\s+\$direct_mtproxy_backend\s*\{)"
     r"([^{}]*)(\})", re.S
@@ -45,7 +99,8 @@ def validate() -> None:
     assert len(set(HOSTS)) == len(HOSTS)
     for host in HOSTS:
         assert re.fullmatch(r"[a-z0-9-]+(?:[.][a-z0-9-]+)+",host)
-        assert not host.endswith(".googlevideo.com")
+        assert host not in {"mtalk.google.com","mtalk4.google.com",
+                            "time.google.com","stun.l.google.com"}
     assert VIDEO_NGINX.startswith("~*^")
 
 
@@ -60,7 +115,7 @@ def render_sni(nginx: str) -> str:
         raise ValueError("Original Gemini SNI entry not verified")
     if not re.search(r"(?m)^[ \t]*default[ \t]+\S+;",old):
         raise ValueError("Original shared SNI fallback missing")
-    if "15449" in nginx or "googlevideo" in old:
+    if "15449" in nginx or any(re.search(r"(?m)^\\s*~\\*?.*"+re.escape(zone)+r".*\\S+;",old) for zone in DYNAMIC_SUFFIXES):
         raise ValueError("Conflicting prior experimental route")
     for host in HOSTS:
         if re.search(r"(?m)^[ \t]*"+re.escape(host)+r"[ \t]+\S+;", old):
@@ -155,7 +210,7 @@ def self_test()->None:
     assert ns != old_nginx and nd != old_dns
     assert ns.count("gemini.google.com 127.0.0.1:15443;")==1
     assert ns.count("discord.com 127.0.0.1:15401;")==1
-    assert len(HOSTS)==14
+    assert len(HOSTS)>=50
     for host in HOSTS:
         assert ns.count(host+" "+BACKEND+";")==1
         assert nd.count("template IN A "+host+" {")==1
@@ -173,7 +228,9 @@ def self_test()->None:
         else:raise AssertionError("Fail-closed gate failed")
     print("four_google_services_canary_self_test=PASS")
     print("exact_hosts="+str(len(HOSTS)))
-    print("dynamic_video_googlevideo_suffix_only=yes")
+    print("dynamic_https_google_owned_suffixes="+",".join(DYNAMIC_SUFFIXES))
+    print("Android_non443_system_domains_not_in_suffixes=true")
+    print("dynamic_google_media_suffixes="+str(len(DYNAMIC_SUFFIXES)))
     print("no_live_network_change=yes")
 
 
@@ -199,7 +256,8 @@ def main()->None:
         with target.open("x") as file:
             file.write(body)
         target.chmod(0o600)
-    print("four_google_services_routes_staged="+str(len(HOSTS)))
+    print("four_google_services_exact_hosts_staged="+str(len(HOSTS)))
+    print("dynamic_google_https_suffixes_staged="+str(len(DYNAMIC_SUFFIXES)))
     print("staging_output_complete=YES")
     print("live_production_untouched=true")
 
