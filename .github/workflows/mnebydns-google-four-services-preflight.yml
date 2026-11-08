@@ -71,7 +71,7 @@ jobs:
               conf=subprocess.run(["nginx","-t"],capture_output=True,timeout=6)
               print("current_nginx_config_valid="+str(conf.returncode==0).lower(),flush=True)
               print("existing_Gemini_isolated_backend_present="+str(pathlib.Path("/etc/mnebydns-gemini/nginx.conf").is_file()).lower(),flush=True)
-              maps=re.findall(r"(?s)map\\s+\\$ssl_preread_server_name\\s+\\$direct_mtproxy_backend\\s*\\{([^{}]*)\\}",nginx)
+              maps=re.findall(r"(?s)map\s+\$ssl_preread_server_name\s+\$direct_mtproxy_backend\s*\{([^{}]*)\}",nginx)
               print("shared_stream_SNI_maps="+str(len(maps)),flush=True)
               if len(maps)==1:
                   entries=[x.strip() for x in maps[0].splitlines() if x.strip() and not x.strip().startswith("#")]
@@ -81,7 +81,7 @@ jobs:
                   print("existing_legacy_sni_routes_present="+str(all(any(x.startswith(h+" ") for x in entries) for h in ("cdn.servgo.ru","tg.servgo.ru"))).lower(),flush=True)
               sockets=subprocess.run(["ss","-H","-lnt"],capture_output=True,text=True,timeout=5).stdout
               for port in (15443,15444,15449,853,443):
-                  print("port_"+str(port)+"_listener="+str(bool(re.search(r"(?m):"+str(port)+r"\\s",sockets))).lower(),flush=True)
+                  print("port_"+str(port)+"_listener="+str(bool(re.search(r"(?m):"+str(port)+r"\s",sockets))).lower(),flush=True)
               print("available_MiB="+str(next(int(x.split()[1])//1024 for x in pathlib.Path("/proc/meminfo").read_text().splitlines() if x.startswith("MemAvailable:"))),flush=True)
           print("read_only_no_live_service_changes=true",flush=True)
           PY
