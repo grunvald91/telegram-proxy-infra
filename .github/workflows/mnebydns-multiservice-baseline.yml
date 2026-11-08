@@ -1,7 +1,7 @@
 name: MNEBYDNS multi-service direct RU vs foreign TLS baseline
 on:
   push:
-    branches: ['feature/mnebydns-multiservice-audit-20261108']
+    branches: ['feature/mnebydns-multiservice-audit-20261108', 'feature/mnebydns-priority-ru-readonly-20261108']
     paths: ['.github/workflows/mnebydns-multiservice-baseline.yml']
 permissions:
   contents: read
@@ -32,6 +32,12 @@ jobs:
             ('perplexity','www.perplexity.ai'),('tiktok','www.tiktok.com'),
             ('youtube','www.youtube.com'),('youtube','youtubei.googleapis.com'),
             ('spotify','open.spotify.com'),('archive','archive.org'),('roblox','www.roblox.com'),
+            # MNEBYDNS priority-specific exact-host reachability; no routes are changed.
+            ('google','www.google.com'),('google','accounts.google.com'),
+            ('google','aistudio.google.com'),('google','www.gstatic.com'),
+            ('google','ssl.gstatic.com'),('google','oauth2.googleapis.com'),
+            ('youtube','i.ytimg.com'),('youtube','accounts.youtube.com'),
+            ('meta','api.instagram.com'),('meta','gateway.instagram.com'),
             ('google_ai','gemini.google.com'),('google_ai','jnn-pa.googleapis.com')
           ]
           def check(item):
