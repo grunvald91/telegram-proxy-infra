@@ -6,6 +6,7 @@ on:
       - 'scripts/mnebydns-four-google-canary.py'
       - 'scripts/mnebydns-four-google-deploy.sh'
       - 'scripts/mnebydns-four-google-rollback.sh'
+      - 'scripts/mnebydns-claude-handoff.sh'
       - '.github/workflows/mnebydns-four-google-canary-tests.yml'
 permissions:
   contents: read
