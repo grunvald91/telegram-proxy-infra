@@ -1,7 +1,7 @@
 name: Validate MNEBYDNS experimental four-service canary offline
 on:
   push:
-    branches: ['feature/mnebydns-entire-android-dns-30m-20261109']
+    branches: ['feature/mnebydns-claude-google-combined-30m-20261109']
     paths:
       - 'scripts/mnebydns-four-google-canary.py'
       - 'scripts/mnebydns-four-google-deploy.sh'
@@ -29,11 +29,11 @@ jobs:
           spec.loader.exec_module(m)
           added=('android.googleapis.com','firebaseinstallations.googleapis.com','gcm-http.googleapis.com')
           assert all(h in m.HOSTS for h in added)
-          assert len(m.HOSTS)==73 and len(set(m.HOSTS))==73
+          assert len(m.HOSTS)==91 and len(set(m.HOSTS))==91
           safe_443=('pki.google.com','clients1.google.com','notifications.google.com')
           assert all(h in m.HOSTS for h in safe_443)
           assert all(h in m.DYNAMIC_SUFFIXES for h in ('googleapis.com','google.com'))
-          assert len(m.DYNAMIC_SUFFIXES)==17
+          assert len(m.DYNAMIC_SUFFIXES)==23
           # Owner-directed temporary DNS-only redirect includes all system names.
           android_system=('mtalk.google.com','mtalk4.google.com','time.google.com',
                           'fcm.googleapis.com','fcm-xmpp.googleapis.com',
@@ -42,7 +42,18 @@ jobs:
                           'pki.google.com','clients1.google.com',
                           'notifications.google.com','stun.l.google.com')
           assert len(android_system)==13
-          assert all(h in m.HOSTS for h in android_system)
+          assert all(h in m.HOSTS for h in (*android_system,*claude))
+          claude=('claude.ai','a.claude.ai','a-cdn.claude.ai',
+                  'assets.claude.ai','downloads.claude.ai','claude.com',
+                  'code.claude.com','platform.claude.com','api.anthropic.com',
+                  'a-api.anthropic.com','a-cdn.anthropic.com','s-cdn.anthropic.com',
+                  'assets-proxy.anthropic.com','statsig.anthropic.com',
+                  'bridge.claudeusercontent.com','claudeusercontent.com',
+                  'claudemcpcontent.com','claude.app')
+          assert len(claude)==18 and all(h in m.HOSTS for h in claude)
+          assert all(z in m.DYNAMIC_SUFFIXES for z in (
+              'claude.ai','claude.com','anthropic.com',
+              'claudeusercontent.com','claudemcpcontent.com','claude.app'))
           fixture='''tls://.:853 {
               template IN A gemini.google.com { match x }
               cache 30
@@ -50,7 +61,7 @@ jobs:
           '''
           rendered=m.render_dot(fixture)
           assert all(('template IN A '+h+' {') in rendered for h in android_system)
-          print('all_known_Android_system_domains_including_STUN_and_broad_Google_suffixes=PASS')
+          print('Android_Google_Claude_91_exact_23_suffixes=PASS')
           PY
           bash -n scripts/mnebydns-four-google-deploy.sh
           bash -n scripts/mnebydns-four-google-rollback.sh
