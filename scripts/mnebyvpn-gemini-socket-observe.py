@@ -242,27 +242,42 @@ def main() -> None:
     print("capture_cannot_prove_process_or_exact_website=yes", flush=True)
     if sys.argv[1] == "preflight":
         return
-    # A bounded, self-terminating sampler; no tap/pcap, no disk or Xray changes.
+    # Baseline then explicit interaction window: only DIFFERENT destination
+    # sockets go into the new-connection summary. Reused existing Google
+    # connections cannot be separated, so the full-window count is also given.
     mapping = hostname_candidates()
-    observed = set()
-    print("capture_started_now_UTC=" +
+    print("capture_setup_complete_UTC=" +
           dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"), flush=True)
-    end = time.monotonic() + 105
-    while time.monotonic() < end:
-        # Fail closed if a second user becomes active during sampling.
-        if active_count() != 1 or isolated_child_pid() != pid:
-            print("capture_aborted_account_or_process_changed=true", flush=True)
-            raise SystemExit(3)
-        try:
-            observed |= proc_sockets(pid)
-        except (OSError, PermissionError):
-            print("capture_aborted_socket_visibility_changed=true", flush=True)
-            raise SystemExit(3)
-        time.sleep(.35)
-    print("capture_finished_UTC=" +
-          dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"), flush=True)
-    for line in summarize(observed, mapping):
+
+    def sample_window(seconds: int) -> set[tuple[str,str,int]]:
+        out: set[tuple[str,str,int]] = set()
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            if active_count() != 1 or isolated_child_pid() != pid:
+                print("capture_aborted_account_or_process_changed=true", flush=True)
+                raise SystemExit(3)
+            try:
+                out.update(proc_sockets(pid))
+            except (OSError, PermissionError):
+                print("capture_aborted_socket_visibility_changed=true", flush=True)
+                raise SystemExit(3)
+            time.sleep(.35)
+        return out
+
+    print("baseline_idle_window_seconds=15", flush=True)
+    baseline=sample_window(15)
+    print("GEMINI_TEST_WINDOW_OPEN_UTC=" +
+          dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),flush=True)
+    print("GEMINI_TEST_WINDOW_SECONDS=90", flush=True)
+    interaction=sample_window(90)
+    print("GEMINI_TEST_WINDOW_CLOSED_UTC=" +
+          dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),flush=True)
+    print("baseline_destination_count="+str(len(baseline)),flush=True)
+    print("test_window_all_destination_count="+str(len(interaction)),flush=True)
+    print("test_window_new_destination_count="+str(len(interaction-baseline)),flush=True)
+    for line in summarize(interaction-baseline, mapping):
         print(line, flush=True)
+    print("test_existing_connections_not_attributable=true", flush=True)
     print("capture_stopped_no_persistent_tracking=true", flush=True)
 
 if __name__ == "__main__":
