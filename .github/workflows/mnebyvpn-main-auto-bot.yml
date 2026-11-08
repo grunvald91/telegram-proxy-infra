@@ -1,3 +1,4 @@
+# 2026-11-08: deploy Telegram auto-free-trial onboarding from green MNEBYVPN 53c350894fbaec1b0b71120c6634e0ab2dc7d812, site/migration 0106 already published in 42456839787.
 # Review fix 2026-11-07: publish MNEBYVPN source 0b37346f5bad5d3b83298ed0516f52808fa0a43c after green CI 42386143675 and successful matching site canary 42386269238.
 # Release 2026-11-07: button-only MNEBYVPN support and operator inbox from verified source CI 42385154590.
 # CI-verified button-only support bot source main 973f71af16bca98e56c329d20f2ae4ccbccfc554 (run 42385154590 success); trigger isolated canary release.
