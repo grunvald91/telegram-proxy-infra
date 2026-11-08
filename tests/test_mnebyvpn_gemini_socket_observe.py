@@ -47,14 +47,14 @@ class SocketTracingContract(unittest.TestCase):
 
     def test_fails_closed_on_multiple_credential_state(self):
         import datetime as dt
-        from unittest.mock import MagicMock
+        from types import SimpleNamespace
         now=dt.datetime(2026,11,8,13,0,tzinfo=dt.timezone.utc)
         data={
             "a":{"enabled":True,"expiresAt":"2026-11-09T13:00:00+00:00"},
             "b":{"enabled":True,"expiresAt":"2026-11-09T13:00:00+00:00"},
             "c":{"enabled":False,"expiresAt":"2026-11-09T13:00:00+00:00"},
         }
-        with patch.object(O.STATE,"read_text",return_value=__import__("json").dumps(data)):
+        with patch.object(O,"STATE",new=SimpleNamespace(read_text=lambda: __import__("json").dumps(data))):
             self.assertEqual(O.active_count(now),2)
 
     def test_no_packet_logs_secrets_or_live_service_writes(self):
