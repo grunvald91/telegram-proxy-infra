@@ -33,7 +33,7 @@ jobs:
           host=root@89.125.90.101
           work="/tmp/mnebydns-ci-$GITHUB_RUN_ID"
           opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
-          remote() { sshpass -e ssh "${opts[@]}" "$host" "$"; }
+          remote() { sshpass -e ssh "${opts[@]}" "$host" "$@"; }
           remote "mkdir -m 700 -- '$work'"
           tar -C mnebyvpn/ops/smart-dns-poc -czf - \
             Gemini-SNI-live.nginx.conf mnebydns-gemini.service |
