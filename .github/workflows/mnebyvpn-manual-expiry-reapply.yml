@@ -1,3 +1,4 @@
+# Guarded refresh for precisely two active test accounts; each key checked by signed inspect.
 # Read-only preflight aggregate counts; no state changes unless exact two-owner check passes.
 name: Operator authorized VPN active test keys reapply and deadline resync
 on:
