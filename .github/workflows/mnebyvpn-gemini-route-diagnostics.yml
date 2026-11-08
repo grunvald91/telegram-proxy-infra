@@ -1,0 +1,70 @@
+# On-demand, no-payload Gemini socket telemetry for one active MNEBYVPN profile.
+# Code-only addition: no continuous agent, reboot, Xray config change or daemon.
+name: MNEBYVPN Gemini one-client route diagnostics (private metadata)
+on:
+  push:
+    branches: ['feature/mnebyvpn-gemini-private-route-trace-20261108']
+    paths:
+      - '.github/workflows/mnebyvpn-gemini-route-diagnostics.yml'
+      - 'scripts/mnebyvpn-gemini-socket-observe.py'
+      - 'tests/test_mnebyvpn_gemini_socket_observe.py'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'One-time action; capture opens a 90-second Gemini test window'
+        required: true
+        type: choice
+        options:
+          - preflight
+          - capture
+        default: preflight
+permissions:
+  contents: read
+concurrency:
+  group: mnebyvpn-gemini-readonly-diagnostic
+  cancel-in-progress: false
+jobs:
+  read-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      SSHPASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RUN_EVENT: ${{ github.event_name }}
+      REQUESTED_MODE: ${{ inputs.mode }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify privacy policy, syntax and socket parser contracts locally
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebyvpn-gemini-socket-observe.py
+          python3 -m unittest discover -s tests -p 'test_mnebyvpn_gemini_socket_observe.py' -v
+          test -f scripts/mnebyvpn-gemini-socket-observe.py
+      - name: Inspect isolated foreign Xray child read-only
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$SSHPASS"
+          if [[ "$RUN_EVENT" == push ]]; then
+            MODE=preflight
+          else
+            MODE="$REQUESTED_MODE"
+          fi
+          [[ "$MODE" == preflight || "$MODE" == capture ]] || exit 3
+          echo "diagnostic_request=$MODE"
+          echo "captures_permanent_user_data=false"
+          echo "collects_raw_addresses_or_credentials=false"
+          echo "changes_xray_nginx_or_firewall=false"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          sshpass -e ssh \
+            -o ConnectTimeout=12 -o LogLevel=ERROR \
+            -o StrictHostKeyChecking=accept-new \
+            root@89.125.90.101 \
+            "python3 - $MODE" < scripts/mnebyvpn-gemini-socket-observe.py
+      - name: Declare result is a short-lived socket observation, not packet payload
+        if: success()
+        shell: bash
+        run: |
+          echo 'persistent_server_collection_enabled=false'
+          echo 'full_Gemini_request_or_SNI_observed=false'
