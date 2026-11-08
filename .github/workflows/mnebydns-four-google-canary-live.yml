@@ -43,7 +43,7 @@ jobs:
             trap - EXIT
             if [[ "$rc" != 0 && "$changed" == yes ]]; then
               echo "canary_failed_attempt_scoped_rollback=yes"
-              SSHPASS="$FOREIGN_PASS" sshpass -e ssh "${opts[@]}" "$host" "test -s '$backup/rollback.sh' && bash '$backup/rollback.sh' '$backup'" || echo "rollback_unconfirmed_watchdog_armed=yes"
+              SSHPASS="$FOREIGN_PASS" sshpass -e ssh "${opts[@]}" "$host" "if test -s '$backup/rollback.sh' && test -s '$backup/nginx.pilot' && test -s '$backup/dns.pilot'; then bash '$backup/rollback.sh' '$backup'; else echo 'no_live_dns_or_nginx_swap_to_revert=true'; fi" || echo "scoped_rollback_unconfirmed=true"
             fi
             SSHPASS="$FOREIGN_PASS" sshpass -e ssh "${opts[@]}" "$host" "rm -rf -- '$work'" >/dev/null 2>&1 || true
             exit "$rc"
