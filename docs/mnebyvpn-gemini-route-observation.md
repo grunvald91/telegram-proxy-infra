@@ -8,7 +8,7 @@ and stderr redirected to `/dev/null` by the agent, and no retained access log.
 Previous application requests therefore cannot be reconstructed.
 
 The new inspector enumerates outbound **socket metadata already held by the
-dedicated Xray child** for one active subscriber. It does not inspect IP
+dedicated Xray child**. Individual subscriber identity per socket is not available. It does not inspect IP
 packets, TLS/QUIC payloads, speech, request bodies, Google account or
 subscription secrets, and does not restart or reconfigure Xray. A mapping of
 Google hostnames to addresses is resolved at measurement time to suggest
@@ -30,18 +30,17 @@ Use the manually dispatched workflow:
 - Choose `preflight` for a quick, read-only safety check. During feature
   branch development only, a push of this workflow/source file automatically
   runs *preflight only*.
-- Choose `capture` to test Gemini. The job validates one enabled VPN account,
+- Choose `capture-exclusive` only after confirming that ALL VPN sessions on this isolated node belong to the operator. This is a manual attestation, not technical subscriber identity proof. The job validates the enabled-account roster,
   identifies its isolated Xray child, resolves known Google host candidates,
   collects **15 seconds idle baseline**, prints
   `GEMINI_TEST_WINDOW_OPEN_UTC`, samples outbound sockets for **90 seconds**,
   then ends. The customer should use only MNEBYVPN and open native Gemini,
   first a short text prompt, then short voice interaction in this 90s window.
-  A second active VPN subscriber or Xray process change stops the test.
+  A change in the enabled account count or the Xray child process stops the test. Many TCP tunnels can belong to a single app: the tunnel count is not a user count.
 - The report separates baseline destinations, all test destinations and
   destinations newly seen during the activity window. Existing reused sockets
   may be invisible in the newly seen set. There is no capture after 90s.
-- Future tests use the same manual workflow; no need to reconfigure or restart
-  the VPN server each time. Run at a time agreed with the customer.
+- Future tests use the same manual workflow, or an owner-confirmed one-off commit titled `[gemini-capture] owner confirmed exclusive test` to `ops/diagnostics/mnebyvpn-gemini-capture-request.txt` on branch `diagnostics/mnebyvpn-gemini-on-demand`. The diagnostics branch must be created after the workflow merges into `main`. No VPN service restart is needed.
 - Do not test on an account used simultaneously by additional devices or
   apps. Background Android Play Services can still generate traffic.
   The test **cannot prove per-Android-app attribution**, despite only one
@@ -64,7 +63,7 @@ Use the manually dispatched workflow:
 
 ## Safety guarantees / limitations
 
-- Exact single active subscriber enforced both before and throughout capture.
+- Ordinary preflight requires a single established tunnel, often unrealistic for normal VPN apps. Explicit `capture-exclusive` permits multiple tunnels only when all connected sessions are declared to be operator-owned, and stops on changed account roster or Xray child. DO NOT run for real multi-user production traffic: attribution would not be safe.
 - Child process identity and configuration topology verified; no global
   tcpdump, pcaps, system logs or all-account log scan.
 - No persistent on-server file, daemon, firewall change, config reload or
