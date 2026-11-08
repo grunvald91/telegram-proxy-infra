@@ -1,8 +1,9 @@
+# 2026-11-09: Owner-approved temporary 63-host canary derived from the prior 90-second VPN trace. The three new hosts are unproven candidates, not attributed app requests. No permanent promotion. Must retain the 30-minute watchdog.
 # Fresh owner-authorized 2026-11-09 batch canary: run ID must be new (not a rerun attempt).
 name: MNEBYDNS owner 30-minute Google routing live experiment
 on:
   push:
-    branches: ['feature/mnebydns-google-four-services-preflight-20261108']
+    branches: ['feature/mnebydns-android-three-candidate-canary-20261109']
     paths: ['.github/workflows/mnebydns-four-google-canary-live.yml']
 permissions:
   contents: read
@@ -60,7 +61,7 @@ jobs:
           echo "foreign_experimental_canary_activated=true"
           SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 'bash -se' <<'RU'
           set -Eeuo pipefail
-          for host in www.youtube.com youtubei.googleapis.com i.ytimg.com stitch.withgoogle.com accounts.google.com aistudio.google.com generativelanguage.googleapis.com gemini.google.com cdn.servgo.ru tg.servgo.ru; do
+          for host in android.googleapis.com firebaseinstallations.googleapis.com gcm-http.googleapis.com www.youtube.com youtubei.googleapis.com i.ytimg.com stitch.withgoogle.com accounts.google.com aistudio.google.com generativelanguage.googleapis.com gemini.google.com cdn.servgo.ru tg.servgo.ru; do
             code="$(curl --noproxy '*' -4 -sS -o /dev/null --connect-timeout 7 --max-time 16 --resolve "$host:443:89.125.90.101" -w '%{http_code}' "https://$host/" 2>/dev/null || true)"
             if [[ "$code" == 000 || -z "$code" ]]; then echo "ru_foreign_TLS_failed=$host"; exit 3; fi
             echo "ru_foreign_original_TLS=$host verified"
@@ -80,6 +81,8 @@ jobs:
                       "aistudio.google.com","generativelanguage.googleapis.com",
                       "jnn-pa.googleapis.com","waa-pa.clients6.google.com",
                       "www.googleapis.com","optimizationguide-pa.googleapis.com",
+                      "android.googleapis.com","firebaseinstallations.googleapis.com",
+                      "gcm-http.googleapis.com",
                       "www.gstatic.com","fonts.gstatic.com",
                       "lh3.googleusercontent.com",
                       "r1---sn-dynamic.googlevideo.com"):
@@ -108,5 +111,5 @@ jobs:
           PY
           echo "russian_path_and_public_DNS_verified=true"
           echo "canary_active_with_reboot_persistent_30_minute_auto_rollback=true"
-          echo "known_google_exact_hosts=60"
+          echo "known_google_exact_hosts=63"
           echo "dynamic_Google_media_groups=8"
