@@ -1,0 +1,86 @@
+name: MNEBYVPN Reality Karing client path and live flapping read-only audit
+on:
+  push:
+    branches: [diag/mnebyvpn-karing-reality-flap-20261109]
+    paths: ['.github/workflows/mnebyvpn-karing-flap-readonly.yml']
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      FOREIGN_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Inspect signed worker subscription content for the one verified owner
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          export SSHPASS="$RU_PASSWORD"
+          sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o LogLevel=ERROR root@188.120.254.223 'python3 -' <<'PY'
+          import base64,json,pathlib,subprocess,urllib.request,urllib.parse
+          link_hash='65159196f6dc7ce18685dd61f958679927889b3a8db907ce80c6b57ce6154a4e'
+          sql="SELECT e.id::text||'|'||e.revision::text FROM vpn_subscription_links l JOIN entitlements e ON e.id=l.entitlement_id JOIN provisioning_state p ON p.entitlement_id=e.id AND p.adapter='vpn' WHERE l.token_sha256='"+link_hash+"' AND l.revoked_at IS NULL AND e.product='vpn' AND e.state='ACTIVE' AND e.expires_at>clock_timestamp() AND p.applied_revision=e.revision"
+          output=subprocess.run(['docker','exec','mnebyvpn-stage-postgres','psql','-qAtX','-v','ON_ERROR_STOP=1','-U','mnebyvpn_stage','-d','mnebyvpn_stage','-c',sql],check=True,capture_output=True,text=True,timeout=15).stdout.strip().splitlines()
+          if len(output)!=1 or output[0].count('|')!=1:raise SystemExit('owner_link_verified=false')
+          identity,revision=output[0].split('|')
+          env=pathlib.Path('/opt/mnebyvpn/bot/worker.env').read_text()
+          token=[line.split('=',1)[1] for line in env.splitlines() if line.startswith('VPN_WORKER_PROFILE_TOKEN=')]
+          if len(token)!=1:raise SystemExit('worker_auth_token_missing')
+          data=json.dumps({'entitlementId':identity}).encode()
+          req=urllib.request.Request('http://127.0.0.1:8794/profile',data,{'Content-Type':'application/json','Authorization':'Bearer '+token[0]},method='POST')
+          with urllib.request.urlopen(req,timeout=8) as resp:
+            body=json.load(resp)
+          val=body.get('profile')
+          if not isinstance(val,str):raise SystemExit('owner_profile_missing')
+          profiles=val.strip().splitlines()
+          print('owner_verified_profile_count='+str(len(profiles)))
+          types=[]
+          for link in profiles:
+            p=urllib.parse.urlsplit(link)
+            q=urllib.parse.parse_qs(p.query)
+            if p.scheme!='vless':raise SystemExit('unexpected_node_protocol')
+            if p.port==2053 and q.get('security')==['reality']:
+              tag='reality_'+q.get('fp',['missing'])[0]
+            elif p.port==8443 and q.get('security')==['tls']:
+              tag='websocket_tls'
+            else:tag='unexpected'
+            types.append(tag)
+          print('owner_verified_profile_types='+','.join(types))
+          print('owner_profile_contains_all_expected='+
+             str(types==['reality_chrome','reality_firefox','websocket_tls']).lower())
+          if types!=['reality_chrome','reality_firefox','websocket_tls']:raise SystemExit('owner_profile_missing_transports')
+          PY
+      - name: Inspect last two hours of foreign Xray process stability and listeners
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$FOREIGN_PASSWORD"
+          sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o LogLevel=ERROR root@89.125.90.101 'python3 -' <<'PY'
+          import subprocess
+          def cmd(args):
+            p=subprocess.run(args,capture_output=True,text=True,timeout=12)
+            return p.stdout.strip()
+          for unit in ('mnebyvpn-vpn-provisioner.service','xray.service'):
+            status=cmd(['systemctl','is-active',unit])
+            restarts=cmd(['systemctl','show',unit,'-p','NRestarts','--value'])
+            since=cmd(['systemctl','show',unit,'-p','ActiveEnterTimestamp','--value'])
+            print('service_'+unit.replace('.service','').replace('-','_')+'_active='+status)
+            print('service_'+unit.replace('.service','').replace('-','_')+'_restart_count='+restarts)
+            print('service_'+unit.replace('.service','').replace('-','_')+'_active_since='+since)
+            journal=cmd(['journalctl','-u',unit,'--since','2 hours ago','--no-pager','-o','cat'])
+            import re
+            noisy=sum(bool(re.search(r'(?i)(start|stop|failed|exit|oom|restart|panic|error)',line)) for line in journal.splitlines())
+            print('service_'+unit.replace('.service','').replace('-','_')+'_important_journal_lines_last_2h='+str(noisy))
+          socks=cmd(['ss','-H','-lnt'])
+          print('listener_reality_tcp2053='+str(any(':2053' in row.split()[3] for row in socks.splitlines())).lower())
+          print('listener_ws_loopback18943='+str('127.0.0.1:18943' in socks).lower())
+          for port in (2053,8443):
+            states={}
+            for line in cmd(['ss','-H','-tn','sport',str(port)]).splitlines():
+              fields=line.split()
+              if fields:states[fields[0]]=states.get(fields[0],0)+1
+            print('tcp'+str(port)+'_states='+','.join(a+':'+str(n) for a,n in sorted(states.items())))
+          PY
