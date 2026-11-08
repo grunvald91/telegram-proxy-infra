@@ -33,6 +33,9 @@ jobs:
           python3 scripts/mnebydns-four-google-canary.py self-test
           bash -n scripts/mnebydns-four-google-deploy.sh
           bash -n scripts/mnebydns-four-google-rollback.sh
+          grep -Fq 'MNEBYDNS_DoT_ready_after_restart=true' scripts/mnebydns-four-google-deploy.sh
+          grep -Fq 'automatic_rollback_persists_after_reboot=true' scripts/mnebydns-four-google-deploy.sh
+          echo "readiness_and_persistent_rollback_review_gate=pass"
           opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
           host=root@89.125.90.101
           work="/tmp/mnebydns-ci-$GITHUB_RUN_ID"
