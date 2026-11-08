@@ -1,4 +1,4 @@
-name: Relay89 egress root cause diagnosis
+name: Relay89 conntrack pressure diagnosis
 on:
   push:
     paths: ['.github/workflows/relay89-egress-rootcause.yml']
@@ -21,41 +21,42 @@ jobs:
           set -euo pipefail
           test -n "$SSHPASS"
           command -v sshpass >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq sshpass; }
-          sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 root@89.125.90.101 'python3 -u -' <<'PY'
-          import subprocess, pathlib, re, time, concurrent.futures, json
-          def run(cmd,t=12):
+          sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 root@89.125.90.101 'command -v conntrack >/dev/null || (apt-get update -qq && apt-get install -y -qq conntrack >/dev/null); python3 -u -' <<'PY'
+          import subprocess,pathlib,time,collections,re,json
+          def run(cmd,t=15):
            try:
-            p=subprocess.run(cmd,capture_output=True,text=True,timeout=t)
-            return (p.stdout+p.stderr).strip()
-           except subprocess.TimeoutExpired:return "TIMEOUT"
-          def red(s):
-           s=re.sub(r'(?i)(password|passwd|secret|token|privatekey|presharedkey|uuid)(\\s*[=:]\\s*|\\s+)\\S+',r'\\1=<redacted>',s)
-           s=re.sub(r'\\b[0-9a-fA-F]{32,}\\b','<hex>',s)
-           return s
-          for cmd in [
-           ['date','-Is'],['uptime'],['ip','-s','link','show','eth0'],['ip','rule'],['ip','route','show','table','all'],
-           ['nft','-a','list','ruleset'],['iptables-save','-c'],['cat','/proc/net/netfilter/nfnetlink_queue'],
-           ['systemctl','show','telegram-foreign-nfqws','-p','ActiveState,SubState,NRestarts,ExecMainStartTimestamp'],
-           ['cat','/etc/resolv.conf'],['cat','/etc/nsswitch.conf'],
-           ['journalctl','-k','--since','2026-11-07','--no-pager','-n','80'],
-           ['tc','-s','qdisc','show','dev','eth0']]:
-           print('COMMAND',cmd,flush=True);print(red(run(cmd))[:24000],flush=True)
-          for path in ['/usr/local/sbin/telegram-foreign-nfqws-rules','/etc/zapret2/telegram-nfqws.conf','/etc/systemd/system/telegram-foreign-nfqws.service']:
-           p=pathlib.Path(path)
-           if p.is_file():print('FILE',path,red(p.read_text())[:10000],flush=True)
-          def probe(host):
-           out=[]
-           for i in range(8):
-            cmd=['curl','-4','-sS','-o','/dev/null','--connect-timeout','3','--max-time','6','-w','ip=%{remote_ip} dns=%{time_namelookup} tcp=%{time_connect} tls=%{time_appconnect} total=%{time_total} http=%{http_code}','https://'+host+'/']
-            out.append(run(cmd,8))
-           return host,out
-          with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
-           for host,out in pool.map(probe,['api.telegram.org','www.cloudflare.com','example.com']):
-            print('HTTPS',host,json.dumps(out),flush=True)
-          for resolver in ['8.8.8.8','1.1.1.1','9.9.9.9']:
-           for i in range(6):
-            print('DNS',resolver,i,run(['dig','@'+resolver,'api.telegram.org','A','+tries=1','+time=2','+noall','+answer','+comments'],4),flush=True)
-          print('NETSTAT',run(['nstat','-az']),flush=True)
+            p=subprocess.run(cmd,capture_output=True,text=True,timeout=t);return p.stdout+p.stderr
+           except subprocess.TimeoutExpired:return 'TIMEOUT'
+          for p in ['nf_conntrack_count','nf_conntrack_max','nf_conntrack_buckets','nf_conntrack_tcp_timeout_syn_sent','nf_conntrack_tcp_timeout_established','nf_conntrack_udp_timeout','nf_conntrack_udp_timeout_stream']:
+           f=pathlib.Path('/proc/sys/net/netfilter')/p
+           if f.exists():print('SYSCTL',p,f.read_text().strip(),flush=True)
+          print('MEM',run(['free','-m']),flush=True)
+          print('SLAB', '\n'.join(l for l in pathlib.Path('/proc/slabinfo').read_text().splitlines() if 'conntrack' in l),flush=True)
+          print('CT_STATS',run(['conntrack','-S']),flush=True)
+          raw=run(['conntrack','-L','-o','extended'],40)
+          print('CT_DUMP_BYTES',len(raw),flush=True)
+          stats={k:collections.Counter() for k in ['protocol','state','src','dst','dport','src_dport','unreplied_src','unreplied_dst','unreplied_dport']}
+          for l in raw.splitlines():
+           if not l.startswith(('ipv4','ipv6')):continue
+           fields=dict(re.findall(r'(?<!\S)(src|dst|dport|sport)=([^ ]+)',l.split('src=',2)[0])) if False else {}
+           for key in ['src','dst','dport','sport']:
+            m=re.search(r'\b'+key+r'=([^ ]+)',l)
+            if m:fields[key]=m.group(1)
+           stats['protocol'][l.split()[2] if len(l.split())>2 else '?']+=1
+           m=re.search(r'\b(SYN_SENT|SYN_RECV|ESTABLISHED|TIME_WAIT|CLOSE|CLOSE_WAIT|FIN_WAIT|LAST_ACK)\b',l)
+           stats['state'][m.group(1) if m else 'other']+=1
+           for key in ['src','dst','dport']:
+            stats[key][fields.get(key,'?')]+=1
+           stats['src_dport'][fields.get('src','?')+':'+fields.get('dport','?')]+=1
+           if '[UNREPLIED]' in l:
+            for key in ['src','dst','dport']:stats['unreplied_'+key][fields.get(key,'?')]+=1
+          for key,c in stats.items():print('CT_TOP',key,json.dumps(c.most_common(12)),flush=True)
+          for cmd in [['ss','-s'],['systemctl','list-timers','--all','--no-pager'],['sysctl','net.ipv4.ip_local_port_range'],['sysctl','net.ipv4.tcp_syn_retries']]:
+           print('CMD',cmd,run(cmd),flush=True)
+          logs=run(['journalctl','-k','--since','2026-11-06','--no-pager','--grep','table full'],20).splitlines()
+          print('CT_FULL_LOG_COUNT',len(logs),'FIRST',logs[:4],'LAST',logs[-4:],flush=True)
+          for i in range(4):
+           print('CT_COUNT_SAMPLE',pathlib.Path('/proc/sys/net/netfilter/nf_conntrack_count').read_text().strip(),flush=True);time.sleep(2)
           print('READ_ONLY=true',flush=True)
           
           PY
