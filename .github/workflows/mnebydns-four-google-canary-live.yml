@@ -1,9 +1,9 @@
 # 2026-11-09: User-directed temporary all-known Android and broad Google DNS route experiment. TCP/443 proxy remains limited; non443 FCM/NTP/STUN connectivity may fail. No permanent promotion. Must retain the 30-minute watchdog.
 # Fresh owner-authorized 2026-11-09 batch canary: run ID must be new (not a rerun attempt).
-name: MNEBYDNS owner 30-minute Google routing live experiment
+name: MNEBYDNS owner 30-minute combined Google and Claude routing live experiment
 on:
   push:
-    branches: ['feature/mnebydns-entire-android-dns-30m-20261109']
+    branches: ['feature/mnebydns-claude-google-combined-30m-20261109']
     paths: ['.github/workflows/mnebydns-four-google-canary-live.yml']
 permissions:
   contents: read
@@ -35,6 +35,7 @@ jobs:
           python3 scripts/mnebydns-four-google-canary.py self-test
           bash -n scripts/mnebydns-four-google-deploy.sh
           bash -n scripts/mnebydns-four-google-rollback.sh
+          bash -n scripts/mnebydns-claude-handoff.sh
           grep -Fq 'MNEBYDNS_DoT_ready_after_restart=true' scripts/mnebydns-four-google-deploy.sh
           grep -Fq 'automatic_rollback_persists_after_reboot=true' scripts/mnebydns-four-google-deploy.sh
           echo "readiness_and_persistent_rollback_review_gate=pass"
@@ -55,9 +56,9 @@ jobs:
           }
           trap cleanup EXIT
           SSHPASS="$FOREIGN_PASS" sshpass -e ssh "${opts[@]}" "$host" "test ! -e '$work' && mkdir -m 700 -- '$work'"
-          tar -czf - -C scripts mnebydns-four-google-canary.py mnebydns-four-google-deploy.sh mnebydns-four-google-rollback.sh | SSHPASS="$FOREIGN_PASS" sshpass -e ssh "${opts[@]}" "$host" "tar -xzf - -C '$work'"
+          tar -czf - -C scripts mnebydns-four-google-canary.py mnebydns-four-google-deploy.sh mnebydns-four-google-rollback.sh mnebydns-claude-handoff.sh | SSHPASS="$FOREIGN_PASS" sshpass -e ssh "${opts[@]}" "$host" "tar -xzf - -C '$work'"
           changed=yes
-          SSHPASS="$FOREIGN_PASS" sshpass -e ssh "${opts[@]}" "$host" "bash '$work/mnebydns-four-google-deploy.sh' '$work'"
+          SSHPASS="$FOREIGN_PASS" sshpass -e ssh "${opts[@]}" "$host" "bash '$work/mnebydns-claude-handoff.sh' '$work'"
           echo "foreign_experimental_canary_activated=true"
           SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 'bash -se' <<'RU'
           set -Eeuo pipefail
@@ -90,6 +91,14 @@ jobs:
                       "some-new-host.google.com","some-new-host.googleapis.com",
                       "some-new-host.google-analytics.com",
                       "some-new-host.doubleclick.net",
+                      "claude.ai","claude.com","platform.claude.com",
+                      "api.anthropic.com","a-api.anthropic.com",
+                      "a.claude.ai","assets.claude.ai",
+                      "bridge.claudeusercontent.com",
+                      "assets-dynamic.claude.ai","some-new-service.anthropic.com",
+                      "some-new-service.claude.com",
+                      "some-new-service.claudeusercontent.com",
+                      "some-new-service.claudemcpcontent.com",
                       "www.gstatic.com","fonts.gstatic.com",
                       "lh3.googleusercontent.com",
                       "r1---sn-dynamic.googlevideo.com"):
@@ -109,5 +118,5 @@ jobs:
           PY
           echo "russian_path_and_public_DNS_verified=true"
           echo "canary_active_with_reboot_persistent_30_minute_auto_rollback=true"
-          echo "known_google_exact_hosts=73"
-          echo "dynamic_Google_media_groups=17"
+          echo "known_google_claude_exact_hosts=91"
+          echo "dynamic_Google_Claude_suffix_groups=23"
