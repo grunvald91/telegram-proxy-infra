@@ -33,7 +33,13 @@ jobs:
           assert not any(h in m.DYNAMIC_SUFFIXES for h in ('googleapis.com','google.com'))
           # Do not proxy FCM's known non-443 endpoints.
           assert not any(h in m.HOSTS for h in ('fcm.googleapis.com','mtalk.google.com','mtalk4.google.com','time.google.com'))
-          assert all(('template IN A '+h+' {') in m.render_dot('tls://.:853 {\\n    template IN A gemini.google.com { match x }\\n    cache 30\\n}\\n') for h in added)
+          fixture='''tls://.:853 {
+              template IN A gemini.google.com { match x }
+              cache 30
+          }
+          '''
+          rendered=m.render_dot(fixture)
+          assert all(('template IN A '+h+' {') in rendered for h in added)
           print('three_trace_candidates_exact_only=PASS')
           PY
           bash -n scripts/mnebydns-four-google-deploy.sh
