@@ -178,7 +178,7 @@ def isolated_child_pid() -> int:
         raise RuntimeError("Isolated Xray child not unique")
     return found[0]
 
-def policy_preflight() -> tuple[int, int]:
+def policy_preflight(exclusive_operator_test: bool = False) -> tuple[int, int, int]:
     data = json.loads(CONF.read_text())
     ins = data.get("inbounds", [])
     if not isinstance(ins, list) or len(ins) not in (1, 2):
@@ -199,9 +199,14 @@ def policy_preflight() -> tuple[int, int]:
         raise RuntimeError("Unexpected Xray access logging")
     pid = isolated_child_pid()
     tunnel_count = active_vpn_ingress_count(pid)
-    if tunnel_count != 1:
+    # Multiple concurrent tunnels are normal for a single proxy app. Their
+    # owner cannot be inferred from /proc. Manual exclusive operator attestation
+    # allows ONLY a bounded test window, and is NOT true per-user telemetry.
+    if not (1 <= tunnel_count <= 128):
+        raise RuntimeError("Unusual established Xray inbound tunnel count="+str(tunnel_count))
+    if not exclusive_operator_test and tunnel_count != 1:
         raise RuntimeError("Require exactly one established Xray inbound tunnel count="+str(tunnel_count))
-    return pid, count
+    return pid, count, tunnel_count
 
 def hostname_candidates() -> dict[str, set[str]]:
     def resolve(host: str) -> tuple[str, set[str]]:
@@ -256,12 +261,13 @@ def summarize(observed: set[tuple[str,str,int]],
     return output
 
 def main() -> None:
-    if len(sys.argv) != 2 or sys.argv[1] not in ("preflight","capture"):
-        raise SystemExit("Usage: script.py preflight|capture")
+    if len(sys.argv) != 2 or sys.argv[1] not in ("preflight","capture-exclusive"):
+        raise SystemExit("Usage: script.py preflight|capture-exclusive")
     print("read_only_vpn_Gemini_probe=true", flush=True)
     print("probe_mode=" + sys.argv[1], flush=True)
     try:
-        pid, count = policy_preflight()
+        pid, count, inbound_at_start = policy_preflight(
+            exclusive_operator_test=sys.argv[1] == "capture-exclusive")
     except Exception as ex:
         # Don't print values from runtime configuration, identifiers or OS.
         print("preflight_status=NOT_READY", flush=True)
@@ -273,14 +279,18 @@ def main() -> None:
             print("preflight_report_only_no_changes=true",flush=True)
             return
         raise SystemExit(2)
-    print("preflight_status=READY_SINGLE_ESTABLISHED_TUNNEL", flush=True)
+    print("preflight_status=" + ("READY_OPERATOR_ATTESTED_EXCLUSIVE_WINDOW"
+          if sys.argv[1] == "capture-exclusive" else "READY_SINGLE_ESTABLISHED_TUNNEL"),
+          flush=True)
     print("outbound_pid_present=true", flush=True)
     print("active_entitlement_count=" + str(count), flush=True)
-    print("established_ingress_tunnels=1", flush=True)
+    print("established_ingress_tunnels=" + str(inbound_at_start), flush=True)
     print("per_credential_identity_attribution=NOT_VERIFIED", flush=True)
     print("capture_cannot_prove_process_or_exact_website=yes", flush=True)
     if sys.argv[1] == "preflight":
         return
+    print("operator_exclusive_attribution=DECLARED_NOT_TECHNICALLY_PROVEN",flush=True)
+    print("capture_may_include_other_apps_or_subscribers=YES",flush=True)
     # Baseline then explicit interaction window: only DIFFERENT destination
     # sockets go into the new-connection summary. Reused existing Google
     # connections cannot be separated, so the full-window count is also given.
@@ -292,7 +302,8 @@ def main() -> None:
         out: set[tuple[str,str,int]] = set()
         end = time.monotonic() + seconds
         while time.monotonic() < end:
-            if active_count() != count or isolated_child_pid() != pid or active_vpn_ingress_count(pid) != 1:
+            if (active_count() != count or isolated_child_pid() != pid
+                or not (1 <= active_vpn_ingress_count(pid) <= 128)):
                 print("capture_aborted_account_or_process_changed=true", flush=True)
                 raise SystemExit(3)
             try:
