@@ -1,0 +1,87 @@
+name: MNEBYVPN isolated VLESS latency diagnosis (ephemeral)
+on:
+  push:
+    branches: ['diag/vpn-latency-20261108']
+    paths: ['.github/workflows/mnebyvpn-vless-latency-diag.yml']
+permissions:
+  contents: read
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      FOREIGN_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Measure same endpoint direct and through a short-lived real VLESS WS TLS profile
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASSWORD"
+          test -n "$FOREIGN_PASSWORD"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          OPTS=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          DIR="$(mktemp -d)"
+          ID="$(python3 -c 'import uuid;print(uuid.uuid4())')"
+          CREATED=0
+          XPID=""
+          cleanup() {
+            set +e
+            if [[ -n "$XPID" ]]; then kill "$XPID" 2>/dev/null; wait "$XPID" 2>/dev/null; fi
+            if [[ "$CREATED" == 1 ]]; then
+              SSHPASS="$RU_PASSWORD" sshpass -e ssh "${OPTS[@]}" root@188.120.254.223 \
+                "python3 - revoke $ID" < scripts/mnebyvpn-benchmark-ephemeral.py \
+                >/dev/null && echo 'ephemeral_profile_revoked=true' || echo 'ephemeral_profile_revocation_failed=true'
+            fi
+            rm -rf "$DIR"
+          }
+          trap cleanup EXIT
+          echo 'test_scope=external_runner_to_real_VLESS_WS_TLS_8443_and_same_target_direct'
+          PROFILE_JSON="$(SSHPASS="$RU_PASSWORD" sshpass -e ssh "${OPTS[@]}" root@188.120.254.223 \
+            "python3 - create $ID" < scripts/mnebyvpn-benchmark-ephemeral.py)"
+          CREATED=1
+          CREDENTIAL="$(printf '%s' "$PROFILE_JSON" | python3 -c 'import sys,json;print(json.load(sys.stdin)["credential"])')"
+          echo "::add-mask::$CREDENTIAL"
+          SSHPASS="$FOREIGN_PASSWORD" sshpass -e scp -q "${OPTS[@]}" \
+            root@89.125.90.101:/opt/xray/xray "$DIR/xray"
+          chmod 700 "$DIR/xray"
+          python3 - "$CREDENTIAL" "$DIR/client.json" <<'PY'
+          import json,sys,pathlib,uuid
+          secret=sys.argv[1]
+          uuid.UUID(secret)
+          config={"log":{"loglevel":"warning"},"inbounds":[
+            {"listen":"127.0.0.1","port":19083,"protocol":"socks",
+             "settings":{"auth":"noauth","udp":False}}],
+            "outbounds":[{"tag":"mnebyvpn","protocol":"vless",
+              "settings":{"vnext":[{"address":"89.125.90.101","port":8443,
+               "users":[{"id":secret,"encryption":"none"}]}]},
+              "streamSettings":{"network":"ws","security":"tls",
+               "tlsSettings":{"serverName":"cdn.servgo.ru","allowInsecure":False},
+               "wsSettings":{"path":"/mnebyvpn-vpn/ws",
+               "headers":{"Host":"cdn.servgo.ru"}}}}]}
+          pathlib.Path(sys.argv[2]).write_text(json.dumps(config))
+          PY
+          "$DIR/xray" run -test -config "$DIR/client.json" >/dev/null 2>&1
+          "$DIR/xray" run -config "$DIR/client.json" > "$DIR/xray.log" 2>&1 &
+          XPID=$!
+          for i in $(seq 1 20); do
+            if bash -c 'echo >/dev/tcp/127.0.0.1/19083' 2>/dev/null; then break; fi
+            sleep .2
+          done
+          echo 'measurements_seconds:'
+          TARGET='https://www.cloudflare.com/cdn-cgi/trace'
+          for i in 1 2 3 4 5; do
+            printf 'sample=%s ' "$i"
+            curl --noproxy '*' -fsS -o /dev/null --connect-timeout 7 --max-time 13 \
+              -w 'direct_tcp=%{time_connect} direct_tls=%{time_appconnect} direct_total=%{time_total} direct_code=%{http_code}\n' "$TARGET" || true
+            printf 'sample=%s ' "$i"
+            curl --noproxy '' --proxy socks5h://127.0.0.1:19083 -fsS -o /dev/null \
+              --connect-timeout 7 --max-time 13 \
+              -w 'vless_tcp=%{time_connect} vless_tls=%{time_appconnect} vless_total=%{time_total} vless_code=%{http_code}\n' "$TARGET" || true
+            sleep .2
+          done
+          echo 'xray_errors:'
+          grep -Ei 'failed|error|timeout' "$DIR/xray.log" | tail -12 || true
+          echo 'test_completed=true'
