@@ -1,7 +1,7 @@
 name: MNEBYDNS multi-service direct RU vs foreign TLS baseline
 on:
   push:
-    branches: ['feature/mnebydns-multiservice-audit-20261108']
+    branches: ['feature/mnebydns-multiservice-audit-20261108', 'feature/mnebydns-priority-ru-readonly-20261108']
     paths: ['.github/workflows/mnebydns-multiservice-baseline.yml']
 permissions:
   contents: read
@@ -32,7 +32,21 @@ jobs:
             ('perplexity','www.perplexity.ai'),('tiktok','www.tiktok.com'),
             ('youtube','www.youtube.com'),('youtube','youtubei.googleapis.com'),
             ('spotify','open.spotify.com'),('archive','archive.org'),('roblox','www.roblox.com'),
-            ('google_ai','gemini.google.com'),('google_ai','jnn-pa.googleapis.com')
+            # MNEBYDNS priority-specific exact-host reachability; no routes are changed.
+            ('google','www.google.com'),('google','accounts.google.com'),
+            ('google','aistudio.google.com'),('google','www.gstatic.com'),
+            ('google','ssl.gstatic.com'),('google','oauth2.googleapis.com'),
+            ('youtube','i.ytimg.com'),('youtube','accounts.youtube.com'),
+            ('meta','api.instagram.com'),('meta','gateway.instagram.com'),
+            # Gemini Android: official app-firewall candidates, exact-name only.
+            ('google_ai','gemini.google.com'),('google_ai','jnn-pa.googleapis.com'),
+            ('google_ai','waa-pa.clients6.google.com'),
+            ('google_ai','optimizationguide-pa.googleapis.com'),
+            ('google_ai','www.googleapis.com'),('google_ai','apis.google.com'),
+            ('google_ai','play.google.com'),
+            # YouTube thumbnails and shared account images (media is dynamic).
+            ('youtube_images','i.ytimg.com'),('youtube_images','yt3.ggpht.com'),
+            ('youtube_images','s.ytimg.com')
           ]
           def check(item):
               label,host=item
@@ -65,6 +79,11 @@ jobs:
           d=pathlib.Path('/opt/mnebydns-dot/Corefile').read_text()
           print('original_gemini_sni_live='+str('gemini.google.com 127.0.0.1:15443;' in c).lower())
           print('original_gemini_dns_live='+str('template IN A gemini.google.com' in d).lower())
+          for host in ('www.google.com','www.youtube.com','youtubei.googleapis.com',
+                       'i.ytimg.com','accounts.youtube.com','www.instagram.com'):
+              declared=bool(re.search(r'(?m)^\s*'+re.escape(host)+r'\s+[^;]+;',c))
+              synthetic=('template IN A '+host+' {' in d)
+              print(f'priority_active_sni_host={host} explicit_shared_route={str(declared).lower()} dns_rewrite={str(synthetic).lower()}')
           for host in ['jnn-pa.googleapis.com','waa-pa.clients6.google.com']:
               print('rolled_back_aux_'+host+'='+str(host not in c and host not in d).lower())
           print('current_sni_route_count='+str(len(re.findall(r'(?m)^\s+[a-zA-Z0-9.-]+\s+127[.]0[.]0[.]1:[0-9]+;',c))))
@@ -73,4 +92,69 @@ jobs:
               print('service_'+service.replace('.service','')+'_active='+str(p.returncode==0).lower())
           print('memory_available_kib='+str(next(int(line.split()[1]) for line in pathlib.Path('/proc/meminfo').read_text().splitlines() if line.startswith('MemAvailable:'))))
           print('read_only=yes')
+          PY
+      - name: Foreign public HTTPS SNI reachability from Russian VPS (no changes)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS"
+          SSHPASS="$RU_PASS" sshpass -e ssh \
+            -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new \
+            -o LogLevel=ERROR root@188.120.254.223 'python3 -' <<'PY'
+          import concurrent.futures,socket,ssl,time
+          hosts={
+            'Google':('www.google.com','accounts.google.com','aistudio.google.com',
+                      'www.gstatic.com','ssl.gstatic.com','oauth2.googleapis.com'),
+            'YouTube':('www.youtube.com','youtubei.googleapis.com','i.ytimg.com',
+                       'accounts.youtube.com'),
+            'Instagram':('www.instagram.com','api.instagram.com',
+                         'gateway.instagram.com','static.cdninstagram.com',
+                         'www.facebook.com'),
+            'GeminiAndroid':('jnn-pa.googleapis.com', 'waa-pa.clients6.google.com',
+                            'optimizationguide-pa.googleapis.com',
+                            'www.googleapis.com','apis.google.com','play.google.com'),
+            'YouTubeImages':('i.ytimg.com','yt3.ggpht.com','s.ytimg.com'),
+          }
+          ingress='89.125.90.101'
+          def check(pair):
+              group,host=pair
+              start=time.monotonic()
+              connected=False
+              try:
+                  with socket.create_connection((ingress,443),timeout=5) as raw:
+                      connected=True
+                      raw.settimeout(5)
+                      with ssl.create_default_context().wrap_socket(raw,server_hostname=host) as tls:
+                          result='ORIGIN_TLS_VALID'
+                          version=tls.version()
+              except (socket.timeout,TimeoutError):
+                  result='TIMEOUT_AFTER_TCP' if connected else 'TCP_TIMEOUT'
+                  version='-'
+              except ssl.SSLCertVerificationError:
+                  result='CERT_UNTRUSTED_OR_WRONG_HOST';version='-'
+              except ssl.SSLError:
+                  result='TLS_ALERT_OR_EOF';version='-'
+              except OSError as exc:
+                  result=type(exc).__name__;version='-'
+              return group,host,result,connected,round((time.monotonic()-start)*1000),version
+          pairs=[(group,host) for group,names in hosts.items() for host in names]
+          controls=[('control','gemini.google.com'),('control','discord.com'),
+                    ('control','cdn.discordapp.com')]
+          with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+              results=list(pool.map(check,pairs+controls))
+          for group,host,result,tcp,elapsed,proto in results:
+              print(f'ru_to_foreign_sni_group={group} host={host} '
+                    f'tls_status={result} tcp_connected={str(tcp).lower()} '
+                    f'elapsed_ms={elapsed} protocol={proto}',flush=True)
+          for group,host,result,tcp,elapsed,proto in results:
+              if group=='control' and result!='ORIGIN_TLS_VALID':
+                  raise SystemExit('Existing live control TLS regressed: '+host)
+              if group!='control' and result=='ORIGIN_TLS_VALID':
+                  # A shared 443 default route can complete origin TLS without
+                  # an exact SNI map entry or public DNS rewrite. Do not mistake
+                  # a successful TLS certificate for approved Smart DNS routing.
+                  print('candidate_TLS_valid_but_route_unattributed='+host)
+          print('ru_to_foreign_sni_candidate_screen_complete=yes')
+          print('unpromoted_hosts_CANNOT_be_declared_working_from_this_screen=yes')
+          print('no_network_DNS_or_service_config_changes=yes')
           PY
