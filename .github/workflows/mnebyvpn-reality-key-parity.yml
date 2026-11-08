@@ -1,0 +1,75 @@
+name: MNEBYVPN live key parity and RU path check for REALITY
+on:
+  push:
+    branches: ['diag/real-reality-address-20261108']
+    paths: ['.github/workflows/mnebyvpn-reality-key-parity.yml']
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      FOREIGN_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Assert real subscriber IDs are present in both listener configs, without logging IDs
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          SSHPASS="$FOREIGN_PASSWORD" sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY'
+          import datetime as dt,json,pathlib,subprocess,hashlib,socket
+          active_state=json.loads(pathlib.Path("/var/lib/mnebyvpn-vpn/state.json").read_text())
+          conf=json.loads(pathlib.Path("/etc/mnebyvpn/xray-canary.json").read_text())
+          now=dt.datetime.now(dt.timezone.utc)
+          active={v['credential'] for v in active_state.values()
+                  if v.get('enabled') and
+                  dt.datetime.fromisoformat(v['expiresAt'])>now}
+          inbounds=conf['inbounds']
+          assert len(inbounds)==2 and inbounds[0]['port']==18943
+          assert inbounds[1]['port']==2053
+          assert inbounds[1]['streamSettings']['security']=='reality'
+          assert inbounds[1]['streamSettings']['network'] in ('tcp','raw')
+          ws_ids={x['id'] for x in inbounds[0]['settings']['clients']}
+          real_clients=inbounds[1]['settings']['clients']
+          real_ids={x['id'] for x in real_clients}
+          assert len(real_ids)==len(real_clients)
+          assert len(ws_ids)==len(inbounds[0]['settings']['clients'])
+          assert active and active==ws_ids==real_ids
+          assert all(x.get('flow')=='xtls-rprx-vision' for x in real_clients)
+          print('active_subscriber_count='+str(len(active)))
+          print('all_active_credentials_in_both_transports=true')
+          print('reality_flow_for_every_active_key=xtls-rprx-vision')
+          public=json.loads(pathlib.Path('/etc/mnebyvpn/reality-public.json').read_text())
+          assert public['port']==2053
+          assert public['shortId']==inbounds[1]['streamSettings']['realitySettings']['shortIds'][0]
+          assert pathlib.Path('/etc/mnebyvpn/reality-announce-enabled').exists()
+          print('advertised_reality_parameters_match_listener=true')
+          for port in (18943,2053):
+              with socket.create_connection(('127.0.0.1',port),timeout=2):
+                  print('local_port_'+str(port)+'_listening=true')
+          print('live_key_parity_verified=true')
+          PY
+          SSHPASS="$RU_PASSWORD" sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -' <<'PY'
+          import socket,statistics,time
+          hostname='cdn.servgo.ru'
+          addresses=sorted({r[4][0] for r in socket.getaddrinfo(hostname,None,socket.AF_INET,socket.SOCK_STREAM)})
+          print('russian_node_domain_ipv4='+','.join(addresses))
+          for port in (8443,2053):
+              durations=[];fails=0
+              for _ in range(6):
+                  start=time.monotonic()
+                  try:
+                      with socket.create_connection((hostname,port),timeout=5):
+                          durations.append((time.monotonic()-start)*1000)
+                  except OSError:
+                      fails+=1
+                  time.sleep(.1)
+              if durations:
+                  print('russian_to_89_port='+str(port)+' success='+str(len(durations))+'/6 median_tcp_ms='+str(round(statistics.median(durations),1))+' failed='+str(fails))
+              else:
+                  print('russian_to_89_port='+str(port)+' success=0/6')
+          PY
