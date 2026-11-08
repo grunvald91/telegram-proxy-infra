@@ -1,0 +1,136 @@
+name: MNEBYDNS VPN compatibility and Google egress read-only diagnosis
+on:
+  push:
+    branches: ['feature/mnebydns-vpn-google-readonly-20261108']
+    paths: ['.github/workflows/mnebydns-vpn-google-diagnose.yml']
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-vpn-google-readonly
+  cancel-in-progress: false
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      RELAY_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Network independent DoT certificate and DNS resolution
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import socket,ssl,struct,random
+          host='dns.mnebyvpn.site'
+          try:
+              addr=socket.gethostbyname(host)
+              ctx=ssl.create_default_context()
+              with socket.create_connection((addr,853),timeout=7) as raw:
+                  with ctx.wrap_socket(raw,server_hostname=host) as tls:
+                      data=b'\x07example\x03org\x00'+struct.pack('!HH',1,1)
+                      q=struct.pack('!HHHHHH',random.randint(0,65535),0x0100,1,0,0,0)+data
+                      tls.sendall(struct.pack('!H',len(q))+q)
+                      head=tls.recv(2)
+                      if len(head)!=2:raise OSError('missing DNS response')
+                      length=struct.unpack('!H',head)[0]
+                      result=b''
+                      while len(result)<length:
+                          piece=tls.recv(length-len(result))
+                          if not piece:raise OSError('short DNS')
+                          result+=piece
+                      print('external_dot_verified_cert=yes')
+                      print('external_dot_rcode='+str(result[3]&0x0f))
+                      print('external_dot_tls='+tls.version())
+          except Exception as e:
+              print('external_dot_failed='+type(e).__name__)
+              raise
+          PY
+      - name: Existing foreign VPS DNS, VPN and Google probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$RELAY_PASS" || exit 2
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass
+          export SSHPASS="$RELAY_PASS"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@89.125.90.101 'python3 -' <<'PY'
+          import subprocess,socket,ssl,struct,random,urllib.parse,pathlib
+          def run(args,timeout=12):
+              try:
+                  return subprocess.run(args,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,timeout=timeout)
+              except Exception:
+                  return None
+          for unit in ['mnebydns-dot.service','nginx.service','xray.service','xray@canary.service','wireguard.service']:
+              p=run(['systemctl','is-active',unit],4)
+              print('foreign_'+unit.replace('.service','').replace('@','_')+'_active='+str(bool(p and p.returncode==0)).lower())
+          p=run(['systemctl','show','mnebydns-dot.service','--property=MemoryMax,CPUQuotaPerSecUSec,ActiveState,SubState'],4)
+          if p and p.returncode==0:
+              for line in p.stdout.splitlines():
+                  if line.startswith(('MemoryMax=','CPUQuotaPerSecUSec=','ActiveState=','SubState=')):
+                      print('foreign_dot_'+line)
+          ports=run(['ss','-H','-lnt'],5)
+          if ports:
+              for port in (443,8443,853,1853):
+                  sockets=[x.split()[3] for x in ports.stdout.splitlines() if x.split() and x.split()[3].endswith(':'+str(port))]
+                  print('foreign_tcp_'+str(port)+'_count='+str(len(sockets)))
+          cfg=run(['nginx','-T'],9)
+          if cfg and cfg.returncode==0:
+              print('foreign_nginx_443_stream_preread='+str('ssl_preread on;' in cfg.stdout).lower())
+              print('foreign_nginx_443_http_vhosts='+str(len([line for line in cfg.stdout.splitlines() if 'listen 443' in line])))
+          mem=pathlib.Path('/proc/meminfo').read_text()
+          for line in mem.splitlines():
+              if line.startswith('MemAvailable:'):
+                  print('foreign_available_mem_mib='+str(int(line.split()[1])//1024))
+          targets=[
+              ('google_home','https://www.google.com/'),
+              ('google_login','https://accounts.google.com/'),
+              ('gemini_web','https://gemini.google.com/'),
+              ('aistudio_web','https://aistudio.google.com/'),
+              ('gemini_api','https://generativelanguage.googleapis.com/'),
+              ('youtube_web','https://www.youtube.com/'),
+              ('google_flow','https://labs.google/fx/tools/flow'),
+          ]
+          for name,url in targets:
+              p=run(['curl','-4','--noproxy','*','-sSL','-o','/dev/null','--connect-timeout','4','--max-time','9','-w','%{http_code} %{time_connect} %{time_appconnect}',url],11)
+              if p:
+                  parts=p.stdout.strip().split()
+                  if len(parts)==3:
+                      print(name+'_http='+parts[0]+' connect_s='+parts[1]+' tls_s='+parts[2]+' exit='+str(p.returncode))
+                  else:print(name+'_result=unavailable exit='+str(p.returncode))
+              else:print(name+'_result=timeout')
+          print('foreign_diagnostics_read_only=yes')
+          PY
+      - name: RU-side encrypted DoT reachability over regular outbound network
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$RU_PASS" || exit 2
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@188.120.254.223 'python3 -' <<'PY'
+          import socket,ssl,struct,random,subprocess
+          host='dns.mnebyvpn.site'
+          try:
+              a=socket.gethostbyname(host)
+              context=ssl.create_default_context()
+              with socket.create_connection((a,853),timeout=9) as s:
+                  with context.wrap_socket(s,server_hostname=host) as tls:
+                      print('ru_to_foreign_dot_tls='+str(tls.version()))
+                      q=struct.pack('!HHHHHH',random.randint(0,65535),0x0100,1,0,0,0)+b'\x07example\x03org\x00'+struct.pack('!HH',1,1)
+                      tls.sendall(struct.pack('!H',len(q))+q)
+                      h=tls.recv(2)
+                      if len(h)!=2:raise OSError('short header')
+                      n=struct.unpack('!H',h)[0];body=b''
+                      while len(body)<n:
+                          part=tls.recv(n-len(body))
+                          if not part:raise OSError('short response')
+                          body+=part
+                      print('ru_to_foreign_dot_rcode='+str(body[3]&15))
+              print('ru_to_foreign_dot_access=pass')
+          except Exception as e:
+              print('ru_to_foreign_dot_access=fail_'+type(e).__name__)
+          for unit in ['mnebyvpn-vpn-worker.service','xray.service','nginx.service']:
+              p=subprocess.run(['systemctl','is-active',unit],capture_output=True,text=True,timeout=5)
+              print('ru_'+unit.replace('.service','')+'_active='+str(p.returncode==0).lower())
+          print('ru_probe_is_not_actual_android_vpn_session=yes')
+          PY
