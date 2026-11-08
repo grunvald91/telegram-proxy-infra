@@ -212,7 +212,7 @@ def self_test()->None:
     assert ns.count("discord.com 127.0.0.1:15401;")==1
     assert len(HOSTS)>=50
     for host in HOSTS:
-        assert ns.count(host+" "+BACKEND+";")==1
+        assert ns.count("\n        "+host+" "+BACKEND+";")==1
         assert nd.count("template IN A "+host+" {")==1
     assert nd.count("template IN A . {")==1
     assert 'answer "{{ .Name }} 20 IN A '+FOREIGN+'"' in nd
