@@ -1,3 +1,4 @@
+# Release 2026-11-08 hotfix: tested main 35c2ee085abc7abe80a38340fe8b2903fc09e36d, CI 42460752052. Restore INCY subscriptions affected by historic -32s foreign node deadline. No checkout or VPN key changes.
 # Release 2026-11-08: deploy green main 06cce510c742b94347762bc94d4f93f46280c347 (CI 42459071663) for opt-in INCY Reality+WS fallback; no change to payment configuration.
 # 2026-11-08 code-review release: MNEBYVPN trial-ready reliability bd4930ada4833601b3012c5672e6abd31b12282c; green main CI 42458907376. No schema changes.
 # 2026-11-08: release Telegram trial auto-ready schema 0106 and vetted MNEBYVPN main 53c350894fbaec1b0b71120c6634e0ab2dc7d812 (CI 42456770518 SUCCESS).
