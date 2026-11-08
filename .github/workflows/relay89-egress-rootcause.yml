@@ -1,4 +1,4 @@
-name: Relay89 conntrack pressure diagnosis
+name: Relay89 conntrack capacity repair and verification
 on:
   push:
     paths: ['.github/workflows/relay89-egress-rootcause.yml']
@@ -15,48 +15,73 @@ jobs:
     env:
       SSHPASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
     steps:
-      - name: Inspect rules DNS and TCP without production changes
+      - name: Repair confirmed conntrack exhaustion and verify DNS and TCP
         shell: bash
         run: |
           set -euo pipefail
           test -n "$SSHPASS"
           command -v sshpass >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq sshpass; }
-          sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 root@89.125.90.101 'command -v conntrack >/dev/null || (apt-get update -qq && apt-get install -y -qq conntrack >/dev/null); python3 -u -' <<'PY'
-          import subprocess,pathlib,time,collections,re,json
+          sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 root@89.125.90.101 'python3 -u -' <<'PY'
+          import subprocess,pathlib,time,json,collections,re,datetime,os
           def run(cmd,t=15):
            try:
             p=subprocess.run(cmd,capture_output=True,text=True,timeout=t);return p.stdout+p.stderr
            except subprocess.TimeoutExpired:return 'TIMEOUT'
-          for p in ['nf_conntrack_count','nf_conntrack_max','nf_conntrack_buckets','nf_conntrack_tcp_timeout_syn_sent','nf_conntrack_tcp_timeout_established','nf_conntrack_udp_timeout','nf_conntrack_udp_timeout_stream']:
-           f=pathlib.Path('/proc/sys/net/netfilter')/p
-           if f.exists():print('SYSCTL',p,f.read_text().strip(),flush=True)
-          print('MEM',run(['free','-m']),flush=True)
-          print('SLAB', '\n'.join(l for l in pathlib.Path('/proc/slabinfo').read_text().splitlines() if 'conntrack' in l),flush=True)
-          print('CT_STATS',run(['conntrack','-S']),flush=True)
-          raw=run(['conntrack','-L','-o','extended'],40)
-          print('CT_DUMP_BYTES',len(raw),flush=True)
-          stats={k:collections.Counter() for k in ['protocol','state','src','dst','dport','src_dport','unreplied_src','unreplied_dst','unreplied_dport']}
-          for l in raw.splitlines():
-           if not l.startswith(('ipv4','ipv6')):continue
-           fields=dict(re.findall(r'(?<!\S)(src|dst|dport|sport)=([^ ]+)',l.split('src=',2)[0])) if False else {}
-           for key in ['src','dst','dport','sport']:
-            m=re.search(r'\b'+key+r'=([^ ]+)',l)
-            if m:fields[key]=m.group(1)
-           stats['protocol'][l.split()[2] if len(l.split())>2 else '?']+=1
-           m=re.search(r'\b(SYN_SENT|SYN_RECV|ESTABLISHED|TIME_WAIT|CLOSE|CLOSE_WAIT|FIN_WAIT|LAST_ACK)\b',l)
-           stats['state'][m.group(1) if m else 'other']+=1
-           for key in ['src','dst','dport']:
-            stats[key][fields.get(key,'?')]+=1
-           stats['src_dport'][fields.get('src','?')+':'+fields.get('dport','?')]+=1
-           if '[UNREPLIED]' in l:
-            for key in ['src','dst','dport']:stats['unreplied_'+key][fields.get(key,'?')]+=1
-          for key,c in stats.items():print('CT_TOP',key,json.dumps(c.most_common(12)),flush=True)
-          for cmd in [['ss','-s'],['systemctl','list-timers','--all','--no-pager'],['sysctl','net.ipv4.ip_local_port_range'],['sysctl','net.ipv4.tcp_syn_retries']]:
-           print('CMD',cmd,run(cmd),flush=True)
-          logs=run(['journalctl','-k','--since','2026-11-06','--no-pager','--grep','table full'],20).splitlines()
-          print('CT_FULL_LOG_COUNT',len(logs),'FIRST',logs[:4],'LAST',logs[-4:],flush=True)
-          for i in range(4):
-           print('CT_COUNT_SAMPLE',pathlib.Path('/proc/sys/net/netfilter/nf_conntrack_count').read_text().strip(),flush=True);time.sleep(2)
-          print('READ_ONLY=true',flush=True)
+          def val(n):return int((pathlib.Path('/proc/sys/net/netfilter')/n).read_text())
+          def stats():
+           d=collections.Counter()
+           for l in run(['conntrack','-S']).splitlines():
+            for k,v in re.findall(r'(\w+)=(\d+)',l):d[k]+=int(v)
+           return dict(d)
+          maxpath=pathlib.Path('/proc/sys/net/netfilter/nf_conntrack_max')
+          old=val('nf_conntrack_max'); count=val('nf_conntrack_count')
+          available=int(re.search(r'MemAvailable:\s+(\d+)',pathlib.Path('/proc/meminfo').read_text()).group(1))
+          print('BEFORE',json.dumps({'max':old,'count':count,'available_kib':available,'stats':stats()}),flush=True)
+          assert available>512000,'insufficient memory headroom'
+          assert old<=262144,'unexpected conntrack limit'
+          backup=pathlib.Path('/root/relay89-egress-fix-20261108')
+          backup.mkdir(mode=0o700,exist_ok=True)
+          orig=backup/'nf_conntrack_max.before'
+          if not orig.exists():orig.write_text(str(old)+'\n')
+          p=pathlib.Path('/etc/sysctl.d/99-z-relay89-conntrack.conf')
+          if p.exists() and not (backup/'sysctl.before').exists():(backup/'sysctl.before').write_bytes(p.read_bytes())
+          maxpath.write_text('262144\n')
+          assert val('nf_conntrack_max')==262144
+          temp=p.with_suffix('.tmp')
+          temp.write_text('# Relay89: prevent conntrack exhaustion under Telegram connection churn.\nnet.netfilter.nf_conntrack_max = 262144\n')
+          os.replace(temp,p)
+          (backup/'rollback.sh').write_text('#!/bin/sh\nset -eu\n# Run only after checking current conntrack occupancy.\nsysctl -w net.netfilter.nf_conntrack_max='+orig.read_text().strip()+'\n')
+          print('APPLIED',p.read_text(),flush=True)
+          before=stats()
+          print('PROCESS_CPU',run(['ps','-eo','pid,comm,pcpu,pmem','--sort=-pcpu']).splitlines()[:18],flush=True)
+          units=run(['systemctl','list-units','--type=service','--all','--no-legend']).splitlines()
+          for l in units:
+           if re.search('telemt|mtg|mtproxy|tproxy|telegram|xray|socks',l,re.I):print('UNIT',l,flush=True)
+          for i in range(5):
+           s=run(['ss','-Hntp','dst',':8888'])
+           proc=collections.Counter(re.findall(r'\("([^"]+)",pid=(\d+)',s))
+           print('PORT8888_PROCESS_SAMPLE',i,json.dumps([(list(k),v) for k,v in proc.most_common()]),flush=True)
+           time.sleep(.3)
+          for name in ['telemt','telemt-direct','mtproxy','xray','tproxy-server']:
+           print('SERVICE',name,run(['systemctl','show',name,'-p','ActiveState,SubState,NRestarts,ExecMainStartTimestamp']),flush=True)
+          for host in ['api.telegram.org','www.cloudflare.com','example.com']:
+           ok=0; times=[]
+           for i in range(20):
+            p1=subprocess.run(['curl','-4','-sS','-o','/dev/null','--connect-timeout','3','--max-time','6','-w','%{time_connect} %{time_total} %{http_code}','https://'+host+'/'],capture_output=True,text=True,timeout=8)
+            ok+=p1.returncode==0
+            times.append(p1.stdout if p1.returncode==0 else 'ERROR '+p1.stderr.strip())
+           print('VERIFY_HTTPS',host,'success',ok,'total',20,json.dumps(times),flush=True)
+          for resolver in ['8.8.8.8','1.1.1.1']:
+           good=0
+           for i in range(20):
+            x=run(['dig','@'+resolver,'api.telegram.org','A','+tries=1','+time=2','+short'],4)
+            good+=bool(re.search(r'^149\.154\.',x,re.M))
+           print('VERIFY_DNS',resolver,'success',good,'total',20,flush=True)
+          for i in range(3):
+           print('POST_SAMPLE',i,'count',val('nf_conntrack_count'),'max',val('nf_conntrack_max'),'stats',json.dumps(stats()),flush=True)
+           if i<2:time.sleep(20)
+          after=stats();print('CT_STATS_DELTA',json.dumps({k:after.get(k,0)-before.get(k,0) for k in ['drop','early_drop','insert_failed']}),flush=True)
+          print('PERSIST_READBACK',p.read_text(),flush=True)
+          print('MEM_AFTER',run(['free','-m']),flush=True)
           
           PY
