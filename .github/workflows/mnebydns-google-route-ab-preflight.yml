@@ -1,0 +1,92 @@
+name: MNEBYDNS Google direct-vs-foreign path and live policy A/B (read only)
+on:
+  push:
+    branches: ['feature/mnebydns-google-bulk-rollout-20261109']
+    paths: ['.github/workflows/mnebydns-google-route-ab-preflight.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-google-ab-readonly
+  cancel-in-progress: false
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      FOREIGN_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: grunvald91/Mnebyvpn
+          ref: ae9ac2e7b7cd4b2a2ad9f912c38b1b8955f5604e
+          path: vpn
+          persist-credentials: false
+      - name: Validate live DNS policy and automatic experiment rollback state (no modification)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$FOREIGN_PASS" && test -n "$RU_PASS"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          export SSHPASS="$FOREIGN_PASS"
+          sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@89.125.90.101 'python3 -' <<'PY'
+          import pathlib,subprocess,socket,re
+          root=pathlib.Path('/opt/mnebydns-googlepilot-backups/42526448796')
+          targets={'nginx':pathlib.Path('/etc/nginx/nginx.conf'), 'dns':pathlib.Path('/opt/mnebydns-dot/Corefile')}
+          for name,actual in targets.items():
+              current=actual.read_bytes()
+              old=root/(name+'.before')
+              pilot=root/(name+'.pilot')
+              state=('baseline' if old.is_file() and old.read_bytes()==current else
+                     'pilot' if pilot.is_file() and pilot.read_bytes()==current else
+                     'OTHER_OR_MISSING_SNAPSHOT')
+              print('latest_canary_'+name+'_state='+state,flush=True)
+          for unit in ('nginx','mnebydns-dot.service','mnebydns-gemini.service',
+                       'mnebydns-googlepilot.service','xray.service',
+                       'mnebydns-four-google-watchdog-42526448796.timer'):
+              cp=subprocess.run(['systemctl','is-active',unit],text=True,capture_output=True,timeout=6)
+              value=cp.stdout.strip()
+              print('service_'+unit+'='+value,flush=True)
+          source=targets['dns'].read_text()
+          print('static_gemini_route_in_Corefile='+str('template IN A gemini.google.com {' in source).lower(),flush=True)
+          print('new_google_canary_flag_in_Corefile='+str('MNEBYDNS 4-service USER CANARY' in source).lower(),flush=True)
+          print('latest_canary_snapshot_present='+str(root.is_dir()).lower(),flush=True)
+          print('no_configuration_changes=true',flush=True)
+          PY
+          cd vpn/ops/smart-dns-poc
+          python3 -m unittest test-diagnose-gemini-android-live.py -v
+          python3 diagnose-gemini-android-live.py
+      - name: Compare same TLS names Russian-direct vs through German SNI ingress (no account traffic)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@188.120.254.223 'python3 -' <<'PY'
+          import socket,ssl,concurrent.futures,time
+          PROXY='89.125.90.101'
+          NAMES=('gemini.google.com','aistudio.google.com','stitch.withgoogle.com',
+                 'accounts.google.com','www.youtube.com','jnn-pa.googleapis.com',
+                 'generativelanguage.googleapis.com','www.googleapis.com')
+          def probe(item):
+              host,mode=item
+              dest=host if mode=='direct_ru' else PROXY
+              t=time.monotonic()
+              try:
+                  with socket.create_connection((dest,443),timeout=7) as tcp:
+                      tcp.settimeout(7)
+                      with ssl.create_default_context().wrap_socket(tcp,server_hostname=host) as tls:
+                          tls_version=tls.version()
+                          _=tls.getpeercert()
+                  result='TLS_CERT_OK_'+tls_version
+              except Exception as e:
+                  result='ERROR_'+type(e).__name__
+              return f'server_path={mode} service_host={host} result={result} elapsed_ms={round((time.monotonic()-t)*1000)}'
+          samples=[(host,mode) for host in NAMES for mode in ('direct_ru','via_foreign_ingress')]
+          with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+              for row in ex.map(probe,samples):print(row,flush=True)
+          print('TLS_path_only_not_app_region_response=true',flush=True)
+          print('no_subscriber_ids_or_packet_payload=true',flush=True)
+          PY
