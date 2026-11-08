@@ -32,7 +32,8 @@ jobs:
           assert len(m.HOSTS)==73 and len(set(m.HOSTS))==73
           safe_443=('pki.google.com','clients1.google.com','notifications.google.com')
           assert all(h in m.HOSTS for h in safe_443)
-          assert not any(h in m.DYNAMIC_SUFFIXES for h in ('googleapis.com','google.com'))
+          assert all(h in m.DYNAMIC_SUFFIXES for h in ('googleapis.com','google.com'))
+          assert len(m.DYNAMIC_SUFFIXES)==17
           # Owner-directed temporary DNS-only redirect includes all system names.
           android_system=('mtalk.google.com','mtalk4.google.com','time.google.com',
                           'fcm.googleapis.com','fcm-xmpp.googleapis.com',
@@ -49,7 +50,7 @@ jobs:
           '''
           rendered=m.render_dot(fixture)
           assert all(('template IN A '+h+' {') in rendered for h in android_system)
-          print('all_known_Android_system_domains_including_STUN=PASS')
+          print('all_known_Android_system_domains_including_STUN_and_broad_Google_suffixes=PASS')
           PY
           bash -n scripts/mnebydns-four-google-deploy.sh
           bash -n scripts/mnebydns-four-google-rollback.sh
