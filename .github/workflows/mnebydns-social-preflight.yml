@@ -1,7 +1,7 @@
-name: MNEBYDNS Instagram Grok X Threads foreign TLS read-only preflight
+name: MNEBYDNS Meta TikTok Telegram foreign TLS read-only preflight
 on:
   push:
-    branches: ['feature/mnebydns-instagram-grok-x-threads-30m-20261109']
+    branches: ['feature/mnebydns-meta-tiktok-telegram-30m-20261109']
     paths: ['.github/workflows/mnebydns-social-preflight.yml']
 permissions:
   contents: read
@@ -12,7 +12,7 @@ jobs:
     env:
       SSHPASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
     steps:
-      - name: Verify German origin TLS for all four apps and active Google Claude pilot
+      - name: Verify Meta TikTok Telegram foreign TLS and owner pilot handoff readiness
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -21,7 +21,7 @@ jobs:
           sudo apt-get install -qq -y sshpass
           sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@89.125.90.101 'python3 -' <<'PY'
           import pathlib,subprocess,socket,ssl,concurrent.futures,datetime
-          snapshot=pathlib.Path('/opt/mnebydns-googlepilot-backups/42533155025')
+          snapshot=pathlib.Path('/opt/mnebydns-googlepilot-backups/42534478710')
           states={}
           for name,path in (('nginx','/etc/nginx/nginx.conf'),('dns','/opt/mnebydns-dot/Corefile')):
               current=pathlib.Path(path).read_bytes()
@@ -32,14 +32,16 @@ jobs:
               print('previous_'+name+'_state='+state,flush=True)
           for unit in ('nginx','mnebydns-dot.service','xray.service',
                        'mnebydns-googlepilot.service',
-                       'mnebydns-four-google-watchdog-42533155025.timer'):
+                       'mnebydns-four-google-watchdog-42534478710.timer'):
               cp=subprocess.run(['systemctl','is-active',unit],capture_output=True,text=True,timeout=5)
               print('unit_'+unit+'='+cp.stdout.strip(),flush=True)
           print('utc_now='+datetime.datetime.now(datetime.timezone.utc).isoformat(),flush=True)
-          hosts=('instagram.com','www.instagram.com','graph.instagram.com','cdninstagram.com',
-                 'threads.com','threads.net','x.com','twitter.com','pbs.twimg.com',
-                 'grok.com','api.x.ai','x.ai','api.twitter.com','api.instagram.com',
-                 'www.threads.com','t.co','graph.facebook.com','connect.facebook.net')
+          hosts=('instagram.com','www.instagram.com','graph.instagram.com','edge-mqtt.facebook.com',
+                 'threads.com','threads.net','graph.threads.net','meta.com','meta.ai',
+                 'www.tiktok.com','tiktok.com','api.tiktokv.com',
+                 'api16-normal-c-alisg.tiktokv.com','api2.musical.ly',
+                 'web.telegram.org','telegram.org','t.me','api.telegram.org',
+                 'x.com','grok.com','claude.ai','gemini.google.com')
           def probe(host):
               try:
                   with socket.create_connection((host,443),timeout=5) as tcp:
@@ -53,9 +55,9 @@ jobs:
           status={host:ok for host,ok,detail in results}
           for host,ok,detail in results:
               print('original_TLS_host='+host+' valid='+str(ok).lower()+' result='+detail,flush=True)
-          for needed in ('instagram.com','threads.com','x.com','grok.com','api.x.ai'):
+          for needed in ('instagram.com','threads.com','www.tiktok.com','api.tiktokv.com','telegram.org','t.me','x.com','grok.com','claude.ai'):
               if not status[needed]:raise SystemExit('primary social origin TLS invalid '+needed)
           if any(v=='OTHER' for v in states.values()):raise SystemExit('Unknown prior pilot configuration')
-          print('four_social_primary_TLS_ready=true',flush=True)
+          print('meta_tiktok_telegram_primary_TLS_ready=true',flush=True)
           print('read_only_no_server_changes=true',flush=True)
           PY
