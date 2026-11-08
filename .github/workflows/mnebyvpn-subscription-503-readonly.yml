@@ -120,5 +120,57 @@ jobs:
                     str(params.get('security',[''])[0]))
                   print('sample_'+str(number)+'_line_keys='+
                     ','.join(sorted(params.keys())))
+          # Compare signed node record with PostgreSQL entitlements,
+          # never print IDs, private keys, credentials or complete profile URLs.
+          import datetime as dt
+          import hashlib
+          import hmac
+          import time
+          signing_key=bytes.fromhex(pathlib.Path('/opt/mnebyvpn/bot/provisioner.key').read_text().strip())
+          detailed_sql="""SELECT e.id::text,e.revision,e.expires_at::text
+             FROM entitlements e
+             JOIN accounts a ON a.id=e.account_id
+             JOIN provisioning_state p ON p.entitlement_id=e.id AND p.adapter='vpn'
+             WHERE e.product='vpn' AND e.state='ACTIVE'
+               AND e.expires_at>clock_timestamp()
+               AND p.applied_revision=e.revision
+               AND p.last_observed_at IS NOT NULL
+             ORDER BY e.expires_at DESC LIMIT 3"""
+          db=subprocess.run(['docker','exec','mnebyvpn-stage-postgres','psql',
+             '-At','-X','-v','ON_ERROR_STOP=1','-U','mnebyvpn_stage',
+             '-d','mnebyvpn_stage','-c',detailed_sql],
+             capture_output=True,text=True,timeout=12,check=True)
+          for n,line in enumerate(db.stdout.splitlines(),1):
+              if len(line.split('|'))!=3: continue
+              eid,rev,expires=line.split('|')
+              raw=json.dumps({'op':'inspect','id':eid,'ts':int(time.time())},
+                    separators=(',',':')).encode()
+              mac=hmac.new(signing_key,raw,hashlib.sha256).hexdigest()
+              start=dt.datetime.now(dt.timezone.utc)
+              req=urllib.request.Request('http://10.66.77.1:18944/v1/provision',
+                 raw,{'X-Mnebyvpn-Signature':mac,'Content-Type':'application/json'},method='POST')
+              try:
+                  with urllib.request.urlopen(req,timeout=9) as response:
+                      remote_date=response.headers.get('Date')
+                      state=json.load(response)
+              except Exception as exc:
+                  print('sample_'+str(n)+'_signed_inspect_failed='+type(exc).__name__)
+                  continue
+              end=dt.datetime.now(dt.timezone.utc)
+              node_clock=dt.datetime.strptime(remote_date,'%a, %d %b %Y %H:%M:%S GMT').replace(tzinfo=dt.timezone.utc)
+              clock_delta=(node_clock-(start+(end-start)/2)).total_seconds()
+              rounded_offset=round(clock_delta)*1000
+              db_exp=dt.datetime.fromisoformat(expires.replace(' ','T'))
+              node_exp=dt.datetime.fromisoformat(state['expiresAt']) if state.get('expiresAt') else None
+              print('sample_'+str(n)+'_node_revision_matches='+str(state.get('revision')==int(rev)).lower())
+              print('sample_'+str(n)+'_node_enabled='+str(bool(state.get('enabled'))).lower())
+              print('sample_'+str(n)+'_node_credential_present='+str(bool(state.get('credential'))).lower())
+              print('sample_'+str(n)+'_node_reality_advertised='+str(bool(state.get('reality'))).lower())
+              print('sample_'+str(n)+'_node_clock_rounded_offset_ms='+str(rounded_offset))
+              if node_exp:
+                  delta_ms=(node_exp-db_exp).total_seconds()*1000
+                  print('sample_'+str(n)+'_expiry_raw_difference_ms='+str(round(delta_ms)))
+                  print('sample_'+str(n)+'_expiry_adjusted_difference_ms='+str(round(delta_ms-rounded_offset)))
+                  print('sample_'+str(n)+'_accepted_by_1s_tolerance='+str(abs(delta_ms-rounded_offset)<=1000).lower())
           print('diagnostic_readonly_complete=true')
           PY
