@@ -1,0 +1,38 @@
+name: MNEBYDNS active nginx master config path diagnostic
+on:
+  push:
+    branches: ['feature/mnebydns-vpn-google-readonly-20261108']
+    paths: ['.github/workflows/mnebydns-active-nginx-conf-audit.yml']
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Verify active master reads the configuration we actually edited
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PASSWORD"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          export SSHPASS="$PASSWORD"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@89.125.90.101 'python3 -' <<'PY'
+          import pathlib,subprocess,re
+          p=subprocess.run(['systemctl','show','nginx','--property=MainPID','--value'],capture_output=True,text=True)
+          pid=p.stdout.strip()
+          if not pid.isdigit() or pid=='0': raise SystemExit('no active nginx pid')
+          raw=(pathlib.Path('/proc')/pid/'cmdline').read_bytes().split(b'\0')
+          args=[x.decode(errors='replace') for x in raw if x]
+          print('nginx_master_executable='+str(args[0] if args else 'unknown')[:120])
+          print('nginx_master_has_explicit_config_flag='+str('-c' in args).lower())
+          if '-c' in args and args.index('-c')+1<len(args):
+            print('nginx_master_config_path='+args[args.index('-c')+1])
+          print('nginx_conf_default_path_valid='+str(pathlib.Path('/etc/nginx/nginx.conf').is_file()).lower())
+          r=subprocess.run(['systemctl','is-active','nginx'],capture_output=True,text=True)
+          print('nginx_active='+str(r.returncode==0).lower())
+          print('audit_read_only=yes')
+          PY
