@@ -1,0 +1,97 @@
+name: MNEBYDNS regional gate read-only differential
+on:
+  push:
+    branches: ['feature/mnebydns-google-four-services-preflight-20261108']
+    paths: ['.github/workflows/mnebydns-country-routing-diagnostic.yml']
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      FOREIGN_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Inspect foreign DoT Google route and regional prerequisites read-only
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$FOREIGN_PASS" && test -n "$RU_PASS"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass
+          export SSHPASS="$FOREIGN_PASS"
+          sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@89.125.90.101 'python3 -' <<'PY'
+          import pathlib,subprocess,re,datetime
+          core=pathlib.Path('/opt/mnebydns-dot/Corefile').read_text()
+          nginx=pathlib.Path('/etc/nginx/nginx.conf').read_text()
+          hosts=('gemini.google.com','aistudio.google.com','stitch.withgoogle.com',
+              'accounts.google.com','oauth2.googleapis.com',
+              'generativelanguage.googleapis.com','jnn-pa.googleapis.com',
+              'waa-pa.clients6.google.com','www.youtube.com','youtubei.googleapis.com',
+              'mtalk.google.com','time.google.com','fcm.googleapis.com')
+          for h in hosts:
+              regex=r'(?m)^\\s*'+re.escape(h)+r'\\s+127[.]0[.]0[.]1:[0-9]+;'
+              print('host='+h+' synthetic_A='+str('template IN A '+h+' {' in core).lower()+
+                  ' dedicated_SNI='+str(bool(re.search(regex,nginx))).lower())
+          for suffix in ('googlevideo','googleapis','google','withgoogle'):
+              print('dynamic_suffix_'+suffix+'_in_CoreDNS='+str((suffix+'[.]com') in core).lower())
+          for svc in ('nginx','xray.service','mnebydns-dot.service',
+              'mnebydns-gemini.service','mnebydns-googlepilot.service'):
+              r=subprocess.run(['systemctl','is-active',svc],capture_output=True,text=True,timeout=4)
+              print('service_'+svc+'='+r.stdout.strip())
+          run='42519046699'
+          root=pathlib.Path('/opt/mnebydns-googlepilot-backups')/run
+          if root.exists():
+              for name,file in [('nginx','/etc/nginx/nginx.conf'),('dns','/opt/mnebydns-dot/Corefile')]:
+                  original=root/(name+'.before')
+                  pilot=root/(name+'.pilot')
+                  live=pathlib.Path(file).read_bytes()
+                  print(name+'_state='+
+                      ('baseline' if original.is_file() and original.read_bytes()==live else
+                      'pilot' if pilot.is_file() and pilot.read_bytes()==live else 'other'))
+          timer='mnebydns-four-google-watchdog-'+run+'.timer'
+          state=subprocess.run(['systemctl','is-active',timer],text=True,capture_output=True,timeout=5)
+          print('canary_rollback_timer='+state.stdout.strip())
+          print('run_readonly=true')
+          PY
+      - name: Compare authenticated TLS connectivity from foreign and Russian VPS
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          hosts='gemini.google.com aistudio.google.com stitch.withgoogle.com accounts.google.com generativelanguage.googleapis.com oauth2.googleapis.com www.youtube.com'
+          opts=(-o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new)
+          for region in foreign ru; do
+            if [[ "$region" == foreign ]]; then
+              export SSHPASS="$FOREIGN_PASS"; remote=root@89.125.90.101
+            else
+              export SSHPASS="$RU_PASS"; remote=root@188.120.254.223
+            fi
+            sshpass -e ssh "${opts[@]}" "$remote" "TARGETS='$hosts' REGION='$region' python3 -" <<'PY'
+          import os,ssl,socket,time,concurrent.futures
+          names=os.environ['TARGETS'].split()
+          def check(host):
+              t=time.monotonic()
+              try:
+                  with socket.create_connection((host,443),timeout=5) as tcp:
+                      tcp.settimeout(5)
+                      with ssl.create_default_context().wrap_socket(tcp,server_hostname=host) as tls:
+                          return host,'tls_ok',tls.version(),round((time.monotonic()-t)*1000)
+              except Exception as e:
+                  return host,type(e).__name__,'-',round((time.monotonic()-t)*1000)
+          with concurrent.futures.ThreadPoolExecutor(max_workers=7) as ex:
+              for h,status,version,ms in ex.map(check,names):
+                  print('direct_region='+os.environ['REGION']+' host='+h+
+                      ' result='+status+' tls='+version+' ms='+str(ms),flush=True)
+          PY
+          done
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 'bash -se' <<'SH'
+          set -Eeuo pipefail
+          for host in gemini.google.com aistudio.google.com stitch.withgoogle.com accounts.google.com generativelanguage.googleapis.com oauth2.googleapis.com www.youtube.com; do
+            code="$(curl -4 --noproxy '*' -sS --max-time 12               --connect-timeout 6 --resolve "$host:443:89.125.90.101"               -w '%{http_code}' -o /dev/null "https://$host/" 2>/dev/null || true)"
+            [[ -n "$code" ]] || code=000
+            echo "forced_foreign_from_ru host=$host https_status=$code"
+          done
+          SH
+          echo 'no_customer_ip_or_authentication_captured=true'
