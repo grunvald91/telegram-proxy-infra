@@ -74,6 +74,8 @@ jobs:
           test -z "$(ss -H -lnt 'sport = :15443')"
           test "$(awk '/^MemAvailable:/{print int($2/1024)}' /proc/meminfo)" -ge 700
           nginx -t -c "$dir/nginx.conf" > /dev/null 2>&1
+          # The root syntax check creates root-owned nginx log files.
+          rm -f -- "$dir/google-sni.log" "$dir/google-sni.pid"
           chown 65532:65532 "$dir"
           chmod 700 "$dir"
           chmod 644 "$dir/nginx.conf"
