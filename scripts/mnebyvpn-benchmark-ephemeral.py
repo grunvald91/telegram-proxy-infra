@@ -10,6 +10,7 @@ import email.utils
 import hashlib
 import hmac
 import json
+import os
 import pathlib
 import sys
 import time
@@ -37,6 +38,12 @@ def main():
         raise SystemExit('Usage: script.py create|revoke entitlement-uuid')
     mode,identity=sys.argv[1:]
     identity=str(uuid.UUID(identity))
+    # Production-agent apply stops its whole Xray child and drops every
+    # subscriber socket. Merely testing with a disposable UUID is disruptive.
+    # New diagnostic profiles need an explicit operator-approved opt-in;
+    # never gate revoke, so interrupted tests can always clean themselves up.
+    if mode=='create' and os.environ.get('MNEBYVPN_ALLOW_DISRUPTIVE_LIVE_TEST')!='yes':
+        raise RuntimeError('Refusing disruptive production Xray restart: use isolated canary or explicit opt-in')
     key=bytes.fromhex(KEY_PATH.read_text().strip())
     if len(key)!=32:raise RuntimeError('Invalid private node key')
     if mode=='create':
