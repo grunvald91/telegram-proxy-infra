@@ -93,6 +93,9 @@ trap abort EXIT
 install -d -m 755 -o root -g root "$pilot"
 install -m 644 -o root -g root "$base/proxy.pilot" "$pilot/nginx.conf"
 install -m 644 -o root -g root "$base/pilot.service" "$unit"
+# nginx -t validates its PID pathname before systemd creates RuntimeDirectory.
+# Create an empty temporary runtime directory; systemd adopts/chowns it on start.
+install -d -m 700 -o root -g root /run/mnebydns-googlepilot
 nginx -t -c "$pilot/nginx.conf" >/dev/null 2>&1 || {
   echo "isolated_nginx_configuration_invalid=yes"; exit 3;
 }
