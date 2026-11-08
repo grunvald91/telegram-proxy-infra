@@ -1,0 +1,123 @@
+name: Verify live dual-transport VPN access and revocation before announcing Reality
+on:
+  push:
+    branches: ['feature/mnebyvpn-reality-fast-node-20261108']
+    paths: ['.github/workflows/mnebyvpn-reality-live-e2e.yml']
+permissions:
+  contents: read
+concurrency:
+  group: mnebyvpn-reality-live-e2e
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      FOREIGN_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test existing WS and new REALITY with same short-lived profile then revoke
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASSWORD" && test -n "$FOREIGN_PASSWORD"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          TMP="$(mktemp -d)"
+          OPTS=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          ID="$(python3 -c 'import uuid;print(uuid.uuid4())')"
+          CREATED=0
+          XWS_PID=""
+          XREAL_PID=""
+          cleanup(){
+            set +e
+            for p in "$XWS_PID" "$XREAL_PID"; do
+              if [[ -n "$p" ]]; then kill "$p" 2>/dev/null || true; wait "$p" 2>/dev/null || true; fi
+            done
+            if [[ "$CREATED" == 1 ]]; then
+              SSHPASS="$RU_PASSWORD" sshpass -e ssh "${OPTS[@]}" root@188.120.254.223 \
+                "python3 - revoke $ID" < scripts/mnebyvpn-benchmark-ephemeral.py \
+                >/dev/null && echo 'expired_test_identity_revoked=true' || echo 'test_identity_revocation_failed=true'
+            fi
+            rm -rf "$TMP"
+          }
+          trap cleanup EXIT
+          PUBLIC_JSON="$(SSHPASS="$FOREIGN_PASSWORD" sshpass -e ssh "${OPTS[@]}" root@89.125.90.101 \
+             'set -e; test "$(systemctl is-active xray.service)" = active; test "$(systemctl is-active mnebyvpn-vpn-provisioner.service)" = active; test ! -e /etc/mnebyvpn/reality-announce-enabled; cat /etc/mnebyvpn/reality-public.json')"
+          export PUBLIC_JSON
+          REAL_PUB="$(python3 -c 'import os,json;print(json.loads(os.environ["PUBLIC_JSON"])["publicKey"])')"
+          REAL_SID="$(python3 -c 'import os,json;print(json.loads(os.environ["PUBLIC_JSON"])["shortId"])')"
+          echo "::add-mask::$REAL_PUB"
+          echo "::add-mask::$REAL_SID"
+          PROFILE_JSON="$(SSHPASS="$RU_PASSWORD" sshpass -e ssh "${OPTS[@]}" root@188.120.254.223 \
+            "python3 - create $ID" < scripts/mnebyvpn-benchmark-ephemeral.py)"
+          CREATED=1
+          CREDENTIAL="$(printf '%s' "$PROFILE_JSON" | python3 -c 'import sys,json;print(json.load(sys.stdin)["credential"])')"
+          echo "::add-mask::$CREDENTIAL"
+          SSHPASS="$FOREIGN_PASSWORD" sshpass -e scp -q "${OPTS[@]}" \
+            root@89.125.90.101:/opt/xray/xray "$TMP/xray"
+          chmod 700 "$TMP/xray"
+          python3 - "$TMP/ws.json" "$TMP/reality.json" "$CREDENTIAL" "$REAL_PUB" "$REAL_SID" <<'PY'
+          import json,pathlib,sys,uuid
+          ws,reality,cred,pub,sid=sys.argv[1:]
+          uuid.UUID(cred)
+          assert len(pub)==43 and len(sid)==16
+          def socks(port):
+              return {"listen":"127.0.0.1","port":port,"protocol":"socks",
+                      "settings":{"auth":"noauth","udp":False}}
+          common={"log":{"loglevel":"warning"}}
+          ws_out={"protocol":"vless","tag":"legacy-ws",
+                  "settings":{"vnext":[{"address":"89.125.90.101","port":8443,
+                    "users":[{"id":cred,"encryption":"none"}]}]},
+                  "streamSettings":{"network":"ws","security":"tls",
+                    "tlsSettings":{"serverName":"cdn.servgo.ru","allowInsecure":False},
+                    "wsSettings":{"path":"/mnebyvpn-vpn/ws",
+                                  "headers":{"Host":"cdn.servgo.ru"}}}}
+          reality_out={"protocol":"vless","tag":"fast-reality",
+                  "settings":{"vnext":[{"address":"89.125.90.101","port":2053,
+                    "users":[{"id":cred,"encryption":"none","flow":"xtls-rprx-vision"}]}]},
+                  "streamSettings":{"network":"tcp","security":"reality",
+                     "realitySettings":{"serverName":"www.cloudflare.com",
+                       "fingerprint":"chrome","password":pub,
+                       "shortId":sid,"spiderX":"/"}}}
+          pathlib.Path(ws).write_text(json.dumps({**common,"inbounds":[socks(19083)],"outbounds":[ws_out]}))
+          pathlib.Path(reality).write_text(json.dumps({**common,"inbounds":[socks(19084)],"outbounds":[reality_out]}))
+          PY
+          "$TMP/xray" run -test -config "$TMP/ws.json" >/dev/null
+          "$TMP/xray" run -test -config "$TMP/reality.json" >/dev/null
+          "$TMP/xray" run -config "$TMP/ws.json" > "$TMP/ws.log" 2>&1 &
+          XWS_PID=$!
+          "$TMP/xray" run -config "$TMP/reality.json" > "$TMP/reality.log" 2>&1 &
+          XREAL_PID=$!
+          sleep 1
+          TARGET=https://www.cloudflare.com/cdn-cgi/trace
+          for mode in ws reality; do
+            if [[ "$mode" == ws ]]; then port=19083; else port=19084; fi
+            echo "testing_transport=$mode"
+            for i in 1 2 3; do
+              curl --noproxy '' --proxy "socks5h://127.0.0.1:$port" \
+                -fsS --connect-timeout 8 --max-time 14 -o /dev/null \
+                -w "sample=$i total_seconds=%{time_total} http=%{http_code}\n" "$TARGET"
+            done
+          done
+          echo 'both_transports_authenticated_3_of_3=true'
+          SSHPASS="$RU_PASSWORD" sshpass -e ssh "${OPTS[@]}" root@188.120.254.223 \
+            "python3 - revoke $ID" < scripts/mnebyvpn-benchmark-ephemeral.py >/dev/null
+          CREATED=0
+          sleep 2
+          for mode in ws reality; do
+            if [[ "$mode" == ws ]]; then port=19083; else port=19084; fi
+            set +e
+            code="$(curl --noproxy '' --proxy "socks5h://127.0.0.1:$port" \
+              -sS --connect-timeout 3 --max-time 7 -o /dev/null \
+              -w '%{http_code}' "$TARGET" 2>/dev/null)"
+            ret=$?
+            set -e
+            if [[ "$code" == 200 || "$ret" == 0 ]]; then
+              echo "revoke_failed_transport=$mode code=$code"
+              exit 2
+            fi
+            echo "transport=$mode revoked_access_confirmed=true"
+          done
+          echo 'both_transports_revocation_verified=true'
