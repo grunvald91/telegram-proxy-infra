@@ -23,6 +23,7 @@ test "$(cat "$ROOT/public/active_sha")" = "$SHA" || {
 docker image inspect "$IMAGE" >/dev/null
 test -s "$ROOT/releases/$SHA/apps/service/src/purchase-notification-worker.ts"
 test -s "$ROOT/releases/$SHA/packages/notifications/src/vpn-purchase.ts"
+test -s "$ROOT/releases/$SHA/packages/notifications/src/vpn-trial-ready.ts"
 test -s "$BOT/web.env"
 grep -Eq '^DATABASE_URL=postgresql://' "$BOT/web.env" || exit 2
 grep -Eq '^TELEGRAM_TOKEN_BOT=[0-9]{5,20}:[A-Za-z0-9_-]{25,}$' "$BOT/web.env" || {
@@ -34,6 +35,8 @@ test "$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 5 http:
 # Preflight schema and do not duplicate notifications if enabled in the existing node worker.
 docker exec mnebyvpn-stage-postgres psql -qAtX -v ON_ERROR_STOP=1 \
   -U mnebyvpn_stage -d mnebyvpn_stage -c "SELECT 1 FROM vpn_purchase_notifications LIMIT 1" >/dev/null
+docker exec mnebyvpn-stage-postgres psql -qAtX -v ON_ERROR_STOP=1 \
+  -U mnebyvpn_stage -d mnebyvpn_stage -c "SELECT 1 FROM vpn_trial_ready_notifications LIMIT 1" >/dev/null
 if grep -Fxq 'VPN_PURCHASE_NOTIFICATIONS_ENABLED=yes' "$BOT/web.env" ||
   { test -f "$BOT/worker.env" &&
     grep -Fxq 'VPN_PURCHASE_NOTIFICATIONS_ENABLED=yes' "$BOT/worker.env"; }; then
@@ -87,6 +90,7 @@ test "$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --max-time 5 http:/
 if [[ "$old" == yes ]]; then docker rm "$PREVIOUS" >/dev/null; fi
 trap - ERR EXIT
 echo 'purchase_notices=running'
+echo 'trial_ready_notices=enabled_node_verified'
 echo "purchase_notices_sha=$SHA"
 echo 'vpn_worker=unchanged'
 echo 'telegram_token=existing_private_env'
