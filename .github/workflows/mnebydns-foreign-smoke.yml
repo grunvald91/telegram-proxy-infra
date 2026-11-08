@@ -1,0 +1,48 @@
+name: MNEBYDNS foreign VPS isolated DoT smoke
+on:
+  push:
+    branches: ['feature/mnebydns-foreign-loopback-smoke-20261108']
+    paths:
+      - '.github/workflows/mnebydns-foreign-smoke.yml'
+permissions:
+  contents: read
+jobs:
+  test-foreign:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      SSHPASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Fetch pinned, green MNEBYDNS PoC
+        uses: actions/checkout@v4
+        with:
+          repository: grunvald91/Mnebyvpn
+          ref: 6b47c8521ead6bd134ac567c6aa0f411d49e80e6
+          persist-credentials: false
+      - name: Run guarded 120-second loopback-only remote test
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SSHPASS" || { echo "foreign SSH credential missing"; exit 2; }
+          [[ "$GITHUB_RUN_ID" =~ ^[0-9]+$ ]] || exit 2
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          host=root@89.125.90.101
+          dir="/tmp/mnebydns-ci-$GITHUB_RUN_ID"
+          opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o LogLevel=ERROR)
+          echo "phase=foreign_native_test_no_docker_on_vps"
+          docker pull coredns/coredns:1.15.0
+          image_container="$(docker create coredns/coredns:1.15.0)"
+          docker cp "$image_container:/coredns" ops/smart-dns-poc/coredns
+          docker rm "$image_container"
+          chmod 755 ops/smart-dns-poc/coredns
+          sshpass -e ssh "${opts[@]}" "$host" "mkdir -m 700 -- '$dir'"
+          tar -C ops/smart-dns-poc -czf - Corefile.foreign make-local-cert.sh probe-dot.py run-foreign-native-smoke.sh coredns |
+            sshpass -e ssh "${opts[@]}" "$host" "tar -xzf - -C '$dir'"
+          sshpass -e ssh "${opts[@]}" "$host" \
+            "cd '$dir' && timeout --signal=TERM --kill-after=15s 120 bash run-foreign-native-smoke.sh"
+          sshpass -e ssh "${opts[@]}" "$host" \
+            "if ss -H -lnt 'sport = :1853' | grep -q .; then echo leftover_dns_listener=yes; exit 1; fi; echo leftover_dns_listener=no"
+          sshpass -e ssh "${opts[@]}" "$host" \
+            "cd '$dir' && rm -f -- coredns Corefile.foreign Corefile.native make-local-cert.sh probe-dot.py run-foreign-native-smoke.sh coredns.log && cd / && rmdir -- '$dir'"
+          echo "foreign_runtime_smoke=completed_and_temp_files_removed"
