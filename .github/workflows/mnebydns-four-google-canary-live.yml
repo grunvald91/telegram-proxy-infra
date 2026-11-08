@@ -1,3 +1,4 @@
+# Fresh owner-authorized 2026-11-09 batch canary: run ID must be new (not a rerun attempt).
 name: MNEBYDNS owner 30-minute Google routing live experiment
 on:
   push:
