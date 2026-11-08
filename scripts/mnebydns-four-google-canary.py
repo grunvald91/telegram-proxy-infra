@@ -40,6 +40,25 @@ HOSTS = (
     "fcm-xmpp.googleapis.com",
     "gcm-xmpp.googleapis.com",
     "stun.l.google.com",
+    # Claude's Web/Android, API, auth, static and bridge service destinations.
+    "claude.ai",
+    "a.claude.ai",
+    "a-cdn.claude.ai",
+    "assets.claude.ai",
+    "downloads.claude.ai",
+    "claude.com",
+    "code.claude.com",
+    "platform.claude.com",
+    "api.anthropic.com",
+    "a-api.anthropic.com",
+    "a-cdn.anthropic.com",
+    "s-cdn.anthropic.com",
+    "assets-proxy.anthropic.com",
+    "statsig.anthropic.com",
+    "bridge.claudeusercontent.com",
+    "claudeusercontent.com",
+    "claudemcpcontent.com",
+    "claude.app",
     "www.youtube.com",
     "youtubei.googleapis.com",
     "i.ytimg.com",
@@ -108,6 +127,8 @@ DYNAMIC_SUFFIXES = (
     "google.com", "googleapis.com", "google.ru", "google.de",
     "google.co.uk", "googletagmanager.com", "google-analytics.com",
     "doubleclick.net", "googleadservices.com",
+    "claude.ai", "claude.com", "anthropic.com",
+    "claudeusercontent.com", "claudemcpcontent.com", "claude.app",
 )
 VIDEO = r"(?i)^(?:[a-z0-9-]+[.])*(?:" + "|".join(
     re.escape(x) for x in DYNAMIC_SUFFIXES) + r")[.]$"
@@ -279,10 +300,16 @@ def self_test()->None:
                    "nested.client.google.com","nested.service.googleapis.com"):
         assert re.fullmatch(VIDEO,domain+".") is not None,domain
         assert re.fullmatch(VIDEO_NGINX[2:],domain,re.IGNORECASE) is not None,domain
+    for domain in ("claude.ai","a.claude.ai","new-service.claude.com",
+                   "api.anthropic.com","new-cdn.anthropic.com",
+                   "bridge.claudeusercontent.com","abc.claudemcpcontent.com",
+                   "sandbox.livepreview.claude.app"):
+        assert re.fullmatch(VIDEO,domain+".") is not None,domain
+        assert re.fullmatch(VIDEO_NGINX[2:],domain,re.IGNORECASE) is not None,domain
     for domain in ("cdn.servgo.ru","example.com","www.instagram.com"):
         assert re.fullmatch(VIDEO,domain+".") is None,domain
         assert re.fullmatch(VIDEO_NGINX[2:],domain,re.IGNORECASE) is None,domain
-    assert len(DYNAMIC_SUFFIXES)==17
+    assert len(DYNAMIC_SUFFIXES)==23
     assert len(HOSTS)>=50
     assert "default 127.0.0.1:1;" in proxy_config()
     for bad in (old_nginx.replace("gemini.google.com", "x.example"),
