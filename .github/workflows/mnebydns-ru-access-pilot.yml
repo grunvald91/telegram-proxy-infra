@@ -19,7 +19,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: grunvald91/Mnebyvpn
-          ref: 7106bfffdf81f6b2788d296b67cf029995fe81e6
+          ref: 0ac3cf11278fdf3ab0d912606e0c728c2b76ad2c
           path: mnebyvpn
           persist-credentials: false
       - name: Three Discord hosts DNS + original TLS + Russian ingress E2E; rollback on error
