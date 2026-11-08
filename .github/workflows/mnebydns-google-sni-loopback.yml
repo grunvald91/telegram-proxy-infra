@@ -79,7 +79,7 @@ jobs:
           chmod 644 "$dir/nginx.conf"
           timeout --signal=TERM --kill-after=3s 95s \
             setpriv --reuid 65532 --regid 65532 --clear-groups --no-new-privs \
-            nginx -e "$dir/google-sni.log" -c "$dir/nginx.conf" -g 'daemon off;' > "$dir/stdout.log" 2>&1 &
+            nginx -c "$dir/nginx.conf" -g 'daemon off;' > "$dir/stdout.log" 2>&1 &
           pid="$!"
           for i in $(seq 1 40); do
             if [[ "$(ss -H -lnt 'sport = :15443' | awk '{print $4}')" == "127.0.0.1:15443" ]]; then break; fi
