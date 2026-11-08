@@ -66,7 +66,7 @@ jobs:
             else
               echo "google_staging_listener_removed=yes"
             fi
-            rm -f -- "$dir/nginx.conf" "$dir/google-sni.log" "$dir/google-sni.pid"
+            rm -f -- "$dir/nginx.conf" "$dir/google-sni.log" "$dir/google-sni.pid" "$dir/stdout.log"
             rmdir -- "$dir" || true
             exit "$original"
           }
@@ -75,10 +75,11 @@ jobs:
           test "$(awk '/^MemAvailable:/{print int($2/1024)}' /proc/meminfo)" -ge 700
           nginx -t -c "$dir/nginx.conf" > /dev/null 2>&1
           chown 65532:65532 "$dir"
+          chmod 700 "$dir"
           chmod 644 "$dir/nginx.conf"
           timeout --signal=TERM --kill-after=3s 95s \
             setpriv --reuid 65532 --regid 65532 --clear-groups --no-new-privs \
-            nginx -c "$dir/nginx.conf" -g 'daemon off;' > "$dir/stdout.log" 2>&1 &
+            nginx -e "$dir/google-sni.log" -c "$dir/nginx.conf" -g 'daemon off;' > "$dir/stdout.log" 2>&1 &
           pid="$!"
           for i in $(seq 1 40); do
             if [[ "$(ss -H -lnt 'sport = :15443' | awk '{print $4}')" == "127.0.0.1:15443" ]]; then break; fi
