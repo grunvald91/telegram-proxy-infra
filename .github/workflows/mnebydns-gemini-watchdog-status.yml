@@ -24,7 +24,7 @@ jobs:
           import subprocess,pathlib,re
           def cmd(args):
               return subprocess.run(args,capture_output=True,text=True,timeout=7)
-          timer=cmd(['systemctl','is-active','mnebydns-gemini-watchdog-42462127536.timer'])
+          timer=cmd(['systemctl','is-active','mnebydns-gemini-watchdog-42462519276.timer'])
           print('prior_rollback_watchdog_active='+str(timer.returncode==0).lower())
           for svc in ['nginx','mnebydns-dot.service','mnebydns-gemini.service']:
               p=cmd(['systemctl','is-active',svc])
