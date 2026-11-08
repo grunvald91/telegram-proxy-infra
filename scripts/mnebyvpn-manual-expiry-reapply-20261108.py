@@ -103,6 +103,9 @@ def main():
         all_active=sql("""SELECT count(*) FROM entitlements
             WHERE product='vpn' AND state='ACTIVE' AND expires_at>clock_timestamp()""")
         rows=read_rows()
+        print("preflight_active_vpn_count="+str(all_active))
+        print("preflight_verified_vpn_count="+str(len(rows)))
+        print("preflight_distinct_owner_accounts="+str(len({r[3] for r in rows})))
         if all_active!="2" or len(rows)!=2 or len({r[3] for r in rows})!=1:
             raise RuntimeError("Expected exactly two active VPN entitlements under one account")
         if any(rev!=applied or rev<1 for _,rev,_,_,applied in rows):
