@@ -1,0 +1,54 @@
+name: MNEBYVPN REALITY ingress and version read-only audit
+on:
+  push:
+    branches: [diagnose/mnebyvpn-reality-karing-20261108]
+    paths: ['.github/workflows/mnebyvpn-reality-karing-readonly.yml']
+permissions:
+  contents: read
+jobs:
+  readonly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      FOREIGN_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Check current Xray compatibility and foreign REALITY ingress without changing services
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          export SSHPASS="$FOREIGN_PASSWORD"
+          sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o LogLevel=ERROR root@89.125.90.101 'bash -se' <<'REMOTE'
+          set -euo pipefail
+          /opt/xray/xray version | head -n 2
+          echo "reality_agent_active=$(systemctl is-active mnebyvpn-vpn-provisioner.service)"
+          echo "shared_xray_active=$(systemctl is-active xray.service)"
+          ss -H -lnt | awk '$4 ~ /:2053$/ {print "reality_tcp2053_listener=true"}'
+          test -f /etc/mnebyvpn/reality-announce-enabled && echo 'reality_announce_enabled=true' || echo 'reality_announce_enabled=false'
+          test -s /etc/mnebyvpn/reality-public.json && echo 'reality_public_metadata=present'
+          /opt/xray/xray run -test -config /etc/mnebyvpn/xray-canary.json >/dev/null 2>&1 && echo 'reality_xray_config_test=passed'
+          REMOTE
+          python3 - <<'PY'
+          import socket
+          for host in ('cdn.servgo.ru','89.125.90.101'):
+            try:
+              with socket.create_connection((host,2053),timeout=8):
+                print('reality_external_tcp2053_'+('domain' if host.startswith('cdn') else 'ip')+'=reachable')
+            except Exception as error:
+              print('reality_external_tcp2053_'+('domain' if host.startswith('cdn') else 'ip')+'=unreachable_'+type(error).__name__)
+          PY
+      - name: Confirm only live owner subscription revision is synced in control plane
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASSWORD"
+          sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o LogLevel=ERROR root@188.120.254.223 'bash -se' <<'REMOTE'
+          set -euo pipefail
+          docker exec -i mnebyvpn-stage-postgres psql -qAtX -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage <<'SQL'
+          SELECT 'owner_link_valid_and_node_synced='||(e.state='ACTIVE' AND e.expires_at>clock_timestamp() AND l.revoked_at IS NULL AND p.applied_revision=e.revision)
+          FROM vpn_subscription_links l JOIN entitlements e ON e.id=l.entitlement_id
+          JOIN provisioning_state p ON p.entitlement_id=e.id AND p.adapter='vpn'
+          WHERE l.token_sha256='65159196f6dc7ce18685dd61f958679927889b3a8db907ce80c6b57ce6154a4e';
+          SQL
+          REMOTE
