@@ -1,0 +1,24 @@
+name: MNEBYVPN ephemeral diagnostics no-disruption guard
+on:
+  push:
+    branches: [fix/prevent-diagnostic-xray-user-restarts-20261108]
+    paths:
+      - 'scripts/mnebyvpn-benchmark-ephemeral.py'
+      - 'tests/test_mnebyvpn_ephemeral_guard.py'
+      - '.github/workflows/mnebyvpn-ephemeral-safety.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scripts/mnebyvpn-benchmark-ephemeral.py'
+      - 'tests/test_mnebyvpn_ephemeral_guard.py'
+      - '.github/workflows/mnebyvpn-ephemeral-safety.yml'
+permissions:
+  contents: read
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -m py_compile scripts/mnebyvpn-benchmark-ephemeral.py
+      - run: python3 -m unittest discover -v -s tests -p test_mnebyvpn_ephemeral_guard.py
