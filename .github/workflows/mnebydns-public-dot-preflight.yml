@@ -1,0 +1,79 @@
+name: MNEBYDNS public Android DoT prerequisite audit (read-only)
+on:
+  push:
+    branches: ['feature/mnebydns-public-dot-preflight-20261108']
+    paths: ['.github/workflows/mnebydns-public-dot-preflight.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      FOREIGN_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Check public DNS delegation and dedicated hostname
+        shell: bash
+        run: |
+          set -euo pipefail
+          for host in mnebyvpn.site dns.mnebyvpn.site dot.mnebyvpn.site; do
+            echo "hostname=$host"
+            for rr in A AAAA CNAME CAA; do
+              value="$(dig +time=3 +tries=1 @1.1.1.1 +short "$host" "$rr" || true)"
+              echo "${rr}_count=$(printf '%s\n' "$value" | grep -c . || true)"
+              if [[ "$rr" = A ]]; then
+                if grep -Fxq '89.125.90.101' <<<"$value"; then
+                  echo "foreign_vps_A=yes"
+                else
+                  echo "foreign_vps_A=no"
+                fi
+              fi
+            done
+          done
+          echo "public_domain_NS_begin"
+          dig +time=3 +tries=1 @1.1.1.1 +short mnebyvpn.site NS | head -n 8
+          echo "public_domain_NS_end"
+      - name: Inspect foreign VPS prerequisites without changing services
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$FOREIGN_PASS" || { echo "existing foreign SSH secret missing"; exit 2; }
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          export SSHPASS="$FOREIGN_PASS"
+          sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o LogLevel=ERROR root@89.125.90.101 'python3 -' <<'PY'
+          import pathlib,shutil,os,subprocess
+          print('foreign_audit=read_only')
+          for cmd in ['openssl','certbot','acme.sh','setpriv','systemctl','iptables','nft','ufw','ss','getent','curl']:
+              print(cmd+'_installed='+str(shutil.which(cmd) is not None).lower())
+          for port in [53,80,443,853,1853]:
+              try:
+                  result=subprocess.run(['ss','-H','-lnt','sport = :'+str(port)],capture_output=True,text=True,timeout=6)
+                  print('tcp_'+str(port)+'_listeners='+str(len(result.stdout.splitlines()) if result.returncode==0 else 'unknown'))
+              except Exception:print('tcp_'+str(port)+'_listeners=unknown')
+          for port in [53,853]:
+              try:
+                  result=subprocess.run(['ss','-H','-lnu','sport = :'+str(port)],capture_output=True,text=True,timeout=6)
+                  print('udp_'+str(port)+'_listeners='+str(len(result.stdout.splitlines()) if result.returncode==0 else 'unknown'))
+              except Exception:print('udp_'+str(port)+'_listeners=unknown')
+          try:
+              p=subprocess.run(['ip','-6','-o','addr','show','scope','global'],capture_output=True,text=True,timeout=5)
+              print('ipv6_global_address_count='+str(len(p.stdout.splitlines()) if p.returncode==0 else 'unknown'))
+          except Exception:print('ipv6_global_address_count=unknown')
+          mem={}
+          for line in pathlib.Path('/proc/meminfo').read_text().splitlines():
+              k,_,v=line.partition(':')
+              if k in {'MemAvailable','MemTotal'}:mem[k]=int(v.strip().split()[0])//1024
+          print('mem_available_mib='+str(mem.get('MemAvailable','unknown')))
+          print('mem_total_mib='+str(mem.get('MemTotal','unknown')))
+          try:
+              st=shutil.disk_usage('/opt')
+              print('disk_available_mib='+str(st.free//1048576))
+          except OSError:print('disk_available_mib=unknown')
+          live=pathlib.Path('/etc/letsencrypt/live')
+          print('public_dns_cert_present='+str((live/'dns.mnebyvpn.site'/'fullchain.pem').is_file()).lower())
+          print('public_dns_key_present='+str((live/'dns.mnebyvpn.site'/'privkey.pem').is_file()).lower())
+          print('systemd_running='+str(pathlib.Path('/run/systemd/system').exists()).lower())
+          print('audit_complete=yes')
+          PY
