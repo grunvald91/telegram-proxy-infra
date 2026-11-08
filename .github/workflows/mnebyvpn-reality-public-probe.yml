@@ -107,10 +107,25 @@ jobs:
             done
             test "$found" == 1
           done
+          echo 'tcp_connect_rtt_to_both_public_ports:'
+          python3 - <<'PY'
+          import socket,statistics,time
+          for port in (8443,2053):
+              ok=[];bad=0
+              for _ in range(12):
+                  start=time.monotonic()
+                  try:
+                      with socket.create_connection(("89.125.90.101",port),timeout=3):
+                          ok.append((time.monotonic()-start)*1000)
+                  except OSError:
+                      bad+=1
+                  time.sleep(.07)
+              print(f"port={port} tcp_success={len(ok)}/12 failures={bad} median_ms={statistics.median(ok):.1f} max_ms={max(ok):.1f}" if ok else f"port={port} unreachable")
+          PY
           echo 'measurement_scope=direct_public_runner_to_89_8443_WS_and_2053_REALITY'
           TARGET='https://www.cloudflare.com/cdn-cgi/trace'
           : > "$TMP/measure.csv"
-          for i in $(seq 1 5); do
+          for i in $(seq 1 10); do
             for route in direct ws reality; do
               opts=(--noproxy '*')
               case "$route" in
@@ -119,7 +134,7 @@ jobs:
               esac
               value="$(curl "${opts[@]}" --silent --show-error --fail \
                   --connect-timeout 7 --max-time 13 -o /dev/null \
-                  -w '%{time_total}' "$TARGET")" || value=fail
+                  -w 'tcp=%{time_connect}|tls=%{time_appconnect}|ttfb=%{time_starttransfer}|total=%{time_total}' "$TARGET")" || value=fail
               echo "$i,$route,$value" >> "$TMP/measure.csv"
               echo "sample=$i route=$route total_seconds=$value"
             done
@@ -129,11 +144,11 @@ jobs:
           groups=collections.defaultdict(list)
           for row in pathlib.Path(sys.argv[1]).read_text().splitlines():
               _, route, val=row.split(",")
-              if val!="fail":groups[route].append(float(val)*1000)
+              if val!="fail":groups[route].append(float(val.split("total=")[-1])*1000)
           for route in ("direct","ws","reality"):
               values=groups[route]
-              print(f"route={route} successful={len(values)}/5 median_ms={statistics.median(values):.1f}" if values else f"route={route} successful=0/5")
-          assert len(groups["ws"])>=4 and len(groups["reality"])>=4, "Cannot trust low sample count"
+              print(f"route={route} successful={len(values)}/10 median_ms={statistics.median(values):.1f}" if values else f"route={route} successful=0/10")
+          assert len(groups["ws"])>=8 and len(groups["reality"])>=8, "Cannot trust low sample count"
           delta=statistics.median(groups["ws"])-statistics.median(groups["reality"])
           print(f"reality_advantage_ms={delta:.1f}")
           PY
