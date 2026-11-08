@@ -57,6 +57,25 @@ class SocketTracingContract(unittest.TestCase):
         with patch.object(O,"STATE",new=SimpleNamespace(read_text=lambda: __import__("json").dumps(data))):
             self.assertEqual(O.active_count(now),2)
 
+    def test_established_inbound_count_filters_by_process_socket_inode_and_port(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            root=pathlib.Path(d)
+            (root/"888"/"fd").mkdir(parents=True)
+            (root/"net").mkdir()
+            (root/"888"/"fd"/"10").symlink_to("socket:[1500]")
+            (root/"888"/"fd"/"11").symlink_to("socket:[1600]")
+            header="  sl  local_address rem_address st tx_queue tr tm->when retrnsmt uid timeout inode\n"
+            accepted="   0: 0100007F:49FF 0200007F:9C40 01 0:0 00:0 00000000 0 0 1500\n"
+            outbound="   1: 0100007F:ABCD 08080808:01BB 01 0:0 00:0 00000000 0 0 1600\n"
+            foreign_user="   2: 0100007F:49FF 0200007F:9C41 01 0:0 00:0 00000000 0 0 9000\n"
+            (root/"net"/"tcp").write_text(header+accepted+outbound+foreign_user)
+            self.assertEqual(O.active_vpn_ingress_count(888,root),1)
+            assert (root/"888"/"fd"/"12").symlink_to("socket:[1700]")
+            second="   3: 0100007F:49FF 0200007F:9C42 01 0:0 00:0 00000000 0 0 1700\n"
+            (root/"net"/"tcp").write_text(header+accepted+outbound+foreign_user+second)
+            self.assertEqual(O.active_vpn_ingress_count(888,root),2)
+
     def test_no_packet_logs_secrets_or_live_service_writes(self):
         source=(ROOT/"scripts/mnebyvpn-gemini-socket-observe.py").read_text()
         for forbidden in ("tcpdump","pyshark","scapy","/dev/packet","pcap",
@@ -64,7 +83,7 @@ class SocketTracingContract(unittest.TestCase):
                           "os.system(","CONFIG.write_text","STATE.write_text",
                           "key_file.read_text","xray -config"):
             self.assertNotIn(forbidden,source)
-        self.assertIn("preflight_status=READY_SINGLE_ACTIVE_VPN_PROFILE",source)
+        self.assertIn("preflight_status=READY_SINGLE_ESTABLISHED_TUNNEL",source)
         self.assertIn("capture_stopped_no_persistent_tracking=true",source)
 
 if __name__=="__main__":
