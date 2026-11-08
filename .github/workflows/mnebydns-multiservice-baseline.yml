@@ -80,3 +80,61 @@ jobs:
           print('memory_available_kib='+str(next(int(line.split()[1]) for line in pathlib.Path('/proc/meminfo').read_text().splitlines() if line.startswith('MemAvailable:'))))
           print('read_only=yes')
           PY
+      - name: Foreign public HTTPS SNI reachability from Russian VPS (no changes)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS"
+          SSHPASS="$RU_PASS" sshpass -e ssh \
+            -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new \
+            -o LogLevel=ERROR root@188.120.254.223 'python3 -' <<'PY'
+          import concurrent.futures,socket,ssl,time
+          hosts={
+            'Google':('www.google.com','accounts.google.com','aistudio.google.com',
+                      'www.gstatic.com','ssl.gstatic.com','oauth2.googleapis.com'),
+            'YouTube':('www.youtube.com','youtubei.googleapis.com','i.ytimg.com',
+                       'accounts.youtube.com'),
+            'Instagram':('www.instagram.com','api.instagram.com',
+                         'gateway.instagram.com','static.cdninstagram.com',
+                         'www.facebook.com'),
+          }
+          ingress='89.125.90.101'
+          def check(pair):
+              group,host=pair
+              start=time.monotonic()
+              connected=False
+              try:
+                  with socket.create_connection((ingress,443),timeout=5) as raw:
+                      connected=True
+                      raw.settimeout(5)
+                      with ssl.create_default_context().wrap_socket(raw,server_hostname=host) as tls:
+                          result='ORIGIN_TLS_VALID'
+                          version=tls.version()
+              except (socket.timeout,TimeoutError):
+                  result='TIMEOUT_AFTER_TCP' if connected else 'TCP_TIMEOUT'
+                  version='-'
+              except ssl.SSLCertVerificationError:
+                  result='CERT_UNTRUSTED_OR_WRONG_HOST';version='-'
+              except ssl.SSLError:
+                  result='TLS_ALERT_OR_EOF';version='-'
+              except OSError as exc:
+                  result=type(exc).__name__;version='-'
+              return group,host,result,connected,round((time.monotonic()-start)*1000),version
+          pairs=[(group,host) for group,names in hosts.items() for host in names]
+          controls=[('control','gemini.google.com'),('control','discord.com'),
+                    ('control','cdn.discordapp.com')]
+          with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+              results=list(pool.map(check,pairs+controls))
+          for group,host,result,tcp,elapsed,proto in results:
+              print(f'ru_to_foreign_sni_group={group} host={host} '
+                    f'tls_status={result} tcp_connected={str(tcp).lower()} '
+                    f'elapsed_ms={elapsed} protocol={proto}',flush=True)
+          for group,host,result,tcp,elapsed,proto in results:
+              if group=='control' and result!='ORIGIN_TLS_VALID':
+                  raise SystemExit('Existing live control TLS regressed: '+host)
+              if group!='control' and result=='ORIGIN_TLS_VALID':
+                  raise SystemExit('Unexpected unpromoted original TLS route: '+host)
+          print('ru_to_foreign_sni_candidate_screen_complete=yes')
+          print('unpromoted_hosts_CANNOT_be_declared_working_from_this_screen=yes')
+          print('no_network_DNS_or_service_config_changes=yes')
+          PY
