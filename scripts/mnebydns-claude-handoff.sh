@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# One-off transaction handoff from 73+17 Google owner pilot to 91+23 Google+Claude
-# pilot. Only uses the old pilot's own verified rollback, never overwrites
+# One-off transaction handoff from 91+23 Google+Claude to 121+46
+# Google+Claude+Instagram+Grok+X+Threads pilot. Only uses the old pilot's own verified rollback, never overwrites
 # unknown configurations. New pilot has its own persistent 30m watchdog.
 set -Eeuo pipefail
 (( EUID == 0 )) || exit 2
 [[ $# == 1 && "$1" =~ ^/tmp/mnebydns-ci-[0-9]+$ ]] || exit 2
 work="$1"
-old=/opt/mnebydns-googlepilot-backups/42532077031
+old=/opt/mnebydns-googlepilot-backups/42533155025
 nginx=/etc/nginx/nginx.conf
 dns=/opt/mnebydns-dot/Corefile
 for f in nginx.before dns.before nginx.pilot dns.pilot rollback.sh; do
@@ -15,7 +15,7 @@ done
 if cmp -s "$old/nginx.pilot" "$nginx" &&
    cmp -s "$old/dns.pilot" "$dns"; then
   systemctl is-active --quiet mnebydns-googlepilot.service
-  systemctl is-active --quiet mnebydns-four-google-watchdog-42532077031.timer
+  systemctl is-active --quiet mnebydns-four-google-watchdog-42533155025.timer
   echo "handoff_old_canary_state=ACTIVE_VERIFIED"
   bash "$old/rollback.sh" "$old"
 elif cmp -s "$old/nginx.before" "$nginx" &&
@@ -35,4 +35,4 @@ cmp -s "$old/nginx.before" "$nginx"
 cmp -s "$old/dns.before" "$dns"
 echo "handoff_old_canary_transactionally_restored=true"
 bash "$work/mnebydns-four-google-deploy.sh" "$work"
-echo "handoff_new_claude_google_30m_canary_active=true"
+echo "handoff_new_google_claude_social_30m_canary_active=true"
