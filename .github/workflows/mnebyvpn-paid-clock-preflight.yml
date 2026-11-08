@@ -5,6 +5,7 @@ on:
     branches:
       - fix/mnebyvpn-safe-live-vpn-worker-rollout-20261108
       - main
+      - audit/mnebyvpn-owner-link-20261108
     paths:
       - '.github/workflows/mnebyvpn-paid-clock-preflight.yml'
       - 'scripts/mnebyvpn-live-node-readonly-check.py'
