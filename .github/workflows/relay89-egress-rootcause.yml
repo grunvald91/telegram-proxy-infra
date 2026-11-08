@@ -1,7 +1,5 @@
 name: Relay89 permanent clock recovery and final network checks
 on:
-  push:
-    paths: ['.github/workflows/relay89-egress-rootcause.yml']
   workflow_dispatch:
 permissions:
   contents: read
