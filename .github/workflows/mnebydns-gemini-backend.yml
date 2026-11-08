@@ -1,0 +1,96 @@
+name: MNEBYDNS Gemini-only loopback HTTPS backend rollout
+on:
+  push:
+    branches: ['feature/mnebydns-vpn-google-readonly-20261108']
+    paths: ['.github/workflows/mnebydns-gemini-backend.yml']
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-gemini-foreign-change
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      SSH_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: grunvald91/Mnebyvpn
+          ref: 1fe5c81f9101bd5f420393254e241fdcc6ff2ec1
+          path: mnebyvpn
+          persist-credentials: false
+      - name: Install separate limited loopback Gemini backend (no public 443 modifications)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$SSH_PASSWORD" || exit 2
+          [[ "$GITHUB_RUN_ID" =~ ^[0-9]+$ ]] || exit 2
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          export SSHPASS="$SSH_PASSWORD"
+          host=root@89.125.90.101
+          work="/tmp/mnebydns-ci-$GITHUB_RUN_ID"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          remote() { sshpass -e ssh "${opts[@]}" "$host" "$"; }
+          remote "mkdir -m 700 -- '$work'"
+          tar -C mnebyvpn/ops/smart-dns-poc -czf - \
+            Gemini-SNI-live.nginx.conf mnebydns-gemini.service |
+            sshpass -e ssh "${opts[@]}" "$host" "tar -xzf - -C '$work'"
+          remote "WORK_DIR='$work' bash -se" <<'REMOTE'
+          set -Eeuo pipefail
+          lock=/run/lock/mnebydns-gemini.lock
+          exec 9>"$lock"
+          flock -n 9 || { echo 'gemini_backend_change_locked'; exit 2; }
+          test ! -e /etc/nginx/conf.d/mnebydns-gemini.conf
+          dest=/etc/mnebydns-gemini
+          unit=/etc/systemd/system/mnebydns-gemini.service
+          test ! -e "$dest" && test ! -e "$unit"
+          test -z "$(ss -H -lnt 'sport = :15443')"
+          test "$(systemctl is-active nginx)" = active
+          nginx -t >/dev/null 2>&1
+          test "$(awk '/^MemAvailable:/{print int($2/1024)}' /proc/meminfo)" -gt 700
+          installed=no
+          rollback() {
+            if [[ "$installed" = yes ]]; then
+              systemctl stop mnebydns-gemini.service >/dev/null 2>&1 || true
+              systemctl disable mnebydns-gemini.service >/dev/null 2>&1 || true
+              rm -f -- "$unit"
+              rm -rf -- "$dest"
+              systemctl daemon-reload
+              echo "backend_rollback_attempted=yes"
+            fi
+          }
+          trap rollback ERR
+          install -d -m 755 -o root -g root "$dest"
+          installed=yes
+          install -m 644 -o root -g root "$WORK_DIR/Gemini-SNI-live.nginx.conf" "$dest/nginx.conf"
+          install -m 644 -o root -g root "$WORK_DIR/mnebydns-gemini.service" "$unit"
+          systemd-analyze verify "$unit"
+          systemctl daemon-reload
+          systemctl start mnebydns-gemini.service
+          for i in $(seq 1 50); do
+            [[ "$(ss -H -lnt 'sport = :15443' | awk '{print $4}')" = "127.0.0.1:15443" ]] && break
+            sleep 0.2
+          done
+          [[ "$(ss -H -lnt 'sport = :15443' | awk '{print $4}')" = "127.0.0.1:15443" ]]
+          result="$(curl -4 --noproxy '*' -sS -o /dev/null --connect-timeout 5 --max-time 15 \
+            --connect-to gemini.google.com:443:127.0.0.1:15443 -w '%{http_code}' \
+            https://gemini.google.com/)"
+          [[ "$result" = 200 || "$result" = 302 ]]
+          if curl -4 --noproxy '*' -sS -o /dev/null --max-time 5 \
+               --connect-to example.org:443:127.0.0.1:15443 https://example.org/; then
+            echo 'unknown_hostname_unexpectedly_forwarded'
+            exit 1
+          fi
+          systemctl enable mnebydns-gemini.service >/dev/null
+          installed=no
+          trap - ERR
+          echo "gemini_backend_tls=valid"
+          echo "unknown_hostname_denied=yes"
+          echo "gemini_backend_public_listener=no"
+          echo "shared_nginx_443_untouched=yes"
+          echo "gemini_backend_active=yes"
+          REMOTE
+          remote "rm -rf -- '$work'"
