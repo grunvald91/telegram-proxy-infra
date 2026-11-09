@@ -73,6 +73,12 @@ def run():
                     b'\x11'*999):
         assert mod.initial_sni(invalid) is None
     assert mod.MAX_FLOWS<=256
+    # PMTU / UDP socket errors must be reported, not silently ignored.
+    router=mod.MetaRouter('ru','10.66.77.1','127.0.0.1')
+    sock=mod.ConnectedDatagram(router,('127.0.0.1',40000))
+    sock.error_received(OSError(mod.errno.EMSGSIZE,'message too long'))
+    assert router.counters['socket_error']==1
+    assert router.counters['emsgsize']==1
     import asyncio
     asyncio.run(test_local_response_path())
     print('meta_quic_local_two_hop_UDP_roundtrip=PASS')
