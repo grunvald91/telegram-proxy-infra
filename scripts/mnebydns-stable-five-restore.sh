@@ -14,6 +14,18 @@ for name in nginx dns proxy; do test -s "$base/$name.stable"; done
 nginx=/etc/nginx/nginx.conf
 dns=/opt/mnebydns-dot/Corefile
 proxy=/etc/mnebydns-googlepilot/nginx.conf
+if [[ $# == 1 && "$1" == --check ]]; then
+  for entry in nginx dns proxy; do
+    case "$entry" in
+      nginx) live="$nginx";; dns) live="$dns";; proxy) live="$proxy";;
+    esac
+    cmp -s "$base/$entry.stable" "$live" || {
+      echo "stable_checkpoint_drift=$entry"; exit 4;
+    }
+  done
+  echo "five_service_stable_checkpoint_and_manifest_valid=true"
+  exit 0
+fi
 exec 9>/run/lock/mnebyvpn-public-route.lock
 flock -w 20 9 || exit 3
 if [[ $# == 0 ]]; then
