@@ -95,3 +95,4 @@ jobs:
               print('RU_local443_'+sni+'='+result,flush=True)
           print('RU_audit_read_only=true',flush=True)
           PY
+# Read-only repeat after Android PCAP 2026-11-09 11:19 MSK; no routing modifications.
