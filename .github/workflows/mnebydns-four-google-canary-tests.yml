@@ -7,6 +7,8 @@ on:
       - 'scripts/mnebydns-four-google-deploy.sh'
       - 'scripts/mnebydns-four-google-rollback.sh'
       - 'scripts/mnebydns-claude-handoff.sh'
+      - 'scripts/mnebydns-meta-ru-deploy.sh'
+      - 'scripts/mnebydns-meta-ru-rollback.sh'
       - '.github/workflows/mnebydns-four-google-canary-tests.yml'
 permissions:
   contents: read
@@ -109,6 +111,8 @@ jobs:
           bash -n scripts/mnebydns-four-google-deploy.sh
           bash -n scripts/mnebydns-four-google-rollback.sh
           bash -n scripts/mnebydns-claude-handoff.sh
+          bash -n scripts/mnebydns-meta-ru-deploy.sh
+          bash -n scripts/mnebydns-meta-ru-rollback.sh
           python3 - <<'PY'
           from pathlib import Path
           r=Path('scripts/mnebydns-four-google-rollback.sh').read_text()
@@ -132,10 +136,21 @@ jobs:
           assert 'bash "$work/mnebydns-four-google-deploy.sh" "$work"' in h
           assert 'cmp -s "$old/nginx.before" "$nginx"' in h
           assert 'cmp -s "$old/dns.before" "$dns"' in h
-          assert 'systemctl is-active --quiet mnebydns-four-google-watchdog-42534478710.timer' in h
+          assert 'systemctl is-active --quiet mnebydns-four-google-watchdog-42536213503.timer' in h
           assert 'api.anthropic.com' in d and 'bridge.claudeusercontent.com' in d
           for hst in ('instagram.com','threads.com','x.com','grok.com','api.x.ai','www.tiktok.com','api.tiktokv.com','t.me','api.telegram.org'):
               assert hst in d
-          assert '/opt/mnebydns-googlepilot-backups/42534478710' in h
+          assert '/opt/mnebydns-googlepilot-backups/42536213503' in h
+          meta=Path('scripts/mnebydns-meta-ru-deploy.sh').read_text()
+          restore=Path('scripts/mnebydns-meta-ru-rollback.sh').read_text()
+          assert 'nginx -t' in meta and 'systemctl reload nginx' in meta
+          assert '35 minutes' in meta and 'Persistent=true' in meta
+          assert '10.66.77.1:19443' in meta
+          assert 'default 10.66.77.1:443;' in meta
+          assert 'stream_443_backend' in meta
+          assert 'cmp -s "$base/pilot" "$live"' in restore
+          assert 'ru_meta_rollback_refuses_unowned_config=true' in restore
+          assert 'telegram.org' not in meta
+          print('ru_meta_ingress_scope_and_rollback_contract=PASS')
           print('transactional_auto_rollback_contract=PASS')
           PY
