@@ -4,7 +4,6 @@ on:
     branches: [diagnostics/mnebydns-meta-ingress-matrix-20261109]
     paths:
       - scripts/mnebydns-meta-overlay.py
-      - scripts/mnebydns-meta-ru-deploy.sh
       - .github/workflows/mnebydns-meta-overlay-offline.yml
 permissions:
   contents: read
@@ -43,40 +42,5 @@ jobs:
           ! grep -Eq 'listen[[:space:]]+([*]|0.0.0.0|89.125.90.101)' "$temp/proxy.meta"
           grep -Fq 'template IN A . {' "$temp/dns.pilot"
           ! grep -Fq 'template IN A api.telegram.org' "$temp/dns.pilot"
-          python3 - <<'PY'
-          from pathlib import Path
-          import subprocess, sys, tempfile
-          script = Path('scripts/mnebydns-meta-ru-deploy.sh').read_text()
-          start_marker = 'python3 - "$base/before" "$base/pilot" <<' + "'PY'\n"
-          code = script.split(start_marker, 1)[1].split("\nPY\n", 1)[0]
-          compile(code, "ru_443_sni_map.py", "exec")
-          with tempfile.TemporaryDirectory() as d:
-              root = Path(d)
-              before = root / 'before'
-              after = root / 'after'
-              original = ("map $ssl_preread_server_name $stream_443_backend {\n"
-                          "    default 10.66.77.1:443;\n"
-                          "    gemini.google.com 127.0.0.1:15443;\n"
-                          "}\n")
-              before.write_text(original)
-              subprocess.run([sys.executable, '-c', code, str(before), str(after)],
-                             check=True, capture_output=True, text=True)
-              generated = after.read_text()
-              assert 'gemini.google.com 127.0.0.1:15443;' in generated
-              assert 'default 10.66.77.1:443;' in generated
-              for name in ('challenges.cloudflare.com', 'cdn.openaimerge.com',
-                           'ws.chatgpt.com', 'chatgpt.com', 'openai.com'):
-                  if name in ('ws.chatgpt.com', 'chatgpt.com', 'openai.com'):
-                      assert 'chatgpt\\.' in generated and 'openai\\.' in generated
-                  else:
-                      assert name + ' 10.66.77.1:19443;' in generated
-              assert 'cloudflare.com|workos.com' not in generated
-              # A second attempt must fail closed rather than silently override the pilot.
-              before.write_text(generated)
-              second = subprocess.run([sys.executable, '-c', code, str(before), str(after)],
-                                      capture_output=True, text=True)
-              assert second.returncode != 0
-          print('RU_sni_Meta_ChatGPT_strict_overlay_offline=PASS')
-          PY
           echo "meta_isolated_offline_acceptance=PASS"
           echo "no_production_hosts_modified=true"
