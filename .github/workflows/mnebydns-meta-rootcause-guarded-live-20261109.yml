@@ -161,11 +161,11 @@ jobs:
           udpwork="/tmp/mnebydns-meta-quic-$id"
           udpbase="/opt/mnebydns-meta-quic-$id"
           de_ssh "test ! -e '$udpwork' && mkdir -m 700 '$udpwork'"
-          tar -czf - -C scripts mnebydns-meta-quic.py mnebydns-meta-quic-stage.sh mnebydns-meta-quic-rollback.sh test-mnebydns-meta-quic.py mnebydns-meta-packet-observer.py |
+          tar -czf - -C scripts mnebydns-meta-quic.py mnebydns-meta-quic-stage.sh mnebydns-meta-quic-rollback.sh test-mnebydns-meta-quic.py mnebydns-meta-packet-observer.py mnebydns-meta-report.py |
             de_ssh "tar -xzf - -C '$udpwork'"
           de_ssh "bash '$udpwork/mnebydns-meta-quic-stage.sh' de '$id' '$deadline'"
           ru_ssh "test ! -e '$udpwork' && mkdir -m 700 '$udpwork'"
-          tar -czf - -C scripts mnebydns-meta-quic.py mnebydns-meta-quic-stage.sh mnebydns-meta-quic-rollback.sh test-mnebydns-meta-quic.py mnebydns-meta-packet-observer.py |
+          tar -czf - -C scripts mnebydns-meta-quic.py mnebydns-meta-quic-stage.sh mnebydns-meta-quic-rollback.sh test-mnebydns-meta-quic.py mnebydns-meta-packet-observer.py mnebydns-meta-report.py |
             ru_ssh "tar -xzf - -C '$udpwork'"
           ru_ssh "bash '$udpwork/mnebydns-meta-quic-stage.sh' ru '$id' '$deadline'"
           # Synthetic QUIC Initial, not a packet from the owner's PCAP.
