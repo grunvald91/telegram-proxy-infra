@@ -61,13 +61,27 @@ if ! test -f "$pilot_unit"; then
   install -m 644 "$old/pilot.service" "$pilot_unit"
   systemctl daemon-reload
 fi
-install -d -m 700 /etc/mnebydns-googlepilot
-# The current pilot service is confined to a loopback TCP/443 original-TLS proxy.
-install -m 600 "$base/proxy.stable" "$live_proxy"
+# DynamicUser needs search permission on the configuration directory and
+# read permission on the NON-SECRET SNI routing file. The original root:0700
+# directory caused a verified startup failure during the first promotion.
+install -d -m 755 /etc/mnebydns-googlepilot
+install -m 644 "$base/proxy.stable" "$live_proxy"
 systemctl enable mnebydns-googlepilot.service >/dev/null
+systemctl reset-failed mnebydns-googlepilot.service || true
 systemctl restart mnebydns-googlepilot.service
-systemctl is-active --quiet mnebydns-googlepilot.service
-ss -H -lnt 'sport = :15449' | grep -Fq '127.0.0.1:15449'
+ready=no
+for attempt in $(seq 1 35); do
+  if systemctl is-active --quiet mnebydns-googlepilot.service &&
+     ss -H -lnt 'sport = :15449' | grep -Fq '127.0.0.1:15449'; then
+    ready=yes
+    break
+  fi
+  sleep 0.2
+done
+if [[ "$ready" != yes ]]; then
+  echo "stable_five_foreign_proxy_start_failed=true"
+  exit 5
+fi
 echo "stable_five_sni_service_healthy=true"
 # Prevalidated files are made available atomically via same-filesystem rename.
 install -m 600 "$base/nginx.stable" "$live_nginx.new-stable"
