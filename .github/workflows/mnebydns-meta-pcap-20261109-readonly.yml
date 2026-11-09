@@ -96,3 +96,37 @@ jobs:
           print('RU_audit_read_only=true',flush=True)
           PY
 # Read-only repeat after Android PCAP 2026-11-09 11:19 MSK; no routing modifications.
+
+      - name: Classify historical Nginx errors during Android PCAP (no payload or client IP)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get install -qq -y sshpass
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@89.125.90.101 'python3 -' <<'PY'
+          import re,subprocess
+          cmd=['journalctl','-u','mnebydns-meta-pilot-42583884583.service','--since','2026-11-09 08:18:00 UTC','--until','2026-11-09 08:23:00 UTC','--no-pager','-o','cat']
+          r=subprocess.run(cmd,capture_output=True,text=True,timeout=12)
+          lines=r.stdout.splitlines()
+          print('DE_journal_read_ok='+str(r.returncode==0).lower())
+          print('DE_captured_meta_service_log_lines='+str(len(lines)))
+          for category,pat in [('dns_resolver',r'resolver|could not be resolved|host not found'),('upstream_error',r'upstream|connect.*failed|no live'),('capacity',r'worker_connections|too many open files|resource temporarily unavailable'),('timeout',r'timed out|timeout'),('reset',r'connection reset|broken pipe'),('permission',r'permission denied|forbidden')]:
+              print('DE_meta_'+category+'_events='+str(sum(bool(re.search(pat,line,re.I)) for line in lines)))
+          print('DE_historical_logs_only=true')
+          PY
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@188.120.254.223 'python3 -' <<'PY'
+          import pathlib,re,subprocess
+          path=pathlib.Path('/var/log/nginx/error.log')
+          chunk=b''
+          if path.is_file():
+              with path.open('rb') as fh:
+                  fh.seek(max(0,path.stat().st_size-6000000))
+                  chunk=fh.read().decode('utf-8','replace')
+          lines=[s for s in chunk.splitlines() if re.search(r'2026/11/09 08:(18|19|20|21|22):',s)]
+          print('RU_nginx_error_log_readable='+str(path.is_file()).lower())
+          print('RU_nginx_error_lines_in_PCAP_window='+str(len(lines)))
+          for category,pat in [('upstream_error',r'upstream|connect.*failed|no live'),('capacity',r'worker_connections|too many open files'),('timeout',r'timed out|timeout'),('reset',r'connection reset|broken pipe')]:
+              print('RU_meta_'+category+'_events='+str(sum(bool(re.search(pat,line,re.I)) for line in lines)))
+          print('RU_historical_logs_only=true')
+          PY
