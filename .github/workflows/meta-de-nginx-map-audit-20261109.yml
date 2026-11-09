@@ -52,5 +52,8 @@ jobs:
               row=re.sub(r'[^\x20-\x7e]','?',row)
               print('de_nginx_map_line_'+str(line_no)+'='+row.strip()[:210],flush=True)
           print('de_nginx_stream_map_close=true',flush=True)
+          for zone in ('instagram','threads','facebook','meta','gemini','chatgpt'):
+              matches=[i+1 for i,row in enumerate(base.splitlines()) if zone in row.lower() and not row.strip().startswith('#')]
+              print('de_public_nginx_'+zone+'_matching_lines='+','.join(map(str,matches[:20])) if matches else 'de_public_nginx_'+zone+'_matching_lines=none',flush=True)
           print('de_nginx_audit_complete=true',flush=True)
           PY
