@@ -161,3 +161,35 @@ jobs:
           print('DE_error_log_total='+str(len(lines)),flush=True)
           print('DE_error_log_content_omitted=true',flush=True)
           PY
+
+      - name: Identify only Meta names rejected by live upstream DNS (no client identifiers)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get install -qq -y sshpass
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@89.125.90.101 'python3 -' <<'PY'
+          import re,subprocess,socket,struct
+          r=subprocess.run(['journalctl','-u','mnebydns-meta-pilot-42583884583.service','--since','2026-11-09 08:18:00 UTC','--until','2026-11-09 08:23:00 UTC','--no-pager','-o','cat'],capture_output=True,text=True,timeout=10)
+          names=[]
+          for line in r.stdout.splitlines():
+              if 'could not be resolved' not in line.lower():continue
+              ms=re.findall(r'(?i)[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:instagram\.com|threads\.net|threads\.com|facebook\.com|fbcdn\.net)',line)
+              names.extend(ms)
+          names=sorted(set(names))
+          print('DE_Meta_NXDOMAIN_affected_hostnames='+','.join(names) if names else 'DE_Meta_NXDOMAIN_hostnames_not_extracted',flush=True)
+          observed=sorted(set(names+['iglite-z.instagram.com','i.instagram.com','i-fallback.instagram.com','test-gateway.instagram.com','graph.instagram.com','threads.com']))
+          def ask(host,server):
+              try:
+                  qid=14789
+                  packet=struct.pack('!HHHHHH',qid,256,1,0,0,0)+b''.join(bytes([len(w)])+w.encode() for w in host.split('.'))+b'\0'+struct.pack('!HH',1,1)
+                  with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as s:
+                      s.settimeout(2);s.sendto(packet,(server,53));reply,_=s.recvfrom(4096)
+                  if len(reply)<12 or struct.unpack('!H',reply[:2])[0]!=qid:return 'invalid_response'
+                  flags=int.from_bytes(reply[2:4],'big')
+                  return 'rcode_'+str(flags&15)+'_answers_'+str(int.from_bytes(reply[6:8],'big'))
+              except Exception as e:return type(e).__name__
+          for name in observed:
+              print('DE_upstream_DNS_'+name+'_Quad9='+ask(name,'9.9.9.9')+'_Cloudflare='+ask(name,'1.1.1.1'),flush=True)
+          print('DNS_tests_read_only_no_client_data=true')
+          PY
