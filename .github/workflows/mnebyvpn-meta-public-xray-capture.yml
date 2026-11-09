@@ -1,0 +1,53 @@
+name: MNEBYVPN owner-confirmed Meta apps 90s live INSI observation
+on:
+  push:
+    branches: [diagnostics/mnebyvpn-meta-app-traffic-20261109]
+    paths:
+      - .github/workflows/mnebyvpn-meta-public-xray-capture.yml
+      - scripts/mnebyvpn-meta-public-xray-observe.py
+permissions:
+  contents: read
+concurrency:
+  group: mnebyvpn-owner-confirmed-meta-live-public-xray
+  cancel-in-progress: false
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      SSHPASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      OPERATOR_MESSAGE: ${{ github.event.head_commit.message }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Protect user metadata and validate source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebyvpn-meta-public-xray-observe.py
+          python3 - <<'PY'
+          from pathlib import Path
+          x=Path('scripts/mnebyvpn-meta-public-xray-observe.py').read_text()
+          for token in ['SERVICE = "xray.service"','META_TEST_WINDOW_OPEN_UTC','META_TEST_WINDOW_SECONDS=90',
+                        'baseline_idle_window_seconds=15','raw_addresses_or_user_identifiers_logged=false',
+                        'localport in (443,2053,8443,18943)']:
+              assert token in x,token
+          for forbidden in ('tcpdump','pyshark','scapy','pcap','systemctl restart','systemctl reload',
+                            'subprocess.Popen','os.system('):
+              assert forbidden not in x,forbidden
+          print('privacy_and_failsafe_guarded=PASS')
+          PY
+      - name: Observe only metadata on live INSI Xray for bounded 15 plus 90 seconds
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$SSHPASS"
+          if [[ "$OPERATOR_MESSAGE" != '[meta-capture] operator confirmed only owner VPN connections' ]]; then
+            echo "::error::Capture not authorized by explicit per-run owner attestation"
+            exit 3
+          fi
+          echo "capture_owner_attestation=TRUE"
+          echo "capture_only_noncontent_socket_metadata=TRUE"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@89.125.90.101 'python3 - capture-exclusive' < scripts/mnebyvpn-meta-public-xray-observe.py
+          echo "Meta_capture_finished_and_no_persistent_collector=true"
