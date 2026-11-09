@@ -1,0 +1,50 @@
+name: MNEBYDNS Meta DE failed pilot journal audit (read-only)
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths: [.github/workflows/meta-de-failed-unit-readonly-20261109.yml]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Fetch only historic DE Meta service failure evidence
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass >/dev/null
+          SSHPASS="$DE_PASS" sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o LogLevel=ERROR root@89.125.90.101 'python3 -' <<'PY'
+          import re,subprocess
+          unit='mnebydns-meta-pilot-42692906781.service'
+          def run(*cmd):
+              try:
+                  return subprocess.run(cmd,capture_output=True,text=True,timeout=9)
+              except (OSError,subprocess.TimeoutExpired):
+                  return None
+          j=run('journalctl','-u',unit,'--since','2026-11-09 20:25:30 UTC','--until','2026-11-09 20:27:30 UTC','--no-pager','-o','cat','-n','100')
+          print('historic_meta_service_journal_readable='+str(j is not None and j.returncode==0).lower(),flush=True)
+          if j is not None:
+              rows=[x.strip() for x in j.stdout.splitlines() if x.strip()]
+              print('historic_meta_service_journal_lines='+str(len(rows)),flush=True)
+              keep=[x for x in rows if any(term in x.lower() for term in ('emerg','crit','error','fail','bind','permission','denied','exit','signal','address','listen','nginx','startup','port','config'))]
+              print('historic_meta_relevant_lines='+str(len(keep)),flush=True)
+              for line in keep[-25:]:
+                  line=re.sub(r'(?:(?:\d{1,3}\.){3}\d{1,3})','[IP]',line)
+                  line=re.sub(r'(/[A-Za-z0-9_.-]+){2,}','[PATH]',line)
+                  line=re.sub(r'[^\x20-\x7E]','?',line)
+                  print('historic_meta_journal='+line[:210],flush=True)
+          for name,cmd in [('de_existing_tcp19443_listener',('ss','-H','-ltn','sport = :19443')),('de_existing_udp19444_listener',('ss','-H','-lun','sport = :19444'))]:
+              r=run(*cmd)
+              print(name+'='+str(r is not None and r.returncode==0 and bool(r.stdout.strip())).lower(),flush=True)
+          for unit in ('nginx','mnebydns-dot.service','mnebydns-googlepilot.service','xray.service'):
+              r=run('systemctl','is-active','--quiet',unit)
+              print('de_working_service_'+unit.replace('.service','').replace('-','_')+'='+str(r is not None and r.returncode==0).lower(),flush=True)
+          print('de_historic_readonly_audit_complete=true',flush=True)
+          PY
