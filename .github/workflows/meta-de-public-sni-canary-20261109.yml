@@ -132,6 +132,31 @@ jobs:
           ' || test "$?" -eq 124
           SH
           capture_pid=$!
+          ru_ssh 'bash -s' <<'SH' &
+          set -Eeuo pipefail
+          if ! command -v tcpdump >/dev/null 2>&1; then
+            echo 'RU_public_tcpdump_available=false'
+            exit 0
+          fi
+          echo 'RU_public_tcpdump_available=true'
+          timeout -s TERM 19s tcpdump -i any -n -l 'tcp and host 89.125.90.101 and port 443 and (port 43121 or port 43122 or port 43123)' 2>/dev/null | python3 -c '
+          import re,sys,collections
+          data=collections.defaultdict(lambda:{"out_packets":0,"out_bytes":0,"in_packets":0,"in_bytes":0})
+          for row in sys.stdin:
+              m=re.search(r"\bIP\s+([\d.]+)\.(\d+)\s+>\s+([\d.]+)\.(\d+):.*\blength\s+(\d+)",row)
+              if not m:continue
+              src,sport,dst,dport,size=m.groups()
+              port=int(sport) if src=="188.120.254.223" else int(dport)
+              if port not in (43121,43122,43123):continue
+              direction="out" if src=="188.120.254.223" else "in"
+              data[port][direction+"_packets"]+=1
+              data[port][direction+"_bytes"]+=int(size)
+          for port in (43121,43122,43123):
+              for k in ("out_packets","out_bytes","in_packets","in_bytes"):
+                  print("ru_public_meta_capture_"+str(port)+"_"+k+"="+str(data[port][k]),flush=True)
+          ' || test "$?" -eq 124
+          SH
+          ru_capture_pid=$!
           sleep 3
           ru_ssh 'python3 -' <<'PY'
           import socket,ssl,concurrent.futures
@@ -160,6 +185,7 @@ jobs:
               print('ru_de_scoped_sni_port_'+str(port)+'_error='+error,flush=True)
           PY
           wait "$capture_pid"
+          wait "$ru_capture_pid"
           # Independent public source; sockets use public DE IP rather than WireGuard.
           ru_ssh 'python3 -' <<'PY'
           import socket,ssl,subprocess,concurrent.futures
