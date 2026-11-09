@@ -1,0 +1,167 @@
+name: MNEBYDNS RU external UDP443 passive packet witness
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths: [.github/workflows/meta-udp-uplink-witness-20261109.yml]
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-meta-uplink-witness
+  cancel-in-progress: false
+jobs:
+  witness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Observe RU NIC only while DE sends three synthetic QUIC Initials
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS" && test -n "$RU_PASS"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass >/dev/null
+          ru_ssh() { SSHPASS="$RU_PASS" sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@188.120.254.223 "$@"; }
+          de_ssh() { SSHPASS="$DE_PASS" sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@89.125.90.101 "$@"; }
+          ru_ssh 'python3 -' <<'PY'
+          import subprocess,re
+          def count():
+              r=subprocess.run(['nft','list','ruleset'],capture_output=True,text=True,timeout=8)
+              if r.returncode:return None
+              rows=[x for x in r.stdout.splitlines() if 'udp dport 443' in x]
+              nums=[int(m.group(1)) for row in rows if (m:=re.search('counter packets ([0-9]+)',row))]
+              return sum(nums) if nums else None
+          print('ru_nft_udp443_packets_before='+str(count() if count() is not None else 'unknown'),flush=True)
+          PY
+          # Passive 12-second capture; no packets or IP addresses are retained/logged.
+          ru_ssh 'bash -s' <<'SH' &
+          set -u
+          if ! command -v tcpdump >/dev/null 2>&1; then
+             echo 'ru_tcpdump_available=false'
+             exit 0
+          fi
+          echo 'ru_tcpdump_available=true'
+          timeout 12s tcpdump -i any -n -q -l 'src host 89.125.90.101 and udp and dst port 443' 2>/dev/null |
+            awk 'END {print "ru_udp443_packets_from_de_observed=" NR}'
+          exit 0
+          SH
+          capture=$!
+          sleep 3
+          de_ssh 'python3 -' <<'PY'
+          import importlib.util,pathlib,socket,time
+          fixture=pathlib.Path('/tmp/mnebydns-meta-quic-42656055187/test-mnebydns-meta-quic.py')
+          if not fixture.is_file():raise SystemExit('canary fixture expired')
+          spec=importlib.util.spec_from_file_location('quic_fixture',fixture)
+          m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+          datagram=m.fixture_sni('i.instagram.com')
+          with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as sock:
+              for _ in range(3):
+                  sock.sendto(datagram,('188.120.254.223',443))
+                  time.sleep(.35)
+          print('DE_to_RU_public_synthetic_initials_sent=3',flush=True)
+          PY
+          wait "$capture" || echo 'ru_capture_transport_incomplete=true'
+          ru_ssh 'python3 -' <<'PY'
+          import subprocess,re
+          r=subprocess.run(['nft','list','ruleset'],capture_output=True,text=True,timeout=8)
+          rows=[x for x in r.stdout.splitlines() if 'udp dport 443' in x] if r.returncode==0 else []
+          nums=[int(m.group(1)) for row in rows if (m:=re.search('counter packets ([0-9]+)',row))]
+          print('ru_nft_udp443_packets_after='+str(sum(nums) if nums else 'unknown'),flush=True)
+          unit='mnebydns-meta-quic-ru-42656055187.service'
+          logs=subprocess.run(['journalctl','-u',unit,'-o','cat','--no-pager','-n','50'],capture_output=True,text=True,timeout=7).stdout
+          lines=[line for line in logs.splitlines() if line.startswith('meta_quic_ru_active=')]
+          if lines:
+              m=re.search(r'(?:^|\s)rx=(\d+)(?:\s|$)',lines[-1])
+              print('ru_quic_ingress_rx_after='+str(int(m.group(1)) if m else 'unknown'),flush=True)
+          PY
+      - name: Read-only kernel routing and nftables input-hook audit
+        if: always()
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS"
+          sudo apt-get install -qq -y sshpass >/dev/null
+          SSHPASS="$RU_PASS" sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o LogLevel=ERROR root@188.120.254.223 'python3 -' <<'PY'
+          import subprocess,re,os
+          def run(cmd):
+              try:
+                  r=subprocess.run(cmd,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,timeout=8)
+                  return r.returncode,r.stdout
+              except (OSError,subprocess.TimeoutExpired):return 127,''
+          code,route=run(['ip','-4','route','get','89.125.90.101'])
+          dev=re.search(r'\bdev (\S+)',route)
+          nic=dev.group(1) if code==0 and dev else None
+          print('ru_route_to_de_public_uses_wg='+str(bool(nic and nic=='tg-relay')).lower(),flush=True)
+          print('ru_route_to_de_public_interface='+str(nic or 'unknown'),flush=True)
+          for name in ['all','default',nic]:
+              if not name:continue
+              f='/proc/sys/net/ipv4/conf/'+name+'/rp_filter'
+              try:value=open(f).read().strip()
+              except OSError:value='unknown'
+              print('ru_rpf_'+re.sub('[^A-Za-z0-9_]','_',name)+'='+value,flush=True)
+          code,nft=run(['nft','-a','list','ruleset'])
+          print('ru_nft_ruleset_readable='+str(code==0).lower(),flush=True)
+          table='unknown';chain='unknown';hook='unknown';priority='unknown';n=0
+          for raw in nft.splitlines():
+              t=re.search(r'^\s*table\s+(\S+)\s+(\S+)',raw)
+              if t:table=t.group(1)+'_'+t.group(2)
+              m=re.search(r'^\s*chain\s+([A-Za-z0-9_-]+)\s*\{',raw)
+              if m:
+                  chain=m.group(1);hook='unknown';priority='unknown'
+              m=re.search(r'\bhook\s+(input|prerouting|forward|output|postrouting)\s+priority\s+([^;]+)',raw)
+              if m:
+                  hook=m.group(1);priority=m.group(2).strip().replace(' ','_')
+                  pol=re.search(r'\bpolicy\s+([a-z]+)',raw)
+                  if pol:print('ru_nft_hook_'+table+'_'+chain+'='+hook+'_'+priority+'_policy_'+pol.group(1),flush=True)
+              if 'udp dport 443' in raw:
+                  n+=1
+                  verdict='none'
+                  for v in ['drop','reject','accept','dnat','redirect','tproxy','jump','goto']:
+                      if re.search(r'\b'+v+r'\b',raw):verdict=v;break
+                  matches=re.search(r'\bcounter packets (\d+)',raw)
+                  print(f'ru_nft_udp443_rule{n}_table={table}',flush=True)
+                  print(f'ru_nft_udp443_rule{n}_chain={chain}',flush=True)
+                  print(f'ru_nft_udp443_rule{n}_hook={hook}',flush=True)
+                  print(f'ru_nft_udp443_rule{n}_verdict={verdict}',flush=True)
+                  if matches:print(f'ru_nft_udp443_rule{n}_counter={matches.group(1)}',flush=True)
+          print('ru_nft_udp443_rules_count='+str(n),flush=True)
+          for table in ['filter','raw','mangle']:
+              code,out=run(['iptables','-t',table,'-S','INPUT' if table=='filter' else 'PREROUTING'])
+              print('ru_iptables_'+table+'_readable='+str(code==0).lower(),flush=True)
+              if code==0:
+                  print('ru_iptables_'+table+'_drop_rule_count='+str(sum('-j DROP' in row for row in out.splitlines())),flush=True)
+          PY
+      - name: Sanitize and inspect actual raw/INPUT rule order (read only)
+        if: always()
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS"
+          sudo apt-get install -qq -y sshpass >/dev/null
+          SSHPASS="$RU_PASS" sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o LogLevel=ERROR root@188.120.254.223 'python3 -' <<'PY'
+          import subprocess,re
+          probes=[
+            ('raw_iptables',['iptables','-t','raw','-S','PREROUTING']),
+            ('raw_nft',['nft','-a','list','chain','ip','raw','PREROUTING']),
+            ('filter_input',['nft','-a','list','chain','ip','filter','INPUT']),
+            ('ufw_before',['nft','-a','list','chain','ip','filter','ufw-before-input']),
+            ('ufw_user',['nft','-a','list','chain','ip','filter','ufw-user-input']),
+            ('trace_prerouting',['nft','-a','list','chain','inet','mnebyvpn_probe_443','trace_prerouting'])
+          ]
+          def clean(s):
+              s=re.sub(r'\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?:/\d+)?\b','[IP]',s)
+              s=re.sub(r'\b[0-9a-f:]{12,}\b','[HEX]',s,flags=re.I)
+              return s.strip()[:220]
+          for label,cmd in probes:
+              try:r=subprocess.run(cmd,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,timeout=9)
+              except (OSError,subprocess.TimeoutExpired):
+                  print(label+'_readable=false',flush=True);continue
+              print(label+'_readable='+str(r.returncode==0).lower(),flush=True)
+              if r.returncode:continue
+              lines=[clean(x) for x in r.stdout.splitlines() if x.strip() and not x.strip().startswith('#')]
+              for i,line in enumerate(lines[:34],1):
+                  print(label+'_rule'+str(i)+'='+line,flush=True)
+          PY

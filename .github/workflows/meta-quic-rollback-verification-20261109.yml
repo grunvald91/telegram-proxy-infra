@@ -1,0 +1,63 @@
+name: Meta QUIC 18m independent rollback verification
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths: [.github/workflows/meta-quic-rollback-verification-20261109.yml]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Read-only verify original DNS/TCP and expiry of UDP pilots
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass >/dev/null
+          for role in ru de; do
+            if [[ "$role" = ru ]]; then
+              export SSHPASS="$RU_PASS"
+              host=188.120.254.223
+            else
+              export SSHPASS="$DE_PASS"
+              host=89.125.90.101
+            fi
+            sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o LogLevel=ERROR root@"$host" 'python3 -' "$role" <<'PY'
+          import subprocess,sys,time,pathlib
+          role=sys.argv[1]
+          id='42656055187'
+          unit=f'mnebydns-meta-quic-{role}-{id}.service'
+          timer=f'mnebydns-meta-quic-{role}-{id}-rollback.timer'
+          def run(*args):
+              p=subprocess.run(args,capture_output=True,text=True,timeout=9)
+              return p.returncode,p.stdout
+          rc,_=run('systemctl','is-active','--quiet',unit)
+          print(f'{role}_pilot_service_active={str(rc==0).lower()}',flush=True)
+          rc,_=run('systemctl','is-active','--quiet',timer)
+          print(f'{role}_rollback_timer_active={str(rc==0).lower()}',flush=True)
+          port=443 if role=='ru' else 19444
+          rc,out=run('ss','-H','-lun','sport = :'+str(port))
+          print(f'{role}_pilot_port_listener_present={str(rc==0 and bool(out.strip())).lower()}',flush=True)
+          if role=='ru':
+              rc,_=run('systemctl','is-active','--quiet','nginx')
+              print('ru_nginx_active='+str(rc==0).lower(),flush=True)
+          else:
+              rc,_=run('systemctl','is-active','--quiet','mnebydns-dot.service')
+              print('de_dns_service_active='+str(rc==0).lower(),flush=True)
+              root=pathlib.Path('/opt/mnebydns-stable-checkpoints/current')
+              if root.exists():
+                  ck=pathlib.Path(root.read_text().strip())
+                  pairs=[(ck/'dns.stable','/opt/mnebydns-dot/Corefile'),
+                         (ck/'nginx.stable','/etc/nginx/nginx.conf'),
+                         (ck/'proxy.stable','/etc/mnebydns-googlepilot/nginx.conf')]
+                  print('de_stable_configs_unchanged='+str(all(subprocess.run(['cmp','-s',str(a),str(b)]).returncode==0 for a,b in pairs)).lower(),flush=True)
+          print(f'{role}_current_unix_seconds={int(time.time())}',flush=True)
+          PY
+          done

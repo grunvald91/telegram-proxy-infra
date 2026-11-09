@@ -1,0 +1,210 @@
+name: MNEBYDNS Meta read-only network diagnostics
+on:
+  push:
+    branches: [diagnostics/meta-pcapdroid-readonly-20261109]
+    paths: [.github/workflows/meta-pcapdroid-readonly-20261109.yml]
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths: [.github/workflows/meta-pcapdroid-readonly-20261109.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-meta-readonly-preflight
+  cancel-in-progress: false
+jobs:
+  observe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      RU_HOST: 188.120.254.223
+      DE_HOST: 89.125.90.101
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Validate private probe configuration
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          missing=0
+          : > "$RUNNER_TEMP/meta-aggregates.txt"
+          for var in RU_HOST DE_HOST RU_PASS DE_PASS; do
+            if [[ -z "${!var:-}" ]]; then
+              echo "missing_${var}=true" >> "$GITHUB_STEP_SUMMARY"
+              echo "missing_${var}=true" >> "$RUNNER_TEMP/meta-aggregates.txt"
+              echo "missing_${var}=true"
+              missing=1
+            fi
+          done
+          if (( missing )); then
+            echo 'BLOCKED: no production access attempted (requires infra SSH access)' >> "$GITHUB_STEP_SUMMARY"
+            echo 'diagnostic_blocked=missing_access_configuration' >> "$RUNNER_TEMP/meta-aggregates.txt"
+            exit 78
+          fi
+          echo 'Host credentials and pinned SSH keys supplied; no server changes permitted.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Setup ephemeral SSH client
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass >/dev/null
+      - name: Read-only remote network and service snapshot on RU and DE
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          SSH_OPTS=(-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$HOME/.ssh/known_hosts" -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=1 -o LogLevel=ERROR)
+          for role in ru de; do
+            if [[ "$role" = ru ]]; then
+              export SSHPASS="$RU_PASS"
+              host="$RU_HOST"
+            else
+              export SSHPASS="$DE_PASS"
+              host="$DE_HOST"
+            fi
+            echo "=== ${role^^} read-only ==="
+            sshpass -e ssh "${SSH_OPTS[@]}" "root@$host" 'python3 -' "$role" <<'PY' | tee -a "$RUNNER_TEMP/meta-aggregates.txt"
+          import datetime, importlib.util, os, re, socket, ssl, subprocess, sys, time
+          role = sys.argv[1]
+          def run(*cmd):
+              try:
+                  r = subprocess.run(cmd, capture_output=True, text=True, timeout=6)
+                  return r.returncode, r.stdout
+              except (OSError, subprocess.TimeoutExpired): return 127, ''
+          print(f'{role}_probe_started=true')
+          code, out = run('ip', '-o', 'link', 'show', 'dev', 'tg-relay')
+          print(f'{role}_wireguard_interface_present={str(code == 0).lower()}')
+          match = re.search(r'\bmtu\s+(\d+)\b', out)
+          if match: print(f'{role}_wireguard_mtu={match.group(1)}')
+          code, out = run('wg', 'show', 'tg-relay', 'latest-handshakes')
+          handshakes = []
+          if code == 0:
+              for line in out.splitlines():
+                  fields = line.split()
+                  if len(fields) == 2 and fields[1].isdigit(): handshakes.append(int(fields[1]))
+          newest = max(handshakes, default=0)
+          print(f'{role}_wireguard_peer_count={len(handshakes)}')
+          print(f'{role}_wireguard_handshake_age_seconds={max(0, int(time.time())-newest) if newest else "none"}')
+          code, out = run('systemctl', 'list-units', '--all', '--plain', '--no-legend', 'mnebydns-meta-quic-*')
+          lines = [s for s in out.splitlines() if '.service' in s and '.timer' not in s]
+          print(f'{role}_meta_quic_service_count={len(lines)}')
+          print(f'{role}_meta_quic_running_count={sum(len(s.split()) > 3 and s.split()[3] == "running" for s in lines)}')
+          # Read-only identification of who owns the expected UDP port.
+          listen_port = 443 if role == 'ru' else 19444
+          rc, sockets = run('ss','-H','-lunp','sport = :'+str(listen_port))
+          pids = set(int(x) for x in re.findall(r'\bpid=(\d+)', sockets)) if rc == 0 else set()
+          print(f'{role}_udp_listener_ss_exit={rc}')
+          print(f'{role}_udp_listener_owner_pid_count={len(pids)}')
+          owners = set()
+          relay = False
+          for pid in pids:
+              try:
+                  cmdline = open('/proc/'+str(pid)+'/cmdline','rb').read().decode('utf-8','replace')
+                  cgroup = open('/proc/'+str(pid)+'/cgroup','r').read()
+              except (OSError,UnicodeError):
+                  continue
+              if 'mnebydns-meta-quic-' in cmdline or 'mnebydns-meta-quic-' in cgroup:
+                  relay = True
+              owners.update(re.findall(r'([A-Za-z0-9_.-]+\.service)',cgroup))
+          print(f'{role}_udp_meta_quic_owner_detected={str(relay).lower()}')
+          safe = sorted(n for n in owners if n.startswith('mnebydns-') or n.startswith('nginx') or n.startswith('xray'))
+          print(f'{role}_udp_owner_scoped_services={",".join(safe[:4]) or "none"}')
+          if role == 'ru':
+              natcode, natout = run('nft', 'list', 'ruleset')
+              print(f'{role}_nft_udp443_rule_present={str(natcode == 0 and any("udp dport 443" in l for l in natout.splitlines())).lower()}')
+              udp443_rules = [row for row in natout.splitlines() if 'udp dport 443' in row] if natcode == 0 else []
+              print(f'{role}_nft_udp443_rule_count={len(udp443_rules)}')
+              for verdict in ('drop','reject','accept','redirect','dnat','tproxy','jump','goto','queue'):
+                  count = sum(1 for row in udp443_rules if re.search(r'\b'+verdict+r'\b',row))
+                  print(f'{role}_nft_udp443_{verdict}_rules={count}')
+              counts = [int(m.group(1)) for row in udp443_rules if (m:=re.search(r'counter packets ([0-9]+)',row))]
+              if counts: print(f'{role}_nft_udp443_counter_packets_total={sum(counts)}')
+              icode, iout = run('iptables', '-t', 'nat', '-S')
+              print(f'{role}_iptables_nat_udp443_rule_present={str(icode == 0 and any("--dport 443" in l and "-p udp" in l for l in iout.splitlines())).lower()}')
+              code, out = run('ss', '-H', '-lun', 'sport = :443')
+              print(f'{role}_udp443_listener_present={str(code == 0 and bool(out.strip())).lower()}')
+              code, out = run('ss', '-H', '-ltn', 'sport = :443')
+              print(f'{role}_tcp443_listener_present={str(code == 0 and bool(out.strip())).lower()}')
+          else:
+              code, out = run('ss', '-H', '-lun', 'sport = :19444')
+              print(f'{role}_udp19444_listener_present={str(code == 0 and bool(out.strip())).lower()}')
+              code, out = run('ss', '-H', '-ltn', 'sport = :19443')
+              print(f'{role}_tcp19443_listener_present={str(code == 0 and bool(out.strip())).lower()}')
+              print(f'{role}_cryptography_available={str(importlib.util.find_spec("cryptography") is not None).lower()}')
+              for hostname in ('i.instagram.com', 'graph.instagram.com', 'threads.com'):
+                  safe = hostname.replace('.', '_')
+                  try:
+                      conn = socket.create_connection((hostname,443),timeout=6)
+                      conn.settimeout(6)
+                      with conn, ssl.create_default_context().wrap_socket(conn,server_hostname=hostname) as tls:
+                          print(f'{role}_origin_tls_{safe}=ok')
+                  except (OSError, ssl.SSLError) as exc:
+                      print(f'{role}_origin_tls_{safe}={type(exc).__name__}')
+          # Only explicitly marked aggregate counters from active pilot units.
+          for line in lines:
+              fields = line.split()
+              if len(fields) < 4 or fields[3] != 'running': continue
+              unit = fields[0]
+              code, raw = run('journalctl','-u',unit,'--no-pager','-o','cat','-n','120')
+              if code != 0: continue
+              marker = 'meta_quic_'+role+'_active='
+              latest = next((row for row in reversed(raw.splitlines()) if row.startswith(marker)), None)
+              if not latest: continue
+              for key in ('rx','admitted','rejected','to_upstream','upstream_rx','client_tx','socket_error','emsgsize'):
+                  hit = re.search(r'(?:^|\s)'+key+r'=(\d+)(?:\s|$)', latest)
+                  if hit: print(f'{role}_quic_{key}={hit.group(1)}')
+              break
+          if role == 'de':
+              code, active = run('systemctl','list-units','--all','--plain','--no-legend','mnebydns-meta-pilot-*.service')
+              pilot_units = [s.split()[0] for s in active.splitlines() if len(s.split()) > 3 and s.split()[3] == 'running']
+              for unit in pilot_units[:1]:
+                  rc, raw = run('journalctl','-u',unit,'--no-pager','-o','cat','-n','120')
+                  rows=[s for s in raw.splitlines() if s.startswith('META_DE ')] if rc == 0 else []
+                  print(f'{role}_tcp_origin_sessions_sampled={len(rows)}')
+                  reply_count = 0
+                  for row in rows:
+                      hit = re.search('recv_from_origin=([0-9]+)', row)
+                      if hit and int(hit.group(1)) > 0:
+                          reply_count += 1
+                  print(f'{role}_tcp_sessions_with_origin_reply={reply_count}')
+                  break
+          print(f'{role}_read_only_complete=true')
+          PY
+          done
+          echo 'Completed read-only service and network preflight. No DNS, firewall, nginx, WG or proxy mutations.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Probe Meta TLS through RU ingress from GitHub runner
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY' | tee -a "$RUNNER_TEMP/meta-aggregates.txt"
+          import os, socket, ssl
+          host=os.environ['RU_HOST']
+          for sni in ('i.instagram.com','graph.instagram.com','test-gateway.instagram.com','threads.com'):
+              try:
+                  with socket.create_connection((host,443),timeout=8) as conn:
+                      conn.settimeout(8)
+                      with ssl.create_default_context().wrap_socket(conn,server_hostname=sni) as tls:
+                          status='verified_tls_'+tls.version().replace('.','_')
+              except (OSError,ssl.SSLError) as exc:
+                  status=type(exc).__name__
+              print('ru_ingress_tls_'+sni.replace('.','_')+'='+status,flush=True)
+          PY
+      - name: Publish sanitized aggregate results to job summary
+        if: always()
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          REPORT="$RUNNER_TEMP/meta-aggregates.txt"
+          {
+            echo "### MNEBYDNS Meta preflight (read-only)"
+            echo "Job status: ${{ job.status }}"
+            echo '```text'
+            if [[ -s "$REPORT" ]]; then
+              grep -E '^(ru|de|diagnostic)_[A-Za-z0-9_]+=(true|false|none|ok|[0-9]+|[A-Za-z0-9_]+)$' "$REPORT" | head -n 100 || true
+            else
+              echo "diagnostic_blocked=no_data_collected"
+            fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
