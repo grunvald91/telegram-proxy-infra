@@ -6,6 +6,7 @@ on:
       - scripts/mnebydns-combined-*.py
       - scripts/mnebydns-combined-*.sh
       - .github/workflows/mnebydns-combined-three-apps-offline.yml
+      - .github/workflows/mnebydns-combined-30m-live-canary.yml
 permissions:
   contents: read
 jobs:
@@ -99,5 +100,21 @@ jobs:
               assert 'chatgpt.com' not in out['proxy.meta']
               print('combined_three_nginx_configs_syntax_VALID=true')
               print('combined_Meta_and_ChatGPT_policy_isolated=true')
+          PY
+          python3 - <<'PY'
+          from pathlib import Path
+          live=Path('.github/workflows/mnebydns-combined-30m-live-canary.yml').read_text()
+          assert 'ssh_ru \'python3 -\' <<\'PY\'' in live
+          assert 'ssh_de "python3 - \'$de_work/dot-probe.py\'"' in live
+          assert 'ssh_de "cat > \'$de_work/dot-probe.py\'"' in live
+          assert 'GH_' not in live
+          assert 'RU_server_to_DE_and_RU_9_of_9_original_TLS_PASS=true' in live
+          assert 'DE_authenticated_DoT_15_of_15_PASS=true' in live
+          assert 'combined_three_app_cutover_failed_rolling_back_both_nodes=true' in live
+          assert 'mnebydns-combined-de-watchdog-$id.timer' in live
+          assert 'mnebydns-meta-ru-watchdog-$id.timer' in live
+          assert 'MNEBYDNS_three_app_TEST_WINDOW_ACTIVE_UNTIL_UTC=' in live
+          assert 'python3 - <<\'PY\'\n          import concurrent.futures,socket,ssl\n          requests=' not in live
+          print('network_verification_from_owned_DE_RU_not_GitHub=PASS')
           PY
           echo "combined_no_live_changes_offline=PASS"
