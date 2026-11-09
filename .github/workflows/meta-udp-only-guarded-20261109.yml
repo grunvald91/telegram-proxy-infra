@@ -53,6 +53,36 @@ jobs:
           trap abort EXIT
           echo "meta_quic_trial_deadline_utc=$deadline"
           # Explicit passive health / dependency checks. No host configurations changed.
+          # Diagnose prerequisites independently before the fail-closed stage gate.
+          de_ssh 'python3 -' <<'PY'
+          import subprocess
+          def run(cmd):
+              p=subprocess.run(cmd,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,timeout=7)
+              return p.returncode,p.stdout
+          code,out=run(['ip','-4','route','get','10.66.77.2'])
+          print('de_check_route_wg='+str(code==0 and 'tg-relay' in out).lower(),flush=True)
+          code,out=run(['ip','-4','-o','addr','show','dev','tg-relay'])
+          print('de_check_wg_address='+str(code==0 and '10.66.77.1/' in out).lower(),flush=True)
+          for unit in ['mnebydns-dot.service','mnebydns-googlepilot.service']:
+              code,_=run(['systemctl','is-active','--quiet',unit])
+              print('de_check_service_'+unit.replace('.service','').replace('-','_')+'='+str(code==0).lower(),flush=True)
+          code,out=run(['ss','-H','-lun','sport = :19444'])
+          print('de_check_udp19444_free='+str(code==0 and not out.strip()).lower(),flush=True)
+          PY
+          ru_ssh 'python3 -' <<'PY'
+          import subprocess
+          def run(cmd):
+              p=subprocess.run(cmd,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,timeout=7)
+              return p.returncode,p.stdout
+          code,out=run(['ip','-4','route','get','10.66.77.1'])
+          print('ru_check_route_wg='+str(code==0 and 'tg-relay' in out).lower(),flush=True)
+          code,out=run(['ip','-4','-o','addr','show','dev','tg-relay'])
+          print('ru_check_wg_address='+str(code==0 and '10.66.77.2/' in out).lower(),flush=True)
+          code,_=run(['systemctl','is-active','--quiet','nginx'])
+          print('ru_check_service_nginx='+str(code==0).lower(),flush=True)
+          code,out=run(['ss','-H','-lun','sport = :443'])
+          print('ru_check_udp443_free='+str(code==0 and not out.strip()).lower(),flush=True)
+          PY
           de_ssh "ip -4 route get 10.66.77.2 | grep -Fq tg-relay && ip -4 -o addr show dev tg-relay | grep -Fq '10.66.77.1/' && systemctl is-active --quiet mnebydns-dot.service && systemctl is-active --quiet mnebydns-googlepilot.service && ! ss -H -lun 'sport = :19444' | grep -q ." 
           ru_ssh "ip -4 route get 10.66.77.1 | grep -Fq tg-relay && ip -4 -o addr show dev tg-relay | grep -Fq '10.66.77.2/' && systemctl is-active --quiet nginx && ! ss -H -lun 'sport = :443' | grep -q ."
           echo 'meta_quic_port_route_readonly_preflight_pass=true'
