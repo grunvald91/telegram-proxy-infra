@@ -154,6 +154,55 @@ jobs:
           print('ru_before_de_public_rx='+str(n('rx')),flush=True)
           print('ru_before_de_public_client_tx='+str(n('client_tx')),flush=True)
           PY
+          # Capture the SAME public QUIC Initial through netfilter while
+          # the real RU UDP socket is bound; automatic cleanup is armed first.
+          ru_ssh "bash -s '$id'" <<'SH' &
+          set -Eeuo pipefail
+          id="$1"
+          table="mnebydns_meta_livetrace_$id"
+          guard="mnebydns-meta-livetrace-$id"
+          ! nft list table inet "$table" >/dev/null 2>&1
+          systemd-run --quiet --collect --unit="$guard" --on-active=90s /usr/sbin/nft delete table inet "$table"
+          systemctl is-active --quiet "$guard.timer"
+          cleanup() {
+            nft delete table inet "$table" >/dev/null 2>&1 || true
+            systemctl stop "$guard.timer" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          nft -f - <<EOF
+          add table inet $table
+          add chain inet $table ingress { type filter hook prerouting priority -311; policy accept; }
+          add rule inet $table ingress ip saddr 89.125.90.101 ip daddr 188.120.254.223 udp dport 443 meta nftrace set 1 counter
+          EOF
+          echo 'ru_quic_live_trace_armed=true'
+          timeout -s TERM 20s nft monitor trace | python3 -c '
+          import sys,re,collections
+          ids=set(); path=collections.Counter(); verdict=collections.Counter()
+          for line in sys.stdin:
+              m=re.search(r"trace id ([a-fA-F0-9]+)",line)
+              if not m:continue
+              ids.add(m.group(1))
+              p=re.search(r"\b(ip|ip6|inet)\s+([A-Za-z0-9_-]+)\s+([A-Za-z0-9_-]+)\s+(packet|rule|verdict|policy)",line)
+              if p:path[p.group(2)+"/"+p.group(3)]+=1
+              v=re.search(r"\bverdict\s+(drop|reject|accept|continue|return|jump|goto)",line)
+              if v:verdict[v.group(1)]+=1
+              if "ct state invalid" in line:verdict["ct_invalid"]+=1
+          print("ru_live_nftrace_unique_packet_ids="+str(len(ids)),flush=True)
+          for k,n in path.most_common(20):print("ru_live_nftrace_chain_"+k.replace("/","_")+"="+str(n),flush=True)
+          for k,n in sorted(verdict.items()):print("ru_live_nftrace_verdict_"+k+"="+str(n),flush=True)
+          ' || test "$?" -eq 124
+          nft list chain inet "$table" ingress | python3 -c '
+          import sys,re
+          m=re.search(r"counter packets (\d+)",sys.stdin.read())
+          print("ru_live_trace_rule_matched="+(m.group(1) if m else "unknown"),flush=True)
+          '
+          cleanup
+          trap - EXIT
+          ! nft list table inet "$table" >/dev/null 2>&1
+          echo 'ru_live_nftrace_table_removed=true'
+          SH
+          trace_pid=$!
+          sleep 4
           de_ssh "python3 - '$udpwork/test-mnebydns-meta-quic.py'" <<'PY'
           import importlib.util,pathlib,socket,sys,subprocess,time
           p=pathlib.Path(sys.argv[1])
@@ -178,6 +227,7 @@ jobs:
           print('de_to_ru_public_QUIC_Initial_sent=3',flush=True)
           print('de_to_ru_public_QUIC_response_received='+str(received),flush=True)
           PY
+          wait "$trace_pid"
           sleep 14
           ru_ssh "python3 - ru '$id'" <<'PY'
           import subprocess,sys,re
