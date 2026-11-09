@@ -39,7 +39,7 @@ mv -f "$dns.meta-$runid" "$dns"
 systemctl reset-failed mnebydns-dot.service || true
 systemctl restart mnebydns-dot.service
 ready=no
-for i in $(seq 1 40); do
+for _ in $(seq 1 40); do
   if systemctl is-active --quiet mnebydns-dot.service &&
      ss -H -lnt 'sport = :853' | grep -Fq '89.125.90.101:853'; then ready=yes; break; fi
   sleep .2
