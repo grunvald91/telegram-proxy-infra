@@ -130,3 +130,32 @@ jobs:
               print('RU_meta_'+category+'_events='+str(sum(bool(re.search(pat,line,re.I)) for line in lines)))
           print('RU_historical_logs_only=true')
           PY
+
+      - name: Classify exact nginx resolver error reason without log contents
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get install -qq -y sshpass
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@89.125.90.101 'python3 -' <<'PY'
+          import re,subprocess
+          r=subprocess.run(['journalctl','-u','mnebydns-meta-pilot-42583884583.service','--since','2026-11-09 08:18:00 UTC','--until','2026-11-09 08:23:00 UTC','--no-pager','-o','cat'],capture_output=True,text=True,timeout=12)
+          lines=r.stdout.splitlines()
+          patterns={
+             'no_resolver_defined':r'no resolver defined',
+             'dns_resolution_failed':r'could not be resolved|host not found',
+             'dns_resolver_timeout':r'resolver.*timed out|could not be resolved.*110|could not be resolved.*timed out',
+             'dns_servfail':r'could not be resolved.*(?:SERVFAIL|server failure|\\(2:)',
+             'dns_nxdomain':r'could not be resolved.*(?:NXDOMAIN|not found|\\(3:)',
+             'no_live_upstreams':r'no live upstreams',
+             'connection_refused':r'connection refused|connect\\(\\) failed.*111',
+             'network_unreachable':r'network is unreachable|no route to host',
+             'upstream_timeout':r'upstream.*timed out',
+             'nginx_too_many_connections':r'worker_connections are not enough|too many open files',
+             'permission_denied':r'permission denied',
+          }
+          for label,pat in patterns.items():
+              print('DE_error_reason_'+label+'='+str(sum(bool(re.search(pat,line,re.I)) for line in lines)),flush=True)
+          print('DE_error_log_total='+str(len(lines)),flush=True)
+          print('DE_error_log_content_omitted=true',flush=True)
+          PY
