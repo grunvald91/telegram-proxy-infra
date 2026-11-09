@@ -134,3 +134,33 @@ jobs:
               if code==0:
                   print('ru_iptables_'+table+'_drop_rule_count='+str(sum('-j DROP' in row for row in out.splitlines())),flush=True)
           PY
+      - name: Sanitize and inspect actual raw/INPUT rule order (read only)
+        if: always()
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS"
+          sudo apt-get install -qq -y sshpass >/dev/null
+          SSHPASS="$RU_PASS" sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o LogLevel=ERROR root@188.120.254.223 'python3 -' <<'PY'
+          import subprocess,re
+          probes=[
+            ('raw_iptables',['iptables','-t','raw','-S','PREROUTING']),
+            ('raw_nft',['nft','-a','list','chain','ip','raw','PREROUTING']),
+            ('filter_input',['nft','-a','list','chain','ip','filter','INPUT']),
+            ('ufw_before',['nft','-a','list','chain','ip','filter','ufw-before-input']),
+            ('ufw_user',['nft','-a','list','chain','ip','filter','ufw-user-input'])
+          ]
+          def clean(s):
+              s=re.sub(r'\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?:/\d+)?\b','[IP]',s)
+              s=re.sub(r'\b[0-9a-f:]{12,}\b','[HEX]',s,flags=re.I)
+              return s.strip()[:220]
+          for label,cmd in probes:
+              try:r=subprocess.run(cmd,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,timeout=9)
+              except (OSError,subprocess.TimeoutExpired):
+                  print(label+'_readable=false',flush=True);continue
+              print(label+'_readable='+str(r.returncode==0).lower(),flush=True)
+              if r.returncode:continue
+              lines=[clean(x) for x in r.stdout.splitlines() if x.strip() and not x.strip().startswith('#')]
+              for i,line in enumerate(lines[:34],1):
+                  print(label+'_rule'+str(i)+'='+line,flush=True)
+          PY
