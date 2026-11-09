@@ -1,0 +1,72 @@
+name: MNEBYVPN identify active INSI tunnel ingress (read-only)
+on:
+  push:
+    branches: [diagnostics/mnebyvpn-meta-app-traffic-20261109]
+    paths: [.github/workflows/mnebyvpn-meta-vpn-ingress-map.yml]
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Summarize live Xray/Nginx VPN socket ownership without client IPs
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS" && test -n "$RU_PASS"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          for node in DE RU; do
+            if [ "$node" = DE ]; then
+              host=89.125.90.101
+              pass="$DE_PASS"
+            else
+              host=188.120.254.223
+              pass="$RU_PASS"
+            fi
+            echo "node=$node"
+            SSHPASS="$pass" sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new "root@$host" 'python3 -' <<'PY'
+          import subprocess,re,collections,os
+          def command(*args):
+              try:
+                  cp=subprocess.run(args,capture_output=True,text=True,timeout=8,check=False)
+                  return cp.stdout if cp.returncode==0 else ''
+              except Exception:return ''
+          print('node_clock_utc='+command('date','-u','+%Y-%m-%dT%H:%M:%SZ').strip())
+          units=['nginx','xray','mnebyvpn-vpn-provisioner','mnebydns-dot','mnebydns-googlepilot']
+          for unit in units:
+              print('service_'+unit.replace('-','_')+'_active='+str(command('systemctl','is-active',unit).strip()=='active').lower())
+          for pid in os.listdir('/proc'):
+              if not pid.isdigit():continue
+              try:
+                  name=open('/proc/'+pid+'/comm').read().strip()
+                  if name not in ('xray','sing-box','hysteria','v2ray'):continue
+                  cmd=open('/proc/'+pid+'/cmdline','rb').read().split(b'\0')
+                  paths=[c.decode('utf-8','replace') for c in cmd if b'.json' in c or b'.yaml' in c]
+                  tag='vpn-canary' if any('xray-canary' in p for p in paths) else 'other'
+                  print('process='+name+' config_group='+tag)
+              except (OSError,ValueError):continue
+          counts=collections.Counter()
+          for line in command('ss','-H','-tnp','state','established').splitlines():
+              parts=line.split()
+              if len(parts)<5:continue
+              match=re.search(r'users:\(\("([^"]+)"',line)
+              if not match:continue
+              proc=match.group(1)
+              if proc not in ('xray','nginx','sing-box','hysteria','v2ray'):continue
+              local=parts[3]
+              port=local.rsplit(':',1)[-1].rstrip(']')
+              if not port.isdecimal():continue
+              counts[(proc,int(port))]+=1
+          for (proc,port),n in sorted(counts.items()):
+              print('established_'+proc+'_localport_'+str(port)+'='+str(n))
+          print('socket_addresses_printed=false')
+          timers=command('systemctl','list-timers','--all','--no-legend').splitlines()
+          print('meta_rollback_timers_present='+str(sum('mnebydns-meta-' in x for x in timers)))
+          print('read_only_ingress_map_complete=true')
+          PY
+          done
