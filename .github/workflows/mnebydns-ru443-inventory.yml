@@ -28,5 +28,16 @@ jobs:
           for unit in ('nginx','xray.service'):
               v=subprocess.run(['systemctl','is-active',unit],capture_output=True,text=True,timeout=5)
               print('ru_'+unit+'_active='+str(v.returncode==0).lower(),flush=True)
+          import re
+          c=subprocess.run(['nginx','-T'],capture_output=True,text=True,timeout=10)
+          source=c.stdout if c.returncode==0 else ''
+          maps=re.findall(r'(?s)map\\s+\\$ssl_preread_server_name\\s+\\$(\\w+)\\s*\\{(.*?)\\}',source)
+          print('ru_nginx_sni_map_count='+str(len(maps)),flush=True)
+          for name,body in maps:
+              print('ru_nginx_sni_map_name='+name,flush=True)
+              print('ru_nginx_sni_map_has_default='+str(bool(re.search(r'(?m)^\\s*default\\s+[^;]+;',body))).lower(),flush=True)
+              print('ru_nginx_sni_map_instagram_already_targeted='+str('instagram.com' in body).lower(),flush=True)
+              print('ru_nginx_sni_map_telegram_already_targeted='+str('telegram.org' in body).lower(),flush=True)
+          print('ru_nginx_sni_preread_enabled='+str('ssl_preread on;' in source).lower(),flush=True)
           print('read_only=true',flush=True)
           PY
