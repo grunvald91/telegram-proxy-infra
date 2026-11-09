@@ -1,0 +1,110 @@
+name: MNEBYDNS Meta private WireGuard sidecar live acceptance and cleanup
+on:
+  push:
+    branches: [diagnostics/mnebydns-meta-ingress-matrix-20261109]
+    paths: [.github/workflows/mnebydns-meta-private-stage.yml]
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-meta-private-stage
+  cancel-in-progress: false
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test Meta-only private Nginx sidecar, validate origin certs via RU, clean up
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS" && test -n "$RU_PASS"
+          [[ "$GITHUB_RUN_ID" =~ ^[0-9]+$ ]]
+          python3 scripts/mnebydns-meta-overlay.py self-test
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          opts=(-o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new)
+          work="/tmp/mnebydns-meta-private-$GITHUB_RUN_ID"
+          unit="mnebydns-meta-private-$GITHUB_RUN_ID"
+          cleanup() {
+            rc=$?
+            trap - EXIT
+            SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 "bash -s -- '$work' '$unit'" <<'CLEAN' || true
+          set -Eeuo pipefail
+          work="$1"; unit="$2"
+          systemctl stop "$unit.service" >/dev/null 2>&1 || true
+          if test -f /etc/mnebydns-meta-private/nginx.conf &&
+             test -f "$work/proxy.meta" &&
+             cmp -s /etc/mnebydns-meta-private/nginx.conf "$work/proxy.meta"; then
+            rm -f /etc/mnebydns-meta-private/nginx.conf
+            rmdir /etc/mnebydns-meta-private || true
+          fi
+          test -f /etc/nginx/nginx.conf
+          root=/opt/mnebydns-stable-checkpoints
+          checkpoint="$(cat "$root/current")"
+          for pair in nginx:/etc/nginx/nginx.conf dns:/opt/mnebydns-dot/Corefile proxy:/etc/mnebydns-googlepilot/nginx.conf; do
+            kind="${pair%%:*}"; dest="${pair#*:}"
+            cmp -s "$checkpoint/$kind.stable" "$dest" || { echo "stable_drift=$kind"; exit 4; }
+            echo "stable_$kind_preserved=true"
+          done
+          if [[ "$work" =~ ^/tmp/mnebydns-meta-private-[0-9]+$ ]]; then rm -rf -- "$work"; fi
+          echo "temporary_Meta_sidecar_stopped=true"
+          CLEAN
+            exit "$rc"
+          }
+          trap cleanup EXIT
+          SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 "test ! -e '$work' && mkdir -m 700 '$work'"
+          tar -czf - -C scripts mnebydns-meta-overlay.py mnebydns-four-google-canary.py |
+            SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 "tar -xz -C '$work'"
+          SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 "bash -s -- '$work' '$unit'" <<'REMOTE'
+          set -Eeuo pipefail
+          work="$1"; unit="$2"
+          root=/opt/mnebydns-stable-checkpoints
+          checkpoint="$(cat "$root/current")"
+          [[ "$checkpoint" =~ ^/opt/mnebydns-stable-checkpoints/[0-9]+$ ]]
+          for pair in nginx:/etc/nginx/nginx.conf dns:/opt/mnebydns-dot/Corefile proxy:/etc/mnebydns-googlepilot/nginx.conf; do
+            kind="${pair%%:*}"; dest="${pair#*:}"
+            cmp -s "$checkpoint/$kind.stable" "$dest" || { echo "not_stable_$kind"; exit 4; }
+          done
+          ip -4 -o addr show dev tg-relay | grep -Fq '10.66.77.1/'
+          test ! -e /etc/mnebydns-meta-private
+          python3 "$work/mnebydns-meta-overlay.py" render /opt/mnebydns-dot/Corefile "$work"
+          install -d -m 755 /etc/mnebydns-meta-private
+          install -m 644 "$work/proxy.meta" /etc/mnebydns-meta-private/nginx.conf
+          install -d -m 700 /run/mnebydns-meta-pilot
+          nginx -t -c /etc/mnebydns-meta-private/nginx.conf >/dev/null
+          systemd-run --unit="$unit" --property=DynamicUser=yes --property=RuntimeDirectory=mnebydns-meta-pilot --property=NoNewPrivileges=yes --property=MemoryMax=90M --property=CPUQuota=20% --property=TasksMax=24 --property=LimitNOFILE=384 /usr/bin/timeout --signal=TERM --kill-after=3s 110s /usr/sbin/nginx -c /etc/mnebydns-meta-private/nginx.conf -g 'daemon off;' >/dev/null
+          ready=false
+          for i in $(seq 1 40); do
+            if systemctl is-active --quiet "$unit.service" &&
+               ss -H -lnt 'sport = :19443' | grep -Fq '10.66.77.1:19443'; then ready=true; break; fi
+            sleep .2
+          done
+          test "$ready" = true
+          echo "DE_Meta_WireGuard_19443_private_sidecar_ready=true"
+          echo "DE_existing_five_service_proxy_and_CoreDNS_unchanged=true"
+          REMOTE
+          SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -' <<'PY'
+          import socket,ssl,concurrent.futures
+          hosts=('instagram.com','www.instagram.com','i.instagram.com','graph.instagram.com',
+                 'edge-mqtt.facebook.com','threads.com','threads.net','graph.threads.net')
+          def one(host):
+              try:
+                  with socket.create_connection(('10.66.77.1',19443),timeout=7) as raw:
+                      raw.settimeout(7)
+                      with ssl.create_default_context().wrap_socket(raw,server_hostname=host) as tls:
+                          return host,True,tls.version()
+              except Exception as err: return host,False,type(err).__name__
+          with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+              records=list(pool.map(one,hosts))
+          for host,ok,label in records:
+              print('RU_to_DE_private_Meta_cert_'+host+'='+str(ok).lower()+' detail='+label,flush=True)
+          good=sum(ok for _,ok,_ in records)
+          print('RU_to_DE_Meta_validated_TLS='+str(good)+'/8',flush=True)
+          if good != len(records):raise SystemExit(4)
+          PY
+          echo "Meta_private_sidecar_live_test=PASS"
+          echo "public_DNS_Nginx_and_existing_VPN_untouched=true"
