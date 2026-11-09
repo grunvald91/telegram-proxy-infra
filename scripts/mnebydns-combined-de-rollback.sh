@@ -9,6 +9,8 @@ base="$1"; id="$(basename "$base")"
 root=/opt/mnebydns-stable-checkpoints
 checkpoint="$(cat "$root/current")"
 [[ "$checkpoint" =~ ^/opt/mnebydns-stable-checkpoints/[0-9]+$ ]] || exit 2
+test -s "$base/checkpoint.ref"
+test "$(cat "$base/checkpoint.ref")" = "$checkpoint" || { echo "combined_DE_checkpoint_changed_during_canary=true"; exit 3; }
 test -s "$checkpoint/stable-manifest.sha256"
 (cd "$checkpoint" && sha256sum -c stable-manifest.sha256 >/dev/null)
 test -s "$base/combined-manifest.sha256"
@@ -59,11 +61,18 @@ if cmp -s "$base/dns.pilot" /opt/mnebydns-dot/Corefile; then
   mv -f "/opt/mnebydns-dot/Corefile.return-$id" /opt/mnebydns-dot/Corefile
   systemctl restart mnebydns-dot.service
 fi
+dns_ready=no
 for _ in $(seq 1 45); do
   if systemctl is-active --quiet mnebydns-dot.service &&
-    ss -H -lnt 'sport = :853' | grep -Fq '89.125.90.101:853'; then break; fi
+    ss -H -lnt 'sport = :853' | grep -Fq '89.125.90.101:853'; then
+    dns_ready=yes; break
+  fi
   sleep .25
 done
+if [[ "$dns_ready" != yes ]]; then
+  echo "combined_DE_DNS_853_restore_NOT_CONFIRMED=true"
+  exit 6
+fi
 systemctl is-active --quiet mnebydns-dot.service
 cmp -s "$checkpoint/dns.stable" /opt/mnebydns-dot/Corefile
 # Restore existing public shared Nginx and German backend.
