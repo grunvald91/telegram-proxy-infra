@@ -38,6 +38,12 @@ jobs:
               print('ru_nginx_sni_map_has_default='+str(bool(re.search(r'(?m)^\\s*default\\s+[^;]+;',body))).lower(),flush=True)
               print('ru_nginx_sni_map_instagram_already_targeted='+str('instagram.com' in body).lower(),flush=True)
               print('ru_nginx_sni_map_telegram_already_targeted='+str('telegram.org' in body).lower(),flush=True)
+          generic_maps=re.findall(r'(?m)^\\s*map\\s+\\$(\\w+)\\s+\\$(\\w+)\\s*\\{',source)
+          print('ru_nginx_generic_map_count='+str(len(generic_maps)),flush=True)
+          for a,b in generic_maps:
+              print('ru_nginx_generic_map_vars='+a+':'+b,flush=True)
+          print('ru_nginx_conf_length='+str(len(source)),flush=True)
+          print('ru_nginx_default_tg_relay_443='+str('10.66.77.1:443' in source).lower(),flush=True)
           print('ru_nginx_sni_preread_enabled='+str('ssl_preread on;' in source).lower(),flush=True)
           print('read_only=true',flush=True)
           PY
