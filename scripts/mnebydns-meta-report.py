@@ -57,10 +57,12 @@ def parse_nginx_meta(lines):
         stats['sessions']+=1
         if status in ('200','201'):stats['status_ok']+=1
         else:stats['status_other']+=1
+        values={}
         for k in ('sent_to_ru','recv_from_ru','sent_to_origin','recv_from_origin'):
-            try:stats[k]+=int(fields[k])
-            except (KeyError,ValueError):pass
-        if int(fields.get('recv_from_origin', '0')) > 0:
+            try:values[k]=max(0,int(fields[k]))
+            except (KeyError,ValueError):values[k]=0
+            stats[k]+=values[k]
+        if values['recv_from_origin']>0:
             stats['sessions_with_origin_reply']+=1
         else:stats['sessions_without_origin_reply']+=1
     return stats
