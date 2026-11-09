@@ -1,0 +1,29 @@
+name: MNEBYDNS five-service proxy restart current state
+on:
+  push:
+    branches: ['feature/mnebydns-stable-5services-20261109']
+    paths: ['.github/workflows/mnebydns-stable-recovery-state.yml']
+permissions:
+  contents: read
+jobs:
+  state:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    env:
+      PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Read-only German proxy failure diagnosis
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass
+          SSHPASS="$PASS" sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@89.125.90.101 'python3 -' <<'PY'
+          import pathlib,subprocess
+          for p in ('/etc/mnebydns-googlepilot','/etc/mnebydns-googlepilot/nginx.conf'):
+              o=pathlib.Path(p)
+              print('path='+p+' mode='+oct(o.stat().st_mode & 0o777),flush=True)
+          for cmd in (['systemctl','show','mnebydns-googlepilot.service','-p','Result','-p','ActiveState','-p','ExecMainStatus'],['journalctl','-u','mnebydns-googlepilot.service','-n','12','--no-pager','-o','cat']):
+              r=subprocess.run(cmd,capture_output=True,text=True,timeout=8)
+              print('diagnostic='+r.stdout[-1500:].replace('\n',' | '),flush=True)
+          PY
