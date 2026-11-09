@@ -1,3 +1,4 @@
+# Re-run requested by owner on 2026-11-09 at 13:28 MSK; retain 28m independent rollback.
 name: MNEBYDNS Meta PCAP TCP and QUIC 28-minute guarded canary
 on:
   push:
