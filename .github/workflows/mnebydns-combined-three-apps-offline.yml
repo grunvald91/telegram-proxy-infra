@@ -26,6 +26,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -qq -y nginx libnginx-mod-stream shellcheck
           shellcheck -S warning scripts/mnebydns-combined-de-stage.sh scripts/mnebydns-combined-de-activate.sh scripts/mnebydns-combined-de-rollback.sh
+          sudo install -d -m 700 /run/mnebydns-meta-pilot
           python3 - <<'PY'
           from pathlib import Path
           stage=Path('scripts/mnebydns-combined-de-stage.sh').read_text()
