@@ -1,0 +1,148 @@
+name: MNEBYDNS Meta Instagram Threads 28-minute protected live canary
+on:
+  push:
+    branches: [diagnostics/mnebydns-meta-ingress-matrix-20261109]
+    paths: [.github/workflows/mnebydns-meta-28m-live.yml]
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-google-public-443-change
+  cancel-in-progress: false
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: grunvald91/Mnebyvpn
+          ref: 0dbe6e4e35c2923228c250bf6cfc870ce71198d6
+          path: vpn
+          persist-credentials: false
+      - name: Deploy guarded RU and DE Meta ingress, validate, auto-restore after 28 minutes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS" && test -n "$RU_PASS"
+          [[ "$GITHUB_RUN_ID" =~ ^[0-9]+$ ]]
+          bash -n scripts/mnebydns-meta-de-stage.sh
+          bash -n scripts/mnebydns-meta-de-activate.sh
+          bash -n scripts/mnebydns-meta-de-rollback.sh
+          bash -n scripts/mnebydns-meta-ru-deploy.sh
+          bash -n scripts/mnebydns-meta-ru-rollback.sh
+          python3 scripts/mnebydns-meta-overlay.py self-test
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          id="$GITHUB_RUN_ID"
+          deadline="$(date -u -d '+28 minutes' +'%Y-%m-%d %H:%M:%S UTC')"
+          dework="/tmp/mnebydns-meta-de-$id"
+          ruwork="/tmp/mnebydns-meta-ru-$id"
+          debase="/opt/mnebydns-experiment-backups/$id"
+          rubase="/opt/mnebydns-meta-ru-backups/$id"
+          de_ssh() {
+            SSHPASS="$DE_PASS" sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@89.125.90.101 "$@"
+          }
+          ru_ssh() {
+            SSHPASS="$RU_PASS" sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@188.120.254.223 "$@"
+          }
+          abort() {
+            rc=$?
+            trap - EXIT
+            if [ "$rc" -ne 0 ]; then
+              echo "live_Meta_canary_failed_starting_scoped_rollback=true"
+              ru_ssh "test ! -s '$rubase/rollback.sh' || bash '$rubase/rollback.sh' '$rubase'" || echo "RU_rollback_NOT_CONFIRMED=true"
+              de_ssh "test ! -s '$debase/rollback.sh' || bash '$debase/rollback.sh' '$debase'" || echo "DE_rollback_NOT_CONFIRMED=true"
+            fi
+            exit "$rc"
+          }
+          trap abort EXIT
+          echo "shared_Meta_canary_deadline_UTC=$deadline"
+          de_ssh "test ! -e '$dework' && mkdir -m 700 '$dework'"
+          tar -czf - -C scripts mnebydns-meta-overlay.py mnebydns-four-google-canary.py mnebydns-meta-de-stage.sh mnebydns-meta-de-activate.sh mnebydns-meta-de-rollback.sh |
+            de_ssh "tar -xzf - -C '$dework'"
+          de_ssh "bash '$dework/mnebydns-meta-de-stage.sh' '$dework' '$deadline'"
+          ru_ssh 'python3 -' <<'PY'
+          import socket,ssl,concurrent.futures
+          names=('instagram.com','www.instagram.com','i.instagram.com','graph.instagram.com',
+                 'edge-mqtt.facebook.com','threads.com','threads.net','graph.threads.net')
+          def check(name):
+              try:
+                  with socket.create_connection(('10.66.77.1',19443),timeout=7) as sock:
+                      sock.settimeout(7)
+                      with ssl.create_default_context().wrap_socket(sock,server_hostname=name):
+                          return name,True
+              except Exception:return name,False
+          with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+              results=list(pool.map(check,names))
+          for name,ok in results:print('RU_to_private_DE_Meta_TLS_'+name+'='+str(ok).lower(),flush=True)
+          if not all(ok for _,ok in results):raise SystemExit('private Meta TLS not ready')
+          print('DE_private_Meta_8_of_8=PASS',flush=True)
+          PY
+          ru_ssh "test ! -e '$ruwork' && mkdir -m 700 '$ruwork'"
+          tar -czf - -C scripts mnebydns-meta-ru-deploy.sh mnebydns-meta-ru-rollback.sh |
+            ru_ssh "tar -xzf - -C '$ruwork'"
+          ru_ssh "bash '$ruwork/mnebydns-meta-ru-deploy.sh' '$ruwork' '$deadline'"
+          ru_ssh 'python3 -' <<'PY'
+          import socket,ssl,concurrent.futures
+          hosts=('instagram.com','www.instagram.com','i.instagram.com','graph.instagram.com',
+                 'edge-mqtt.facebook.com','threads.com','threads.net','graph.threads.net')
+          def check(host):
+              try:
+                  with socket.create_connection(('127.0.0.1',443),timeout=7) as s:
+                      s.settimeout(7)
+                      with ssl.create_default_context().wrap_socket(s,server_hostname=host):
+                          return host,True
+              except Exception:return host,False
+          with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+              rows=list(pool.map(check,hosts))
+          for host,ok in rows:print('RU_local443_Meta_certificate_'+host+'='+str(ok).lower(),flush=True)
+          if not all(ok for _,ok in rows):raise SystemExit('RU Meta public ingress test failed')
+          print('RU_to_DE_public_ingress_TLS_8_of_8=PASS',flush=True)
+          PY
+          de_ssh "bash '$dework/mnebydns-meta-de-activate.sh' '$debase'"
+          python3 - <<'PY'
+          import importlib.util,pathlib,socket
+          spec=importlib.util.spec_from_file_location('probe',pathlib.Path('vpn/ops/smart-dns-poc/probe-gemini-canary.py'))
+          assert spec and spec.loader
+          m=importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(m)
+          DE='89.125.90.101'; RU='188.120.254.223'
+          def query(name,kind=1):
+              error=None
+              for _ in range(3):
+                  try:
+                      code,n,records=m.query(name,kind,DE,853,'dns.mnebyvpn.site',None)
+                      return code,[socket.inet_ntoa(raw) for typ,ttl,raw in records if typ==1]
+                  except Exception as e:error=type(e).__name__
+              raise AssertionError('DoT not ready: '+name+' '+str(error))
+          meta=('instagram.com','www.instagram.com','i.instagram.com',
+                'graph.instagram.com','edge-mqtt.facebook.com',
+                'threads.com','threads.net','graph.threads.net')
+          stable=('gemini.google.com','claude.ai','grok.com','x.com','www.tiktok.com')
+          for name in meta:
+              code,ips=query(name)
+              print('Meta_public_DoT_A_'+name+'='+','.join(ips)+' valid='+str(code==0 and ips==[RU]).lower(),flush=True)
+              if code!=0 or ips!=[RU]:raise SystemExit('Meta DNS cutover failed '+name)
+          for name in stable:
+              code,ips=query(name)
+              print('five_service_retained_'+name+'='+str(code==0 and ips==[DE]).lower(),flush=True)
+              if code!=0 or ips!=[DE]:raise SystemExit('stable DNS regression '+name)
+          for name in ('api.telegram.org','t.me','web.telegram.org'):
+              code,ips=query(name)
+              ok=code==0 and DE not in ips and RU not in ips
+              print('Telegram_remains_unrewritten_'+name+'='+str(ok).lower(),flush=True)
+              if not ok:raise SystemExit('Telegram unverified DNS route introduced '+name)
+          for name in ('instagram.com','threads.com'):
+              for kind in (28,64,65):
+                  code,ips=query(name,kind)
+                  if code!=0 or ips:raise SystemExit('Meta incompatible RR '+name)
+          print('Meta_8_public_DNS_plus_5_stable_and_3_Telegram_guards=PASS',flush=True)
+          PY
+          echo "Meta_Instagram_Threads_public_test_ACTIVE_UNTIL=$deadline"
+          echo "Meta_android_application_NOT_YET_TESTED=true"
+          echo "persistent_rollback_on_both_servers_armed=true"
+          trap - EXIT
