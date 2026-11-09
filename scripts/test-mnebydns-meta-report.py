@@ -24,6 +24,9 @@ with contextlib.redirect_stdout(out):
  ru=m.report('ru',run,source)
  de=m.report('de',run,source)
 assert ru['observer']['tcp_syn_in']==4
+assert ru['observer']['tcp_clienthello_meta_in']==3
+assert ru['observer']['udp_in']==10
+assert de['observer']['tcp_payload_packets_out']==1
 assert ru['quic']['emsgsize']==1
 assert de['meta_tcp']['sessions']==2
 assert de['meta_tcp']['sessions_with_origin_reply']==1
