@@ -115,7 +115,7 @@ systemctl enable --now "$timer.timer" >/dev/null
 systemctl is-active --quiet "$timer.timer"
 systemctl start "$name.service"
 ready=no
-for i in $(seq 1 40); do
+for _ in $(seq 1 40); do
   if systemctl is-active --quiet "$name.service" &&
      ss -H -lnt 'sport = :19443' | grep -Fq '10.66.77.1:19443'; then
     ready=yes; break
