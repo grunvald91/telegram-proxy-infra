@@ -45,5 +45,12 @@ jobs:
                   line=re.sub(r'(?<![a-zA-Z0-9_])(?:\d{1,3}\.){3}\d{1,3}', '[IP]',line)
                   line=re.sub(r'[^\x20-\x7e]','?',line)
                   print('de_nginx_relevant_'+safe_name.replace('.','_')+'_'+str(i+1)+'='+line.strip()[:190],flush=True)
+          print('de_nginx_stream_map_open=true',flush=True)
+          for line_no in range(87,127):
+              row=base.splitlines()[line_no-1]
+              row=re.sub(r'(?<![A-Za-z0-9_])(?:\d{1,3}\.){3}\d{1,3}','[IP]',row)
+              row=re.sub(r'[^\x20-\x7e]','?',row)
+              print('de_nginx_map_line_'+str(line_no)+'='+row.strip()[:210],flush=True)
+          print('de_nginx_stream_map_close=true',flush=True)
           print('de_nginx_audit_complete=true',flush=True)
           PY
