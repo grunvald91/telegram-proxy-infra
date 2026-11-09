@@ -1,0 +1,97 @@
+name: MNEBYDNS Meta PCAP live readonly 2026-11-09
+on:
+  push:
+    branches: [diagnostics/mnebydns-meta-ingress-matrix-20261109]
+    paths: [.github/workflows/mnebydns-meta-pcap-20261109-readonly.yml]
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-meta-pcap-readonly
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: External TLS attempts from independent GitHub runner (not mobile operator)
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import concurrent.futures,ssl,socket,time
+          jobs=[('RU_meta_iglite','188.120.254.223','iglite-z.instagram.com'),
+                ('RU_meta_i','188.120.254.223','i.instagram.com'),
+                ('RU_meta_threads','188.120.254.223','threads.com'),
+                ('DE_stable_claude','89.125.90.101','claude.ai'),
+                ('RU_existing_site','188.120.254.223','servgo.ru')]
+          def probe(item):
+              name,ip,sni=item
+              try:
+                  with socket.create_connection((ip,443),timeout=4) as sock:
+                      sock.settimeout(5)
+                      with ssl.create_default_context().wrap_socket(sock,server_hostname=sni) as conn:
+                          return name,'CERT_VALID_TLS_'+str(conn.version())
+              except Exception as e:return name,type(e).__name__
+          with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
+              for name,result in ex.map(probe,jobs):print(name+'='+result,flush=True)
+          print('external_not_equivalent_to_mobile_operator=true')
+          PY
+      - name: Read-only verified status of 89 (stable DNS + proxy)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS" && test -n "$RU_PASS"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@89.125.90.101 'python3 -' <<'PY'
+          import pathlib,subprocess
+          root=pathlib.Path('/opt/mnebydns-stable-checkpoints')
+          try:
+              chk=pathlib.Path((root/'current').read_text().strip())
+              assert chk.parent==root
+              for kind,path in (('nginx','/etc/nginx/nginx.conf'),('dns','/opt/mnebydns-dot/Corefile'),('proxy','/etc/mnebydns-googlepilot/nginx.conf')):
+                  ok=(chk/(kind+'.stable')).read_bytes()==pathlib.Path(path).read_bytes()
+                  print('DE_stable_'+kind+'_checkpoint_match='+str(ok).lower(),flush=True)
+              dns=pathlib.Path('/opt/mnebydns-dot/Corefile').read_text()
+              for host in ('instagram.com','threads.com','iglite-z.instagram.com','test-gateway.instagram.com'):
+                  print('DE_Corefile_contains_'+host+'='+str(host in dns).lower(),flush=True)
+          except Exception as exc: print('DE_checkpoint_status='+type(exc).__name__,flush=True)
+          for unit in ('mnebydns-dot.service','mnebydns-googlepilot.service','nginx.service','xray.service'):
+              r=subprocess.run(['systemctl','is-active',unit],capture_output=True,text=True,timeout=5)
+              print('DE_unit_'+unit+'='+r.stdout.strip(),flush=True)
+          print('DE_meta_sidecar_live_directory='+str(pathlib.Path('/etc/mnebydns-meta-pilot').exists()).lower(),flush=True)
+          r=subprocess.run(['ss','-H','-lun','sport = :443'],capture_output=True,text=True,timeout=5)
+          print('DE_udp443_listener_count='+str(len(r.stdout.splitlines())),flush=True)
+          print('DE_audit_read_only=true')
+          PY
+      - name: Read-only status of 188 (SNI mapping / rollback)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@188.120.254.223 'python3 -' <<'PY'
+          import pathlib,subprocess,ssl,socket
+          live=pathlib.Path('/etc/nginx/streams.d/01-mtproxy-443.conf')
+          before=pathlib.Path('/opt/mnebydns-meta-ru-backups/42553135266/before')
+          current=live.read_bytes()
+          print('RU_nginx_original_baseline='+str(before.is_file() and current==before.read_bytes()).lower(),flush=True)
+          print('RU_Meta_private_WG_19443_mapping_present='+str(b'10.66.77.1:19443' in current).lower(),flush=True)
+          n=subprocess.run(['nginx','-t'],capture_output=True,text=True,timeout=7)
+          print('RU_nginx_syntax_ok='+str(n.returncode==0).lower(),flush=True)
+          n=subprocess.run(['ss','-H','-lnt','sport = :443'],capture_output=True,text=True,timeout=5)
+          print('RU_tcp443_listener_present='+str(bool(n.stdout.strip())).lower(),flush=True)
+          n=subprocess.run(['ss','-H','-lun','sport = :443'],capture_output=True,text=True,timeout=5)
+          print('RU_udp443_listener_count='+str(len(n.stdout.splitlines())),flush=True)
+          for sni in ('iglite-z.instagram.com','i.instagram.com','test-gateway.instagram.com','threads.com'):
+              try:
+                  with socket.create_connection(('127.0.0.1',443),timeout=4) as sock:
+                      sock.settimeout(5)
+                      with ssl.create_default_context().wrap_socket(sock,server_hostname=sni) as tls:
+                          result='VALID_TLS_'+str(tls.version())
+              except Exception as e:result=type(e).__name__
+              print('RU_local443_'+sni+'='+result,flush=True)
+          print('RU_audit_read_only=true',flush=True)
+          PY
