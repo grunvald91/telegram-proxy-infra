@@ -37,7 +37,9 @@ def journal(unit):
 def get_last_counts(lines, prefix, keys):
     rows=[s for s in lines if s.startswith(prefix)]
     if not rows:return None
-    body=rows[-1][len(prefix):]
+    # Packet observer prefixes every key, not merely the first field.
+    # Normalize those field prefixes before extracting the complete set.
+    body=rows[-1][len(prefix):].replace(' '+prefix,' ')
     result={}
     if prefix.endswith('active='):
         active=re.match(r'^(\d+)',body)
