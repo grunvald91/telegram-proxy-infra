@@ -1,0 +1,83 @@
+name: MNEBYDNS ChatGPT DE permanent promotion guarded preflight
+on:
+  push:
+    branches: [diagnostics/mnebydns-meta-ingress-matrix-20261109]
+    paths: [.github/workflows/mnebydns-chatgpt-promote-preflight.yml]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Offline safety and shell tests
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          script=scripts/mnebydns-chatgpt-promote-current-canary.sh
+          bash -n "$script"
+          python3 scripts/mnebydns-chatgpt-de-overlay.py self-test
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y shellcheck sshpass
+          shellcheck -S error "$script"
+          python3 - <<'PY'
+          from pathlib import Path
+          c=Path("scripts/mnebydns-chatgpt-promote-current-canary.sh").read_text()
+          assert 'sha256sum -c stable-manifest.sha256' in c
+          assert 'sha256sum -c combined-manifest.sha256' in c
+          assert 'OnCalendar=$safety_deadline' in c
+          assert 'Persistent=true' in c
+          assert "cmp -s \"$out/nginx.pilot\" \"$base/nginx.pilot\"" in c
+          assert "cmp -s \"$out/proxy.pilot\" \"$base/proxy.pilot\"" in c
+          assert 'mnebydns-chatgpt-de-overlay.py' in c
+          assert 'systemctl restart mnebydns-dot.service' in c
+          assert 'chatgpt_plus_five_DNS_11_of_11_pass=true' in c
+          assert 'systemctl disable --now "$watch.timer"' in c
+          assert 'systemctl disable --now "$safety.timer"' in c
+          assert 'chatgpt_PERMANENT_STABLE_CHECKPOINT=' in c
+          assert '188.120.254.223' in c
+          assert 'flock -w 18 9' in c
+          assert not any(x in c for x in ('tcpdump','iptables -F','systemctl restart nginx','systemctl restart mnebydns-googlepilot.service'))
+          print('promotion_offline_STATIC_PASS=true')
+          PY
+      - name: Read-only preflight current live 30-minute canary and RU owners
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS" && test -n "$RU_PASS"
+          ssh_de() { SSHPASS="$DE_PASS" sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@89.125.90.101 "$@"; }
+          ssh_ru() { SSHPASS="$RU_PASS" sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@188.120.254.223 "$@"; }
+          ssh_de 'bash -s' <<'SH'
+          set -Eeuo pipefail
+          id=42553135266
+          base="/opt/mnebydns-combined-backups/$id"
+          old="$(cat /opt/mnebydns-stable-checkpoints/current)"
+          test "$old" = "$(cat "$base/checkpoint.ref")"
+          (cd "$old" && sha256sum -c stable-manifest.sha256 >/dev/null)
+          (cd "$base" && sha256sum -c combined-manifest.sha256 >/dev/null)
+          cmp -s "$base/nginx.pilot" /etc/nginx/nginx.conf
+          cmp -s "$base/dns.pilot" /opt/mnebydns-dot/Corefile
+          cmp -s "$base/proxy.pilot" /etc/mnebydns-googlepilot/nginx.conf
+          systemctl is-active --quiet "mnebydns-combined-de-watchdog-$id.timer"
+          systemctl is-active --quiet "mnebydns-combined-meta-$id.service"
+          test -s "/tmp/mnebydns-combined-de-$id/dot-probe.py"
+          deadline="$(sed -n 's/^OnCalendar=//p' "$base/mnebydns-combined-de-watchdog-$id.timer")"
+          remaining=$(( $(date -u -d "$deadline" +%s) - $(date -u +%s) ))
+          (( remaining > 300 ))
+          echo "DE_live_combined_canary_owned_and_active=true"
+          echo "DE_canary_remaining_seconds=$remaining"
+          SH
+          ssh_ru 'bash -s' <<'SH'
+          set -Eeuo pipefail
+          id=42553135266
+          base="/opt/mnebydns-meta-ru-backups/$id"
+          test -s "$base/rollback.sh"
+          cmp -s "$base/pilot" /etc/nginx/streams.d/01-mtproxy-443.conf
+          systemctl is-active --quiet "mnebydns-meta-ru-watchdog-$id.timer"
+          echo "RU_live_Meta_pilot_owned_and_rollback_ready=true"
+          SH
+          echo "chatgpt_promotion_preflight_no_live_change=PASS"
