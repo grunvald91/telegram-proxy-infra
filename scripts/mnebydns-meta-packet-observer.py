@@ -255,7 +255,10 @@ def capture_live(role,interface,seconds):
                 chunk=os.read(fd,65536)
                 if not chunk:raise RuntimeError('tcpdump pipe closed')
                 buf.extend(chunk)
-                if head is None:head=pcap_header(buf)
+                if head is None:
+                    head=pcap_header(buf)
+                    if head:
+                        print('meta_stage_'+role+'_capture_ready=true',flush=True)
                 if head:
                     read_pcap_packet(buf,head[0],head[1],obs)
             if time.monotonic()>=next_report:
