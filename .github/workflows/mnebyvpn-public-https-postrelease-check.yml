@@ -37,13 +37,17 @@ jobs:
           sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@188.120.254.223 'bash -s' <<'REMOTE'
           set -Eeuo pipefail
           echo "public_active_sha=$(cat /opt/mnebyvpn/public/active_sha)"
-          expected_release=aa5ba3e121d6183d918040a903213e272e2ce5f0
+          expected_release=4e264f097ead5899cf52b0961aed4db06e1399e1
           test "$(cat /opt/mnebyvpn/public/active_sha)" = "$expected_release"
           echo 'compact_release_sha_verified=true'
           # Pure HTTP GET checks: no payment or VPN state is mutated.
           page="$(curl -fsS --max-time 6 http://127.0.0.1:8792/)"
           [[ "$page" == *'id="journey-landing"'* ]]
           [[ "$page" == *'/journey.js'* ]]
+          style="$(curl -fsS --max-time 6 http://127.0.0.1:8792/journey.css)"
+          [[ "$style" == *'body.journey-active .ambient{position:fixed'* ]]
+          [[ "$style" == *'body.journey-active .journey-checkout'* ]]
+          echo 'neon_design_and_fixed_background_verified=true'
           echo 'compact_homepage_rendered=true'
           for route in /journey.js /journey.css /about.js /payment/success /payment/return; do
             code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 7 "http://127.0.0.1:8792$route")"
