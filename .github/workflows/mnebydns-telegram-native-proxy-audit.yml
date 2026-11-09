@@ -1,0 +1,53 @@
+name: MNEBYDNS native Telegram existing proxy capability read-only audit
+on:
+  push:
+    branches: [diagnostics/mnebydns-meta-ingress-matrix-20261109]
+    paths: [.github/workflows/mnebydns-telegram-native-proxy-audit.yml]
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Inspect existing Telegram MTProto/WebProxy listeners without revealing keys or changing services
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS" && test -n "$RU_PASS"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          for target in DE RU; do
+            if [[ "$target" == DE ]]; then
+              host=89.125.90.101
+              password="$DE_PASS"
+            else
+              host=188.120.254.223
+              password="$RU_PASS"
+            fi
+            SSHPASS="$password" sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new "root@$host" "python3 - '$target'" <<'PY'
+          import subprocess,socket,sys
+          target=sys.argv[1]
+          def read(args):
+              try:return subprocess.run(args,capture_output=True,text=True,timeout=7)
+              except Exception:return None
+          commands=read(['systemctl','list-units','--type=service','--all','--no-pager','--no-legend'])
+          names=sorted(set(row.split()[0] for row in commands.stdout.splitlines()
+              if row.split() and any(term in row.split()[0].lower()
+                 for term in ('telemt','mtproto','mtproxy','mtg','tproxy','telegram')))) if commands else []
+          for name in names:
+              state=read(['systemctl','is-active',name])
+              enabled=read(['systemctl','is-enabled',name])
+              print(target+'_existing_telegram_proxy_service='+name+' active='+str(bool(state and state.returncode==0)).lower()
+                    +' enabled='+str(bool(enabled and enabled.returncode==0)).lower(),flush=True)
+          ports=(443,8443,2053,2398,8080,8081,8888,8794,8793,3001)
+          for port in ports:
+              x=read(['ss','-H','-lnt', 'sport = :'+str(port)])
+              print(target+'_tcp_'+str(port)+'_has_listener='+str(bool(x and x.stdout.strip())).lower(),flush=True)
+          print(target+'_proxy_secret_values_logged=false',flush=True)
+          print(target+'_no_configs_or_firewall_modified=true',flush=True)
+          PY
+          done
