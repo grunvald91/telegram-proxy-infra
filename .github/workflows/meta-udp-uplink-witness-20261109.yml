@@ -77,3 +77,60 @@ jobs:
               m=re.search(r'(?:^|\s)rx=(\d+)(?:\s|$)',lines[-1])
               print('ru_quic_ingress_rx_after='+str(int(m.group(1)) if m else 'unknown'),flush=True)
           PY
+      - name: Read-only kernel routing and nftables input-hook audit
+        if: always()
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS"
+          sudo apt-get install -qq -y sshpass >/dev/null
+          SSHPASS="$RU_PASS" sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o LogLevel=ERROR root@188.120.254.223 'python3 -' <<'PY'
+          import subprocess,re,os
+          def run(cmd):
+              try:
+                  r=subprocess.run(cmd,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,timeout=8)
+                  return r.returncode,r.stdout
+              except (OSError,subprocess.TimeoutExpired):return 127,''
+          code,route=run(['ip','-4','route','get','89.125.90.101'])
+          dev=re.search(r'\bdev (\S+)',route)
+          nic=dev.group(1) if code==0 and dev else None
+          print('ru_route_to_de_public_uses_wg='+str(bool(nic and nic=='tg-relay')).lower(),flush=True)
+          print('ru_route_to_de_public_interface='+str(nic or 'unknown'),flush=True)
+          for name in ['all','default',nic]:
+              if not name:continue
+              f='/proc/sys/net/ipv4/conf/'+name+'/rp_filter'
+              try:value=open(f).read().strip()
+              except OSError:value='unknown'
+              print('ru_rpf_'+re.sub('[^A-Za-z0-9_]','_',name)+'='+value,flush=True)
+          code,nft=run(['nft','-a','list','ruleset'])
+          print('ru_nft_ruleset_readable='+str(code==0).lower(),flush=True)
+          table='unknown';chain='unknown';hook='unknown';priority='unknown';n=0
+          for raw in nft.splitlines():
+              t=re.search(r'^\s*table\s+(\S+)\s+(\S+)',raw)
+              if t:table=t.group(1)+'_'+t.group(2)
+              m=re.search(r'^\s*chain\s+([A-Za-z0-9_-]+)\s*\{',raw)
+              if m:
+                  chain=m.group(1);hook='unknown';priority='unknown'
+              m=re.search(r'\bhook\s+(input|prerouting|forward|output|postrouting)\s+priority\s+([^;]+)',raw)
+              if m:
+                  hook=m.group(1);priority=m.group(2).strip().replace(' ','_')
+                  pol=re.search(r'\bpolicy\s+([a-z]+)',raw)
+                  if pol:print('ru_nft_hook_'+table+'_'+chain+'='+hook+'_'+priority+'_policy_'+pol.group(1),flush=True)
+              if 'udp dport 443' in raw:
+                  n+=1
+                  verdict='none'
+                  for v in ['drop','reject','accept','dnat','redirect','tproxy','jump','goto']:
+                      if re.search(r'\b'+v+r'\b',raw):verdict=v;break
+                  matches=re.search(r'\bcounter packets (\d+)',raw)
+                  print(f'ru_nft_udp443_rule{n}_table={table}',flush=True)
+                  print(f'ru_nft_udp443_rule{n}_chain={chain}',flush=True)
+                  print(f'ru_nft_udp443_rule{n}_hook={hook}',flush=True)
+                  print(f'ru_nft_udp443_rule{n}_verdict={verdict}',flush=True)
+                  if matches:print(f'ru_nft_udp443_rule{n}_counter={matches.group(1)}',flush=True)
+          print('ru_nft_udp443_rules_count='+str(n),flush=True)
+          for table in ['filter','raw','mangle']:
+              code,out=run(['iptables','-t',table,'-S','INPUT' if table=='filter' else 'PREROUTING'])
+              print('ru_iptables_'+table+'_readable='+str(code==0).lower(),flush=True)
+              if code==0:
+                  print('ru_iptables_'+table+'_drop_rule_count='+str(sum('-j DROP' in row for row in out.splitlines())),flush=True)
+          PY
