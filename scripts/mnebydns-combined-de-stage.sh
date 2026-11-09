@@ -6,7 +6,6 @@ set -Eeuo pipefail
 [[ $# == 2 && "$1" =~ ^/tmp/mnebydns-combined-de-[0-9]+$ ]] || exit 2
 work="$1"; deadline="$2"; id="$(basename "$work" | sed 's/^mnebydns-combined-de-//')"
 [[ "$id" =~ ^[0-9]+$ ]] || exit 2
-[[ "$deadline" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}[[:space:]][0-9]{2}:[0-9]{2}:[[:space:]]UTC$ ]] && exit 2
 [[ "$deadline" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}[[:space:]][0-9]{2}:[0-9]{2}:[0-9]{2}[[:space:]]UTC$ ]] || exit 2
 now="$(date -u +%s)"; expiry="$(date -u -d "$deadline" +%s)"
 (( expiry - now >= 300 && expiry - now <= 2700 )) || exit 2
