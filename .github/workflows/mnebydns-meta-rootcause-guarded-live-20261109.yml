@@ -111,9 +111,9 @@ jobs:
           }
           de_ssh "systemd-run --no-block --collect --unit='mnebydns-meta-observe-de-$id' -p RuntimeMaxSec=1800 -p MemoryMax=64M -p CPUQuota=25% /usr/bin/python3 '$dework/mnebydns-meta-packet-observer.py' --role de --interface tg-relay --seconds '$observer_seconds' >/dev/null"
           ru_ssh "systemd-run --no-block --collect --unit='mnebydns-meta-observe-ru-$id' -p RuntimeMaxSec=1800 -p MemoryMax=64M -p CPUQuota=25% /usr/bin/python3 '$ruwork/mnebydns-meta-packet-observer.py' --role ru --interface ens3 --seconds '$observer_seconds' >/dev/null"
-          sleep 2
-          de_ssh "systemctl is-active --quiet 'mnebydns-meta-observe-de-$id.service' && echo DE_passive_stage_observer_ACTIVE=true"
-          ru_ssh "systemctl is-active --quiet 'mnebydns-meta-observe-ru-$id.service' && echo RU_passive_stage_observer_ACTIVE=true"
+          sleep 3
+          de_ssh "systemctl is-active --quiet 'mnebydns-meta-observe-de-$id.service' && journalctl -u 'mnebydns-meta-observe-de-$id.service' --since '2 minutes ago' --no-pager -o cat | grep -Fq 'meta_stage_de_capture_ready=true' && echo DE_passive_stage_observer_ACTIVE=true"
+          ru_ssh "systemctl is-active --quiet 'mnebydns-meta-observe-ru-$id.service' && journalctl -u 'mnebydns-meta-observe-ru-$id.service' --since '2 minutes ago' --no-pager -o cat | grep -Fq 'meta_stage_ru_capture_ready=true' && echo RU_passive_stage_observer_ACTIVE=true"
           ru_ssh 'python3 -' <<'PY'
           import socket,ssl,concurrent.futures
           hosts=('instagram.com','www.instagram.com','i.instagram.com','graph.instagram.com',
