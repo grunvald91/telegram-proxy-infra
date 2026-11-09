@@ -73,8 +73,78 @@ def run():
                     b'\x11'*999):
         assert mod.initial_sni(invalid) is None
     assert mod.MAX_FLOWS<=256
+    import asyncio
+    asyncio.run(test_local_response_path())
+    print('meta_quic_local_two_hop_UDP_roundtrip=PASS')
     print('meta_quic_synthetic_v1_7_domains=PASS')
     print('meta_quic_non_Meta_rejected=PASS')
     print('meta_quic_no_user_payloads_or_pcap_in_repo=true')
+
+
+async def test_local_response_path():
+    """Verify both UDP relays forward a reply, not merely admit an Initial.
+
+    A localhost echo fixture substitutes for Meta; no external packets,
+    account data or real phone traffic are used in this regression test.
+    """
+    import asyncio
+    loop = asyncio.get_running_loop()
+    mark = b'echo-server-roundtrip:'
+
+    class Echo(asyncio.DatagramProtocol):
+        def connection_made(self, transport): self.transport=transport
+        def datagram_received(self, data, addr):
+            self.transport.sendto(mark + data[:16], addr)
+
+    class Client(asyncio.DatagramProtocol):
+        def __init__(self):
+            self.data=None
+            self.event=asyncio.Event()
+        def datagram_received(self,data,addr):
+            self.data=data
+            self.event.set()
+
+    class IsolatedRouter(mod.MetaRouter):
+        def __init__(self, role, destination):
+            super().__init__(role, '127.0.0.1', '127.0.0.1')
+            self.destination=destination
+        async def destination_for(self,name):
+            assert mod.allowed(name)
+            return self.destination
+
+    transports=[]
+    try:
+        echo_transport,_=await loop.create_datagram_endpoint(Echo,local_addr=('127.0.0.1',0))
+        transports.append(echo_transport)
+        ep=echo_transport.get_extra_info('sockname')
+        de=IsolatedRouter('de',ep)
+        de_transport,_=await loop.create_datagram_endpoint(lambda:de,local_addr=('127.0.0.1',0))
+        transports.append(de_transport)
+        ru=IsolatedRouter('ru',de_transport.get_extra_info('sockname'))
+        ru_transport,_=await loop.create_datagram_endpoint(lambda:ru,local_addr=('127.0.0.1',0))
+        transports.append(ru_transport)
+        client=Client()
+        client_transport,_=await loop.create_datagram_endpoint(lambda:client,local_addr=('127.0.0.1',0))
+        transports.append(client_transport)
+        data=fixture_sni('i.instagram.com')
+        client_transport.sendto(data,ru_transport.get_extra_info('sockname'))
+        await asyncio.wait_for(client.event.wait(),3.0)
+        assert client.data==mark+data[:16],client.data
+        for router in (ru,de):
+            assert router.counters['rx'] >=1,router.counters
+            assert router.counters['to_upstream']>=1,router.counters
+            assert router.counters['upstream_rx']>=1,router.counters
+            assert router.counters['client_tx']>=1,router.counters
+        assert ru.counters['admitted']==1 and de.counters['admitted']==1
+        # A malicious hostname must not create a second upstream flow.
+        extra,_=await loop.create_datagram_endpoint(Client,local_addr=('127.0.0.1',0))
+        transports.append(extra)
+        extra.sendto(fixture_sni('internal.local'),ru_transport.get_extra_info('sockname'))
+        await asyncio.sleep(.12)
+        assert ru.counters['rejected']>=1,ru.counters
+        assert ru.counters['admitted']==1,ru.counters
+    finally:
+        for t in reversed(transports):t.close()
+        await asyncio.sleep(.05)
 
 if __name__=='__main__':run()
