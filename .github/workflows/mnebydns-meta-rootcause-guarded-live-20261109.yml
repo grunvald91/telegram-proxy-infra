@@ -205,6 +205,14 @@ jobs:
               echo "QUIC_direct_reference_${hostname}_UNSUPPORTED_OR_UNAVAILABLE=true"
             fi
           done
+          # Baseline after all synthetic and GitHub-runner probes, BEFORE
+          # Meta DNS cutover. These are deliberately not counted as phone traffic.
+          sleep 12
+          de_ssh "journalctl -u 'mnebydns-meta-quic-de-$id.service' --since '5 minutes ago' --no-pager -o cat | grep '^meta_quic_de_active=' | tail -n 1" | sed 's/^/PRE_PHONE_DE_QUIC_COUNTERS /'
+          ru_ssh "journalctl -u 'mnebydns-meta-quic-ru-$id.service' --since '5 minutes ago' --no-pager -o cat | grep '^meta_quic_ru_active=' | tail -n 1" | sed 's/^/PRE_PHONE_RU_QUIC_COUNTERS /'
+          de_ssh "journalctl -u 'mnebydns-meta-observe-de-$id.service' --since '5 minutes ago' --no-pager -o cat | grep '^meta_stage_de_WINDOW_' | tail -n 1" | sed 's/^/PRE_PHONE_DE_PACKETS /'
+          ru_ssh "journalctl -u 'mnebydns-meta-observe-ru-$id.service' --since '5 minutes ago' --no-pager -o cat | grep '^meta_stage_ru_WINDOW_' | tail -n 1" | sed 's/^/PRE_PHONE_RU_PACKETS /'
+          echo "PRE_PHONE_baseline_captured_before_DNS_cutover=true"
           de_ssh "bash '$dework/mnebydns-meta-de-activate.sh' '$debase'"
           # The GitHub runner cannot probe public 853: certificate-validated
           # DNS-over-TLS is checked on the German server without changing it.
