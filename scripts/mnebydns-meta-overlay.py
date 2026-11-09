@@ -73,6 +73,8 @@ def render_proxy() -> str:
         "stream {\n"
         "  resolver 9.9.9.9 ipv6=off valid=30s;\n"
         "  resolver_timeout 5s;\n"
+        "  # Aggregate-only experiment telemetry: no SNI, IP or packet contents\n"
+        "  log_format meta_stage 'META_DE status=$status sent_to_ru=$bytes_sent recv_from_ru=$bytes_received sent_to_origin=$upstream_bytes_sent recv_from_origin=$upstream_bytes_received connect=$upstream_connect_time duration=$session_time';\n"
         "  map $ssl_preread_server_name $meta_origin {\n"
         "    default 127.0.0.1:1;\n"
         + map_entries +
@@ -85,7 +87,7 @@ def render_proxy() -> str:
         "    proxy_connect_timeout 7s;\n"
         "    proxy_timeout 90s;\n"
         "    proxy_buffer_size 16k;\n"
-        "    access_log off;\n"
+        "    access_log /dev/stdout meta_stage;\n"
         "  }\n"
         "}\n"
     )
@@ -112,6 +114,9 @@ def self_test() -> None:
     assert "listen "+WG_PRIVATE+";" in proxy
     assert "listen 0.0.0.0" not in proxy and "listen 443;" not in proxy
     assert "default 127.0.0.1:1;" in proxy
+    assert "access_log /dev/stdout meta_stage;" in proxy
+    assert "sent_to_origin=$upstream_bytes_sent" in proxy
+    assert "$remote_addr" not in proxy and "$request" not in proxy
     for blocked in ("telegram.org","googlevideo.com","anthropic.com","tiktokv.com"):
         assert blocked not in proxy
     print("meta_exact_17_dynamic_17_offline=PASS")
