@@ -1,0 +1,28 @@
+name: MNEBYDNS code review standalone static lint
+on:
+  push:
+    branches: ['review/mnebydns-meta-split-20261109']
+    paths: ['.github/workflows/mnebydns-review-static-lint.yml']
+permissions:
+  contents: read
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run ShellCheck and Python self-test without server access
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+          for f in scripts/mnebydns-four-google-deploy.sh scripts/mnebydns-four-google-rollback.sh scripts/mnebydns-claude-handoff.sh scripts/mnebydns-meta-ru-deploy.sh scripts/mnebydns-meta-ru-rollback.sh; do
+            bash -n "$f"
+            echo "bash_syntax_ok=$f"
+            echo "shellcheck_file=$f"
+            shellcheck -S warning --format=gcc "$f" || echo "shellcheck_nonzero=$f"
+          done
+          python3 -m py_compile scripts/mnebydns-four-google-canary.py
+          python3 scripts/mnebydns-four-google-canary.py self-test
+          echo "static_review_only_no_external_server_access=true"
