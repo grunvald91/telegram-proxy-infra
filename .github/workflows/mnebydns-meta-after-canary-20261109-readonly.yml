@@ -1,0 +1,65 @@
+name: MNEBYDNS Meta after-canary rollback and resolver rootcause read-only
+on:
+  push:
+    branches: [diagnostics/mnebydns-meta-ingress-matrix-20261109]
+    paths: [.github/workflows/mnebydns-meta-after-canary-20261109-readonly.yml]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Check both rollback states and classify historical DNS proxy errors (no client details)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS" && test -n "$RU_PASS"
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@89.125.90.101 'python3 -' <<'PY'
+          import pathlib,subprocess,re,collections,datetime
+          print('DE_checked_at='+datetime.datetime.now(datetime.timezone.utc).isoformat(),flush=True)
+          root=pathlib.Path('/opt/mnebydns-stable-checkpoints')
+          checkpoint=pathlib.Path((root/'current').read_text().strip())
+          assert checkpoint.parent==root
+          for kind,path in [('dns','/opt/mnebydns-dot/Corefile'),('nginx','/etc/nginx/nginx.conf'),('proxy','/etc/mnebydns-googlepilot/nginx.conf')]:
+              print('DE_rollback_'+kind+'_matches_stable='+str((checkpoint/(kind+'.stable')).read_bytes()==pathlib.Path(path).read_bytes()).lower(),flush=True)
+          print('DE_meta_sidecar_removed='+str(not pathlib.Path('/etc/mnebydns-meta-pilot').exists()).lower(),flush=True)
+          for unit in ('mnebydns-dot.service','mnebydns-googlepilot.service','xray.service'):
+              p=subprocess.run(['systemctl','is-active',unit],capture_output=True,text=True,timeout=5)
+              print('DE_unit_'+unit+'='+p.stdout.strip(),flush=True)
+          p=subprocess.run(['journalctl','-u','mnebydns-meta-pilot-42583884583.service','--since','2026-11-09 08:09:00 UTC','--until','2026-11-09 08:37:40 UTC','--no-pager','-o','cat'],capture_output=True,text=True,timeout=8)
+          print('DE_meta_journal_read_ok='+str(p.returncode==0).lower(),flush=True)
+          lines=[s for s in p.stdout.splitlines() if 'error' in s.lower() or 'resolve' in s.lower()]
+          print('DE_meta_error_events='+str(len(lines)),flush=True)
+          reasons=collections.Counter()
+          for s in lines:
+              a=s.lower()
+              if 'could not be resolved' in a:reasons['could_not_be_resolved']+=1
+              elif 'no resolver defined' in a:reasons['no_resolver_defined']+=1
+              elif 'timed out' in a:reasons['timeout']+=1
+              elif 'no live upstreams' in a:reasons['no_live_upstreams']+=1
+              elif 'connection refused' in a:reasons['connection_refused']+=1
+              else:reasons['other']+=1
+          for k,v in sorted(reasons.items()):print('DE_proxy_error_kind_'+k+'='+str(v),flush=True)
+          for domain in ('iglite-z.instagram.com','i.instagram.com','test-gateway.instagram.com','z-m-gateway.facebook.com','graph.instagram.com','graph.facebook.com','threads.com','threads.net'):
+              print('DE_proxy_error_mentions_'+domain+'='+str(sum(domain in s for s in lines)),flush=True)
+          print('DE_no_raw_logs_or_client_IP_printed=true',flush=True)
+          PY
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@188.120.254.223 'python3 -' <<'PY'
+          import pathlib,subprocess,datetime
+          print('RU_checked_at='+datetime.datetime.now(datetime.timezone.utc).isoformat(),flush=True)
+          current=pathlib.Path('/etc/nginx/streams.d/01-mtproxy-443.conf')
+          original=pathlib.Path('/opt/mnebydns-meta-ru-backups/42583884583/before')
+          print('RU_rollback_matches_original='+str(original.is_file() and current.read_bytes()==original.read_bytes()).lower(),flush=True)
+          print('RU_Meta_WG_19443_mapping_absent='+str(b'10.66.77.1:19443' not in current.read_bytes()).lower(),flush=True)
+          for unit in ('nginx.service','mnebydns-meta-ru-watchdog-42583884583.timer'):
+              p=subprocess.run(['systemctl','is-active',unit],capture_output=True,text=True,timeout=5)
+              print('RU_unit_'+unit+'='+p.stdout.strip(),flush=True)
+          print('RU_readonly=true',flush=True)
+          PY
