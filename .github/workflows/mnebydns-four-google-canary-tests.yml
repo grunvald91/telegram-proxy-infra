@@ -96,10 +96,10 @@ jobs:
           rendered=m.render_dot(fixture)
           for h in ('instagram.com','www.instagram.com','threads.com','graph.threads.net','edge-mqtt.facebook.com'):
               assert ('template IN A '+h+' {') in rendered
-              section=rendered.split('template IN A '+h+' {',1)[1].split('}',1)[0]
+              section=rendered.split('template IN A '+h+' {',1)[1].split('\\n    }\\n',1)[0]
               assert '188.120.254.223' in section
           for h in ('api.x.ai','www.tiktok.com','claude.ai'):
-              section=rendered.split('template IN A '+h+' {',1)[1].split('}',1)[0]
+              section=rendered.split('template IN A '+h+' {',1)[1].split('\\n    }\\n',1)[0]
               assert '89.125.90.101' in section
           assert 'match '+m.META_DYNAMIC in rendered
           assert 'match '+m.OTHER_DYNAMIC in rendered
