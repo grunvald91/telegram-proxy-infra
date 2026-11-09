@@ -60,10 +60,11 @@ jobs:
               forward . tls://9.9.9.9 {}
           }
           CORE
-          python3 scripts/mnebydns-meta-overlay.py render "$work/Corefile" "$work/output" || {
-            mkdir -p "$work/output"
-            python3 scripts/mnebydns-meta-overlay.py render "$work/Corefile" "$work/output"
-          }
+          mkdir -p "$work/output"
+          python3 scripts/mnebydns-meta-overlay.py render "$work/Corefile" "$work/output"
+          # GitHub runner does not have our WireGuard private IP; use
+          # localhost solely in its temporary config copy for syntax test.
+          sed -i 's/listen 10.66.77.1:19443;/listen 127.0.0.1:19443;/' "$work/output/proxy.meta"
           sudo install -d -m 700 /run/mnebydns-meta-pilot
           sudo nginx -t -c "$work/output/proxy.meta"
           grep -F 'access_log /dev/stdout meta_stage;' "$work/output/proxy.meta"
