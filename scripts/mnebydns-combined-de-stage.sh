@@ -49,6 +49,8 @@ done
 python3 "$work/mnebydns-combined-render.py" self-test
 install -d -m 700 /opt/mnebydns-combined-backups
 install -d -m 700 "$base"
+printf '%s\n' "$checkpoint" > "$base/checkpoint.ref"
+chmod 600 "$base/checkpoint.ref"
 python3 "$work/mnebydns-combined-render.py" render \
   "$checkpoint/nginx.stable" "$checkpoint/dns.stable" "$checkpoint/proxy.stable" "$base"
 for kind in nginx dns proxy; do
@@ -56,7 +58,7 @@ for kind in nginx dns proxy; do
   ! cmp -s "$checkpoint/$kind.stable" "$base/$kind.pilot"
 done
 test -s "$base/proxy.meta"
-(cd "$base" && sha256sum nginx.pilot dns.pilot proxy.pilot proxy.meta > combined-manifest.sha256)
+(cd "$base" && sha256sum nginx.pilot dns.pilot proxy.pilot proxy.meta checkpoint.ref > combined-manifest.sha256)
 install -m 700 "$work/mnebydns-combined-de-rollback.sh" "$base/rollback.sh"
 cat > "$base/$watch.service" <<UNIT
 [Unit]
@@ -109,6 +111,7 @@ install -m 644 "$base/$service.service" "/etc/systemd/system/$service.service"
 systemctl daemon-reload
 systemctl enable --now "$watch.timer" >/dev/null
 systemctl is-active --quiet "$watch.timer"
+test -n "$(systemctl list-timers --all --no-legend "$watch.timer")"
 abort() {
   rc=$?; trap - EXIT
   flock -u 9 || true
