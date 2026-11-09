@@ -76,7 +76,7 @@ jobs:
           names=('instagram.com','www.instagram.com','i.instagram.com','graph.instagram.com',
                  'edge-mqtt.facebook.com','threads.com','threads.net','graph.threads.net',
                  'iglite-z.instagram.com','test-gateway.instagram.com',
-                 'z-m-gateway.facebook.com','graph.facebook.com')
+                 'z-m-gateway.facebook.com','graph.facebook.com','i-fallback.instagram.com')
           def check(name):
               try:
                   with socket.create_connection(('10.66.77.1',19443),timeout=7) as sock:
@@ -88,7 +88,7 @@ jobs:
               results=list(pool.map(check,names))
           for name,ok in results:print('RU_to_private_DE_Meta_TLS_'+name+'='+str(ok).lower(),flush=True)
           if not all(ok for _,ok in results):raise SystemExit('private Meta TLS not ready')
-          print('DE_private_Meta_12_of_12=PASS',flush=True)
+          print('DE_private_Meta_13_of_13=PASS',flush=True)
           PY
           ru_ssh "test ! -e '$ruwork' && mkdir -m 700 '$ruwork'"
           tar -czf - -C scripts mnebydns-meta-ru-deploy.sh mnebydns-meta-ru-rollback.sh |
@@ -99,7 +99,7 @@ jobs:
           hosts=('instagram.com','www.instagram.com','i.instagram.com','graph.instagram.com',
                  'edge-mqtt.facebook.com','threads.com','threads.net','graph.threads.net',
                  'iglite-z.instagram.com','test-gateway.instagram.com',
-                 'z-m-gateway.facebook.com','graph.facebook.com')
+                 'z-m-gateway.facebook.com','graph.facebook.com','i-fallback.instagram.com')
           def check(host):
               try:
                   with socket.create_connection(('127.0.0.1',443),timeout=7) as s:
@@ -111,7 +111,7 @@ jobs:
               rows=list(pool.map(check,hosts))
           for host,ok in rows:print('RU_local443_Meta_certificate_'+host+'='+str(ok).lower(),flush=True)
           if not all(ok for _,ok in rows):raise SystemExit('RU Meta public ingress test failed')
-          print('RU_to_DE_public_ingress_TLS_12_of_12=PASS',flush=True)
+          print('RU_to_DE_public_ingress_TLS_13_of_13=PASS',flush=True)
           PY
           # QUIC v1 UDP 443 is needed by the actual Android PCAPs.
           # Stage on foreign private WG first, then RU public UDP 443.
@@ -145,8 +145,8 @@ jobs:
           # one admitted flow on the remote end. No client addresses logged.
           sleep 14
           de_ssh "journalctl -u 'mnebydns-meta-quic-de-$id.service' --since '2 minutes ago' --no-pager -o cat | grep -Eq 'admitted=[1-9][0-9]*'"
-          de_ssh "systemctl is-active --quiet 'mnebydns-meta-quic-de-$id-rollback.timer' && echo DE_UDP_WG_Meta_QUIC_PASS=true"
-          ru_ssh "systemctl is-active --quiet 'mnebydns-meta-quic-ru-$id-rollback.timer' && echo RU_UDP443_Meta_QUIC_PASS=true"
+          de_ssh "systemctl is-active --quiet 'mnebydns-meta-quic-de-$id-rollback.timer' && echo DE_UDP_WG_Meta_QUIC_ADMISSION_ONLY=true"
+          ru_ssh "systemctl is-active --quiet 'mnebydns-meta-quic-ru-$id-rollback.timer' && echo RU_UDP443_Meta_QUIC_ADMISSION_ONLY=true"
           de_ssh "bash '$dework/mnebydns-meta-de-activate.sh' '$debase'"
           # The GitHub runner cannot probe public 853: certificate-validated
           # DNS-over-TLS is checked on the German server without changing it.
@@ -162,7 +162,7 @@ jobs:
                 'graph.instagram.com','edge-mqtt.facebook.com','threads.com',
                 'threads.net','graph.threads.net','iglite-z.instagram.com',
                 'test-gateway.instagram.com','z-m-gateway.facebook.com',
-                'graph.facebook.com')
+                'graph.facebook.com','i-fallback.instagram.com')
           stable=('chatgpt.com','gemini.google.com','claude.ai','grok.com',
                   'x.com','www.tiktok.com')
           cases=[(h,RU) for h in meta]+[(h,DE) for h in stable]
@@ -192,11 +192,12 @@ jobs:
                   code,_,rr=dot.query(h,kind,DE,853,'dns.mnebyvpn.site',None)
                   if code!=0 or any(typ==1 for typ,ttl,v in rr):
                       raise SystemExit('Meta alternative-RR regression '+h)
-          print('Meta_PCAP_12_plus_stable_6_verified_DNS=PASS',flush=True)
+          print('Meta_PCAP_13_plus_stable_6_verified_DNS=PASS',flush=True)
           PY
           de_ssh "systemctl is-active --quiet 'mnebydns-meta-de-watchdog-$id.timer' && echo DE_rollback_armed=true"
           ru_ssh "systemctl is-active --quiet 'mnebydns-meta-ru-watchdog-$id.timer' && echo RU_rollback_armed=true"
           echo "Meta_QUIC_UDP443_MNEBYDNS_META_ONLY_ACTIVE=true"
+          echo "Meta_QUIC_real_origin_reply_NOT_VERIFIED=true"
           echo "Meta_Instagram_Threads_public_test_ACTIVE_UNTIL=$deadline"
           echo "Meta_android_application_NOT_YET_TESTED=true"
           echo "persistent_rollback_on_both_servers_armed=true"
