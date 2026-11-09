@@ -37,7 +37,7 @@ jobs:
               assert 'mnebyvpn-public-route.lock' in code
           assert 'OnCalendar=$deadline' in stage
           assert 'Persistent=true' in stage
-          assert 'systemctl is-active --quiet "$watch.timer"' in act
+          assert '"$watch.timer"' in act and 'systemctl is-active --quiet "$unit"' in act
           assert 'systemctl reload nginx' in act
           assert 'systemctl restart mnebydns-dot.service' in back
           assert 'combined-manifest.sha256' in back
