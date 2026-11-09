@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hashlib
+import errno
 import hmac
 import ipaddress
 import socket
@@ -198,6 +199,11 @@ class ConnectedDatagram(asyncio.DatagramProtocol):
             self.router.counters['client_tx'] += 1
 
     def error_received(self, exc):
+        # A real UDP reply can exceed the private WireGuard path MTU;
+        # classify delivery errors rather than silently discarding the flow.
+        self.router.counters['socket_error'] += 1
+        if isinstance(exc, OSError) and exc.errno == errno.EMSGSIZE:
+            self.router.counters['emsgsize'] += 1
         self.router.discard(self.client)
 
 
@@ -209,7 +215,8 @@ class MetaRouter(asyncio.DatagramProtocol):
         # Aggregate counters only: never log app payloads, user IPs or SNI.
         self.counters = {"admitted":0, "rejected":0, "expired":0, "resolve_error":0,
                          "rx":0, "to_upstream":0, "upstream_rx":0, "client_tx":0,
-                         "oversize":0, "undersize":0, "peer_drop":0, "overflow":0}
+                         "oversize":0, "undersize":0, "peer_drop":0, "overflow":0,
+                         "socket_error":0, "emsgsize":0}
 
     def connection_made(self, transport):
         self.transport = transport
