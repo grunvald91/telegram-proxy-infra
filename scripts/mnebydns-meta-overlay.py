@@ -99,7 +99,8 @@ def self_test() -> None:
             "    forward . tls://9.9.9.9 {}\n}\n")
     modified = render_dns(core)
     assert modified.count("mnebydns-meta-isolated-20261109") == 1
-    assert modified.replace(modified.split("    # mnebydns-meta-isolated-20261109:")[1].split("    cache 30")[0],"") != ""
+    assert modified.endswith("    cache 30\n"+core.split("    cache 30\n",1)[1])
+    assert core.split("    cache 30\n",1)[0] in modified
     assert modified.count("20 IN A "+RU) == len(EXACT)+1
     for host in ("www.instagram.com", "scontent.cdninstagram.com",
                  "graph.threads.net","edge-mqtt.facebook.com","foo.meta.ai"):
