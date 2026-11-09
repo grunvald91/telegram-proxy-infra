@@ -96,7 +96,7 @@ def active_vpn_ingress_count(pid: int, root: pathlib.Path = PROC) -> int:
     return len(found)
 
 def proc_sockets(pid: int, root: pathlib.Path = PROC) -> set[tuple[str, str, int]]:
-    """Return only current global outgoing endpoints owned by Xray child."""
+    """Return only global outbound endpoints, excluding Xray VPN ingress."""
     inodes = socket_inodes(pid, root)
     if not inodes:
         return set()
@@ -114,6 +114,13 @@ def proc_sockets(pid: int, root: pathlib.Path = PROC) -> set[tuple[str, str, int
             if len(parts) < 10 or parts[9] not in inodes:
                 continue
             try:
+                # In /proc/net, parts[1] is LOCAL and parts[2] is REMOTE.
+                # An accepted VPN client has local port 2053 (REALITY)
+                # or 18943 (WS) and a remote EPHEMERAL port. Those are
+                # inbound subscriber sockets, not outbound destinations.
+                _local_addr, local_port = decode_endpoint(parts[1], family)
+                if local_port in (18943, 2053):
+                    continue
                 addr, port = decode_endpoint(parts[2], family)
                 if port == 0 or private_ip(addr):
                     continue
@@ -245,6 +252,7 @@ def summarize(observed: set[tuple[str,str,int]],
         "Meta_domain_on_each_connection_proven=false",
         "HTTPS_voice_content_decrypted=false",
         "raw_addresses_or_user_identifiers_logged=false",
+        "inbound_reality_and_ws_sockets_excluded=true",
         "DNS_only_non443_compatibility=UNVERIFIED",
     ])
     return output
