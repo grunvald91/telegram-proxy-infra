@@ -1,0 +1,131 @@
+name: MNEBYDNS private WireGuard SNI TLS comparison for Instagram and Telegram
+on:
+  push:
+    branches: ['feature/mnebydns-wg-meta-diagnostics-20261109']
+    paths: ['.github/workflows/mnebydns-wg-meta-tls-ab.yml']
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      FOREIGN_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Launch isolated, time-limited SNI passthrough bound ONLY to existing foreign WireGuard interface
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$FOREIGN_PASS" && test -n "$RU_PASS"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          opts=(-o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new)
+          work="/tmp/mnebydns-wg-sni-$GITHUB_RUN_ID"
+          cleanup() {
+            rc=$?
+            trap - EXIT
+            SSHPASS="$FOREIGN_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 "bash -se -- '$work'" <<'END' || true
+          set -Eeuo pipefail
+          work="$1"
+          [[ "$work" =~ ^/tmp/mnebydns-wg-sni-[0-9]+$ ]] || exit 2
+          if test -s "$work/nginx.conf"; then
+            /usr/sbin/nginx -c "$work/nginx.conf" -s stop >/dev/null 2>&1 || true
+            sleep .3
+          fi
+          if ! ss -H -lnt 'sport = :19443' | grep -Fq '10.66.77.1:19443'; then
+            rm -rf -- "$work"
+            echo "temporary_private_probe_cleanup=complete"
+          else
+            echo "temporary_private_probe_will_self_expire_after_75s=true"
+          fi
+          END
+            exit "$rc"
+          }
+          trap cleanup EXIT
+          SSHPASS="$FOREIGN_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 "bash -se -- '$work'" <<'END'
+          set -Eeuo pipefail
+          work="$1"
+          [[ "$work" =~ ^/tmp/mnebydns-wg-sni-[0-9]+$ ]] || exit 2
+          test ! -e "$work"
+          test -z "$(ss -H -lnt 'sport = :19443')"
+          mkdir -m 700 -- "$work"
+          ip -4 -o addr show dev tg-relay | grep -Fq '10.66.77.1/'
+          cat > "$work/nginx.conf" <<'NGINX'
+          load_module /usr/lib/nginx/modules/ngx_stream_module.so;
+          worker_processes 1;
+          pid __WORK__/nginx.pid;
+          error_log stderr warn;
+          events { worker_connections 128; }
+          stream {
+              resolver 9.9.9.9 ipv6=off valid=30s;
+              resolver_timeout 4s;
+              map $ssl_preread_server_name $probe_origin {
+                  default 127.0.0.1:1;
+                  instagram.com instagram.com:443;
+                  www.instagram.com www.instagram.com:443;
+                  i.instagram.com i.instagram.com:443;
+                  graph.instagram.com graph.instagram.com:443;
+                  edge-mqtt.facebook.com edge-mqtt.facebook.com:443;
+                  threads.com threads.com:443;
+                  threads.net threads.net:443;
+                  graph.threads.net graph.threads.net:443;
+                  t.me t.me:443;
+                  api.telegram.org api.telegram.org:443;
+                  web.telegram.org web.telegram.org:443;
+                  telegram.org telegram.org:443;
+                  x.com x.com:443;
+                  claude.ai claude.ai:443;
+              }
+              server {
+                  listen 10.66.77.1:19443;
+                  ssl_preread on;
+                  proxy_pass $probe_origin;
+                  proxy_connect_timeout 5s;
+                  proxy_timeout 18s;
+                  access_log off;
+              }
+          }
+          NGINX
+          sed -i "s|__WORK__|$work|g" "$work/nginx.conf"
+          /usr/sbin/nginx -t -c "$work/nginx.conf" >/dev/null
+          nohup timeout --signal=TERM 75s /usr/sbin/nginx -c "$work/nginx.conf" -g 'daemon off;' >"$work/stdout" 2>&1 </dev/null &
+          sleep 1
+          ss -H -lnt 'sport = :19443' | grep -Fq '10.66.77.1:19443'
+          echo "private_wg_only_sni_passthrough_active=true"
+          echo "temporary_listener_self_expires_after_75s=true"
+          echo "production_nginx_wireguard_dns_unchanged=true"
+          END
+          SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -' <<'PY'
+          import concurrent.futures,socket,ssl,time
+          from collections import Counter
+          DEST=('10.66.77.1',19443)
+          HOSTS=('instagram.com','www.instagram.com','i.instagram.com',
+                 'graph.instagram.com','edge-mqtt.facebook.com',
+                 'threads.com','threads.net','graph.threads.net',
+                 't.me','api.telegram.org','web.telegram.org','telegram.org',
+                 'x.com','claude.ai')
+          def probe(name):
+              t=time.monotonic()
+              try:
+                  with socket.create_connection(DEST,timeout=6) as tcp:
+                      tcp.settimeout(6)
+                      with ssl.create_default_context().wrap_socket(tcp,server_hostname=name) as secure:
+                          result='VALID_'+secure.version()
+              except Exception as err:
+                  result='ERROR_'+type(err).__name__
+              return (name,result,round(1000*(time.monotonic()-t)))
+          with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
+              rows=list(pool.map(probe,HOSTS))
+          for host,result,elapsed in rows:
+              print('WG_RU_DE_foreign_TLS_host='+host+' result='+result+' elapsed_ms='+str(elapsed),flush=True)
+          good=sum(res.startswith('VALID_') for _,res,_ in rows)
+          instagram=sum(res.startswith('VALID_') for host,res,_ in rows if 'instagram.com' in host)
+          telegram=sum(res.startswith('VALID_') for host,res,_ in rows if host in ('t.me','api.telegram.org','web.telegram.org','telegram.org'))
+          print('wg_valid_cert_count='+str(good)+'/'+str(len(rows)),flush=True)
+          print('wg_instagram_valid='+str(instagram)+'/4',flush=True)
+          print('wg_telegram_web_valid='+str(telegram)+'/4',flush=True)
+          print('only_tls_handshakes_no_messages_or_contents=true',flush=True)
+          print('client_unchanged=yes',flush=True)
+          if instagram<3:raise SystemExit('critical_wg_Instagram_tls_test_failed')
+          PY
