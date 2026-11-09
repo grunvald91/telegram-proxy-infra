@@ -6,7 +6,7 @@ set -Eeuo pipefail
 (( EUID == 0 )) || exit 2
 [[ $# == 1 && "$1" =~ ^/tmp/mnebydns-ci-[0-9]+$ ]] || exit 2
 work="$1"
-old=/opt/mnebydns-googlepilot-backups/42534478710
+old=/opt/mnebydns-googlepilot-backups/42536213503
 nginx=/etc/nginx/nginx.conf
 dns=/opt/mnebydns-dot/Corefile
 for f in nginx.before dns.before nginx.pilot dns.pilot rollback.sh; do
@@ -15,7 +15,7 @@ done
 if cmp -s "$old/nginx.pilot" "$nginx" &&
    cmp -s "$old/dns.pilot" "$dns"; then
   systemctl is-active --quiet mnebydns-googlepilot.service
-  systemctl is-active --quiet mnebydns-four-google-watchdog-42534478710.timer
+  systemctl is-active --quiet mnebydns-four-google-watchdog-42536213503.timer
   echo "handoff_old_canary_state=ACTIVE_VERIFIED"
   bash "$old/rollback.sh" "$old"
 elif cmp -s "$old/nginx.before" "$nginx" &&
@@ -35,4 +35,4 @@ cmp -s "$old/nginx.before" "$nginx"
 cmp -s "$old/dns.before" "$dns"
 echo "handoff_old_canary_transactionally_restored=true"
 bash "$work/mnebydns-four-google-deploy.sh" "$work"
-echo "handoff_new_google_claude_meta_tiktok_telegram_30m_canary_active=true"
+echo "handoff_new_meta_wireguard_dns_split_canary_active=true"
