@@ -1,0 +1,71 @@
+name: MNEBYDNS Meta public ingress diagnostic (read only)
+on:
+  push:
+    branches: [diagnostics/mnebydns-meta-ingress-matrix-20261109]
+    paths: [.github/workflows/mnebydns-meta-public-connectivity-diagnostic.yml]
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-meta-public-diagnostic
+  cancel-in-progress: false
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Compare independent external public TCP reachability
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import socket, concurrent.futures
+          cases=[('RU', '188.120.254.223',443),('RU','188.120.254.223',80),('RU','188.120.254.223',8443),('DE','89.125.90.101',443),('DE','89.125.90.101',853)]
+          def check(item):
+              label,ip,port=item
+              try:
+                  with socket.create_connection((ip,port),timeout=5): status='CONNECTED'
+              except Exception as e: status=type(e).__name__
+              return f'external_{label}_{port}={status}'
+          with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
+              for result in pool.map(check,cases): print(result,flush=True)
+          print('external_matrix_read_only=true')
+          PY
+      - name: Inspect existing live endpoints and stable checkpoint without mutation
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          opts=(-o ConnectTimeout=10 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new)
+          SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY'
+          import socket,pathlib,subprocess
+          root=pathlib.Path('/opt/mnebydns-stable-checkpoints')
+          checkpoint=pathlib.Path((root/'current').read_text().strip())
+          assert checkpoint.is_relative_to(root)
+          for kind,path in [('nginx','/etc/nginx/nginx.conf'),('dns','/opt/mnebydns-dot/Corefile'),('proxy','/etc/mnebydns-googlepilot/nginx.conf')]:
+              ok=(checkpoint/(kind+'.stable')).read_bytes()==pathlib.Path(path).read_bytes()
+              print('DE_stable_'+kind+'_unchanged='+str(ok).lower(),flush=True)
+              if not ok:raise SystemExit('stable drift detected')
+          try:
+              with socket.create_connection(('188.120.254.223',443),timeout=5):print('DE_to_RU_public443=CONNECTED')
+          except Exception as e:print('DE_to_RU_public443='+type(e).__name__)
+          print('DE_read_only=true')
+          PY
+          SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -' <<'PY'
+          import socket,subprocess,pathlib
+          p=subprocess.run(['ss','-H','-lnt','sport = :443'],capture_output=True,text=True,timeout=5)
+          print('RU_443_listening='+str(':443' in p.stdout).lower())
+          for host,label in [('127.0.0.1','RU_local443'),('188.120.254.223','RU_self_public443')]:
+              try:
+                  with socket.create_connection((host,443),timeout=5):print(label+'=CONNECTED')
+              except Exception as e:print(label+'='+type(e).__name__)
+          p=subprocess.run(['nft','list','ruleset'],capture_output=True,text=True,timeout=5)
+          hits=[r for r in p.stdout.splitlines() if '443' in r and ('drop' in r or 'reject' in r)]
+          print('RU_firewall_443_drop_reject_rules='+str(len(hits)))
+          txt=pathlib.Path('/etc/nginx/streams.d/01-mtproxy-443.conf').read_text()
+          print('RU_unverified_Meta_route_absent='+str('10.66.77.1:19443' not in txt).lower())
+          print('RU_read_only=true')
+          PY
