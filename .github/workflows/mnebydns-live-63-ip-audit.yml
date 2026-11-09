@@ -1,7 +1,7 @@
-name: MNEBYDNS Meta TikTok Telegram 174-host live DNS audit
+name: MNEBYDNS Meta via WireGuard 174-host split DNS and dual watchdog audit
 on:
   push:
-    branches: ['feature/mnebydns-meta-tiktok-telegram-30m-20261109']
+    branches: ['feature/mnebydns-meta-via-wireguard-pilot-20261109']
     paths: ['.github/workflows/mnebydns-live-63-ip-audit.yml']
   workflow_dispatch:
 permissions:
@@ -12,6 +12,7 @@ jobs:
     timeout-minutes: 7
     env:
       FOREIGN_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4
@@ -45,7 +46,8 @@ jobs:
                   try:
                       code,number,rows=dns.query(host,1,expected,853,'dns.mnebyvpn.site',None)
                       addresses=[socket.inet_ntoa(data) for rr,ttl,data in rows if rr==1]
-                      if code==0 and addresses==[expected]:
+                      expected_ip=route.RU_INGRESS if route.is_meta(host) else route.FOREIGN
+                      if code==0 and addresses==[expected_ip]:
                           return host,True,addresses,code
                       last=str(code)
                   except Exception as exc:
@@ -73,7 +75,7 @@ jobs:
                         'sub.dynamic.telegramusercontent.com')))
           total=len(results); good=sum(ok for _,ok,_,_ in results)
           for host,ok,addresses,code in results:
-              print(f'domain={host} german_ip_returned={str(ok).lower()} answer={",".join(addresses) or "NONE"} status={code}',flush=True)
+              print(f'domain={host} route_target_match={str(ok).lower()} answer={",".join(addresses) or "NONE"} status={code}',flush=True)
           print('exact_candidate_hosts_rewritten='+str(sum(ok for _,ok,_,_ in results[:174]))+'/174',flush=True)
           print(f'gemini_base_also_rewritten={str(results[174][1]).lower()}',flush=True)
           print(f'all_DNS_checks_pass={str(good==total).lower()} count={total}',flush=True)
@@ -86,7 +88,7 @@ jobs:
               print('non_target_direct='+host,flush=True)
           print('public_DoT_certificate_validated=yes',flush=True)
           PY
-      - name: Read-only check exact live Nginx and DNS snapshot vs timed 174-host Google Claude Meta TikTok Telegram configuration
+      - name: Read-only check exact live Nginx and DNS snapshot vs timed Meta-via-RU-WireGuard 174-host configuration
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -96,7 +98,7 @@ jobs:
           export SSHPASS="$FOREIGN_PASSWORD"
           sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@89.125.90.101 'python3 -' <<'PY'
           import pathlib,subprocess
-          base=pathlib.Path('/opt/mnebydns-googlepilot-backups/42536213503')
+          base=pathlib.Path('/opt/mnebydns-googlepilot-backups/42538883926')
           for name,path in (('nginx','/etc/nginx/nginx.conf'),('dns','/opt/mnebydns-dot/Corefile')):
               current=pathlib.Path(path).read_bytes()
               pilot=base/(name+'.pilot')
@@ -105,10 +107,35 @@ jobs:
                      'BASELINE' if before.is_file() and before.read_bytes()==current else 'OTHER')
               print(f'live_{name}_state={state}',flush=True)
               if state!='PILOT':raise SystemExit('combined pilot not active')
+          p=subprocess.run(['ss','-H','-lnt','sport = :19443'],capture_output=True,text=True,timeout=5)
+          if '10.66.77.1:19443' not in p.stdout:raise SystemExit('private DE WireGuard ingress missing')
+          print('foreign_private_WireGuard_meta_listener=ACTIVE',flush=True)
           for unit in ('mnebydns-googlepilot.service','mnebydns-dot.service',
-                       'mnebydns-four-google-watchdog-42536213503.timer'):
+                       'mnebydns-four-google-watchdog-42538883926.timer'):
               p=subprocess.run(['systemctl','is-active',unit],capture_output=True,text=True,timeout=6)
               print('unit_'+unit+'='+p.stdout.strip(),flush=True)
               if p.returncode:raise SystemExit('required 174-host live service or watchdog inactive: '+unit)
           print('remote_state_readonly=yes',flush=True)
+          PY
+      - name: Verify exact owner-only Meta SNI map and auto-rollback on Russian ingress
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASSWORD"
+          export SSHPASS="$RU_PASSWORD"
+          sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@188.120.254.223 'python3 -' <<'PY'
+          import pathlib,subprocess
+          base=pathlib.Path('/opt/mnebydns-meta-ru-backups/42538883926')
+          live=pathlib.Path('/etc/nginx/streams.d/01-mtproxy-443.conf')
+          if not (base/'pilot').exists() or live.read_bytes()!=(base/'pilot').read_bytes():
+              raise SystemExit('RU SNI current pilot does not match owned snapshot')
+          text=live.read_text()
+          if '10.66.77.1:19443' not in text:
+              raise SystemExit('RU Meta private SNI route not present')
+          for unit in ('nginx','mnebydns-meta-ru-watchdog-42538883926.timer'):
+              p=subprocess.run(['systemctl','is-active',unit],capture_output=True,text=True,timeout=5)
+              print('RU_'+unit+'='+p.stdout.strip(),flush=True)
+              if p.returncode:raise SystemExit('RU Meta rollback or Nginx inactive')
+          print('RU_meta_private_WireGuard_ingress=ACTIVE',flush=True)
+          print('no_production_changes=true',flush=True)
           PY
