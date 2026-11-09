@@ -104,6 +104,62 @@ jobs:
               print('de_meta_diag_'+key+'_tls_verified='+str(verified).lower(),flush=True)
               print('de_meta_diag_'+key+'_error='+error,flush=True)
           PY
+          # Passive DE network metadata for three explicitly scoped RU TLS sessions.
+          # Fixed ephemeral client ports identify the test; no TLS contents are recorded.
+          de_ssh 'bash -s' <<'SH' &
+          set -Eeuo pipefail
+          if ! command -v tcpdump >/dev/null 2>&1; then
+            echo 'DE_public_tcpdump_available=false'
+            exit 0
+          fi
+          echo 'DE_public_tcpdump_available=true'
+          timeout -s TERM 19s tcpdump -i any -n -l 'tcp and host 188.120.254.223 and port 443 and (port 43121 or port 43122 or port 43123)' 2>/dev/null | python3 -c '
+          import re,sys,collections
+          data=collections.defaultdict(lambda:{"in_packets":0,"in_bytes":0,"out_packets":0,"out_bytes":0})
+          for row in sys.stdin:
+              m=re.search(r"\bIP\s+([\d.]+)\.(\d+)\s+>\s+([\d.]+)\.(\d+):.*\blength\s+(\d+)",row)
+              if not m:continue
+              src,sport,dst,dport,size=m.groups()
+              size=int(size)
+              port=int(sport) if src=="188.120.254.223" else int(dport)
+              if port not in (43121,43122,43123):continue
+              side="in" if src=="188.120.254.223" else "out"
+              data[port][side+"_packets"]+=1
+              data[port][side+"_bytes"]+=size
+          for port in (43121,43122,43123):
+              for key in ("in_packets","in_bytes","out_packets","out_bytes"):
+                  print("de_public_meta_capture_"+str(port)+"_"+key+"="+str(data[port][key]),flush=True)
+          ' || test "$?" -eq 124
+          SH
+          capture_pid=$!
+          sleep 3
+          ru_ssh 'python3 -' <<'PY'
+          import socket,ssl,concurrent.futures
+          de='89.125.90.101'
+          cases=[('i.instagram.com',43121),('graph.instagram.com',43122),('threads.com',43123)]
+          def test(item):
+              name,port=item
+              tcp=False;tls=False;error='none'
+              try:
+                  with socket.socket(socket.AF_INET,socket.SOCK_STREAM) as sock:
+                      sock.settimeout(6)
+                      sock.bind(('0.0.0.0',port))
+                      sock.connect((de,443))
+                      tcp=True
+                      try:
+                          with ssl.create_default_context().wrap_socket(sock,server_hostname=name) as t:
+                              tls=bool(t.getpeercert())
+                      except Exception as e:error=type(e).__name__
+              except Exception as e:error=type(e).__name__
+              return name,port,tcp,tls,error
+          with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+              results=list(pool.map(test,cases))
+          for name,port,tcp,tls,error in results:
+              print('ru_de_scoped_sni_port_'+str(port)+'_tcp='+str(tcp).lower(),flush=True)
+              print('ru_de_scoped_sni_port_'+str(port)+'_tls='+str(tls).lower(),flush=True)
+              print('ru_de_scoped_sni_port_'+str(port)+'_error='+error,flush=True)
+          PY
+          wait "$capture_pid"
           # Independent public source; sockets use public DE IP rather than WireGuard.
           ru_ssh 'python3 -' <<'PY'
           import socket,ssl,subprocess,concurrent.futures
