@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Release request 2026-11-09: publish tested compact website source aa5ba3e121d6183d918040a903213e272e2ce5f0 after green CI 42545724393. No deployment logic changes.
 # Promote only the tested MNEBYVPN website container to its existing public port.
 # No nginx, firewall, DNS, proxy, Telegram, payment or other-container changes.
 set -Eeuo pipefail
