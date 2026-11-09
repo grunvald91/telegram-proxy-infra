@@ -60,6 +60,8 @@ jobs:
             trap - EXIT
             if [ "$rc" -ne 0 ]; then
               echo "live_Meta_canary_failed_starting_scoped_rollback=true"
+              ru_ssh "systemctl stop 'mnebydns-meta-observe-ru-$id.service' >/dev/null 2>&1 || true" || true
+              de_ssh "systemctl stop 'mnebydns-meta-observe-de-$id.service' >/dev/null 2>&1 || true" || true
               ru_ssh "test ! -s '$rubase/rollback.sh' || bash '$rubase/rollback.sh' '$rubase'" || echo "RU_rollback_NOT_CONFIRMED=true"
               de_ssh "test ! -s '$debase/rollback.sh' || bash '$debase/rollback.sh' '$debase'" || echo "DE_rollback_NOT_CONFIRMED=true"
               ru_ssh "test ! -s '/opt/mnebydns-meta-quic-$id/rollback.sh' || bash '/opt/mnebydns-meta-quic-$id/rollback.sh' ru '$id'" || echo "RU_QUIC_rollback_NOT_CONFIRMED=true"
@@ -96,6 +98,22 @@ jobs:
           tar -czf - -C scripts mnebydns-meta-ru-deploy.sh mnebydns-meta-ru-rollback.sh |
             ru_ssh "tar -xzf - -C '$ruwork'"
           ru_ssh "bash '$ruwork/mnebydns-meta-ru-deploy.sh' '$ruwork' '$deadline'"
+          # Independent time-bounded passive observers start BEFORE public
+          # TCP TLS comparison, so an early failure also has per-hop evidence.
+          # Only aggregate counters reach the journal; no raw capture is saved.
+          tar -czf - -C scripts mnebydns-meta-packet-observer.py |
+            de_ssh "tar -xzf - -C '$dework'"
+          tar -czf - -C scripts mnebydns-meta-packet-observer.py |
+            ru_ssh "tar -xzf - -C '$ruwork'"
+          observer_seconds="$(( $(date -u -d "$deadline" +%s) - $(date -u +%s) - 15 ))"
+          (( observer_seconds >= 120 && observer_seconds <= 1800 )) || {
+            echo "Meta_observer_deadline_out_of_bounds=true"; exit 4;
+          }
+          de_ssh "systemd-run --no-block --collect --unit='mnebydns-meta-observe-de-$id' -p RuntimeMaxSec=1800 -p MemoryMax=64M -p CPUQuota=25% /usr/bin/python3 '$dework/mnebydns-meta-packet-observer.py' --role de --interface tg-relay --seconds '$observer_seconds' >/dev/null"
+          ru_ssh "systemd-run --no-block --collect --unit='mnebydns-meta-observe-ru-$id' -p RuntimeMaxSec=1800 -p MemoryMax=64M -p CPUQuota=25% /usr/bin/python3 '$ruwork/mnebydns-meta-packet-observer.py' --role ru --interface ens3 --seconds '$observer_seconds' >/dev/null"
+          sleep 2
+          de_ssh "systemctl is-active --quiet 'mnebydns-meta-observe-de-$id.service' && echo DE_passive_stage_observer_ACTIVE=true"
+          ru_ssh "systemctl is-active --quiet 'mnebydns-meta-observe-ru-$id.service' && echo RU_passive_stage_observer_ACTIVE=true"
           ru_ssh 'python3 -' <<'PY'
           import socket,ssl,concurrent.futures
           hosts=('instagram.com','www.instagram.com','i.instagram.com','graph.instagram.com',
@@ -187,13 +205,6 @@ jobs:
               echo "QUIC_direct_reference_${hostname}_UNSUPPORTED_OR_UNAVAILABLE=true"
             fi
           done
-          # Passive counters, 22.5-minute runtime bound, no raw PCAP files,
-          # no IP/hostname/payload in observer logs; unchanged production binaries.
-          de_ssh "systemd-run --no-block --collect --unit='mnebydns-meta-observe-de-$id' -p RuntimeMaxSec=1400 -p MemoryMax=64M -p CPUQuota=25% /usr/bin/python3 '$udpwork/mnebydns-meta-packet-observer.py' --role de --interface tg-relay --seconds 1350 >/dev/null"
-          ru_ssh "systemd-run --no-block --collect --unit='mnebydns-meta-observe-ru-$id' -p RuntimeMaxSec=1400 -p MemoryMax=64M -p CPUQuota=25% /usr/bin/python3 '$udpwork/mnebydns-meta-packet-observer.py' --role ru --interface ens3 --seconds 1350 >/dev/null"
-          sleep 2
-          de_ssh "systemctl is-active --quiet 'mnebydns-meta-observe-de-$id.service' && echo DE_passive_stage_observer_ACTIVE=true"
-          ru_ssh "systemctl is-active --quiet 'mnebydns-meta-observe-ru-$id.service' && echo RU_passive_stage_observer_ACTIVE=true"
           de_ssh "bash '$dework/mnebydns-meta-de-activate.sh' '$debase'"
           # The GitHub runner cannot probe public 853: certificate-validated
           # DNS-over-TLS is checked on the German server without changing it.
