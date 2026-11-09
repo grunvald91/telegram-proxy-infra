@@ -26,6 +26,8 @@ python3 "$work/mnebydns-four-google-canary.py" self-test
 test ! -e "$base" && test ! -e "$unit" && test ! -e "$pilot"
 test ! -e "$watchdog_service" && test ! -e "$watchdog_timer"
 test -z "$(ss -H -lnt 'sport = :15449')"
+test -z "$(ss -H -lnt 'sport = :19443')"
+ip -4 -o addr show dev tg-relay | grep -Fq '10.66.77.1/'
 for file in "$nginx" "$dns"; do
   test -f "$file" && test ! -L "$file"
 done
@@ -112,7 +114,9 @@ for i in $(seq 1 40); do
 done
 systemctl is-active --quiet mnebydns-googlepilot.service
 ss -H -lnt 'sport = :15449' | grep -q '127.0.0.1:15449'
+ss -H -lnt 'sport = :19443' | grep -q '10.66.77.1:19443'
 echo "isolated_google_pilot_on_loopback=true"
+echo "meta_private_wireguard_listener_ready=true"
 
 # Validate original Google certificate through the new SNI backend.
 # Avoid interpolating an arbitrary user supplied hostname in bash.
