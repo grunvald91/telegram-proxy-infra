@@ -1,7 +1,7 @@
 name: Validate MNEBYDNS experimental four-service canary offline
 on:
   push:
-    branches: ['feature/mnebydns-meta-tiktok-telegram-30m-20261109']
+    branches: ['feature/mnebydns-meta-via-wireguard-pilot-20261109']
     paths:
       - 'scripts/mnebydns-four-google-canary.py'
       - 'scripts/mnebydns-four-google-deploy.sh'
@@ -35,6 +35,11 @@ jobs:
           assert all(h in m.HOSTS for h in safe_443)
           assert all(h in m.DYNAMIC_SUFFIXES for h in ('googleapis.com','google.com'))
           assert len(m.DYNAMIC_SUFFIXES)==97
+          assert m.RU_INGRESS=='188.120.254.223'
+          assert len(m.META_SUFFIXES)==17
+          assert all(m.is_meta(h) for h in ('instagram.com','www.instagram.com','threads.net','edge-mqtt.facebook.com'))
+          assert not any(m.is_meta(h) for h in ('api.x.ai','www.tiktok.com','claude.ai'))
+          assert 'listen 10.66.77.1:19443;' in m.proxy_config()
           # Owner-directed temporary DNS-only redirect includes all system names.
           android_system=('mtalk.google.com','mtalk4.google.com','time.google.com',
                           'fcm.googleapis.com','fcm-xmpp.googleapis.com',
@@ -89,6 +94,15 @@ jobs:
           }
           '''
           rendered=m.render_dot(fixture)
+          for h in ('instagram.com','www.instagram.com','threads.com','graph.threads.net','edge-mqtt.facebook.com'):
+              assert ('template IN A '+h+' {') in rendered
+              section=rendered.split('template IN A '+h+' {',1)[1].split('}',1)[0]
+              assert '188.120.254.223' in section
+          for h in ('api.x.ai','www.tiktok.com','claude.ai'):
+              section=rendered.split('template IN A '+h+' {',1)[1].split('}',1)[0]
+              assert '89.125.90.101' in section
+          assert 'match '+m.META_DYNAMIC in rendered
+          assert 'match '+m.OTHER_DYNAMIC in rendered
           assert all(('template IN A '+h+' {') in rendered for h in (*android_system,*claude,*social,*meta_extra,*tiktok,*telegram))
           print('Android_Google_Claude_Meta_TikTok_Telegram_174_exact_97_suffixes=PASS')
           PY
