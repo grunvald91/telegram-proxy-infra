@@ -100,7 +100,7 @@ jobs:
           stats=collections.defaultdict(lambda:collections.Counter())
           rows=0
           for line in trials.read_text().splitlines():
-              m=re.match(r"trial=(\w+) local_port=(\d+) tcp=(true|false) sent=(\d+) error=(\S+)",line)
+              m=re.match(r"trial=(\w+) local_port=(-?\d+) tcp=(true|false) sent=(\d+) error=(\S+)",line)
               if not m:continue
               ident,p,tcp,sent,error=m.groups();p=int(p);sent=int(sent)
               label,mode,trial,which=ident.rsplit("_",3)
