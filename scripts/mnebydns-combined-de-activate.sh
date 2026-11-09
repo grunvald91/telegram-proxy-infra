@@ -45,7 +45,8 @@ trap abort EXIT
 # backend socket, only adds ChatGPT names to its strict allowlist.
 install -m 644 "$base/proxy.pilot" "/etc/mnebydns-googlepilot/nginx.conf.new-$id"
 mv -f "/etc/mnebydns-googlepilot/nginx.conf.new-$id" /etc/mnebydns-googlepilot/nginx.conf
-systemctl restart mnebydns-googlepilot.service
+nginx -t -c /etc/mnebydns-googlepilot/nginx.conf >/dev/null
+systemctl kill --signal=HUP --kill-who=main mnebydns-googlepilot.service
 ready=no
 for _ in $(seq 1 40); do
   if systemctl is-active --quiet mnebydns-googlepilot.service &&
