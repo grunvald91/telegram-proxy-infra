@@ -76,6 +76,34 @@ jobs:
           tar -czf - -C scripts mnebydns-meta-de-public-stage.sh mnebydns-meta-de-public-rollback.sh |
             de_ssh "tar -xzf - -C '$publicwork'"
           de_ssh "bash '$publicwork/mnebydns-meta-de-public-stage.sh' '$publicwork' '$public_deadline'"
+          # Diagnose DE-side public map independently of RU→DE transport.
+          de_ssh 'python3 -' <<'PY'
+          import socket,ssl,concurrent.futures
+          names=['i.instagram.com','graph.instagram.com','threads.com']
+          targets=[('local_443','127.0.0.1',443),('private_19443','10.66.77.1',19443),
+                   ('self_public_443','89.125.90.101',443)]
+          def probe(x):
+              label,host,port,name=x
+              tcp=False;verified=False;error='none'
+              try:
+                  with socket.create_connection((host,port),timeout=6) as sock:
+                      tcp=True
+                      sock.settimeout(6)
+                      try:
+                          with ssl.create_default_context().wrap_socket(sock,server_hostname=name) as tls:
+                              verified=bool(tls.getpeercert())
+                      except Exception as e:error=type(e).__name__
+              except Exception as e:error=type(e).__name__
+              return label,name,tcp,verified,error
+          cases=[(label,host,port,name) for label,host,port in targets for name in names]
+          with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+              rows=list(pool.map(probe,cases))
+          for label,name,tcp,verified,error in rows:
+              key=label+'_'+name.replace('.','_')
+              print('de_meta_diag_'+key+'_tcp='+str(tcp).lower(),flush=True)
+              print('de_meta_diag_'+key+'_tls_verified='+str(verified).lower(),flush=True)
+              print('de_meta_diag_'+key+'_error='+error,flush=True)
+          PY
           # Independent public source; sockets use public DE IP rather than WireGuard.
           ru_ssh 'python3 -' <<'PY'
           import socket,ssl,subprocess,concurrent.futures
