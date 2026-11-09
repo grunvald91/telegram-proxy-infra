@@ -1,0 +1,55 @@
+name: MNEBYVPN Meta/Threads VPN metadata preflight (opt-in live capture)
+on:
+  push:
+    branches: [diagnostics/mnebyvpn-meta-app-traffic-20261109]
+    paths:
+      - scripts/mnebyvpn-meta-socket-observe.py
+      - .github/workflows/mnebyvpn-meta-vpn-traffic.yml
+      - ops/diagnostics/mnebyvpn-meta-capture-request.txt
+permissions:
+  contents: read
+concurrency:
+  group: mnebyvpn-meta-private-readonly-traffic
+  cancel-in-progress: false
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      SSHPASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check code and privacy constraints
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebyvpn-meta-socket-observe.py
+          python3 - <<'PY'
+          from pathlib import Path
+          x=Path('scripts/mnebyvpn-meta-socket-observe.py').read_text()
+          assert 'META_TEST_WINDOW_OPEN_UTC' in x
+          assert 'baseline_idle_window_seconds=15' in x
+          assert 'META_TEST_WINDOW_SECONDS=90' in x
+          assert 'raw_addresses_or_user_identifiers_logged=false' in x
+          assert 'domain_match_confidence=LOW_SHARED_IP_AND_DYNAMIC_DNS' in x
+          for forbidden in ('tcpdump','pyshark','scapy','pcap','systemctl restart','systemctl reload','subprocess.Popen','os.system('):
+              assert forbidden not in x,forbidden
+          print('meta_privacy_metadata_only_contract=PASS')
+          PY
+      - name: Observe dedicated VPN Xray only - never log payload, addresses or credentials
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$SSHPASS"
+          MODE=preflight
+          if [[ "$COMMIT_MESSAGE" == '[meta-capture] operator confirmed only owner VPN connections' ]]; then
+            MODE=capture-exclusive
+          fi
+          echo "meta_observer_mode=$MODE"
+          echo "user_content_or_packets_recorded=false"
+          echo "xray_restart_config_change=false"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@89.125.90.101 "python3 - $MODE" < scripts/mnebyvpn-meta-socket-observe.py
+          echo "observational_metadata_only=true"
