@@ -1,0 +1,35 @@
+name: MNEBYDNS Meta QUIC response-path correctness offline
+on:
+  push:
+    branches: [fix/mnebydns-meta-quic-response-audit-20261109]
+    paths: [.github/workflows/mnebydns-meta-quic-reviewed-offline.yml]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate QUIC v1 parser and complete synthetic return path (no network)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -c 'import cryptography'
+          python3 -m py_compile scripts/mnebydns-meta-quic.py scripts/test-mnebydns-meta-quic.py
+          python3 scripts/test-mnebydns-meta-quic.py
+          python3 scripts/mnebydns-meta-overlay.py self-test
+          bash -n scripts/mnebydns-meta-quic-stage.sh
+          bash -n scripts/mnebydns-meta-quic-rollback.sh
+          python3 - <<'PY'
+          from pathlib import Path
+          s=Path('.github/workflows/mnebydns-meta-28m-live.yml').read_text()
+          assert 'Meta_QUIC_real_origin_reply_NOT_VERIFIED=true' in s
+          assert 'DE_UDP_WG_Meta_QUIC_ADMISSION_ONLY=true' in s
+          assert 'RU_UDP443_Meta_QUIC_ADMISSION_ONLY=true' in s
+          assert 'DE_UDP_WG_Meta_QUIC_PASS=true' not in s
+          assert 'RU_UDP443_Meta_QUIC_PASS=true' not in s
+          assert 'i-fallback.instagram.com' in s
+          print('meta_canary_evidence_label_guard=PASS')
+          PY
+          echo 'meta_QUIC_offline_review=PASS'
