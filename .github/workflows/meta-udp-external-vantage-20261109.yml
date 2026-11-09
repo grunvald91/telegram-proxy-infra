@@ -1,0 +1,74 @@
+name: MNEBYDNS Meta public UDP443 external vantage probe
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths: [.github/workflows/meta-udp-external-vantage-20261109.yml]
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-meta-external-readonly
+  cancel-in-progress: false
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Send QUIC Initial from DE public interface; compare RU aggregate counters
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS" && test -n "$RU_PASS"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass >/dev/null
+          ru_ssh() { SSHPASS="$RU_PASS" sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o LogLevel=ERROR root@188.120.254.223 "$@"; }
+          de_ssh() { SSHPASS="$DE_PASS" sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o LogLevel=ERROR root@89.125.90.101 "$@"; }
+          ru_ssh 'python3 -' <<'PY'
+          import subprocess,re
+          unit='mnebydns-meta-quic-ru-42656055187.service'
+          active=subprocess.run(['systemctl','is-active','--quiet',unit]).returncode==0
+          print('ru_expected_canary_service_active='+str(active).lower(),flush=True)
+          if not active: raise SystemExit('known canary already stopped; do not infer network reachability')
+          log=subprocess.run(['journalctl','-u',unit,'-o','cat','--no-pager','-n','50'],capture_output=True,text=True,timeout=8).stdout
+          rows=[s for s in log.splitlines() if s.startswith('meta_quic_ru_active=')]
+          if not rows:raise SystemExit('no RU counter snapshot')
+          for key in ['rx','upstream_rx','client_tx']:
+              m=re.search(r'(?:^|\s)'+key+r'=(\d+)(?:\s|$)',rows[-1])
+              print('before_ru_'+key+'='+(m.group(1) if m else 'unknown'),flush=True)
+          PY
+          de_ssh 'python3 -' <<'PY'
+          import importlib.util,pathlib,socket,subprocess
+          fixture=pathlib.Path('/tmp/mnebydns-meta-quic-42656055187/test-mnebydns-meta-quic.py')
+          if not fixture.is_file():raise SystemExit('canary fixture unavailable')
+          p=subprocess.run(['ip','-4','route','get','188.120.254.223'],capture_output=True,text=True,timeout=8)
+          print('de_public_ru_route_uses_wireguard='+str('tg-relay' in p.stdout).lower(),flush=True)
+          if p.returncode!=0 or 'tg-relay' in p.stdout:raise SystemExit('no independent DE public vantage')
+          spec=importlib.util.spec_from_file_location('quic_fixture',fixture)
+          m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+          packet=m.fixture_sni('graph.instagram.com')
+          with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as sock:
+              sock.settimeout(4)
+              sock.sendto(packet,('188.120.254.223',443))
+              print('DE_to_RU_public_UDP443_sent=true',flush=True)
+              try:
+                  data,_=sock.recvfrom(8192)
+                  print('DE_to_RU_public_UDP_reply_received='+str(bool(data)).lower(),flush=True)
+                  print('DE_to_RU_public_UDP_reply_bytes='+str(len(data)),flush=True)
+              except socket.timeout:
+                  print('DE_to_RU_public_UDP_reply_received=false',flush=True)
+          PY
+          sleep 15
+          ru_ssh 'python3 -' <<'PY'
+          import subprocess,re
+          unit='mnebydns-meta-quic-ru-42656055187.service'
+          log=subprocess.run(['journalctl','-u',unit,'-o','cat','--no-pager','-n','50'],capture_output=True,text=True,timeout=8).stdout
+          rows=[s for s in log.splitlines() if s.startswith('meta_quic_ru_active=')]
+          if not rows:raise SystemExit('no new RU counter snapshot')
+          for key in ['rx','admitted','to_upstream','upstream_rx','client_tx','socket_error','emsgsize']:
+              m=re.search(r'(?:^|\s)'+key+r'=(\d+)(?:\s|$)',rows[-1])
+              print('after_ru_'+key+'='+(m.group(1) if m else 'unknown'),flush=True)
+          PY
+          echo 'Only synthetic allowed Meta QUIC Initial; no firewall/DNS/port/service configuration changed.'
