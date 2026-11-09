@@ -35,6 +35,20 @@ jobs:
               print('historic_meta_service_journal_lines='+str(len(rows)),flush=True)
               keep=[x for x in rows if any(term in x.lower() for term in ('emerg','crit','error','fail','bind','permission','denied','exit','signal','address','listen','nginx','startup','port','config'))]
               print('historic_meta_relevant_lines='+str(len(keep)),flush=True)
+              filenames=[]
+              for line in keep:
+                  hit=re.search(r'open\(\) "([^"]+)" failed \((\d+): ([^)]+)\)',line)
+                  if hit:
+                      p=hit.group(1)
+                      if p.startswith('/dev/') or p.startswith('/var/log/') or p.startswith('/run/'):
+                          shown=p[:128]
+                      else:
+                          shown='[REDACTED]'
+                      filenames.append((shown,hit.group(2),hit.group(3)))
+              for p,errno,name in sorted(set(filenames)):
+                  print('historic_meta_failed_file='+p,flush=True)
+                  print('historic_meta_failed_errno='+errno,flush=True)
+                  print('historic_meta_failed_reason='+name,flush=True)
               for line in keep[-25:]:
                   line=re.sub(r'(?:(?:\d{1,3}\.){3}\d{1,3})','[IP]',line)
                   line=re.sub(r'(/[A-Za-z0-9_.-]+){2,}','[PATH]',line)
