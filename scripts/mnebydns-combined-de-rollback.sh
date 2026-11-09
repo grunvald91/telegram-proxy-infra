@@ -85,7 +85,8 @@ fi
 if cmp -s "$base/proxy.pilot" /etc/mnebydns-googlepilot/nginx.conf; then
   install -m 644 "$checkpoint/proxy.stable" "/etc/mnebydns-googlepilot/nginx.conf.return-$id"
   mv -f "/etc/mnebydns-googlepilot/nginx.conf.return-$id" /etc/mnebydns-googlepilot/nginx.conf
-  systemctl restart mnebydns-googlepilot.service
+  nginx -t -c /etc/mnebydns-googlepilot/nginx.conf >/dev/null
+  systemctl kill --signal=HUP --kill-who=main mnebydns-googlepilot.service
 fi
 for kind in nginx dns proxy; do
   case "$kind" in
