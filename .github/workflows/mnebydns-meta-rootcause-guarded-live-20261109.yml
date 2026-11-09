@@ -194,8 +194,10 @@ jobs:
           python3 -m pip install --quiet 'aioquic>=1.0,<3'
           python3 scripts/mnebydns-meta-quic-handshake-probe.py --mode direct | tee /tmp/meta-quic-direct.out
           python3 scripts/mnebydns-meta-quic-handshake-probe.py --mode ru | tee /tmp/meta-quic-ru.out
+          validated_reference_hosts=0
           for hostname in i.instagram.com i-fallback.instagram.com test-gateway.instagram.com threads.com graph.instagram.com; do
             if grep -Fq "QUIC_direct_${hostname}=verified_quic_handshake" /tmp/meta-quic-direct.out; then
+              (( validated_reference_hosts += 1 ))
               grep -Fq "QUIC_ru_${hostname}=verified_quic_handshake" /tmp/meta-quic-ru.out || {
                 echo "QUIC_external_RU_return_path_FAIL_for_${hostname}=true"
                 exit 4
@@ -205,6 +207,11 @@ jobs:
               echo "QUIC_direct_reference_${hostname}_UNSUPPORTED_OR_UNAVAILABLE=true"
             fi
           done
+          if (( validated_reference_hosts < 3 )); then
+            echo "Meta_QUIC_reference_inconclusive_no_mobile_cutover=true"
+            exit 4
+          fi
+          echo "Meta_direct_and_through_RU_verified_QUIC_hosts=$validated_reference_hosts"
           # Baseline after all synthetic and GitHub-runner probes, BEFORE
           # Meta DNS cutover. These are deliberately not counted as phone traffic.
           sleep 12
