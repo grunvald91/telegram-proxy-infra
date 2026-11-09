@@ -7,6 +7,8 @@ set -Eeuo pipefail
 base="$1"; id="$(basename "$base")"
 checkpoint="$(cat /opt/mnebydns-stable-checkpoints/current)"
 [[ "$checkpoint" =~ ^/opt/mnebydns-stable-checkpoints/[0-9]+$ ]] || exit 2
+test -s "$base/checkpoint.ref"
+test "$(cat "$base/checkpoint.ref")" = "$checkpoint" || { echo "combined_DE_checkpoint_changed_during_canary=true"; exit 3; }
 (cd "$checkpoint" && sha256sum -c stable-manifest.sha256 >/dev/null)
 (cd "$base" && sha256sum -c combined-manifest.sha256 >/dev/null)
 service="mnebydns-combined-meta-$id"
