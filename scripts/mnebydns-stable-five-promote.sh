@@ -88,10 +88,27 @@ install -m 600 "$base/nginx.stable" "$live_nginx.new-stable"
 mv -f "$live_nginx.new-stable" "$live_nginx"
 nginx -t >/dev/null
 systemctl reload nginx
-install -m 600 "$base/dns.stable" "$live_dns.new-stable"
+# CoreDNS also runs under systemd DynamicUser. Root-only 0600 Corefile
+# caused a verified DoT853 outage in the first promotion; these permissions
+# are required for service startup and safe after reboot.
+chmod 755 /opt/mnebydns-dot
+install -m 644 "$base/dns.stable" "$live_dns.new-stable"
 mv -f "$live_dns.new-stable" "$live_dns"
+systemctl reset-failed mnebydns-dot.service || true
 systemctl restart mnebydns-dot.service
-systemctl is-active --quiet mnebydns-dot.service
+dns_ready=no
+for attempt in $(seq 1 40); do
+  if systemctl is-active --quiet mnebydns-dot.service &&
+     ss -H -lnt 'sport = :853' | grep -Fq '89.125.90.101:853'; then
+    dns_ready=yes
+    break
+  fi
+  sleep 0.2
+done
+if [[ "$dns_ready" != yes ]]; then
+  echo "stable_DoT853_not_ready_after_restart=true"
+  exit 6
+fi
 systemctl is-active --quiet nginx
 systemctl is-active --quiet xray.service
 systemctl is-active --quiet mnebydns-gemini.service
@@ -121,3 +138,4 @@ echo "experimental_meta_telegram_routes_not_active=true"
 echo "retained_exact_hosts=132 retained_dynamic_suffixes=70"
 echo "stable_checkpoint=$base"
 echo "stable_without_expiry_timer=true"
+echo "stable_dynamic_user_config_and_DoT_readiness=PASS"
