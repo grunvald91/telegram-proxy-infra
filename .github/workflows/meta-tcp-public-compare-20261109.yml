@@ -1,0 +1,154 @@
+name: MNEBYDNS Meta TCP public-path safeguarded canary
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths: [.github/workflows/meta-tcp-public-compare-20261109.yml]
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-google-public-443-change
+  cancel-in-progress: false
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify scripts and isolated Meta overlay before SSH
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          bash -n scripts/mnebydns-meta-de-stage.sh scripts/mnebydns-meta-de-rollback.sh scripts/mnebydns-meta-ru-deploy.sh scripts/mnebydns-meta-ru-rollback.sh
+          python3 scripts/mnebydns-meta-overlay.py self-test
+          echo 'meta_tcp_local_preflight=PASS'
+      - name: Stage TCP-only route, compare local and public TLS, force scoped rollback
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass >/dev/null
+          [[ "$GITHUB_RUN_ID" =~ ^[0-9]{9,13}$ ]]
+          id="$GITHUB_RUN_ID"
+          deadline="$(date -u -d '+12 minutes' +'%Y-%m-%d %H:%M:%S UTC')"
+          dework="/tmp/mnebydns-meta-de-$id"
+          ruwork="/tmp/mnebydns-meta-ru-$id"
+          debase="/opt/mnebydns-experiment-backups/$id"
+          rubase="/opt/mnebydns-meta-ru-backups/$id"
+          de_ssh() {
+            SSHPASS="$DE_PASS" sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o LogLevel=ERROR root@89.125.90.101 "$@"
+          }
+          ru_ssh() {
+            SSHPASS="$RU_PASS" sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o LogLevel=ERROR root@188.120.254.223 "$@"
+          }
+          cleanup() {
+            rc=$?
+            trap - EXIT
+            echo 'meta_tcp_scoped_rollback_started=true'
+            if ! ru_ssh "test ! -s '$rubase/rollback.sh' || bash '$rubase/rollback.sh' '$rubase'"; then
+              echo 'meta_tcp_RU_rollback_not_verified=true'; rc=1
+            fi
+            if ! de_ssh "test ! -s '$debase/rollback.sh' || bash '$debase/rollback.sh' '$debase'"; then
+              echo 'meta_tcp_DE_rollback_not_verified=true'; rc=1
+            fi
+            if ! ru_ssh "systemctl is-active --quiet nginx && test ! -e '/etc/systemd/system/mnebydns-meta-ru-watchdog-$id.timer'"; then
+              echo 'meta_tcp_RU_post_rollback_not_verified=true'; rc=1
+            fi
+            if ! de_ssh "systemctl is-active --quiet mnebydns-dot.service && cmp -s \"\$(cat /opt/mnebydns-stable-checkpoints/current)\"/dns.stable /opt/mnebydns-dot/Corefile"; then
+              echo 'meta_tcp_DE_stable_dns_not_verified=true'; rc=1
+            fi
+            echo "meta_tcp_final_exit=$rc"
+            exit "$rc"
+          }
+          trap cleanup EXIT
+          echo "meta_tcp_auto_rollback_deadline_utc=$deadline"
+          de_ssh "test ! -e '$dework' && mkdir -m 700 '$dework'"
+          tar -czf - -C scripts mnebydns-meta-overlay.py mnebydns-four-google-canary.py mnebydns-meta-de-stage.sh mnebydns-meta-de-rollback.sh |
+            de_ssh "tar -xzf - -C '$dework'"
+          de_ssh "bash '$dework/mnebydns-meta-de-stage.sh' '$dework' '$deadline'"
+          # The DE private TCP sidecar is checked before any RU nginx reload.
+          ru_ssh 'python3 -' <<'PY'
+          import socket,ssl
+          hosts=['i.instagram.com','graph.instagram.com','threads.com']
+          success=0
+          for host in hosts:
+              try:
+                  sock=socket.create_connection(('10.66.77.1',19443),timeout=6)
+                  sock.settimeout(6)
+                  with sock,ssl.create_default_context().wrap_socket(sock,server_hostname=host) as tls:
+                      ok=bool(tls.getpeercert())
+                  success+=int(ok)
+              except Exception as e:
+                  ok=False
+                  print('ru_to_de_private_tls_'+host.replace('.','_')+'_error='+type(e).__name__,flush=True)
+              print('ru_to_de_private_tls_'+host.replace('.','_')+'='+str(ok).lower(),flush=True)
+          print('ru_to_de_private_tls_success='+str(success),flush=True)
+          if success!=len(hosts):raise SystemExit('private Meta TLS sidecar inaccessible')
+          PY
+          ru_ssh "test ! -e '$ruwork' && mkdir -m 700 '$ruwork'"
+          tar -czf - -C scripts mnebydns-meta-ru-deploy.sh mnebydns-meta-ru-rollback.sh |
+            ru_ssh "tar -xzf - -C '$ruwork'"
+          ru_ssh "bash '$ruwork/mnebydns-meta-ru-deploy.sh' '$ruwork' '$deadline'"
+          # Confirm live SNI routing via loopback before testing public ingress.
+          ru_ssh 'python3 -' <<'PY'
+          import socket,ssl
+          hosts=['i.instagram.com','graph.instagram.com','threads.com']
+          success=0
+          for host in hosts:
+              try:
+                  sock=socket.create_connection(('127.0.0.1',443),timeout=6)
+                  sock.settimeout(6)
+                  with sock,ssl.create_default_context().wrap_socket(sock,server_hostname=host) as tls:
+                      ok=bool(tls.getpeercert())
+                  success+=int(ok)
+              except Exception as e:
+                  ok=False
+                  print('ru_local_meta_tls_'+host.replace('.','_')+'_error='+type(e).__name__,flush=True)
+              print('ru_local_meta_tls_'+host.replace('.','_')+'='+str(ok).lower(),flush=True)
+          print('ru_local_meta_tls_success='+str(success),flush=True)
+          if success!=len(hosts):raise SystemExit('RU local Meta TLS routing failed')
+          PY
+          # External vantage: DE public NIC, explicitly not private WG.
+          de_ssh 'python3 -' <<'PY'
+          import subprocess,socket,ssl
+          ru='188.120.254.223'
+          result=subprocess.run(['ip','-4','route','get',ru],capture_output=True,text=True,timeout=6)
+          if result.returncode or 'tg-relay' in result.stdout:raise SystemExit('DE external route not independent')
+          print('de_to_ru_public_route_not_wg=true',flush=True)
+          hosts=['i.instagram.com','graph.instagram.com','threads.com']
+          success=0
+          for host in hosts:
+              try:
+                  sock=socket.create_connection((ru,443),timeout=7)
+                  sock.settimeout(7)
+                  with sock,ssl.create_default_context().wrap_socket(sock,server_hostname=host) as tls:
+                      ok=bool(tls.getpeercert())
+                  success+=int(ok)
+              except Exception as e:
+                  ok=False
+                  print('de_to_ru_public_tls_'+host.replace('.','_')+'_error='+type(e).__name__,flush=True)
+              print('de_to_ru_public_tls_'+host.replace('.','_')+'='+str(ok).lower(),flush=True)
+          print('de_to_ru_public_tls_success='+str(success),flush=True)
+          PY
+          # This test only reads the public route; no DNS record or working proxy changed.
+          python3 - <<'PY'
+          import socket,ssl
+          host='i.instagram.com'
+          try:
+              s=socket.create_connection(('188.120.254.223',443),timeout=7)
+              s.settimeout(7)
+              with s,ssl.create_default_context().wrap_socket(s,server_hostname=host) as t:
+                  ok=bool(t.getpeercert())
+              print('runner_to_ru_public_tls='+str(ok).lower(),flush=True)
+          except Exception as e:
+              print('runner_to_ru_public_tls=false',flush=True)
+              print('runner_to_ru_public_tls_error='+type(e).__name__,flush=True)
+          PY
+          ru_ssh "systemctl is-active --quiet 'mnebydns-meta-ru-watchdog-$id.timer' && echo ru_scoped_rollback_armed=true"
+          de_ssh "systemctl is-active --quiet 'mnebydns-meta-de-watchdog-$id.timer' && echo de_scoped_rollback_armed=true"
+          echo 'meta_tcp_public_comparison_completed=true'
+          echo 'meta_tcp_no_dns_udp_vpn_changes=true'
