@@ -1,0 +1,117 @@
+name: MNEBYDNS isolated UDP/443 nft trace and automatic cleanup
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths: [.github/workflows/meta-nftrace-20261109.yml]
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-google-public-443-change
+  cancel-in-progress: false
+jobs:
+  trace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Read-only credential and tool preflight
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass >/dev/null
+          SSHPASS="$RU_PASS" sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@188.120.254.223 'bash -s' <<'SH'
+          set -Eeuo pipefail
+          command -v nft
+          command -v systemd-run
+          command -v timeout
+          systemctl is-active --quiet nginx
+          ip -4 -o addr show dev tg-relay | grep -Fq '10.66.77.2/'
+          test ! -e /etc/systemd/system/mnebydns-meta-quic-ru-42656055187.service
+          echo 'trace_host_preflight_pass=true'
+          SH
+      - name: Temporary isolated nft trace with fail-safe timer
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ru_ssh() { SSHPASS="$RU_PASS" sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@188.120.254.223 "$@"; }
+          de_ssh() { SSHPASS="$DE_PASS" sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@89.125.90.101 "$@"; }
+          echo 'Starting narrowly scoped trace (DE public IP -> RU UDP/443); no firewall verdicts changed.'
+          ru_ssh 'bash -s' <<'SH' &
+          set -Eeuo pipefail
+          table="mnebydns_meta_trace_fixed1109"
+          guard="mnebydns-meta-trace-fixed1109"
+          test "$(id -u)" -eq 0
+          ! nft list table inet "$table" >/dev/null 2>&1
+          # Independent systemd expiry is armed BEFORE inserting the trace.
+          systemd-run --quiet --collect --unit="$guard" --on-active=90s /usr/sbin/nft delete table inet "$table"
+          systemctl is-active --quiet "$guard.timer"
+          cleanup() {
+             nft delete table inet "$table" >/dev/null 2>&1 || true
+             systemctl stop "$guard.timer" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          nft -f - <<EOF
+          add table inet $table
+          add chain inet $table ingress { type filter hook prerouting priority -311; policy accept; }
+          add rule inet $table ingress ip saddr 89.125.90.101 ip daddr 188.120.254.223 udp dport 443 meta nftrace set 1 counter
+          EOF
+          nft list chain inet "$table" ingress >/dev/null
+          echo 'ru_trace_guard_active=true'
+          echo 'ru_trace_scope=source_DE_destination_RU_udp443'
+          # No packet bytes or client identities are printed. Classify only nft verdicts and paths.
+          timeout -s TERM 18s nft monitor trace | python3 -c '
+          import sys,re,collections
+          ids=set(); paths=collections.Counter(); verdicts=collections.Counter(); raw=0
+          for line in sys.stdin:
+              m=re.search(r"trace id ([0-9a-fA-F]+)",line)
+              if not m: continue
+              ids.add(m.group(1)); raw+=1
+              p=re.search(r"\b(ip|ip6|inet)\s+([A-Za-z0-9_-]+)\s+([A-Za-z0-9_-]+)\s+(packet|rule|verdict|policy)",line)
+              if p: paths[p.group(2)+"/"+p.group(3)]+=1
+              v=re.search(r"\bverdict\s+(drop|accept|reject|continue|return|jump|goto)",line)
+              if not v:
+                  v=re.search(r"\bpolicy\s+(drop|accept)",line)
+              if v: verdicts[v.group(1)]+=1
+              if re.search(r"\bct state invalid\b",line):verdicts["ct_invalid_match"]+=1
+          print("ru_nftrace_unique_packet_ids="+str(len(ids)),flush=True)
+          print("ru_nftrace_event_count="+str(raw),flush=True)
+          for k,v in paths.most_common(25):print("ru_nftrace_chain_"+k.replace("/","_")+"="+str(v),flush=True)
+          for k,v in sorted(verdicts.items()):print("ru_nftrace_verdict_"+k+"="+str(v),flush=True)
+          ' || test "$?" -eq 124
+          nft -a list chain inet "$table" ingress | python3 -c '
+          import sys,re
+          s=sys.stdin.read()
+          m=re.search(r"counter packets (\d+)",s)
+          print("ru_trace_rule_matched_packets="+(m.group(1) if m else "unknown"),flush=True)
+          '
+          cleanup
+          trap - EXIT
+          if nft list table inet "$table" >/dev/null 2>&1; then
+            echo 'ru_trace_cleanup_failed=true'
+            exit 3
+          fi
+          echo 'ru_trace_table_removed=true'
+          SH
+          capture=$!
+          sleep 5
+          de_ssh 'python3 -' <<'PY'
+          import socket,time
+          remote=('188.120.254.223',443)
+          for n in range(3):
+              with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as s:
+                  s.sendto((b'\xc0\x00\x00\x00\x01'+bytes(1227)),remote)
+                  time.sleep(.35)
+          print('de_to_ru_public_udp443_probe_datagrams_sent=3',flush=True)
+          PY
+          wait "$capture"
+          ru_ssh 'bash -s' <<'SH'
+          set -Eeuo pipefail
+          ! nft list table inet mnebydns_meta_trace_fixed1109 >/dev/null 2>&1
+          systemctl is-active --quiet nginx
+          echo 'ru_post_probe_nginx_and_firewall_preserved=true'
+          SH
