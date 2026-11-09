@@ -41,9 +41,58 @@ jobs:
           assert 'systemctl reload nginx' in act
           assert 'systemctl restart mnebydns-dot.service' in back
           assert 'combined-manifest.sha256' in back
+          assert 'checkpoint.ref' in stage and 'checkpoint.ref' in act and 'checkpoint.ref' in back
+          assert 'checkpoint.ref > combined-manifest.sha256' in stage
+          assert 'combined_DE_DNS_853_restore_NOT_CONFIRMED=true' in back
+          assert 'dns_ready=yes; break' in back
           assert 'cmp -s "$base/$kind.pilot" "$live"' in back
           assert act.index('mv -f "/etc/mnebydns-googlepilot/nginx.conf.new-$id"') < act.index('mv -f "/etc/nginx/nginx.conf.new-$id"') < act.index('mv -f "/opt/mnebydns-dot/Corefile.new-$id"')
           assert back.index('if cmp -s "$base/dns.pilot"') < back.index('if cmp -s "$base/nginx.pilot"')
           print('combined_independent_watchdog_safe_rollback_STATIC_PASS=true')
+          PY
+          python3 - <<'PY'
+          import importlib.util, pathlib, subprocess, tempfile
+          source=pathlib.Path('scripts/mnebydns-combined-render.py')
+          spec=importlib.util.spec_from_file_location('combined',source)
+          mod=importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(mod)
+          with tempfile.TemporaryDirectory() as d:
+              root=pathlib.Path(d)
+              # Minimal valid nginx fixtures preserving the known five-service paths.
+              shared=('load_module /usr/lib/nginx/modules/ngx_stream_module.so;\n'
+                      'events {}\nstream {\n'
+                      'map $ssl_preread_server_name $direct_mtproxy_backend {\n'
+                      'default 127.0.0.1:9000;\n'
+                      'gemini.google.com 127.0.0.1:15443;\n'
+                      'claude.ai 127.0.0.1:15449;\n'
+                      'www.tiktok.com 127.0.0.1:15449;\n'
+                      '}\nserver { listen 127.0.0.1:9443; proxy_pass $direct_mtproxy_backend; }\n}\n')
+              dns=('tls://.:853 {\n'
+                   'template IN A gemini.google.com { match ^gemini[.]google[.]com[.]$ }\n'
+                   'template IN A claude.ai { match ^claude[.]ai[.]$ }\n'
+                   'template IN A example.test { answer "{{ .Name }} 20 IN A 89.125.90.101" }\n'
+                   '    cache 30\nforward . tls://9.9.9.9 {}\n}\n')
+              proxy=('load_module /usr/lib/nginx/modules/ngx_stream_module.so;\n'
+                     'events {}\nstream {\n'
+                     'map $ssl_preread_server_name $experimental_origin {\n'
+                     'default 127.0.0.1:1;\n'
+                     'claude.ai claude.ai:443;\n}\n'
+                     'server { listen 127.0.0.1:15449; ssl_preread on; '
+                     'proxy_pass $experimental_origin; resolver 9.9.9.9; }\n}\n')
+              out=mod.render(shared,dns,proxy)
+              for key in ('nginx.pilot','proxy.pilot','proxy.meta'):
+                  conf=root/key
+                  data=out[key]
+                  if key=='proxy.meta':
+                      data=data.replace('listen 10.66.77.1:19443;', 'listen 127.0.0.1:19443;')
+                  conf.write_text(data)
+                  subprocess.run(['sudo','nginx','-t','-c',str(conf)], check=True)
+              assert '20 IN A 188.120.254.223' in out['dns.pilot']
+              assert '20 IN A 89.125.90.101' in out['dns.pilot']
+              assert 'api.telegram.org' not in out['dns.pilot']
+              assert 'claude.ai claude.ai:443;' in out['proxy.pilot']
+              assert 'chatgpt.com' not in out['proxy.meta']
+              print('combined_three_nginx_configs_syntax_VALID=true')
+              print('combined_Meta_and_ChatGPT_policy_isolated=true')
           PY
           echo "combined_no_live_changes_offline=PASS"
