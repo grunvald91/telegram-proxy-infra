@@ -287,6 +287,29 @@ DYNAMIC_SUFFIXES = (
     "fragment.com",
 
 )
+# Only these Meta domains are routed through the existing private RU<->DE
+# WireGuard link. This preserves already proven Germany-direct Google/Claude
+# and TikTok routes byte-for-byte.
+RU_INGRESS = "188.120.254.223"
+META_SUFFIXES = (
+    "instagram.com", "cdninstagram.com", "instagr.am", "ig.me",
+    "igsonar.com", "threads.com", "threads.net", "facebook.com",
+    "facebook.net", "fbcdn.net", "fbsbx.com", "fb.com",
+    "meta.com", "meta.ai", "instagramstatic.com", "igcdn.com", "fbcdn.com",
+)
+META_EXACT = ("instagramstatic-a.akamaihd.net",)
+META_DYNAMIC = r"(?i)^(?:[a-z0-9-]+[.])*(?:" + "|".join(
+    re.escape(x) for x in META_SUFFIXES) + r")[.]$"
+OTHER_SUFFIXES = tuple(x for x in DYNAMIC_SUFFIXES if x not in META_SUFFIXES)
+OTHER_DYNAMIC = r"(?i)^(?:[a-z0-9-]+[.])*(?:" + "|".join(
+    re.escape(x) for x in OTHER_SUFFIXES) + r")[.]$"
+
+
+def is_meta(host: str) -> bool:
+    return host in META_EXACT or any(
+        host == zone or host.endswith("." + zone) for zone in META_SUFFIXES
+    )
+
 VIDEO = r"(?i)^(?:[a-z0-9-]+[.])*(?:" + "|".join(
     re.escape(x) for x in DYNAMIC_SUFFIXES) + r")[.]$"
 VIDEO_NGINX = r"~*^(?:[a-z0-9-]+\.)*(?:" + "|".join(
@@ -342,10 +365,11 @@ def render_sni(nginx: str) -> str:
     return result
 
 
-def rr_template(host:str,kind:str,match:str|None=None)->str:
+def rr_template(host:str,kind:str,match:str|None=None,ip:str|None=None)->str:
     pattern=match or ("^"+re.escape(host).replace(r"\.","[.]")+"[.]$")
     if kind=="A":
-        response=f'        answer "{{{{ .Name }}}} 20 IN A {FOREIGN}"\n'
+        target=ip or (RU_INGRESS if is_meta(host) else FOREIGN)
+        response=f'        answer "{{{{ .Name }}}} 20 IN A {target}"\n'
     else:
         response="        rcode NOERROR\n"
     return (f"    template IN {kind} {host} {{\n"
@@ -372,8 +396,8 @@ def render_dot(corefile:str)->str:
         for kind in RR:
             insertion+=rr_template(host,kind)
     for kind in RR:
-        insertion+=rr_template(".",
-            kind,VIDEO)
+        insertion+=rr_template(".",kind,META_DYNAMIC,ip=RU_INGRESS)
+        insertion+=rr_template(".",kind,OTHER_DYNAMIC,ip=FOREIGN)
     new=corefile.replace(marker,insertion+marker,1)
     if new.replace(insertion,"",1)!=corefile:
         raise AssertionError("Not additive")
@@ -399,6 +423,7 @@ def proxy_config()->str:
       "    }\n"
       "    server {\n"
       "        listen 127.0.0.1:15449;\n"
+      "        listen 10.66.77.1:19443;\n"
       "        ssl_preread on;\n"
       "        proxy_pass $experimental_origin;\n"
       "        proxy_connect_timeout 7s;\n"
@@ -437,7 +462,7 @@ def self_test()->None:
     assert new_with_existing.count("www.google.com 127.0.0.1:15449;")==0
     assert "www.google.com" in existing_exact_hosts(existing)
     assert "www.google.com" not in existing_exact_hosts(old_nginx)
-    assert nd.count("template IN A . {")==1
+    assert nd.count("template IN A . {")==2
     assert 'answer "{{ .Name }} 20 IN A '+FOREIGN+'"' in nd
     assert ns.replace("\n"+"".join(f"        {host} {BACKEND};\n" for host in HOSTS)+
                      f"        {VIDEO_NGINX} {BACKEND};\n","")==old_nginx
@@ -481,6 +506,19 @@ def self_test()->None:
         assert re.fullmatch(VIDEO,domain+".") is None,domain
         assert re.fullmatch(VIDEO_NGINX[2:],domain,re.IGNORECASE) is None,domain
     assert len(DYNAMIC_SUFFIXES)==97
+    assert len(META_SUFFIXES)==17
+    assert len(OTHER_SUFFIXES)==len(DYNAMIC_SUFFIXES)-len(META_SUFFIXES)
+    assert is_meta("www.instagram.com")
+    assert is_meta("scontent.cdninstagram.com")
+    assert is_meta("edge-mqtt.facebook.com")
+    assert is_meta("www.threads.com")
+    assert not is_meta("api.x.ai")
+    assert not is_meta("www.tiktok.com")
+    assert f'20 IN A {RU_INGRESS}' in nd
+    for h in ("instagram.com","threads.com","edge-mqtt.facebook.com"):
+        assert f"template IN A {h} {{" in nd
+    assert "listen 10.66.77.1:19443;" in proxy_config()
+
     assert len(HOSTS)>=50
     assert "default 127.0.0.1:1;" in proxy_config()
     for bad in (old_nginx.replace("gemini.google.com", "x.example"),
