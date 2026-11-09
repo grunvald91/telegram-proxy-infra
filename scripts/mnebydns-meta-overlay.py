@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare an isolated Meta + ChatGPT MNEBYDNS experiment.
+"""Prepare an isolated Instagram/Threads-only MNEBYDNS experiment.
 
 This renderer DOES NOT change the running five-service checkpoint.
 It renders a separate private-WireGuard Nginx sidecar plus an additive
@@ -38,45 +38,21 @@ META_DNS_PATTERN = r"(?i)^(?:[a-z0-9-]+[.])*(?:" + "|".join(
 META_NGINX_PATTERN = r"~*^(?:[a-z0-9-]+\.)*(?:" + "|".join(
     re.escape(zone) for zone in SUFFIXES) + r")$"
 
-# ChatGPT primary domains from the OpenAI network recommendations.
-# Only specific names of third-party vendors: never wildcard their zones.
-# https://help.openai.com/en/articles/9247338-network-recommendations-for-chatgpt-errors-on-web-and-apps
-CHATGPT_SUFFIXES = (
-    "chatgpt.com", "openai.com", "oaistatic.com",
-    "oaiusercontent.com", "oaistatsig.com",
-)
-CHATGPT_EXACT = (
-    "cdn.openaimerge.com", "cdn.workos.com",
-    "challenges.cloudflare.com", "forwarder.workos.com",
-    "frontend-apps-multi-region.workos.com", "images.workoscdn.com",
-    "setup.workos.com", "workos.imgix.net", "js.intercomcdn.com",
-    "js.stripe.com", "o207216.ingest.sentry.io",
-    "o33249.ingest.sentry.io", "rum.browser-intake-datadoghq.com",
-    "ct.sendgrid.net", "humb.apple.com",
-)
-CHATGPT_DNS_PATTERN = r"(?i)^(?:[a-z0-9-]+[.])*(?:" + "|".join(
-    re.escape(zone) for zone in CHATGPT_SUFFIXES) + r")[.]$"
-CHATGPT_NGINX_PATTERN = r"~*^(?:[a-z0-9-]+\.)*(?:" + "|".join(
-    re.escape(zone) for zone in CHATGPT_SUFFIXES) + r")$"
-assert set(CHATGPT_SUFFIXES).isdisjoint(set(SUFFIXES))
-assert set(CHATGPT_EXACT).isdisjoint(set(EXACT))
-
 def render_dns(stable: str) -> str:
     marker = "    cache 30\n"
     if stable.count(marker) != 1 or stable.count("template IN A gemini.google.com {") != 1:
         raise ValueError("Unknown five-service CoreDNS baseline")
-    for name in EXACT + CHATGPT_EXACT + CHATGPT_SUFFIXES:
+    for name in EXACT:
         if re.search(r"template IN (?:A|AAAA|HTTPS|SVCB|CNAME)\s+"+re.escape(name)+r"\s*\{",stable):
             raise ValueError("Existing owner of Meta DNS name: "+name)
     if RU in stable or "mnebydns-meta-isolated-20261109" in stable:
         raise ValueError("Unexpected pre-existing Meta route")
-    addition = "\n    # mnebydns-meta-isolated-20261109: temporary reversible Meta + ChatGPT\n"
-    for host in EXACT + CHATGPT_EXACT + CHATGPT_SUFFIXES:
+    addition = "\n    # mnebydns-meta-isolated-20261109: temporary reversible Meta only\n"
+    for host in EXACT:
         for kind in old.RR:
             addition += old.rr_template(host,kind,ip=RU)
     for kind in old.RR:
         addition += old.rr_template(".",kind,META_DNS_PATTERN,ip=RU)
-        addition += old.rr_template(".",kind,CHATGPT_DNS_PATTERN,ip=RU)
     result = stable.replace(marker, addition+marker,1)
     if result.replace(addition,"",1) != stable:
         raise AssertionError("DNS patch was not purely additive")
@@ -86,7 +62,7 @@ def render_dns(stable: str) -> str:
     return result
 
 def render_proxy() -> str:
-    map_entries = "".join("        "+host+" "+host+":443;\n" for host in EXACT + CHATGPT_EXACT + CHATGPT_SUFFIXES)
+    map_entries = "".join("        "+host+" "+host+":443;\n" for host in EXACT)
     return (
         "# MNEBYDNS Meta-only WireGuard SNI TLS passthrough; no public listener\n"
         "load_module /usr/lib/nginx/modules/ngx_stream_module.so;\n"
@@ -101,7 +77,6 @@ def render_proxy() -> str:
         "    default 127.0.0.1:1;\n"
         + map_entries +
         "    "+META_NGINX_PATTERN+" $ssl_preread_server_name:443;\n"
-        "    "+CHATGPT_NGINX_PATTERN+" $ssl_preread_server_name:443;\n"
         "  }\n"
         "  server {\n"
         "    listen "+WG_PRIVATE+";\n"
@@ -117,9 +92,6 @@ def render_proxy() -> str:
 
 def self_test() -> None:
     assert len(EXACT) == 17 and len(SUFFIXES) == 17
-    assert len(CHATGPT_SUFFIXES) == 5 and len(CHATGPT_EXACT) == 15
-    assert all(re.fullmatch(r"[a-z0-9-]+(?:[.][a-z0-9-]+)+",n)
-               for n in CHATGPT_SUFFIXES+CHATGPT_EXACT)
     assert all(re.fullmatch(r"[a-z0-9-]+(?:\.[a-z0-9-]+)+",name) for name in EXACT)
     core = ("tls://.:853 {\n"
             "    template IN A gemini.google.com { match ^gemini[.]google[.]com[.]$ }\n"
@@ -129,26 +101,20 @@ def self_test() -> None:
     assert modified.count("mnebydns-meta-isolated-20261109") == 1
     assert modified.endswith("    cache 30\n"+core.split("    cache 30\n",1)[1])
     assert core.split("    cache 30\n",1)[0] in modified
-    assert modified.count("20 IN A "+RU) == len(EXACT)+len(CHATGPT_EXACT)+len(CHATGPT_SUFFIXES)+2
+    assert modified.count("20 IN A "+RU) == len(EXACT)+1
     for host in ("www.instagram.com", "scontent.cdninstagram.com",
                  "graph.threads.net","edge-mqtt.facebook.com","foo.meta.ai"):
         assert re.fullmatch(META_DNS_PATTERN,host+".") is not None or host in EXACT
-    for host in ("chatgpt.com","android.chat.openai.com","ws.chatgpt.com",
-                 "files.oaiusercontent.com","cdn.oaistatic.com"):
-        assert re.fullmatch(CHATGPT_DNS_PATTERN,host+".") is not None
     for host in ("api.telegram.org","web.telegram.org","t.me",
                  "www.youtube.com","claude.ai","grok.com","x.com","www.tiktok.com"):
         assert re.fullmatch(META_DNS_PATTERN,host+".") is None
-        assert re.fullmatch(CHATGPT_DNS_PATTERN,host+".") is None
     proxy=render_proxy()
     assert "listen "+WG_PRIVATE+";" in proxy
     assert "listen 0.0.0.0" not in proxy and "listen 443;" not in proxy
     assert "default 127.0.0.1:1;" in proxy
     for blocked in ("telegram.org","googlevideo.com","anthropic.com","tiktokv.com"):
         assert blocked not in proxy
-    assert CHATGPT_NGINX_PATTERN in proxy
     print("meta_exact_17_dynamic_17_offline=PASS")
-    print("chatgpt_suffixes_5_thirdparty_exact_15_offline=PASS")
     print("five_service_checkpoint_remains_unchanged=PASS")
     print("private_WireGuard_only_fail_closed_sidecar=PASS")
 
