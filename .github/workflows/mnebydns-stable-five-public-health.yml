@@ -1,0 +1,59 @@
+name: MNEBYDNS stable five services public DoT health monitor
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/mnebydns-stable-five-public-health.yml']
+  workflow_dispatch:
+  schedule:
+    - cron: '17 1,7,13,19 * * *'
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-stable-five-health
+  cancel-in-progress: false
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: grunvald91/Mnebyvpn
+          ref: 0dbe6e4e35c2923228c250bf6cfc870ce71198d6
+          persist-credentials: false
+      - name: Independently test five working DNS routes and unverified app exclusions
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import importlib.util, pathlib, socket
+          spec=importlib.util.spec_from_file_location('check',pathlib.Path('ops/smart-dns-poc/probe-gemini-canary.py'))
+          assert spec and spec.loader
+          m=importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(m)
+          foreign='89.125.90.101'
+          ru='188.120.254.223'
+          def query(host):
+              last=None
+              for attempt in range(3):
+                  try:
+                      rcode,n,rr=m.query(host,1,foreign,853,'dns.mnebyvpn.site',None)
+                      return rcode,[socket.inet_ntoa(x) for typ,ttl,x in rr if typ==1]
+                  except Exception as ex:
+                      last=type(ex).__name__
+              raise RuntimeError('public_DoT_unreachable_for_'+host+'_'+str(last))
+          routes=('gemini.google.com','claude.ai','api.anthropic.com',
+                  'grok.com','api.x.ai','x.com','www.tiktok.com','api.tiktokv.com')
+          for name in routes:
+              code,ips=query(name)
+              ok=code==0 and ips==[foreign]
+              print('working_public_DoT_route='+name+' valid='+str(ok).lower(),flush=True)
+              if not ok:raise SystemExit('working_DNS_route_regression:'+name)
+          for name in ('instagram.com','www.instagram.com','threads.com',
+                       'threads.net','t.me','api.telegram.org'):
+              code,ips=query(name)
+              ok=code==0 and foreign not in ips and ru not in ips
+              print('unverified_route_still_direct='+name+' valid='+str(ok).lower(),flush=True)
+              if not ok:raise SystemExit('unverified_route_reintroduced:'+name)
+          print('MNEBYDNS_stable_five_public_dns_health=PASS',flush=True)
+          PY
