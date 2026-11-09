@@ -70,7 +70,7 @@ systemctl enable mnebydns-googlepilot.service >/dev/null
 systemctl reset-failed mnebydns-googlepilot.service || true
 systemctl restart mnebydns-googlepilot.service
 ready=no
-for attempt in $(seq 1 35); do
+for _ in $(seq 1 35); do
   if systemctl is-active --quiet mnebydns-googlepilot.service &&
      ss -H -lnt 'sport = :15449' | grep -Fq '127.0.0.1:15449'; then
     ready=yes
@@ -97,7 +97,7 @@ mv -f "$live_dns.new-stable" "$live_dns"
 systemctl reset-failed mnebydns-dot.service || true
 systemctl restart mnebydns-dot.service
 dns_ready=no
-for attempt in $(seq 1 40); do
+for _ in $(seq 1 40); do
   if systemctl is-active --quiet mnebydns-dot.service &&
      ss -H -lnt 'sport = :853' | grep -Fq '89.125.90.101:853'; then
     dns_ready=yes
