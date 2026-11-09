@@ -39,6 +39,10 @@ jobs:
           assert 'Persistent=true' in stage
           assert '"$watch.timer"' in act and 'systemctl is-active --quiet "$unit"' in act
           assert 'systemctl reload nginx' in act
+          assert 'systemctl kill --signal=HUP --kill-who=main mnebydns-googlepilot.service' in act
+          assert 'systemctl kill --signal=HUP --kill-who=main mnebydns-googlepilot.service' in back
+          assert 'systemctl restart mnebydns-googlepilot.service' not in act
+          assert 'systemctl restart mnebydns-googlepilot.service' not in back
           assert 'systemctl restart mnebydns-dot.service' in back
           assert 'combined-manifest.sha256' in back
           assert 'checkpoint.ref' in stage and 'checkpoint.ref' in act and 'checkpoint.ref' in back
