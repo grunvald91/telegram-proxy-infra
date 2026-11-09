@@ -1,0 +1,1 @@
+Operator request on 2026-11-09: execute one 30-minute guarded combined Meta Instagram Threads and ChatGPT DNS HTTPS canary; preserve stable five services; use both-node rollback timers; no persistent capture or logging of subscriber content. Do not promote permanent service without Android acceptance.
