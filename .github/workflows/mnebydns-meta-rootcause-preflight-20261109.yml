@@ -1,0 +1,83 @@
+name: MNEBYDNS Meta root-cause no-change preflight
+on:
+  push:
+    branches: [diagnostics/mnebydns-meta-rootcause-20261109]
+    paths: [.github/workflows/mnebydns-meta-rootcause-preflight-20261109.yml]
+permissions:
+  contents: read
+jobs:
+  server-readonly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check server availability, Meta TLS, packet tools and rollback status without changes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS" && test -n "$RU_PASS"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          for role in ru de; do
+            if [[ $role == ru ]]; then
+              export SSHPASS="$RU_PASS"
+              target=188.120.254.223
+            else
+              export SSHPASS="$DE_PASS"
+              target=89.125.90.101
+            fi
+            sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR "root@$target" "python3 - '$role'" <<'PY'
+          import subprocess,sys,socket,ssl,concurrent.futures,pathlib,shutil,re
+          role=sys.argv[1]
+          def get(*args,timeout=8):
+              try:
+                  p=subprocess.run(args,capture_output=True,text=True,timeout=timeout)
+                  return (p.returncode,p.stdout,p.stderr)
+              except Exception as exc: return (-1,'',type(exc).__name__)
+          print(role+'_rootcause_preflight_readonly=true',flush=True)
+          for name in ('tcpdump','timeout','ss','nginx','wg','nft','python3'):
+              print(role+'_tool_'+name+'_present='+str(shutil.which(name) is not None).lower(),flush=True)
+          for unit in ('nginx','mnebydns-dot.service') if role=='de' else ('nginx',):
+              rc,_,_=get('systemctl','is-active','--quiet',unit)
+              print(role+'_service_'+unit+'_active='+str(rc==0).lower(),flush=True)
+          rc,_,_=get('nginx','-t')
+          print(role+'_nginx_configuration_valid='+str(rc==0).lower(),flush=True)
+          rc,mtu,_=get('ip','-o','link','show','dev','tg-relay')
+          m=re.search(r'\bmtu (\d+)',mtu)
+          print(role+'_wireguard_link_exists='+str(rc==0).lower(),flush=True)
+          print(role+'_wireguard_MTU='+str(m.group(1) if m else 'unknown'),flush=True)
+          rc,r,_=get('ip','-4','route','get','1.1.1.1')
+          match=re.search(r'\bdev (\S+)',r)
+          iface=match.group(1) if match else 'unknown'
+          print(role+'_public_route_iface_found='+str(rc==0 and iface!='unknown').lower(),flush=True)
+          print(role+'_public_interface='+iface,flush=True)
+          if role=='ru':
+              cfg=pathlib.Path('/etc/nginx/streams.d/01-mtproxy-443.conf')
+              s=cfg.read_text() if cfg.is_file() else ''
+              print('ru_meta_tcp_overlay_currently_absent='+str('10.66.77.1:19443' not in s).lower(),flush=True)
+              rc,socketinfo,_=get('ss','-H','-lun','sport = :443')
+              print('ru_public_udp443_listener_already_active='+str(bool(socketinfo.strip())).lower(),flush=True)
+              rc,c,_=get('systemctl','list-timers','--all','--no-pager','--no-legend')
+              print('ru_leftover_20261109_meta_watchdogs='+str(sum('mnebydns-meta-ru-watchdog-' in z for z in c.splitlines())),flush=True)
+          else:
+              rc,c,_=get('systemctl','list-timers','--all','--no-pager','--no-legend')
+              print('de_leftover_20261109_meta_watchdogs='+str(sum('mnebydns-meta-de-watchdog-' in z for z in c.splitlines())),flush=True)
+              names=('i.instagram.com','i-fallback.instagram.com','iglite-z.instagram.com',
+                     'test-gateway.instagram.com','graph.instagram.com','threads.com',
+                     'graph.facebook.com')
+              def check(host):
+                  try:
+                      with socket.create_connection((host,443),timeout=6) as sock:
+                          sock.settimeout(6)
+                          with ssl.create_default_context().wrap_socket(sock,server_hostname=host):
+                              return host,'cert_verified'
+                  except Exception as exc: return host,type(exc).__name__
+              with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+                  for h,outcome in pool.map(check,names):
+                      print('de_public_meta_tls_'+h+'='+outcome,flush=True)
+          print(role+'_server_no_changes_made=true',flush=True)
+          PY
+          done

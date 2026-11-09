@@ -1,0 +1,22 @@
+name: MNEBYDNS stable five-service isolated renderer regression
+on:
+  push:
+    branches: ['feature/mnebydns-stable-5services-20261109']
+    paths:
+      - 'scripts/mnebydns-stable-five-render.py'
+      - '.github/workflows/mnebydns-stable-5-preflight.yml'
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and verify deterministic stable 5 service routing
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-stable-five-render.py
+          python3 scripts/mnebydns-stable-five-render.py self-test
+          bash -n scripts/mnebydns-four-google-rollback.sh

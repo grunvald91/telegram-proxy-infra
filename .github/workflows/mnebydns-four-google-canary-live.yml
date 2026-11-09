@@ -1,0 +1,207 @@
+# One-off Meta-only domestic SNI entry -> existing private WireGuard Germany foreign-origin relay. RU 443 and DE DNS both have independent persistent rollback timers. Telegram direct-IP MTProto remains outside DNS routing. No permanent promotion.
+# User-directed 30m additional Meta Instagram Threads TikTok Telegram DNS-only experiment, retaining Google Claude Grok X. MTProto direct IP is outside DNS interception. Auto-rollback required.
+# Fresh owner-authorized 2026-11-09 batch canary: run ID must be new (not a rerun attempt).
+name: MNEBYDNS 30-minute Instagram Threads via encrypted RU-Germany bridge
+on:
+  push:
+    branches: ['feature/mnebydns-meta-via-wireguard-pilot-20261109']
+    paths: ['.github/workflows/mnebydns-four-google-canary-live.yml']
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-google-public-443-change
+  cancel-in-progress: false
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      FOREIGN_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: grunvald91/Mnebyvpn
+          ref: 525cdfd5ae5f810d5b778e51327573fc518dffa9
+          path: vpn
+          persist-credentials: false
+      - name: Activate 30-minute automatic-rollback Google DNS and SNI canary
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$FOREIGN_PASS" && test -n "$RU_PASS"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          python3 scripts/mnebydns-four-google-canary.py self-test
+          bash -n scripts/mnebydns-four-google-deploy.sh
+          bash -n scripts/mnebydns-four-google-rollback.sh
+          bash -n scripts/mnebydns-claude-handoff.sh
+          bash -n scripts/mnebydns-meta-ru-deploy.sh
+          bash -n scripts/mnebydns-meta-ru-rollback.sh
+          grep -Fq 'MNEBYDNS_DoT_ready_after_restart=true' scripts/mnebydns-four-google-deploy.sh
+          grep -Fq 'automatic_rollback_persists_after_reboot=true' scripts/mnebydns-four-google-deploy.sh
+          echo "readiness_and_persistent_rollback_review_gate=pass"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          host=root@89.125.90.101
+          work="/tmp/mnebydns-ci-$GITHUB_RUN_ID"
+          backup="/opt/mnebydns-googlepilot-backups/$GITHUB_RUN_ID"
+          ruhost=root@188.120.254.223
+          ruwork="/tmp/mnebydns-meta-ru-$GITHUB_RUN_ID"
+          rubackup="/opt/mnebydns-meta-ru-backups/$GITHUB_RUN_ID"
+          ru_changed=no
+          changed=no
+          cleanup() {
+            rc=$?
+            trap - EXIT
+            if [[ "$rc" != 0 && "$changed" == yes ]]; then
+              echo "canary_failed_attempt_scoped_rollback=yes"
+              SSHPASS="$FOREIGN_PASS" sshpass -e ssh "${opts[@]}" "$host" "if test -s '$backup/rollback.sh' && test -s '$backup/nginx.pilot' && test -s '$backup/dns.pilot'; then bash '$backup/rollback.sh' '$backup'; else echo 'no_live_dns_or_nginx_swap_to_revert=true'; fi" || echo "scoped_rollback_unconfirmed=true"
+            fi
+            if [[ "$rc" != 0 && "$ru_changed" == yes ]]; then
+              echo "ru_meta_failed_attempt_rollback=yes"
+              SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" "$ruhost" "if test -s '$rubackup/rollback.sh' && test -s '$rubackup/pilot'; then bash '$rubackup/rollback.sh' '$rubackup'; fi" || echo "ru_meta_rollback_unconfirmed=true"
+            fi
+            SSHPASS="$FOREIGN_PASS" sshpass -e ssh "${opts[@]}" "$host" "rm -rf -- '$work'" >/dev/null 2>&1 || true
+            SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" "$ruhost" "rm -rf -- '$ruwork'" >/dev/null 2>&1 || true
+            exit "$rc"
+          }
+          trap cleanup EXIT
+          SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" "$ruhost" "test ! -e '$ruwork' && mkdir -m 700 -- '$ruwork'"
+          tar -czf - -C scripts mnebydns-meta-ru-deploy.sh mnebydns-meta-ru-rollback.sh | SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" "$ruhost" "tar -xzf - -C '$ruwork'"
+          ru_changed=yes
+          SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" "$ruhost" "bash '$ruwork/mnebydns-meta-ru-deploy.sh' '$ruwork'"
+          echo "ru_meta_443_ingress_sni_map_prepared=true"
+          SSHPASS="$FOREIGN_PASS" sshpass -e ssh "${opts[@]}" "$host" "test ! -e '$work' && mkdir -m 700 -- '$work'"
+          tar -czf - -C scripts mnebydns-four-google-canary.py mnebydns-four-google-deploy.sh mnebydns-four-google-rollback.sh mnebydns-claude-handoff.sh | SSHPASS="$FOREIGN_PASS" sshpass -e ssh "${opts[@]}" "$host" "tar -xzf - -C '$work'"
+          changed=yes
+          SSHPASS="$FOREIGN_PASS" sshpass -e ssh "${opts[@]}" "$host" "bash '$work/mnebydns-claude-handoff.sh' '$work'"
+          echo "foreign_experimental_canary_activated=true"
+          SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" "$ruhost" 'python3 -' <<'WG'
+          import concurrent.futures, socket, ssl
+          names=('instagram.com','www.instagram.com','i.instagram.com',
+                 'graph.instagram.com','edge-mqtt.facebook.com',
+                 'threads.com','threads.net','graph.threads.net')
+          def probe(name):
+              try:
+                  with socket.create_connection(('10.66.77.1',19443),timeout=7) as tcp:
+                      tcp.settimeout(7)
+                      with ssl.create_default_context().wrap_socket(tcp,server_hostname=name) as tls:
+                          return name, tls.version()
+              except Exception as e:
+                  return name, type(e).__name__
+          with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
+              results=list(ex.map(probe,names))
+          for name,result in results:
+              print('RU_WG_foreign_Meta_TLS='+name+' result='+result,flush=True)
+          assert all(r.startswith('TLSv') for _,r in results)
+          print('meta_WireGuard_transport_real_TLS=PASS',flush=True)
+          WG
+          SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 'bash -se' <<'RU'
+          set -Eeuo pipefail
+          for host in pki.google.com clients1.google.com notifications.google.com android.googleapis.com firebaseinstallations.googleapis.com gcm-http.googleapis.com www.youtube.com youtubei.googleapis.com i.ytimg.com stitch.withgoogle.com accounts.google.com aistudio.google.com generativelanguage.googleapis.com gemini.google.com cdn.servgo.ru tg.servgo.ru; do
+            code="$(curl --noproxy '*' -4 -sS -o /dev/null --connect-timeout 7 --max-time 16 --resolve "$host:443:89.125.90.101" -w '%{http_code}' "https://$host/" 2>/dev/null || true)"
+            if [[ "$code" == 000 || -z "$code" ]]; then echo "ru_foreign_TLS_failed=$host"; exit 3; fi
+            echo "ru_foreign_original_TLS=$host verified"
+          done
+          echo "optional_new_service_RU_SNI_probes_start=true"
+          for host in www.tiktok.com api.tiktokv.com tiktok.com \
+            t.me telegram.org api.telegram.org web.telegram.org \
+            instagram.com www.instagram.com threads.com threads.net \
+            edge-mqtt.facebook.com graph.threads.net; do
+            code="$(curl --noproxy '*' -4 -sS -o /dev/null --connect-timeout 5 --max-time 9 --resolve "$host:443:89.125.90.101" -w '%{http_code}' "https://$host/" 2>/dev/null || true)"
+            if [[ "$code" == 000 || -z "$code" ]]; then
+              echo "optional_RU_SNI_to_DE_failed=$host"
+            else
+              echo "optional_RU_SNI_to_DE_OK=$host HTTP=$code"
+            fi
+          done
+          echo "optional_new_service_RU_SNI_probes_end=true"
+          RU
+          python3 - <<'PY'
+          import importlib.util,pathlib,socket
+          p=pathlib.Path("vpn/ops/smart-dns-poc/probe-gemini-canary.py")
+          spec=importlib.util.spec_from_file_location("dnsprobe",p)
+          assert spec and spec.loader
+          m=importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(m)
+          ps=pathlib.Path("scripts/mnebydns-four-google-canary.py")
+          spec2=importlib.util.spec_from_file_location("routing",ps)
+          routing=importlib.util.module_from_spec(spec2)
+          spec2.loader.exec_module(routing)
+          ip="89.125.90.101"
+          ru_ip="188.120.254.223"
+          for name in ("www.youtube.com","youtubei.googleapis.com","i.ytimg.com",
+                      "s.ytimg.com","yt3.ggpht.com",
+                      "stitch.withgoogle.com","accounts.google.com",
+                      "aistudio.google.com","generativelanguage.googleapis.com",
+                      "jnn-pa.googleapis.com","waa-pa.clients6.google.com",
+                      "www.googleapis.com","optimizationguide-pa.googleapis.com",
+                      "android.googleapis.com","firebaseinstallations.googleapis.com",
+                      "gcm-http.googleapis.com","pki.google.com",
+                      "clients1.google.com","notifications.google.com",
+                      "mtalk.google.com","mtalk4.google.com","time.google.com",
+                      "fcm.googleapis.com","fcm-xmpp.googleapis.com",
+                      "gcm-xmpp.googleapis.com","stun.l.google.com",
+                      "some-new-host.google.com","some-new-host.googleapis.com",
+                      "some-new-host.google-analytics.com",
+                      "some-new-host.doubleclick.net",
+                      "claude.ai","claude.com","platform.claude.com",
+                      "api.anthropic.com","a-api.anthropic.com",
+                      "a.claude.ai","assets.claude.ai",
+                      "bridge.claudeusercontent.com",
+                      "assets-dynamic.claude.ai","some-new-service.anthropic.com",
+                      "some-new-service.claude.com",
+                      "some-new-service.claudeusercontent.com",
+                      "some-new-service.claudemcpcontent.com",
+                      "instagram.com","www.instagram.com","graph.instagram.com",
+                      "api.instagram.com","i.instagram.com",
+                      "scontent-nrt1-1.cdninstagram.com","ig.me",
+                      "threads.com","www.threads.com","threads.net",
+                      "x.com","api.x.com","twitter.com","api.twitter.com",
+                      "t.co","pbs.twimg.com","video.twimg.com",
+                      "grok.com","api.x.ai","grok.x.ai",
+                      "graph.facebook.com","connect.facebook.net",
+                      "some-service.fbcdn.net","some-service.facebook.net",
+                      "some-service.grok.com","some-service.x.ai",
+                      "meta.com","meta.ai","graph.threads.net",
+                      "edge-mqtt.facebook.com","rupload.facebook.com",
+                      "www.tiktok.com","api.tiktokv.com",
+                      "api16-normal-c-alisg.tiktokv.com",
+                      "api2.musical.ly","p16-tiktokcdn-com.akamaized.net",
+                      "p16-sign-va.tiktokcdn.com",
+                      "sf16-website-login.neutral.ttwstatic.com",
+                      "api19-normal-useast1a.tiktokv.com",
+                      "p16-ttcdn-tos.ipstatp.com",
+                      "some-service.byteoversea.com",
+                      "some-service.snssdk.com",
+                      "some-service.tiktokcdn-eu.com",
+                      "telegram.org","web.telegram.org","t.me","api.telegram.org",
+                      "some-service.telegram-cdn.org",
+                      "some-service.telegramusercontent.com",
+                      "www.gstatic.com","fonts.gstatic.com",
+                      "lh3.googleusercontent.com",
+                      "r1---sn-dynamic.googlevideo.com"):
+            code,count,rows=m.query(name,1,ip,853,"dns.mnebyvpn.site",None)
+            answers=[socket.inet_ntoa(raw) for typ,ttl,raw in rows if typ==1]
+            wanted=ru_ip if routing.is_meta(name) else ip
+            if code!=0 or answers!=[wanted]:
+              raise AssertionError("Public synthetic DoT failed: "+name+" expected "+wanted+" got "+str(answers))
+            for typ in (28,64,65):
+              rcode,n,rr=m.query(name,typ,ip,853,"dns.mnebyvpn.site",None)
+              if rcode!=0 or n!=0:raise AssertionError("DoT address-family bypass: "+name)
+            print("public_DNS_route_pass="+name)
+          print("Android_FCM_NTP_STUN_DNS_all_routed_only_transport_unverified=true")
+          for name in ("gemini.google.com","discord.com","gateway.discord.gg","cdn.discordapp.com"):
+            code,count,rows=m.query(name,1,ip,853,"dns.mnebyvpn.site",None)
+            answers=[socket.inet_ntoa(raw) for typ,ttl,raw in rows if typ==1]
+            if code!=0 or ip not in answers:raise AssertionError("Legacy DNS regression: "+name)
+            print("original_DNS_preserved="+name)
+          PY
+          echo "russian_path_and_public_DNS_verified=true"
+          echo "canary_active_with_reboot_persistent_30_minute_auto_rollback=true"
+          echo "known_google_claude_meta_tiktok_telegram_exact_hosts=174"
+          echo "dynamic_Google_Claude_Meta_TikTok_Telegram_suffix_groups=97"
+          SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" "$ruhost" "systemctl is-active --quiet mnebydns-meta-ru-watchdog-$GITHUB_RUN_ID.timer"
+          echo "ru_meta_35min_automatic_rollback=ACTIVE"
+          echo "meta_domains_return_domestic_IP_other_services_remain_Germany=true"

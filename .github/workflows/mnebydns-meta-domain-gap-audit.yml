@@ -1,0 +1,23 @@
+name: MNEBYDNS Meta hostname gap audit - read only
+on:
+  push:
+    branches: [diagnostics/mnebydns-meta-ingress-matrix-20261109]
+    paths: [.github/workflows/mnebydns-meta-domain-gap-audit.yml]
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify source-backed candidate host coverage without changing production
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-meta-domain-coverage-audit.py
+          python3 scripts/mnebydns-meta-domain-coverage-audit.py | tee /tmp/meta-audit.txt
+          grep -Fq 'meta_candidate_domain_gap_offline_audit=PASS' /tmp/meta-audit.txt
+          grep -Fq '"live_network_changed": false' /tmp/meta-audit.txt
+          grep -Fq '"live_app_success_inferred": false' /tmp/meta-audit.txt
+          echo "Meta_documented_host_gaps_AUDITED_no_prod_modifications=true"

@@ -1,0 +1,66 @@
+name: MNEBYDNS stable checkpoint and reboot persistence health audit
+on:
+  push:
+    branches: ['feature/mnebydns-stable-5services-20261109']
+    paths: ['.github/workflows/mnebydns-stable-checkpoint-health.yml']
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Verify stable files, no pilot expiry, enabled services and RAM
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          SSHPASS="$DE_PASS" sshpass -e ssh -o LogLevel=ERROR -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new root@89.125.90.101 'python3 -' <<'PY'
+          import pathlib,subprocess
+          def get(a):
+              p=subprocess.run(a,capture_output=True,text=True,timeout=5)
+              return p.returncode,p.stdout.strip()
+          root=pathlib.Path('/opt/mnebydns-stable-checkpoints')
+          checkpoint=pathlib.Path((root/'current').read_text().strip())
+          assert checkpoint.is_relative_to(root)
+          for typ,live in (('nginx','/etc/nginx/nginx.conf'),('dns','/opt/mnebydns-dot/Corefile'),('proxy','/etc/mnebydns-googlepilot/nginx.conf')):
+              same=(checkpoint/(typ+'.stable')).read_bytes()==pathlib.Path(live).read_bytes()
+              print('DE_config_'+typ+'_checkpoint_match='+str(same).lower(),flush=True)
+              assert same
+          for service in ('nginx','mnebydns-dot.service','mnebydns-googlepilot.service','mnebydns-gemini.service','xray.service'):
+              c,v=get(['systemctl','is-active',service])
+              print('DE_unit_'+service+'_active='+str(c==0).lower(),flush=True)
+              assert c==0
+          for service in ('mnebydns-dot.service','mnebydns-googlepilot.service'):
+              c,v=get(['systemctl','is-enabled',service])
+              print('DE_unit_'+service+'_boot_enabled='+str(c==0).lower(),flush=True)
+          c,v=get(['systemctl','is-active','mnebydns-four-google-watchdog-42538883926.timer'])
+          print('DE_old_canary_timer_inactive='+str(c!=0).lower(),flush=True)
+          assert c!=0
+          c,v=get(['ss','-H','-lnt'])
+          for address in ('89.125.90.101:853','127.0.0.1:15449'):
+              ok=any(line.split()[3].endswith(address) for line in v.splitlines())
+              print('DE_listener_'+address+'_up='+str(ok).lower(),flush=True)
+              assert ok
+          assert '10.66.77.1:19443' not in v
+          c,mem=get(['cat','/proc/meminfo'])
+          line=next(s for s in mem.splitlines() if s.startswith('MemAvailable:'))
+          print('DE_mem_available_kib='+line.split()[1],flush=True)
+          print('DE_durable_five_service_checkpoint='+checkpoint.name,flush=True)
+          PY
+          SSHPASS="$RU_PASS" sshpass -e ssh -o LogLevel=ERROR -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new root@188.120.254.223 'python3 -' <<'PY'
+          import pathlib,subprocess
+          before=pathlib.Path('/opt/mnebydns-meta-ru-backups/42538883926/before')
+          live=pathlib.Path('/etc/nginx/streams.d/01-mtproxy-443.conf')
+          same=before.read_bytes()==live.read_bytes()
+          print('RU_Meta_SNI_reverted_to_baseline='+str(same).lower(),flush=True)
+          assert same
+          p=subprocess.run(['systemctl','is-active','mnebydns-meta-ru-watchdog-42538883926.timer'],capture_output=True,text=True,timeout=5)
+          print('RU_old_meta_timer_inactive='+str(p.returncode!=0).lower(),flush=True)
+          assert p.returncode!=0
+          print('read_only_no_changes=true',flush=True)
+          PY

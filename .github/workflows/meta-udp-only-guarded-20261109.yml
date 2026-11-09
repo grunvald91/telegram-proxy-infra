@@ -1,0 +1,280 @@
+name: MNEBYDNS Meta UDP-only guarded canary 18m
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths: [.github/workflows/meta-udp-only-guarded-20261109.yml]
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-google-public-443-change
+  cancel-in-progress: false
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: QUIC parser, round-trip and stage-script offline preflight
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-meta-quic.py
+          python3 scripts/test-mnebydns-meta-quic.py
+          bash -n scripts/mnebydns-meta-quic-stage.sh scripts/mnebydns-meta-quic-rollback.sh
+          test -n "$DE_PASS" && test -n "$RU_PASS"
+          echo 'meta_quic_static_preflight_pass=true'
+      - name: Stage bounded UDP-only relay, prove WG forwarding and arm independent rollback
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass >/dev/null
+          id="$GITHUB_RUN_ID"
+          [[ "$id" =~ ^[0-9]{9,13}$ ]]
+          deadline="$(date -u -d '+18 minutes' +'%Y-%m-%d %H:%M:%S UTC')"
+          udpwork="/tmp/mnebydns-meta-quic-$id"
+          udpbase="/opt/mnebydns-meta-quic-$id"
+          de_ssh() { SSHPASS="$DE_PASS" sshpass -e ssh -o ConnectTimeout=12 -o ServerAliveInterval=5 -o ServerAliveCountMax=1 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@89.125.90.101 "$@"; }
+          ru_ssh() { SSHPASS="$RU_PASS" sshpass -e ssh -o ConnectTimeout=12 -o ServerAliveInterval=5 -o ServerAliveCountMax=1 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@188.120.254.223 "$@"; }
+          abort() {
+            rc=$?
+            trap - EXIT
+            if (( rc != 0 )); then
+              echo 'meta_quic_canary_failure_rollback_requested=true'
+              ru_ssh "test ! -s '$udpbase/rollback.sh' || bash '$udpbase/rollback.sh' ru '$id'" || echo 'meta_quic_ru_rollback_NOT_VERIFIED=true'
+              de_ssh "test ! -s '$udpbase/rollback.sh' || bash '$udpbase/rollback.sh' de '$id'" || echo 'meta_quic_de_rollback_NOT_VERIFIED=true'
+            fi
+            exit "$rc"
+          }
+          trap abort EXIT
+          echo "meta_quic_trial_deadline_utc=$deadline"
+          # Explicit passive health / dependency checks. No host configurations changed.
+          # Diagnose prerequisites independently before the fail-closed stage gate.
+          de_ssh 'python3 -' <<'PY'
+          import subprocess
+          def run(cmd):
+              p=subprocess.run(cmd,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,timeout=7)
+              return p.returncode,p.stdout
+          code,out=run(['ip','-4','route','get','10.66.77.2'])
+          print('de_check_route_wg='+str(code==0 and 'tg-relay' in out).lower(),flush=True)
+          code,out=run(['ip','-4','-o','addr','show','dev','tg-relay'])
+          print('de_check_wg_address='+str(code==0 and '10.66.77.1/' in out).lower(),flush=True)
+          for unit in ['mnebydns-dot.service','mnebydns-googlepilot.service']:
+              code,_=run(['systemctl','is-active','--quiet',unit])
+              print('de_check_service_'+unit.replace('.service','').replace('-','_')+'='+str(code==0).lower(),flush=True)
+          code,out=run(['ss','-H','-lun','sport = :19444'])
+          print('de_check_udp19444_free='+str(code==0 and not out.strip()).lower(),flush=True)
+          PY
+          ru_ssh 'python3 -' <<'PY'
+          import subprocess
+          def run(cmd):
+              p=subprocess.run(cmd,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,timeout=7)
+              return p.returncode,p.stdout
+          code,out=run(['ip','-4','route','get','10.66.77.1'])
+          print('ru_check_route_wg='+str(code==0 and 'tg-relay' in out).lower(),flush=True)
+          code,out=run(['ip','-4','-o','addr','show','dev','tg-relay'])
+          print('ru_check_wg_address='+str(code==0 and '10.66.77.2/' in out).lower(),flush=True)
+          code,_=run(['systemctl','is-active','--quiet','nginx'])
+          print('ru_check_service_nginx='+str(code==0).lower(),flush=True)
+          code,out=run(['ss','-H','-lun','sport = :443'])
+          print('ru_check_udp443_free='+str(code==0 and not out.strip()).lower(),flush=True)
+          PY
+          de_ssh "ip -4 route get 10.66.77.2 | grep -Fq tg-relay && ip -4 -o addr show dev tg-relay | grep -Fq '10.66.77.1/' && systemctl is-active --quiet mnebydns-dot.service && systemctl is-active --quiet mnebydns-googlepilot.service && ! ss -H -lun 'sport = :19444' | grep -q ." 
+          ru_ssh "ip -4 route get 10.66.77.1 | grep -Fq tg-relay && ip -4 -o addr show dev tg-relay | grep -Fq '10.66.77.2/' && systemctl is-active --quiet nginx && ! ss -H -lun 'sport = :443' | grep -q ."
+          echo 'meta_quic_port_route_readonly_preflight_pass=true'
+          # Stage private DE first; each node schedules its own persistent rollback before listener starts.
+          de_ssh "test ! -e '$udpwork' && mkdir -m 700 '$udpwork'"
+          tar -czf - -C scripts mnebydns-meta-quic.py mnebydns-meta-quic-stage.sh mnebydns-meta-quic-rollback.sh test-mnebydns-meta-quic.py | de_ssh "tar -xzf - -C '$udpwork'"
+          de_ssh "bash '$udpwork/mnebydns-meta-quic-stage.sh' de '$id' '$deadline'"
+          ru_ssh "test ! -e '$udpwork' && mkdir -m 700 '$udpwork'"
+          tar -czf - -C scripts mnebydns-meta-quic.py mnebydns-meta-quic-stage.sh mnebydns-meta-quic-rollback.sh test-mnebydns-meta-quic.py | ru_ssh "tar -xzf - -C '$udpwork'"
+          ru_ssh "bash '$udpwork/mnebydns-meta-quic-stage.sh' ru '$id' '$deadline'"
+          # A well-formed synthetic QUIC Initial is injected locally on RU:443.
+          ru_ssh "python3 - '$udpwork/test-mnebydns-meta-quic.py'" <<'PY'
+          import importlib.util,pathlib,socket,sys
+          p=pathlib.Path(sys.argv[1])
+          spec=importlib.util.spec_from_file_location('quic_fixture',p)
+          m=importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(m)
+          datagram=m.fixture_sni('i.instagram.com')
+          with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as s:
+              s.sendto(datagram,('127.0.0.1',443))
+          print('ru_local_synthetic_quic_sent=true',flush=True)
+          PY
+          sleep 14
+          de_ssh "python3 - de '$id'" <<'PY'
+          import subprocess,sys,re
+          role,id=sys.argv[1:]
+          unit=f'mnebydns-meta-quic-{role}-{id}.service'
+          log=subprocess.run(['journalctl','-u',unit,'--since','90 seconds ago','--no-pager','-o','cat'],capture_output=True,text=True,timeout=8).stdout
+          rows=[row for row in log.splitlines() if row.startswith(f'meta_quic_{role}_active=')]
+          if not rows:raise SystemExit('DE counter snapshot missing')
+          row=rows[-1]
+          def num(key):
+              m=re.search(r'(?:^|\s)'+re.escape(key)+r'=(\d+)(?:\s|$)',row)
+              return int(m.group(1)) if m else 0
+          for k in ('rx','admitted','rejected','to_upstream','upstream_rx','client_tx','socket_error','emsgsize'):
+              print('de_quic_'+k+'='+str(num(k)),flush=True)
+          if not (num('rx')>0 and num('admitted')>0 and num('to_upstream')>0):
+              raise SystemExit('RU-to-DE QUIC Initial unverified')
+          print('RU_to_DE_synthetic_QUIC_Initial=PASS',flush=True)
+          PY
+          ru_ssh "python3 - ru '$id'" <<'PY'
+          import subprocess,sys,re
+          role,id=sys.argv[1:]
+          unit=f'mnebydns-meta-quic-{role}-{id}.service'
+          log=subprocess.run(['journalctl','-u',unit,'--since','90 seconds ago','--no-pager','-o','cat'],capture_output=True,text=True,timeout=8).stdout
+          rows=[row for row in log.splitlines() if row.startswith(f'meta_quic_{role}_active=')]
+          if not rows:raise SystemExit('RU counter snapshot missing')
+          row=rows[-1]
+          def num(key):
+              m=re.search(r'(?:^|\s)'+re.escape(key)+r'=(\d+)(?:\s|$)',row)
+              return int(m.group(1)) if m else 0
+          for k in ('rx','admitted','rejected','to_upstream','upstream_rx','client_tx','socket_error','emsgsize'):
+              print('ru_quic_'+k+'='+str(num(k)),flush=True)
+          if not (num('rx')>0 and num('admitted')>0 and num('to_upstream')>0):
+              raise SystemExit('RU QUIC listener not forwarding')
+          print('RU_local_UDP443_synthetic_accepted=PASS',flush=True)
+          PY
+          # Prove internet-facing UDP while the RU listener is active.
+          # This was missing from the earlier successful localhost-only canary.
+          ru_ssh "python3 - ru '$id'" <<'PY'
+          import subprocess,sys,re
+          unit='mnebydns-meta-quic-ru-'+sys.argv[2]+'.service'
+          log=subprocess.run(['journalctl','-u',unit,'--since','90 seconds ago','--no-pager','-o','cat'],capture_output=True,text=True,timeout=8).stdout
+          rows=[line for line in log.splitlines() if line.startswith('meta_quic_ru_active=')]
+          if not rows:raise SystemExit('missing live baseline counters')
+          def n(k):
+              m=re.search(r'(?:^|\s)'+re.escape(k)+r'=(\d+)(?:\s|$)',rows[-1])
+              return int(m.group(1)) if m else 0
+          print('ru_before_de_public_rx='+str(n('rx')),flush=True)
+          print('ru_before_de_public_client_tx='+str(n('client_tx')),flush=True)
+          PY
+          # Capture the SAME public QUIC Initial through netfilter while
+          # the real RU UDP socket is bound; automatic cleanup is armed first.
+          ru_ssh "bash -s '$id'" <<'SH' &
+          set -Eeuo pipefail
+          id="$1"
+          table="mnebydns_meta_livetrace_$id"
+          guard="mnebydns-meta-livetrace-$id"
+          ! nft list table inet "$table" >/dev/null 2>&1
+          systemd-run --quiet --collect --unit="$guard" --on-active=90s /usr/sbin/nft delete table inet "$table"
+          systemctl is-active --quiet "$guard.timer"
+          cleanup() {
+            nft delete table inet "$table" >/dev/null 2>&1 || true
+            systemctl stop "$guard.timer" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          nft -f - <<EOF
+          add table inet $table
+          add chain inet $table ingress { type filter hook prerouting priority -311; policy accept; }
+          add rule inet $table ingress ip saddr 89.125.90.101 ip daddr 188.120.254.223 udp dport 443 meta nftrace set 1 counter
+          EOF
+          echo 'ru_quic_live_trace_armed=true'
+          timeout -s TERM 20s nft monitor trace | python3 -c '
+          import sys,re,collections
+          ids=set(); path=collections.Counter(); verdict=collections.Counter()
+          for line in sys.stdin:
+              m=re.search(r"trace id ([a-fA-F0-9]+)",line)
+              if not m:continue
+              ids.add(m.group(1))
+              p=re.search(r"\b(ip|ip6|inet)\s+([A-Za-z0-9_-]+)\s+([A-Za-z0-9_-]+)\s+(packet|rule|verdict|policy)",line)
+              if p:path[p.group(2)+"/"+p.group(3)]+=1
+              v=re.search(r"\bverdict\s+(drop|reject|accept|continue|return|jump|goto)",line)
+              if v:verdict[v.group(1)]+=1
+              if "ct state invalid" in line:verdict["ct_invalid"]+=1
+          print("ru_live_nftrace_unique_packet_ids="+str(len(ids)),flush=True)
+          for k,n in path.most_common(20):print("ru_live_nftrace_chain_"+k.replace("/","_")+"="+str(n),flush=True)
+          for k,n in sorted(verdict.items()):print("ru_live_nftrace_verdict_"+k+"="+str(n),flush=True)
+          ' || test "$?" -eq 124
+          nft list chain inet "$table" ingress | python3 -c '
+          import sys,re
+          m=re.search(r"counter packets (\d+)",sys.stdin.read())
+          print("ru_live_trace_rule_matched="+(m.group(1) if m else "unknown"),flush=True)
+          '
+          cleanup
+          trap - EXIT
+          ! nft list table inet "$table" >/dev/null 2>&1
+          echo 'ru_live_nftrace_table_removed=true'
+          SH
+          trace_pid=$!
+          sleep 4
+          de_ssh "python3 - '$udpwork/test-mnebydns-meta-quic.py'" <<'PY'
+          import importlib.util,pathlib,socket,sys,subprocess,time
+          p=pathlib.Path(sys.argv[1])
+          spec=importlib.util.spec_from_file_location('meta_fixture_public',p)
+          assert spec and spec.loader
+          fixture=importlib.util.module_from_spec(spec);spec.loader.exec_module(fixture)
+          route=subprocess.run(['ip','-4','route','get','188.120.254.223'],capture_output=True,text=True,timeout=8)
+          if route.returncode or 'tg-relay' in route.stdout:
+              raise SystemExit('DE public uplink route not independent')
+          print('de_public_uplink_without_wg=PASS',flush=True)
+          received=0
+          for _ in range(3):
+              with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as sock:
+                  sock.settimeout(3)
+                  packet=fixture.fixture_sni('i.instagram.com')
+                  sock.sendto(packet,('188.120.254.223',443))
+                  try:
+                      data,_=sock.recvfrom(8192)
+                      if data:received+=1
+                  except socket.timeout:pass
+              time.sleep(.2)
+          print('de_to_ru_public_QUIC_Initial_sent=3',flush=True)
+          print('de_to_ru_public_QUIC_response_received='+str(received),flush=True)
+          PY
+          wait "$trace_pid"
+          sleep 14
+          ru_ssh "python3 - ru '$id'" <<'PY'
+          import subprocess,sys,re
+          unit='mnebydns-meta-quic-ru-'+sys.argv[2]+'.service'
+          log=subprocess.run(['journalctl','-u',unit,'--since','150 seconds ago','--no-pager','-o','cat'],capture_output=True,text=True,timeout=8).stdout
+          rows=[line for line in log.splitlines() if line.startswith('meta_quic_ru_active=')]
+          if not rows:raise SystemExit('missing live post-external counters')
+          def n(k):
+              m=re.search(r'(?:^|\s)'+re.escape(k)+r'=(\d+)(?:\s|$)',rows[-1])
+              return int(m.group(1)) if m else 0
+          for key in ('rx','admitted','rejected','to_upstream','upstream_rx','client_tx','socket_error','emsgsize'):
+              print('ru_post_DE_public_'+key+'='+str(n(key)),flush=True)
+          if n('rx')<2:
+              raise SystemExit('Public UDP did not reach active RU relay; abort and auto-rollback')
+          print('RU_public_UDP443_reached_live_relay=PASS',flush=True)
+          PY
+          # Optional external vantage test, never changes DNS or services.
+          python3 - <<'PY'
+          import importlib.util,pathlib,socket
+          p=pathlib.Path('scripts/test-mnebydns-meta-quic.py')
+          spec=importlib.util.spec_from_file_location('quic_fixture',p)
+          m=importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(m)
+          datagram=m.fixture_sni('graph.instagram.com')
+          with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as sock:
+              sock.settimeout(3)
+              sock.sendto(datagram,('188.120.254.223',443))
+          print('external_github_runner_QUIC_Initial_sent=true',flush=True)
+          PY
+          sleep 14
+          ru_ssh "python3 - ru '$id'" <<'PY'
+          import subprocess,sys,re
+          role,id=sys.argv[1:]
+          unit=f'mnebydns-meta-quic-{role}-{id}.service'
+          log=subprocess.run(['journalctl','-u',unit,'--since','90 seconds ago','--no-pager','-o','cat'],capture_output=True,text=True,timeout=8).stdout
+          rows=[row for row in log.splitlines() if row.startswith(f'meta_quic_{role}_active=')]
+          if not rows:raise SystemExit('no RU aggregate counters')
+          row=rows[-1]
+          for key in ('rx','admitted','to_upstream','upstream_rx','client_tx','socket_error','emsgsize'):
+              m=re.search(r'(?:^|\s)'+key+r'=(\d+)(?:\s|$)',row)
+              print('ru_after_external_'+key+'='+(m.group(1) if m else 'unknown'),flush=True)
+          PY
+          ru_ssh "systemctl is-active --quiet 'mnebydns-meta-quic-ru-$id-rollback.timer' && echo ru_automatic_rollback_armed=true"
+          de_ssh "systemctl is-active --quiet 'mnebydns-meta-quic-de-$id-rollback.timer' && echo de_automatic_rollback_armed=true"
+          de_ssh "cmp -s \"\$(cat /opt/mnebydns-stable-checkpoints/current)\"/dns.stable /opt/mnebydns-dot/Corefile && cmp -s \"\$(cat /opt/mnebydns-stable-checkpoints/current)\"/nginx.stable /etc/nginx/nginx.conf && cmp -s \"\$(cat /opt/mnebydns-stable-checkpoints/current)\"/proxy.stable /etc/mnebydns-googlepilot/nginx.conf"
+          echo 'other_dns_tcp_vpn_config_verified_unchanged=true'
+          echo 'meta_udp_only_canary_active=true'
+          echo 'meta_android_application_NOT_TESTED=true'
+          echo "meta_udp_only_rollback_deadline_utc=$deadline"
+          trap - EXIT

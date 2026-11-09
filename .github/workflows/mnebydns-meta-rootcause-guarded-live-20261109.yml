@@ -1,0 +1,279 @@
+# Explicit arming via a separate trigger commit; creation of this workflow cannot start a canary.
+name: MNEBYDNS Meta 28m guarded root-cause SNI TCP QUIC trial
+on:
+  push:
+    branches: [diagnostics/mnebydns-meta-rootcause-20261109]
+    paths: [ops/mnebydns-meta-rootcause-arm.txt]
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-google-public-443-change
+  cancel-in-progress: false
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: grunvald91/Mnebyvpn
+          ref: 0dbe6e4e35c2923228c250bf6cfc870ce71198d6
+          path: vpn
+          persist-credentials: false
+      - name: Deploy guarded RU and DE Meta ingress, validate, auto-restore after 28 minutes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS" && test -n "$RU_PASS"
+          [[ "$GITHUB_RUN_ID" =~ ^[0-9]+$ ]]
+          bash -n scripts/mnebydns-meta-de-stage.sh
+          bash -n scripts/mnebydns-meta-de-activate.sh
+          bash -n scripts/mnebydns-meta-de-rollback.sh
+          bash -n scripts/mnebydns-meta-ru-deploy.sh
+          bash -n scripts/mnebydns-meta-ru-rollback.sh
+          python3 scripts/mnebydns-meta-overlay.py self-test
+          python3 scripts/test-mnebydns-meta-quic.py
+          python3 scripts/test-mnebydns-meta-packet-observer.py
+          python3 -m py_compile scripts/mnebydns-meta-packet-observer.py scripts/mnebydns-meta-quic-handshake-probe.py
+          bash -n scripts/mnebydns-meta-quic-stage.sh
+          bash -n scripts/mnebydns-meta-quic-rollback.sh
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          id="$GITHUB_RUN_ID"
+          deadline="$(date -u -d '+28 minutes' +'%Y-%m-%d %H:%M:%S UTC')"
+          dework="/tmp/mnebydns-meta-de-$id"
+          ruwork="/tmp/mnebydns-meta-ru-$id"
+          debase="/opt/mnebydns-experiment-backups/$id"
+          rubase="/opt/mnebydns-meta-ru-backups/$id"
+          de_ssh() {
+            SSHPASS="$DE_PASS" sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@89.125.90.101 "$@"
+          }
+          ru_ssh() {
+            SSHPASS="$RU_PASS" sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@188.120.254.223 "$@"
+          }
+          abort() {
+            rc=$?
+            trap - EXIT
+            if [ "$rc" -ne 0 ]; then
+              echo "live_Meta_canary_failed_starting_scoped_rollback=true"
+              ru_ssh "systemctl stop 'mnebydns-meta-observe-ru-$id.service' >/dev/null 2>&1 || true" || true
+              de_ssh "systemctl stop 'mnebydns-meta-observe-de-$id.service' >/dev/null 2>&1 || true" || true
+              ru_ssh "test ! -s '$rubase/rollback.sh' || bash '$rubase/rollback.sh' '$rubase'" || echo "RU_rollback_NOT_CONFIRMED=true"
+              de_ssh "test ! -s '$debase/rollback.sh' || bash '$debase/rollback.sh' '$debase'" || echo "DE_rollback_NOT_CONFIRMED=true"
+              ru_ssh "test ! -s '/opt/mnebydns-meta-quic-$id/rollback.sh' || bash '/opt/mnebydns-meta-quic-$id/rollback.sh' ru '$id'" || echo "RU_QUIC_rollback_NOT_CONFIRMED=true"
+              de_ssh "test ! -s '/opt/mnebydns-meta-quic-$id/rollback.sh' || bash '/opt/mnebydns-meta-quic-$id/rollback.sh' de '$id'" || echo "DE_QUIC_rollback_NOT_CONFIRMED=true"
+            fi
+            exit "$rc"
+          }
+          trap abort EXIT
+          echo "shared_Meta_canary_deadline_UTC=$deadline"
+          de_ssh "test ! -e '$dework' && mkdir -m 700 '$dework'"
+          tar -czf - -C scripts mnebydns-meta-overlay.py mnebydns-four-google-canary.py mnebydns-meta-de-stage.sh mnebydns-meta-de-activate.sh mnebydns-meta-de-rollback.sh |
+            de_ssh "tar -xzf - -C '$dework'"
+          de_ssh "bash '$dework/mnebydns-meta-de-stage.sh' '$dework' '$deadline'"
+          ru_ssh 'python3 -' <<'PY'
+          import socket,ssl,concurrent.futures
+          names=('instagram.com','www.instagram.com','i.instagram.com','graph.instagram.com',
+                 'edge-mqtt.facebook.com','threads.com','threads.net','graph.threads.net',
+                 'iglite-z.instagram.com','test-gateway.instagram.com',
+                 'z-m-gateway.facebook.com','graph.facebook.com','i-fallback.instagram.com')
+          def check(name):
+              try:
+                  with socket.create_connection(('10.66.77.1',19443),timeout=7) as sock:
+                      sock.settimeout(7)
+                      with ssl.create_default_context().wrap_socket(sock,server_hostname=name):
+                          return name,True
+              except Exception:return name,False
+          with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+              results=list(pool.map(check,names))
+          for name,ok in results:print('RU_to_private_DE_Meta_TLS_'+name+'='+str(ok).lower(),flush=True)
+          if not all(ok for _,ok in results):raise SystemExit('private Meta TLS not ready')
+          print('DE_private_Meta_13_of_13=PASS',flush=True)
+          PY
+          ru_ssh "test ! -e '$ruwork' && mkdir -m 700 '$ruwork'"
+          tar -czf - -C scripts mnebydns-meta-ru-deploy.sh mnebydns-meta-ru-rollback.sh |
+            ru_ssh "tar -xzf - -C '$ruwork'"
+          ru_ssh "bash '$ruwork/mnebydns-meta-ru-deploy.sh' '$ruwork' '$deadline'"
+          # Independent time-bounded passive observers start BEFORE public
+          # TCP TLS comparison, so an early failure also has per-hop evidence.
+          # Only aggregate counters reach the journal; no raw capture is saved.
+          tar -czf - -C scripts mnebydns-meta-packet-observer.py |
+            de_ssh "tar -xzf - -C '$dework'"
+          tar -czf - -C scripts mnebydns-meta-packet-observer.py |
+            ru_ssh "tar -xzf - -C '$ruwork'"
+          observer_seconds="$(( $(date -u -d "$deadline" +%s) - $(date -u +%s) - 15 ))"
+          (( observer_seconds >= 120 && observer_seconds <= 1800 )) || {
+            echo "Meta_observer_deadline_out_of_bounds=true"; exit 4;
+          }
+          de_ssh "systemd-run --no-block --collect --unit='mnebydns-meta-observe-de-$id' -p RuntimeMaxSec=1800 -p MemoryMax=64M -p CPUQuota=25% /usr/bin/python3 '$dework/mnebydns-meta-packet-observer.py' --role de --interface tg-relay --seconds '$observer_seconds' >/dev/null"
+          ru_ssh "systemd-run --no-block --collect --unit='mnebydns-meta-observe-ru-$id' -p RuntimeMaxSec=1800 -p MemoryMax=64M -p CPUQuota=25% /usr/bin/python3 '$ruwork/mnebydns-meta-packet-observer.py' --role ru --interface ens3 --seconds '$observer_seconds' >/dev/null"
+          sleep 3
+          de_ssh "systemctl is-active --quiet 'mnebydns-meta-observe-de-$id.service' && journalctl -u 'mnebydns-meta-observe-de-$id.service' --since '2 minutes ago' --no-pager -o cat | grep -Fq 'meta_stage_de_capture_ready=true' && echo DE_passive_stage_observer_ACTIVE=true"
+          ru_ssh "systemctl is-active --quiet 'mnebydns-meta-observe-ru-$id.service' && journalctl -u 'mnebydns-meta-observe-ru-$id.service' --since '2 minutes ago' --no-pager -o cat | grep -Fq 'meta_stage_ru_capture_ready=true' && echo RU_passive_stage_observer_ACTIVE=true"
+          ru_ssh 'python3 -' <<'PY'
+          import socket,ssl,concurrent.futures
+          hosts=('instagram.com','www.instagram.com','i.instagram.com','graph.instagram.com',
+                 'edge-mqtt.facebook.com','threads.com','threads.net','graph.threads.net',
+                 'iglite-z.instagram.com','test-gateway.instagram.com',
+                 'z-m-gateway.facebook.com','graph.facebook.com','i-fallback.instagram.com')
+          def check(host):
+              try:
+                  with socket.create_connection(('127.0.0.1',443),timeout=7) as s:
+                      s.settimeout(7)
+                      with ssl.create_default_context().wrap_socket(s,server_hostname=host):
+                          return host,True
+              except Exception:return host,False
+          with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+              rows=list(pool.map(check,hosts))
+          for host,ok in rows:print('RU_local443_Meta_certificate_'+host+'='+str(ok).lower(),flush=True)
+          if not all(ok for _,ok in rows):raise SystemExit('RU Meta public ingress test failed')
+          print('RU_to_DE_public_ingress_TLS_13_of_13=PASS',flush=True)
+          PY
+          # Mandatory real external TLS path via the public RU ingress,
+          # using DE as a distinct network vantage; localhost-only PASS is insufficient.
+          de_ssh 'python3 -' <<'PY'
+          import socket,ssl,concurrent.futures
+          names=('i.instagram.com','i-fallback.instagram.com',
+                 'test-gateway.instagram.com','threads.com')
+          def check(host):
+              try:
+                  with socket.create_connection(('188.120.254.223',443),timeout=7) as sock:
+                      sock.settimeout(7)
+                      with ssl.create_default_context().wrap_socket(sock,server_hostname=host):
+                          return host,'verified',True
+              except Exception as e:return host,type(e).__name__,False
+          with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+              rows=list(pool.map(check,names))
+          for h,outcome,_ in rows:
+              print('DE_to_RU_public_TCP443_'+h+'='+outcome,flush=True)
+          if not all(ok for _,_,ok in rows):
+              raise SystemExit('Public RU:443 certificate path failed; no mobile cutover')
+          print('Meta_public_RU_443_external_certificate_4_of_4=PASS',flush=True)
+          PY
+          # QUIC v1 UDP 443 is needed by the actual Android PCAPs.
+          # Stage on foreign private WG first, then RU public UDP 443.
+          # Independent per-node systemd rollback guards and strict Meta SNI
+          # allowlisting; do not modify any existing TCP/DNS/Xray backend.
+          udpwork="/tmp/mnebydns-meta-quic-$id"
+          udpbase="/opt/mnebydns-meta-quic-$id"
+          de_ssh "test ! -e '$udpwork' && mkdir -m 700 '$udpwork'"
+          tar -czf - -C scripts mnebydns-meta-quic.py mnebydns-meta-quic-stage.sh mnebydns-meta-quic-rollback.sh test-mnebydns-meta-quic.py mnebydns-meta-packet-observer.py mnebydns-meta-report.py |
+            de_ssh "tar -xzf - -C '$udpwork'"
+          de_ssh "bash '$udpwork/mnebydns-meta-quic-stage.sh' de '$id' '$deadline'"
+          ru_ssh "test ! -e '$udpwork' && mkdir -m 700 '$udpwork'"
+          tar -czf - -C scripts mnebydns-meta-quic.py mnebydns-meta-quic-stage.sh mnebydns-meta-quic-rollback.sh test-mnebydns-meta-quic.py mnebydns-meta-packet-observer.py mnebydns-meta-report.py |
+            ru_ssh "tar -xzf - -C '$udpwork'"
+          ru_ssh "bash '$udpwork/mnebydns-meta-quic-stage.sh' ru '$id' '$deadline'"
+          # Synthetic QUIC Initial, not a packet from the owner's PCAP.
+          # The full RU localhost -> WG -> DE UDP proxy is validated before DNS cutover.
+          ru_ssh "python3 - '$udpwork/test-mnebydns-meta-quic.py'" <<'PY'
+          import importlib.util,pathlib,socket,sys
+          path=pathlib.Path(sys.argv[1])
+          spec=importlib.util.spec_from_file_location('fixture',path)
+          assert spec and spec.loader
+          fixture=importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(fixture)
+          packet=fixture.fixture_sni('i.instagram.com')
+          with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as s:
+              s.sendto(packet,('127.0.0.1',443))
+          print('RU_Meta_synthetic_QUIC_Initial_sent=true',flush=True)
+          PY
+          # The stateless first Initial is authenticated and should appear as
+          # one admitted flow on the remote end. No client addresses logged.
+          sleep 14
+          de_ssh "journalctl -u 'mnebydns-meta-quic-de-$id.service' --since '2 minutes ago' --no-pager -o cat | grep -Eq 'admitted=[1-9][0-9]*'"
+          de_ssh "systemctl is-active --quiet 'mnebydns-meta-quic-de-$id-rollback.timer' && echo DE_UDP_WG_Meta_QUIC_ADMISSION_ONLY=true"
+          ru_ssh "systemctl is-active --quiet 'mnebydns-meta-quic-ru-$id-rollback.timer' && echo RU_UDP443_Meta_QUIC_ADMISSION_ONLY=true"
+          # Test real QUIC v1 TLS with full certificate verification, not
+          # just whether DE admitted a synthetic Initial. Runner is separate
+          # from the mobile operator; both direct and RU paths are compared.
+          python3 -m pip install --quiet 'aioquic>=1.0,<3'
+          python3 scripts/mnebydns-meta-quic-handshake-probe.py --mode direct | tee /tmp/meta-quic-direct.out
+          python3 scripts/mnebydns-meta-quic-handshake-probe.py --mode ru | tee /tmp/meta-quic-ru.out
+          validated_reference_hosts=0
+          for hostname in i.instagram.com i-fallback.instagram.com test-gateway.instagram.com threads.com graph.instagram.com; do
+            if grep -Fq "QUIC_direct_${hostname}=verified_quic_handshake" /tmp/meta-quic-direct.out; then
+              (( validated_reference_hosts += 1 ))
+              grep -Fq "QUIC_ru_${hostname}=verified_quic_handshake" /tmp/meta-quic-ru.out || {
+                echo "QUIC_external_RU_return_path_FAIL_for_${hostname}=true"
+                exit 4
+              }
+              echo "QUIC_external_RU_certificate_${hostname}=PASS"
+            else
+              echo "QUIC_direct_reference_${hostname}_UNSUPPORTED_OR_UNAVAILABLE=true"
+            fi
+          done
+          if (( validated_reference_hosts < 3 )); then
+            echo "Meta_QUIC_reference_inconclusive_no_mobile_cutover=true"
+            exit 4
+          fi
+          echo "Meta_direct_and_through_RU_verified_QUIC_hosts=$validated_reference_hosts"
+          # Baseline after all synthetic and GitHub-runner probes, BEFORE
+          # Meta DNS cutover. These are deliberately not counted as phone traffic.
+          sleep 12
+          de_ssh "journalctl -u 'mnebydns-meta-quic-de-$id.service' --since '5 minutes ago' --no-pager -o cat | grep '^meta_quic_de_active=' | tail -n 1" | sed 's/^/PRE_PHONE_DE_QUIC_COUNTERS /'
+          ru_ssh "journalctl -u 'mnebydns-meta-quic-ru-$id.service' --since '5 minutes ago' --no-pager -o cat | grep '^meta_quic_ru_active=' | tail -n 1" | sed 's/^/PRE_PHONE_RU_QUIC_COUNTERS /'
+          de_ssh "journalctl -u 'mnebydns-meta-observe-de-$id.service' --since '5 minutes ago' --no-pager -o cat | grep '^meta_stage_de_WINDOW_' | tail -n 1" | sed 's/^/PRE_PHONE_DE_PACKETS /'
+          ru_ssh "journalctl -u 'mnebydns-meta-observe-ru-$id.service' --since '5 minutes ago' --no-pager -o cat | grep '^meta_stage_ru_WINDOW_' | tail -n 1" | sed 's/^/PRE_PHONE_RU_PACKETS /'
+          echo "PRE_PHONE_baseline_captured_before_DNS_cutover=true"
+          de_ssh "bash '$dework/mnebydns-meta-de-activate.sh' '$debase'"
+          # The GitHub runner cannot probe public 853: certificate-validated
+          # DNS-over-TLS is checked on the German server without changing it.
+          de_ssh "cat > '$dework/dot-probe.py'" < vpn/ops/smart-dns-poc/probe-gemini-canary.py
+          de_ssh "python3 - '$dework/dot-probe.py'" <<'PY'
+          import importlib.util,pathlib,socket,sys,concurrent.futures
+          f=pathlib.Path(sys.argv[1])
+          spec=importlib.util.spec_from_file_location('dot',f)
+          assert spec and spec.loader
+          dot=importlib.util.module_from_spec(spec);spec.loader.exec_module(dot)
+          DE='89.125.90.101';RU='188.120.254.223'
+          meta=('instagram.com','www.instagram.com','i.instagram.com',
+                'graph.instagram.com','edge-mqtt.facebook.com','threads.com',
+                'threads.net','graph.threads.net','iglite-z.instagram.com',
+                'test-gateway.instagram.com','z-m-gateway.facebook.com',
+                'graph.facebook.com','i-fallback.instagram.com')
+          stable=('chatgpt.com','gemini.google.com','claude.ai','grok.com',
+                  'x.com','www.tiktok.com')
+          cases=[(h,RU) for h in meta]+[(h,DE) for h in stable]
+          def probe(item):
+              h,expected=item
+              try:
+                  code,_,rr=dot.query(h,1,DE,853,'dns.mnebyvpn.site',None)
+                  ips=[socket.inet_ntoa(v) for typ,ttl,v in rr if typ==1]
+                  return h,code==0 and ips==[expected],ips
+              except Exception as e:return h,False,[type(e).__name__]
+          with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
+              rows=list(pool.map(probe,cases))
+          for h,ok,ips in rows:
+              print('Meta_PCAP_DoT_'+h+'='+str(ok).lower()+' answer='+','.join(ips),flush=True)
+          if not all(ok for _,ok,_ in rows):
+              raise SystemExit('DoT regression or unverified PCAP Meta routes')
+          for h in ('api.telegram.org','t.me'):
+              try:
+                  code,_,rr=dot.query(h,1,DE,853,'dns.mnebyvpn.site',None)
+                  ips=[socket.inet_ntoa(v) for typ,ttl,v in rr if typ==1]
+                  if DE in ips or RU in ips:raise SystemExit('Telegram route modified')
+                  print('Telegram_still_unrewritten_'+h+'=true',flush=True)
+              except (OSError,TimeoutError) as e:
+                  print('Telegram_external_resolver_unavailable_'+h+'='+type(e).__name__,flush=True)
+          for h in ('instagram.com','threads.com'):
+              for kind in (28,64,65):
+                  code,_,rr=dot.query(h,kind,DE,853,'dns.mnebyvpn.site',None)
+                  if code!=0 or any(typ==1 for typ,ttl,v in rr):
+                      raise SystemExit('Meta alternative-RR regression '+h)
+          print('Meta_PCAP_13_plus_stable_6_verified_DNS=PASS',flush=True)
+          PY
+          de_ssh "systemctl is-active --quiet 'mnebydns-meta-de-watchdog-$id.timer' && echo DE_rollback_armed=true"
+          ru_ssh "systemctl is-active --quiet 'mnebydns-meta-ru-watchdog-$id.timer' && echo RU_rollback_armed=true"
+          echo "Meta_QUIC_UDP443_MNEBYDNS_META_ONLY_ACTIVE=true"
+          echo "SNI_MOBILE_NETWORK_DIAGNOSIS_NOT_PROVEN_BY_SERVER_TESTS=true"
+          echo "Meta_Instagram_Threads_public_test_ACTIVE_UNTIL=$deadline"
+          echo "Meta_android_application_NOT_YET_TESTED=true"
+          echo "NO_NEW_PHONE_PCAP_REQUIRED=true"
+          echo "OBSERVERS_NO_CLIENT_DATA_SAVED=true"
+          echo "persistent_rollback_on_both_servers_armed=true"
+          trap - EXIT

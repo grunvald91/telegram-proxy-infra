@@ -1,0 +1,1 @@
+User explicitly asked to persist verified ChatGPT in DE with original five stable services and to discard failed Meta pilot. Source review preflight https://github.com/grunvald91/telegram-proxy-infra/actions/runs/42553905765 passed. One-time promotion approved on 2026-11-09; preserve verified route, no permanent Meta. Canary 42553135266 current, expires 2026-11-09 03:20:55 UTC.

@@ -1,0 +1,46 @@
+name: MNEBYDNS Meta isolated overlay offline acceptance
+on:
+  push:
+    branches: [diagnostics/mnebydns-meta-ingress-matrix-20261109]
+    paths:
+      - scripts/mnebydns-meta-overlay.py
+      - .github/workflows/mnebydns-meta-overlay-offline.yml
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-meta-overlay-offline
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Self-test bounded Meta DNS patch and separate WireGuard proxy
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-meta-overlay.py
+          python3 scripts/mnebydns-meta-overlay.py self-test
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y nginx libnginx-mod-stream
+          temp="$(mktemp -d)"
+          cat > "$temp/baseline.Corefile" <<'CORE'
+          tls://.:853 {
+              template IN A gemini.google.com { match ^gemini[.]google[.]com[.]$ }
+              cache 30
+              forward . tls://9.9.9.9 {}
+          }
+          CORE
+          python3 scripts/mnebydns-meta-overlay.py render "$temp/baseline.Corefile" "$temp"
+          sudo install -d -m 700 /run/mnebydns-meta-pilot
+          # GitHub runners do not own the production WireGuard IP.
+          # Test identical nginx syntax against loopback only; keep original file unchanged.
+          sed 's/listen 10.66.77.1:19443;/listen 127.0.0.1:19443;/' "$temp/proxy.meta" > "$temp/proxy.local.nginx.conf"
+          sudo nginx -t -c "$temp/proxy.local.nginx.conf"
+          grep -Fq 'listen 10.66.77.1:19443;' "$temp/proxy.meta"
+          ! grep -Eq 'listen[[:space:]]+([*]|0.0.0.0|89.125.90.101)' "$temp/proxy.meta"
+          grep -Fq 'template IN A . {' "$temp/dns.pilot"
+          ! grep -Fq 'template IN A api.telegram.org' "$temp/dns.pilot"
+          echo "meta_isolated_offline_acceptance=PASS"
+          echo "no_production_hosts_modified=true"

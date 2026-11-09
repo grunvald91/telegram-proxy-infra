@@ -1,0 +1,44 @@
+name: MNEBYDNS durable rollback and code hardening regression tests
+on:
+  push:
+    branches: ['feature/mnebydns-stable-hardening-scale-prep-20261109']
+    paths:
+      - 'scripts/mnebydns-stable-five-promote.sh'
+      - 'scripts/mnebydns-stable-five-restore.sh'
+      - 'scripts/mnebydns-stable-five-render.py'
+      - '.github/workflows/mnebydns-stable-hardening-tests.yml'
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify safe restore and corrected CoreDNS promotion permissions
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y shellcheck
+          python3 -m py_compile scripts/mnebydns-stable-five-render.py
+          python3 scripts/mnebydns-stable-five-render.py self-test
+          bash -n scripts/mnebydns-stable-five-promote.sh
+          bash -n scripts/mnebydns-stable-five-restore.sh
+          shellcheck -S warning scripts/mnebydns-stable-five-promote.sh scripts/mnebydns-stable-five-restore.sh
+          python3 - <<'PY'
+          from pathlib import Path
+          x=Path('scripts/mnebydns-stable-five-promote.sh').read_text()
+          y=Path('scripts/mnebydns-stable-five-restore.sh').read_text()
+          assert 'install -m 644 "$base/dns.stable"' in x
+          assert 'install -m 644 "$base/proxy.stable"' in x
+          assert 'stable_DoT853_not_ready_after_restart=true' in x
+          assert 'mnebydns-stable-checkpoints/current' in x
+          assert 'stable-manifest.sha256' in y
+          assert 'refusing_unowned_experiment_change=' in y
+          assert 'five_service_stable_checkpoint_and_manifest_valid=true' in y
+          assert 'mnebydns-experiment-backups' in y
+          print('future_deploy_never_restores_unverified_Meta_Telegram=PASS')
+          print('DynamicUser_core_and_proxy_permissions_fixed=PASS')
+          print('five_service_restore_sha_guard_and_recovery=PASS')
+          PY

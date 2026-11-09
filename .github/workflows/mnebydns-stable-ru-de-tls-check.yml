@@ -1,0 +1,43 @@
+name: MNEBYDNS stable five TLS from Russian access server to German exit
+on:
+  push:
+    branches: ['feature/mnebydns-stable-5services-20261109']
+    paths: ['.github/workflows/mnebydns-stable-ru-de-tls-check.yml']
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    env:
+      PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Confirm real TLS certificates along tested Russia to Germany path
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          SSHPASS="$PASSWORD" sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@188.120.254.223 'python3 -' <<'PY'
+          import socket,ssl,concurrent.futures,time
+          dest='89.125.90.101'
+          hosts=('gemini.google.com','claude.ai','api.anthropic.com',
+                 'x.com','grok.com','api.x.ai','www.tiktok.com','api.tiktokv.com')
+          def probe(host):
+              t=time.monotonic()
+              try:
+                  with socket.create_connection((dest,443),timeout=7) as sock:
+                      sock.settimeout(7)
+                      with ssl.create_default_context().wrap_socket(sock,server_hostname=host) as tls:
+                          return host,True,tls.version(),round((time.monotonic()-t)*1000)
+              except Exception as ex:
+                  return host,False,type(ex).__name__,round((time.monotonic()-t)*1000)
+          with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
+              results=list(pool.map(probe,hosts))
+          for host,ok,result,ms in results:
+              print('RU_to_DE_working_service='+host+' verified='+str(ok).lower()+' tls='+result+' elapsed_ms='+str(ms),flush=True)
+          good=sum(ok for _,ok,_,_ in results)
+          print('RU_to_DE_working_services_TLS_valid='+str(good)+'/'+str(len(hosts)),flush=True)
+          if good!=len(hosts):raise SystemExit('working_tls_path_failed')
+          print('read_only_no_configuration_changes=true',flush=True)
+          PY

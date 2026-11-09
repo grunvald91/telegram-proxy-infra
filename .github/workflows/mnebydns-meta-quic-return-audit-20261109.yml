@@ -1,0 +1,57 @@
+name: MNEBYDNS Meta QUIC archived response counters read-only
+on:
+  push:
+    branches: [diagnostics/mnebydns-meta-ingress-matrix-20261109]
+    paths: [.github/workflows/mnebydns-meta-quic-return-audit-20261109.yml]
+permissions:
+  contents: read
+jobs:
+  archived-counters:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Count original QUIC journal counters from both nodes (no IP or payload)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS" && test -n "$RU_PASS"
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+          for role in de ru; do
+            if [[ "$role" == de ]]; then
+              export SSHPASS="$DE_PASS"
+              target=89.125.90.101
+            else
+              export SSHPASS="$RU_PASS"
+              target=188.120.254.223
+            fi
+            SSHPASS="$SSHPASS" sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new "root@$target" "python3 - '$role'" <<'PY'
+          import subprocess,sys,re
+          role=sys.argv[1]
+          for run in (42590952202,42601232320):
+              unit=f'mnebydns-meta-quic-{role}-{run}.service'
+              p=subprocess.run(['journalctl','-u',unit,'--since','2026-11-09 09:00:00 UTC','--until','2026-11-09 11:00:00 UTC','--no-pager','-o','cat'],capture_output=True,text=True,timeout=10)
+              matches=[]
+              for line in p.stdout.splitlines():
+                  m=re.search(r'meta_quic_(?:de|ru)_active=(\d+)\s+admitted=(\d+)\s+rejected=(\d+)\s+expired=(\d+)\s+resolve_error=(\d+)',line)
+                  if m:matches.append(tuple(map(int,m.groups())))
+              print(f'{role}_{run}_journal_read_ok={str(p.returncode==0).lower()}',flush=True)
+              print(f'{role}_{run}_counter_samples={len(matches)}',flush=True)
+              if matches:
+                  last=matches[-1]
+                  for name,v in zip(('active','admitted','rejected','expired','resolve_error'),last):
+                      print(f'{role}_{run}_last_{name}={v}',flush=True)
+                  print(f'{role}_{run}_max_active={max(m[0] for m in matches)}',flush=True)
+                  print(f'{role}_{run}_max_admitted={max(m[1] for m in matches)}',flush=True)
+              if role=='de':
+                  unit=f'mnebydns-meta-pilot-{run}.service'
+                  p=subprocess.run(['journalctl','-u',unit,'--since','2026-11-09 09:00:00 UTC','--until','2026-11-09 11:00:00 UTC','--no-pager','-o','cat'],capture_output=True,text=True,timeout=10)
+                  problems=[s.lower() for s in p.stdout.splitlines() if 'error' in s.lower() or 'resolve' in s.lower() or 'timed out' in s.lower()]
+                  print(f'de_tcp_{run}_upstream_error_events={len(problems)}',flush=True)
+                  print(f'de_tcp_{run}_dns_resolution_errors={sum("could not be resolved" in s for s in problems)}',flush=True)
+                  print(f'de_tcp_{run}_connection_timeout_events={sum("timed out" in s for s in problems)}',flush=True)
+          print(role+'_archived_counters_read_only=true',flush=True)
+          PY
+          done

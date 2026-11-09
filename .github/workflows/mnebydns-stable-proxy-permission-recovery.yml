@@ -1,0 +1,40 @@
+name: MNEBYDNS urgently recover confirmed working proxy from systemd DynamicUser permissions
+on:
+  push:
+    branches: ['feature/mnebydns-stable-5services-20261109']
+    paths: ['.github/workflows/mnebydns-stable-proxy-permission-recovery.yml']
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-google-public-443-change
+  cancel-in-progress: false
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    env:
+      PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Fix only nonsecret SNI config readability for confined DynamicUser and recover 15449
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$PASS"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass
+          SSHPASS="$PASS" sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@89.125.90.101 'bash -se' <<'SH'
+          set -Eeuo pipefail
+          base=/opt/mnebydns-stable-checkpoints/42541370669
+          conf=/etc/mnebydns-googlepilot/nginx.conf
+          cmp -s "$base/proxy.stable" "$conf"
+          test -d /etc/mnebydns-googlepilot
+          test ! -L "$conf"
+          chmod 755 /etc/mnebydns-googlepilot
+          chmod 644 "$conf"
+          systemctl reset-failed mnebydns-googlepilot.service
+          systemctl restart mnebydns-googlepilot.service
+          systemctl is-active --quiet mnebydns-googlepilot.service
+          ss -H -lnt 'sport = :15449' | grep -Fq '127.0.0.1:15449'
+          echo "confirmed_five_services_proxy_recovered=true"
+          echo "no_unverified_Meta_Telegram_service_restored=true"
+          SH

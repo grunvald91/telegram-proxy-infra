@@ -1,0 +1,53 @@
+name: MNEBYDNS Meta Russian Nginx 443 local-to-private-WireGuard TLS test
+on:
+  push:
+    branches: ['feature/mnebydns-meta-via-wireguard-pilot-20261109']
+    paths: ['.github/workflows/mnebydns-meta-ru-local-443-test.yml']
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    env:
+      RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Local live SNI handling on Russian public 443 and loopback 443
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASSWORD"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass
+          SSHPASS="$RU_PASSWORD" sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@188.120.254.223 'python3 -' <<'PY'
+          import socket,ssl,time,concurrent.futures
+          HOSTS=('instagram.com','www.instagram.com','i.instagram.com',
+                 'graph.instagram.com','edge-mqtt.facebook.com',
+                 'threads.com','threads.net','graph.threads.net')
+          DESTINATIONS=('127.0.0.1','188.120.254.223')
+          def probe(pair):
+              ip,name=pair
+              start=time.monotonic()
+              try:
+                  sock=socket.create_connection((ip,443),timeout=6)
+              except Exception as ex:
+                  return ip,name,'TCP_FAILED_'+type(ex).__name__,round(1000*(time.monotonic()-start))
+              with sock:
+                  sock.settimeout(6)
+                  try:
+                      with ssl.create_default_context().wrap_socket(sock,server_hostname=name) as tls:
+                          status='TLS_VALID_'+tls.version()
+                  except Exception as ex:
+                      status='TCP_OK_TLS_FAILED_'+type(ex).__name__
+              return ip,name,status,round(1000*(time.monotonic()-start))
+          with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+              result=list(pool.map(probe,((ip,h) for ip in DESTINATIONS for h in HOSTS)))
+          for ip,name,state,ms in result:
+              print('RU443_local_destination='+ip+' host='+name+' state='+state+' ms='+str(ms),flush=True)
+          for ip in DESTINATIONS:
+              rows=[r for r in result if r[0]==ip]
+              valid=sum(r[2].startswith('TLS_VALID') for r in rows)
+              print('RU443_'+ip.replace('.','_')+'_valid='+str(valid)+'/'+str(len(rows)),flush=True)
+          print('no_server_configuration_changes=true',flush=True)
+          print('no_user_traffic_captured=true',flush=True)
+          PY

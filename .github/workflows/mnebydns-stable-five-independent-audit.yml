@@ -1,0 +1,126 @@
+name: MNEBYDNS five working services post-promotion independent live audit
+on:
+  push:
+    branches: ['feature/mnebydns-stable-5services-20261109']
+    paths: ['.github/workflows/mnebydns-stable-five-independent-audit.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: grunvald91/Mnebyvpn
+          ref: 0dbe6e4e35c2923228c250bf6cfc870ce71198d6
+          path: vpn
+          persist-credentials: false
+      - name: Verify retained synthetic five-app DNS and test original TLS at German exit
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import importlib.util, pathlib, socket, ssl, concurrent.futures
+          def load(name,path):
+              sp=importlib.util.spec_from_file_location(name,pathlib.Path(path))
+              assert sp and sp.loader
+              m=importlib.util.module_from_spec(sp);sp.loader.exec_module(m)
+              return m
+          spec=load('stable','scripts/mnebydns-stable-five-render.py')
+          dns=load('dns','vpn/ops/smart-dns-poc/probe-gemini-canary.py')
+          foreign='89.125.90.101'
+          assert len(spec.STABLE_HOSTS)==132 and len(spec.STABLE_SUFFIXES)==70
+          all_names=(*spec.STABLE_HOSTS,'gemini.google.com',
+                     'new-service.googleapis.com','video-random.googlevideo.com',
+                     'new-api.anthropic.com','new-media.twimg.com',
+                     'new-media.tiktokcdn.com')
+          def check(name):
+              try:
+                  code,n,rows=dns.query(name,1,foreign,853,'dns.mnebyvpn.site',None)
+                  ips=[socket.inet_ntoa(data) for typ,ttl,data in rows if typ==1]
+                  return name,code==0 and ips==[foreign],ips
+              except Exception as ex:
+                  return name,False,[type(ex).__name__]
+          with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+              checks=list(pool.map(check,all_names))
+          good=sum(ok for _,ok,_ in checks)
+          for name,ok,answer in checks:
+              if not ok:print('unexpected_stable_dns='+name+' value='+str(answer),flush=True)
+          print('retained_foreign_dns_valid='+str(good)+'/'+str(len(checks)),flush=True)
+          if good!=len(checks):raise SystemExit(2)
+          for name in ('instagram.com','www.instagram.com','threads.com',
+                       'threads.net','graph.facebook.com','t.me',
+                       'web.telegram.org','api.telegram.org'):
+              code,n,rows=dns.query(name,1,foreign,853,'dns.mnebyvpn.site',None)
+              addresses=[socket.inet_ntoa(data) for typ,ttl,data in rows if typ==1]
+              direct=code==0 and foreign not in addresses and '188.120.254.223' not in addresses
+              print('unverified_service_direct_dns='+name+' routed='+str(not direct).lower(),flush=True)
+              if not direct:raise SystemExit('unverified_service_still_proxied:'+name)
+          hosts=('gemini.google.com','claude.ai','api.anthropic.com',
+                 'x.com','grok.com','api.x.ai','www.tiktok.com',
+                 'api.tiktokv.com')
+          def probe(host):
+              try:
+                  with socket.create_connection((foreign,443),timeout=8) as sock:
+                      sock.settimeout(8)
+                      with ssl.create_default_context().wrap_socket(sock,server_hostname=host) as tls:
+                          return host,True,tls.version()
+              except Exception as exc:return host,False,type(exc).__name__
+          with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+              routes=list(pool.map(probe,hosts))
+          for host,ok,protocol in routes:
+              print('stable_TLS_via_German_origin='+host+' valid='+str(ok).lower()+' result='+protocol,flush=True)
+          if not all(ok for _,ok,_ in routes):raise SystemExit('stable_original_tls_failed')
+          print('five_services_German_TLS_healthy=true',flush=True)
+          PY
+      - name: Check stable disk snapshot, baseline restoration, service units and no remaining timers
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS" && test -n "$RU_PASS"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass
+          opts=(-o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new)
+          SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY'
+          import pathlib,subprocess
+          root=pathlib.Path('/opt/mnebydns-stable-checkpoints')
+          base=pathlib.Path((root/'current').read_text().strip())
+          assert base.is_relative_to(root)
+          for name,path in (('nginx','/etc/nginx/nginx.conf'),('dns','/opt/mnebydns-dot/Corefile'),('proxy','/etc/mnebydns-googlepilot/nginx.conf')):
+              p=pathlib.Path(path)
+              assert p.read_bytes()==(base/(name+'.stable')).read_bytes(), name
+              print('DE_stable_'+name+'_matches_checkpoint=yes',flush=True)
+          for unit in ('nginx','mnebydns-dot.service','mnebydns-googlepilot.service',
+                       'mnebydns-gemini.service','xray.service'):
+              p=subprocess.run(['systemctl','is-active',unit],capture_output=True,text=True,timeout=5)
+              print('DE_'+unit+'='+p.stdout.strip(),flush=True)
+              if p.returncode:raise SystemExit('mandatory_service_failed:'+unit)
+          for unit in ('mnebydns-four-google-watchdog-42538883926.timer',):
+              p=subprocess.run(['systemctl','is-active',unit],capture_output=True,text=True,timeout=5)
+              print('DE_old_experiment_timer_inactive='+str(p.returncode!=0).lower(),flush=True)
+              if p.returncode==0:raise SystemExit('expired_watchdog_still_active')
+          text=pathlib.Path('/etc/mnebydns-googlepilot/nginx.conf').read_text()
+          assert '10.66.77.1:19443' not in text
+          print('DE_old_Meta_private_WG_listener_removed=yes',flush=True)
+          print('DE_checkpoint='+str(base),flush=True)
+          PY
+          SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -' <<'PY'
+          import pathlib,subprocess
+          base=pathlib.Path('/opt/mnebydns-meta-ru-backups/42538883926')
+          live=pathlib.Path('/etc/nginx/streams.d/01-mtproxy-443.conf')
+          assert live.read_bytes()==(base/'before').read_bytes()
+          print('RU_unverified_Meta_SNI_route_rolled_back=yes',flush=True)
+          for unit in ('nginx',):
+              p=subprocess.run(['systemctl','is-active',unit],capture_output=True,text=True,timeout=5)
+              assert p.returncode==0
+          p=subprocess.run(['systemctl','is-active','mnebydns-meta-ru-watchdog-42538883926.timer'],capture_output=True,text=True,timeout=5)
+          print('RU_old_experiment_timer_inactive='+str(p.returncode!=0).lower(),flush=True)
+          if p.returncode==0:raise SystemExit('RU_watchdog_still_active')
+          PY
+          echo "independent_stable_five_services_audit=PASS"
