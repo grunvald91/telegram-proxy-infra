@@ -1,0 +1,59 @@
+name: MNEBYDNS PROMOTE confirmed five apps - preserve on disk no auto expiry
+on:
+  push:
+    branches: ['feature/mnebydns-stable-5services-20261109']
+    paths: ['.github/workflows/mnebydns-stable-five-promote.yml']
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-google-public-443-change
+  cancel-in-progress: false
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check stable five renderer and deploy shell syntax
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/mnebydns-stable-five-render.py self-test
+          bash -n scripts/mnebydns-stable-five-promote.sh
+          echo "preflight_stable_five_pass=true"
+  promote:
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      DE_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore untested RU Meta ingress then make owner-confirmed five-service baseline durable on DE
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASSWORD" && test -n "$RU_PASSWORD"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass
+          opts=(-o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new)
+          ru_base="/opt/mnebydns-meta-ru-backups/42538883926"
+          SSHPASS="$RU_PASSWORD" sshpass -e ssh "${opts[@]}" root@188.120.254.223 "bash -se -- '$ru_base'" <<'RU'
+          set -Eeuo pipefail
+          base="$1"
+          test -s "$base/rollback.sh"
+          bash "$base/rollback.sh" "$base"
+          test -s "$base/before"
+          cmp -s "$base/before" /etc/nginx/streams.d/01-mtproxy-443.conf
+          systemctl is-active --quiet nginx
+          echo "untested_instagram_threads_russian_ingress_reverted=true"
+          RU
+          work="/tmp/mnebydns-stable-five-$GITHUB_RUN_ID"
+          SSHPASS="$DE_PASSWORD" sshpass -e ssh "${opts[@]}" root@89.125.90.101 "test ! -e '$work' && mkdir -m 700 '$work'"
+          tar -czf - -C scripts mnebydns-stable-five-render.py mnebydns-four-google-canary.py mnebydns-stable-five-promote.sh | SSHPASS="$DE_PASSWORD" sshpass -e ssh "${opts[@]}" root@89.125.90.101 "tar -xzf - -C '$work'"
+          SSHPASS="$DE_PASSWORD" sshpass -e ssh "${opts[@]}" root@89.125.90.101 "bash '$work/mnebydns-stable-five-promote.sh' '$work'"
+          SSHPASS="$DE_PASSWORD" sshpass -e ssh "${opts[@]}" root@89.125.90.101 "rm -rf -- '$work'"
+          echo "MNEBYDNS_stable_confirmed_five_promoted=true"
+          echo "Meta_Telegram_experiments_removed=true"
+          echo "No_automatic_expiry_of_confirmed_routes=true"
