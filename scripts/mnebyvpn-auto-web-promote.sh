@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Release 2026-11-09: compact neon storefront visual QA at 360x740, 390x844, 1440x900; source 4e264f097ead5899cf52b0961aed4db06e1399e1, green main CI 42552734811. Website-only, preserve VPN/DNS/payment state.
 # Release request 2026-11-09: publish tested compact website source aa5ba3e121d6183d918040a903213e272e2ce5f0 after green CI 42545724393. No deployment logic changes.
 # Promote only the tested MNEBYVPN website container to its existing public port.
 # No nginx, firewall, DNS, proxy, Telegram, payment or other-container changes.
