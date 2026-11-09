@@ -2,7 +2,7 @@ name: MNEBYDNS PROMOTE confirmed five apps - preserve on disk no auto expiry
 on:
   push:
     branches: ['feature/mnebydns-stable-5services-20261109']
-    paths: ['.github/workflows/mnebydns-stable-five-promote.yml']
+    paths: ['.github/workflows/mnebydns-stable-five-promote.yml', 'scripts/mnebydns-stable-five-promote.sh', 'scripts/mnebydns-stable-five-render.py']
 permissions:
   contents: read
 concurrency:
