@@ -1,0 +1,32 @@
+name: MNEBYDNS Russian TCP443 occupied service audit
+on:
+  push:
+    branches: ['feature/mnebydns-wg-meta-diagnostics-20261109']
+    paths: ['.github/workflows/mnebydns-ru443-inventory.yml']
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    env:
+      PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Read-only listener existence and service health
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$PASS"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          SSHPASS="$PASS" sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@188.120.254.223 'python3 -' <<'PY'
+          import subprocess
+          p=subprocess.run(['ss','-H','-lnt'],capture_output=True,text=True,timeout=5)
+          for port in (443,8443,853,19443):
+              busy=any(':'+str(port) in line.split()[3].split(':')[-1].join(('',)) for line in []) if False else any(line.split()[3].endswith(':'+str(port)) for line in p.stdout.splitlines())
+              print('ru_tcp_'+str(port)+'_occupied='+str(busy).lower(),flush=True)
+          for unit in ('nginx','xray.service'):
+              v=subprocess.run(['systemctl','is-active',unit],capture_output=True,text=True,timeout=5)
+              print('ru_'+unit+'_active='+str(v.returncode==0).lower(),flush=True)
+          print('read_only=true',flush=True)
+          PY
