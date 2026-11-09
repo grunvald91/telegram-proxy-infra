@@ -140,6 +140,60 @@ jobs:
               raise SystemExit('RU QUIC listener not forwarding')
           print('RU_local_UDP443_synthetic_accepted=PASS',flush=True)
           PY
+          # Prove internet-facing UDP while the RU listener is active.
+          # This was missing from the earlier successful localhost-only canary.
+          ru_ssh "python3 - ru '$id'" <<'PY'
+          import subprocess,sys,re
+          unit='mnebydns-meta-quic-ru-'+sys.argv[2]+'.service'
+          log=subprocess.run(['journalctl','-u',unit,'--since','90 seconds ago','--no-pager','-o','cat'],capture_output=True,text=True,timeout=8).stdout
+          rows=[line for line in log.splitlines() if line.startswith('meta_quic_ru_active=')]
+          if not rows:raise SystemExit('missing live baseline counters')
+          def n(k):
+              m=re.search(r'(?:^|\s)'+re.escape(k)+r'=(\d+)(?:\s|$)',rows[-1])
+              return int(m.group(1)) if m else 0
+          print('ru_before_de_public_rx='+str(n('rx')),flush=True)
+          print('ru_before_de_public_client_tx='+str(n('client_tx')),flush=True)
+          PY
+          de_ssh "python3 - '$udpwork/test-mnebydns-meta-quic.py'" <<'PY'
+          import importlib.util,pathlib,socket,sys,subprocess,time
+          p=pathlib.Path(sys.argv[1])
+          spec=importlib.util.spec_from_file_location('meta_fixture_public',p)
+          assert spec and spec.loader
+          fixture=importlib.util.module_from_spec(spec);spec.loader.exec_module(fixture)
+          route=subprocess.run(['ip','-4','route','get','188.120.254.223'],capture_output=True,text=True,timeout=8)
+          if route.returncode or 'tg-relay' in route.stdout:
+              raise SystemExit('DE public uplink route not independent')
+          print('de_public_uplink_without_wg=PASS',flush=True)
+          received=0
+          for _ in range(3):
+              with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as sock:
+                  sock.settimeout(3)
+                  packet=fixture.fixture_sni('i.instagram.com')
+                  sock.sendto(packet,('188.120.254.223',443))
+                  try:
+                      data,_=sock.recvfrom(8192)
+                      if data:received+=1
+                  except socket.timeout:pass
+              time.sleep(.2)
+          print('de_to_ru_public_QUIC_Initial_sent=3',flush=True)
+          print('de_to_ru_public_QUIC_response_received='+str(received),flush=True)
+          PY
+          sleep 14
+          ru_ssh "python3 - ru '$id'" <<'PY'
+          import subprocess,sys,re
+          unit='mnebydns-meta-quic-ru-'+sys.argv[2]+'.service'
+          log=subprocess.run(['journalctl','-u',unit,'--since','150 seconds ago','--no-pager','-o','cat'],capture_output=True,text=True,timeout=8).stdout
+          rows=[line for line in log.splitlines() if line.startswith('meta_quic_ru_active=')]
+          if not rows:raise SystemExit('missing live post-external counters')
+          def n(k):
+              m=re.search(r'(?:^|\s)'+re.escape(k)+r'=(\d+)(?:\s|$)',rows[-1])
+              return int(m.group(1)) if m else 0
+          for key in ('rx','admitted','rejected','to_upstream','upstream_rx','client_tx','socket_error','emsgsize'):
+              print('ru_post_DE_public_'+key+'='+str(n(key)),flush=True)
+          if n('rx')<2:
+              raise SystemExit('Public UDP did not reach active RU relay; abort and auto-rollback')
+          print('RU_public_UDP443_reached_live_relay=PASS',flush=True)
+          PY
           # Optional external vantage test, never changes DNS or services.
           python3 - <<'PY'
           import importlib.util,pathlib,socket
