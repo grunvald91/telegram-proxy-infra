@@ -34,7 +34,10 @@ jobs:
           CORE
           python3 scripts/mnebydns-meta-overlay.py render "$temp/baseline.Corefile" "$temp"
           sudo install -d -m 700 /run/mnebydns-meta-pilot
-          sudo nginx -t -c "$temp/proxy.meta"
+          # GitHub runners do not own the production WireGuard IP.
+          # Test identical nginx syntax against loopback only; keep original file unchanged.
+          sed 's/listen 10.66.77.1:19443;/listen 127.0.0.1:19443;/' "$temp/proxy.meta" > "$temp/proxy.local.nginx.conf"
+          sudo nginx -t -c "$temp/proxy.local.nginx.conf"
           grep -Fq 'listen 10.66.77.1:19443;' "$temp/proxy.meta"
           ! grep -Eq 'listen[[:space:]]+([*]|0.0.0.0|89.125.90.101)' "$temp/proxy.meta"
           grep -Fq 'template IN A . {' "$temp/dns.pilot"
