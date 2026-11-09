@@ -1,0 +1,179 @@
+name: MNEBYDNS guarded 30-minute ChatGPT Instagram Threads combined canary
+on:
+  push:
+    branches: [diagnostics/mnebydns-meta-ingress-matrix-20261109]
+    paths:
+      - ops/diagnostics/mnebydns-three-app-canary-request.txt
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-google-public-443-change
+  cancel-in-progress: false
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: grunvald91/Mnebyvpn
+          ref: 0dbe6e4e35c2923228c250bf6cfc870ce71198d6
+          path: vpn
+          persist-credentials: false
+      - name: Strict offline gate before any live modification
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS" && test -n "$RU_PASS"
+          python3 scripts/mnebydns-combined-render.py self-test
+          for f in mnebydns-combined-de-rollback.sh mnebydns-combined-de-stage.sh mnebydns-combined-de-activate.sh mnebydns-meta-ru-deploy.sh mnebydns-meta-ru-rollback.sh; do
+            bash -n "scripts/$f"
+          done
+          echo "combined_three_app_offline_validation=PASS"
+      - name: Stage private Meta and ChatGPT Germany route; activate DNS last, arm independent dual-node rollback
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          [[ "$GITHUB_RUN_ID" =~ ^[0-9]+$ ]]
+          id="$GITHUB_RUN_ID"
+          deadline="$(date -u -d '+30 minutes' +'%Y-%m-%d %H:%M:%S UTC')"
+          de_work="/tmp/mnebydns-combined-de-$id"
+          ru_work="/tmp/mnebydns-meta-ru-$id"
+          de_backup="/opt/mnebydns-combined-backups/$id"
+          ru_backup="/opt/mnebydns-meta-ru-backups/$id"
+          ssh_de() { SSHPASS="$DE_PASS" sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@89.125.90.101 "$@"; }
+          ssh_ru() { SSHPASS="$RU_PASS" sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@188.120.254.223 "$@"; }
+          completed=no
+          cleanup() {
+            rc=$?
+            trap - EXIT
+            if [[ "$completed" != yes ]]; then
+              echo "combined_three_app_cutover_failed_rolling_back_both_nodes=true"
+              set +e
+              ssh_de "if test -s '$de_backup/rollback.sh'; then bash '$de_backup/rollback.sh' '$de_backup'; else echo DE_no_Meta_experiment_found; fi"
+              de_result=$?
+              ssh_ru "if test -s '$ru_backup/rollback.sh'; then bash '$ru_backup/rollback.sh' '$ru_backup'; else echo RU_no_Meta_experiment_found; fi"
+              ru_result=$?
+              echo "DE_rollback_exit=$de_result RU_rollback_exit=$ru_result"
+              if (( de_result != 0 || ru_result != 0 )); then echo "manual_rollback_attention_required=true"; fi
+              set -e
+            fi
+            exit "$rc"
+          }
+          trap cleanup EXIT
+          echo "MNEBYDNS_three_app_shared_auto_revert_UTC=$deadline"
+          # Stage DE without touching live DNS, legacy Nginx, Xray, or stable five proxy.
+          ssh_de "test ! -e '$de_work' && mkdir -m 700 '$de_work'"
+          tar -czf - -C scripts mnebydns-combined-render.py mnebydns-chatgpt-de-overlay.py mnebydns-meta-overlay.py mnebydns-stable-five-render.py mnebydns-four-google-canary.py mnebydns-combined-de-rollback.sh mnebydns-combined-de-stage.sh mnebydns-combined-de-activate.sh |
+            ssh_de "tar -xzf - -C '$de_work'"
+          ssh_de "bash '$de_work/mnebydns-combined-de-stage.sh' '$de_work' '$deadline'"
+          # Verify direct original Meta TLS from RU through the newly staged private sidecar.
+          ssh_ru 'python3 -' <<'PY'
+          import ssl,socket,concurrent.futures
+          hosts=('instagram.com','www.instagram.com','i.instagram.com','graph.instagram.com',
+                 'edge-mqtt.facebook.com','threads.com','threads.net','graph.threads.net')
+          def probe(name):
+              try:
+                  with socket.create_connection(('10.66.77.1',19443),timeout=7) as tcp:
+                      tcp.settimeout(7)
+                      with ssl.create_default_context().wrap_socket(tcp,server_hostname=name) as tls:
+                          return name,True,tls.version()
+              except Exception as e:return name,False,type(e).__name__
+          with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+              rows=list(pool.map(probe,hosts))
+          for name,ok,detail in rows:print('private_Meta_TLS_'+name+'='+str(ok).lower()+' detail='+detail,flush=True)
+          if sum(ok for _,ok,_ in rows)!=8:raise SystemExit('Meta private TLS incomplete')
+          print('private_WireGuard_8_of_8_TLS=PASS')
+          PY
+          # RU map is independently snapshotted and has its own systemd rollback timer.
+          ssh_ru "test ! -e '$ru_work' && mkdir -m 700 '$ru_work'"
+          tar -czf - -C scripts mnebydns-meta-ru-deploy.sh mnebydns-meta-ru-rollback.sh |
+            ssh_ru "tar -xzf - -C '$ru_work'"
+          ssh_ru "bash '$ru_work/mnebydns-meta-ru-deploy.sh' '$ru_work' '$deadline'"
+          # Verify RU original TLS via its new local stream route before publishing synthetic DNS.
+          ssh_ru 'python3 -' <<'PY'
+          import ssl,socket,concurrent.futures
+          hosts=('instagram.com','www.instagram.com','graph.instagram.com',
+                 'edge-mqtt.facebook.com','threads.com','threads.net','graph.threads.net')
+          def probe(name):
+              try:
+                  with socket.create_connection(('127.0.0.1',443),timeout=6) as tcp:
+                      tcp.settimeout(6)
+                      with ssl.create_default_context().wrap_socket(tcp,server_hostname=name) as tls:
+                          return name,True
+              except Exception as e:return name,type(e).__name__
+          with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+              rows=list(pool.map(probe,hosts))
+          for name,ok in rows:print('RU_local443_Meta_TLS_'+name+'='+str(ok).lower(),flush=True)
+          if sum(ok is True for _,ok in rows)!=len(hosts):raise SystemExit('RU local SNI map TLS incomplete')
+          print('RU_443_Meta_original_certificate_7_of_7=PASS')
+          PY
+          # First activate German ChatGPT proxy, then shared SNI, then CoreDNS; both watchdogs are armed.
+          ssh_de "bash '$de_work/mnebydns-combined-de-activate.sh' '$de_backup'"
+          # Validate original HTTPS certificates from both public ingress routes.
+          python3 - <<'PY'
+          import concurrent.futures,socket,ssl
+          requests=[('chatgpt.com','89.125.90.101'),
+                    ('android.chat.openai.com','89.125.90.101'),
+                    ('ws.chatgpt.com','89.125.90.101'),
+                    ('api.openai.com','89.125.90.101'),
+                    ('files.oaiusercontent.com','89.125.90.101'),
+                    ('cdn.oaistatic.com','89.125.90.101'),
+                    ('instagram.com','188.120.254.223'),
+                    ('threads.com','188.120.254.223'),
+                    ('claude.ai','89.125.90.101')]
+          def test(item):
+              host,ip=item
+              try:
+                  with socket.create_connection((ip,443),timeout=9) as sock:
+                      sock.settimeout(9)
+                      with ssl.create_default_context().wrap_socket(sock,server_hostname=host) as tls:
+                          return host,True,tls.version()
+              except Exception as exc:return host,False,type(exc).__name__
+          with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool: rows=list(pool.map(test,requests))
+          for host,ok,status in rows:print('three_app_public_original_TLS_'+host+'='+str(ok).lower()+' detail='+status,flush=True)
+          if not all(ok for _,ok,_ in rows):raise SystemExit('public three-app origin certificate mismatch')
+          print('three_app_public_TLS_certificate_9_of_9_PASS=true',flush=True)
+          PY
+          # Independent public certificate-validated DoT acceptance.
+          python3 - <<'PY'
+          import importlib.util,socket,concurrent.futures,pathlib
+          spec=importlib.util.spec_from_file_location('dot',pathlib.Path('vpn/ops/smart-dns-poc/probe-gemini-canary.py'))
+          assert spec and spec.loader
+          dot=importlib.util.module_from_spec(spec);spec.loader.exec_module(dot)
+          de='89.125.90.101'
+          ru='188.120.254.223'
+          cases=[('instagram.com',ru),('www.instagram.com',ru),
+                 ('threads.com',ru),('graph.threads.net',ru),
+                 ('chatgpt.com',de),('android.chat.openai.com',de),
+                 ('ws.chatgpt.com',de),('api.openai.com',de),
+                 ('files.oaiusercontent.com',de),('cdn.oaistatic.com',de),
+                 ('gemini.google.com',de),('claude.ai',de),('x.com',de),
+                 ('grok.com',de),('www.tiktok.com',de),
+                 ('api.telegram.org',None),('t.me',None)]
+          def probe(item):
+              host,expected=item
+              try:
+                  code,_,rr=dot.query(host,1,de,853,'dns.mnebyvpn.site',None)
+                  ips=[socket.inet_ntoa(data) for kind,ttl,data in rr if kind==1]
+                  valid=(code==0 and (ips==[expected] if expected else de not in ips and ru not in ips))
+                  return host,valid,ips
+              except Exception as exc:return host,False,[type(exc).__name__]
+          with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
+              rows=list(pool.map(probe,cases))
+          for name,ok,ips in rows:print('public_Meta_and_five_DoT_'+name+'='+str(ok).lower()+' answer='+','.join(ips),flush=True)
+          if not all(ok for _,ok,_ in rows):raise SystemExit('public DNS Meta or stable-five regression')
+          print('public_DoT_Meta_ChatGPT_five_and_Telegram_17_of_17=PASS')
+          PY
+          ssh_de "systemctl is-active --quiet 'mnebydns-combined-de-watchdog-$id.timer' && systemctl is-active --quiet 'mnebydns-combined-meta-$id.service' && echo DE_independent_watchdog_ACTIVE=true"
+          ssh_ru "systemctl is-active --quiet 'mnebydns-meta-ru-watchdog-$id.timer' && echo RU_independent_watchdog_ACTIVE=true"
+          completed=yes
+          echo "MNEBYDNS_three_app_TEST_WINDOW_ACTIVE_UNTIL_UTC=$deadline"
+          echo "ChatGPT_Instagram_Threads_mobile_app_test_NOT_YET_VERIFIED=true"
+          echo "Five_service_baseline_preserved_and_timer_rollback_armed=true"
