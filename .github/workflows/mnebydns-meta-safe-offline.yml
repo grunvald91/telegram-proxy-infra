@@ -1,0 +1,49 @@
+name: MNEBYDNS Meta safe canary script review (offline only)
+on:
+  push:
+    branches: [feature/mnebydns-meta-safe-24m-canary-20261109]
+    paths:
+      - scripts/mnebydns-meta-canary-prepare.sh
+      - scripts/mnebydns-meta-canary-activate.sh
+      - scripts/mnebydns-meta-canary-rollback.sh
+      - .github/workflows/mnebydns-meta-safe-offline.yml
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-meta-safe-offline
+  cancel-in-progress: true
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax, lint and fail-closed baseline logic
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y shellcheck
+          for f in scripts/mnebydns-meta-canary-{prepare,activate,rollback}.sh; do
+            bash -n "$f"
+            shellcheck -S warning "$f"
+          done
+          python3 -m py_compile scripts/mnebydns-meta-overlay.py
+          python3 scripts/mnebydns-meta-overlay.py self-test
+          python3 - <<'PY'
+          from pathlib import Path
+          root=Path("scripts")
+          p=(root/"mnebydns-meta-canary-prepare.sh").read_text()
+          a=(root/"mnebydns-meta-canary-activate.sh").read_text()
+          b=(root/"mnebydns-meta-canary-rollback.sh").read_text()
+          assert "systemd-analyze calendar" in p and "Persistent=true" in p
+          assert "RuntimeDirectory=mnebydns-meta-pilot" in p
+          assert "mnebydns-googlepilot.service" in p
+          assert "mnebydns-dot.service" in a and "systemctl restart mnebydns-dot.service" in a
+          assert "mnebydns-experiment-backups" in b
+          assert "cmp -s \"$checkpoint/dns.stable\" \"$base/dns.before\"" in b
+          assert "refuses_unowned_DNS" in b
+          assert "cmp -s \"$checkpoint/nginx.stable\"" in b
+          print("Meta_source_fail_closed_guard_review=PASS")
+          PY
+          echo MNEBYDNS_Meta_canary_code_only_review=PASS
