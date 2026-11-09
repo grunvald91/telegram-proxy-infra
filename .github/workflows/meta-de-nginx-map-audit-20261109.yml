@@ -1,0 +1,59 @@
+name: MNEBYDNS DE public Nginx SNI routing read-only audit
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths: [.github/workflows/meta-de-nginx-map-audit-20261109.yml]
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Read existing DE public TLS map without any server modifications
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass >/dev/null
+          SSHPASS="$DE_PASS" sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o LogLevel=ERROR root@89.125.90.101 'python3 -' <<'PY'
+          import pathlib,re,hashlib,glob,subprocess
+          master=pathlib.Path('/etc/nginx/nginx.conf')
+          if not master.is_file():raise SystemExit('DE public Nginx configuration missing')
+          base=master.read_text(errors='replace')
+          print('de_public_nginx_conf_sha256_12='+hashlib.sha256(base.encode()).hexdigest()[:12],flush=True)
+          print('de_public_nginx_conf_lines='+str(len(base.splitlines())),flush=True)
+          rc=subprocess.run(['nginx','-t'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=8).returncode
+          print('de_public_nginx_config_valid='+str(rc==0).lower(),flush=True)
+          roots=['/etc/nginx/nginx.conf']
+          for pat in ('/etc/nginx/streams.d/*.conf','/etc/nginx/conf.d/*.conf'):
+              roots += glob.glob(pat)
+          for name in sorted(set(roots)):
+              try:raw=pathlib.Path(name).read_text(errors='replace')
+              except OSError:continue
+              safe_name=pathlib.Path(name).name
+              lines=raw.splitlines()
+              print('de_nginx_file_'+safe_name.replace('.','_')+'_lines='+str(len(lines)),flush=True)
+              for i,line in enumerate(lines):
+                  if not re.search(r'\b(map|stream|listen|proxy_pass|ssl_preread|resolver|upstream|include|default|proxy_ssl|server_name)\b',line):
+                      continue
+                  if line.strip().startswith('#'):continue
+                  line=re.sub(r'(?<![a-zA-Z0-9_])(?:\d{1,3}\.){3}\d{1,3}', '[IP]',line)
+                  line=re.sub(r'[^\x20-\x7e]','?',line)
+                  print('de_nginx_relevant_'+safe_name.replace('.','_')+'_'+str(i+1)+'='+line.strip()[:190],flush=True)
+          print('de_nginx_stream_map_open=true',flush=True)
+          for line_no in range(87,127):
+              row=base.splitlines()[line_no-1]
+              row=re.sub(r'(?<![A-Za-z0-9_])(?:\d{1,3}\.){3}\d{1,3}','[IP]',row)
+              row=re.sub(r'[^\x20-\x7e]','?',row)
+              print('de_nginx_map_line_'+str(line_no)+'='+row.strip()[:210],flush=True)
+          print('de_nginx_stream_map_close=true',flush=True)
+          for zone in ('instagram','threads','facebook','meta','gemini','chatgpt'):
+              matches=[i+1 for i,row in enumerate(base.splitlines()) if zone in row.lower() and not row.strip().startswith('#')]
+              print('de_public_nginx_'+zone+'_matching_lines='+','.join(map(str,matches[:20])) if matches else 'de_public_nginx_'+zone+'_matching_lines=none',flush=True)
+          print('de_nginx_audit_complete=true',flush=True)
+          PY
