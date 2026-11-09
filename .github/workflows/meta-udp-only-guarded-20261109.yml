@@ -1,7 +1,8 @@
 name: MNEBYDNS Meta UDP-only guarded canary 18m
 on:
-  push:
-    branches: [diagnostics/meta-udp-only-guarded-20261109]
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
     paths: [.github/workflows/meta-udp-only-guarded-20261109.yml]
 permissions:
   contents: read
