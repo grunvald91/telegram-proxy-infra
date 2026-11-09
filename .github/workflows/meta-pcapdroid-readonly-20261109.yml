@@ -94,6 +94,13 @@ jobs:
           if role == 'ru':
               natcode, natout = run('nft', 'list', 'ruleset')
               print(f'{role}_nft_udp443_rule_present={str(natcode == 0 and any("udp dport 443" in l for l in natout.splitlines())).lower()}')
+              udp443_rules = [row for row in natout.splitlines() if 'udp dport 443' in row] if natcode == 0 else []
+              print(f'{role}_nft_udp443_rule_count={len(udp443_rules)}')
+              for verdict in ('drop','reject','accept','redirect','dnat','tproxy','jump','goto','queue'):
+                  count = sum(1 for row in udp443_rules if re.search(r'\b'+verdict+r'\b',row))
+                  print(f'{role}_nft_udp443_{verdict}_rules={count}')
+              counts = [int(m.group(1)) for row in udp443_rules if (m:=re.search(r'counter packets ([0-9]+)',row))]
+              if counts: print(f'{role}_nft_udp443_counter_packets_total={sum(counts)}')
               icode, iout = run('iptables', '-t', 'nat', '-S')
               print(f'{role}_iptables_nat_udp443_rule_present={str(icode == 0 and any("--dport 443" in l and "-p udp" in l for l in iout.splitlines())).lower()}')
               code, out = run('ss', '-H', '-lun', 'sport = :443')
