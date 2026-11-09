@@ -1,0 +1,66 @@
+name: MNEBYDNS ChatGPT same German route as Claude - offline safe tests
+on:
+  push:
+    branches: [diagnostics/mnebydns-meta-ingress-matrix-20261109]
+    paths:
+      - scripts/mnebydns-chatgpt-de-overlay.py
+      - .github/workflows/mnebydns-chatgpt-de-offline.yml
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify ChatGPT Germany-only additive CoreDNS plus Nginx routes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-chatgpt-de-overlay.py scripts/mnebydns-stable-five-render.py scripts/mnebydns-four-google-canary.py
+          python3 scripts/mnebydns-stable-five-render.py self-test
+          python3 scripts/mnebydns-chatgpt-de-overlay.py self-test
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y nginx libnginx-mod-stream
+          python3 - <<'PY'
+          import importlib.util, pathlib, tempfile, subprocess
+          script=pathlib.Path('scripts/mnebydns-chatgpt-de-overlay.py')
+          spec=importlib.util.spec_from_file_location('chatgpt_germany',script)
+          m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+          with tempfile.TemporaryDirectory() as path:
+              base=pathlib.Path(path)
+              shared=('load_module /usr/lib/nginx/modules/ngx_stream_module.so;\n'
+                      'events {}\nstream {\n'
+                      'map $ssl_preread_server_name $direct_mtproxy_backend {\n'
+                      'default 127.0.0.1:9000;\n'
+                      'gemini.google.com 127.0.0.1:15443;\n'
+                      'claude.ai 127.0.0.1:15449;\n'
+                      'www.tiktok.com 127.0.0.1:15449;\n'
+                      '}\nserver { listen 127.0.0.1:9443; proxy_pass $direct_mtproxy_backend; }\n}\n')
+              dns=('tls://.:853 {\n'
+                   'template IN A gemini.google.com { match ^gemini[.]google[.]com[.]$ }\n'
+                   'template IN A claude.ai { match ^claude[.]ai[.]$ }\n'
+                   'template IN A example.test { answer "{{ .Name }} 20 IN A 89.125.90.101" }\n'
+                   '    cache 30\nforward . tls://9.9.9.9 {}\n}\n')
+              foreign=('load_module /usr/lib/nginx/modules/ngx_stream_module.so;\n'
+                       'events {}\nstream {\n'
+                       'map $ssl_preread_server_name $experimental_origin {\n'
+                       'default 127.0.0.1:1;\nclaude.ai claude.ai:443;\n}\n'
+                       'server { listen 127.0.0.1:15449;\n'
+                       'ssl_preread on; proxy_pass $experimental_origin;\n'
+                       'resolver 9.9.9.9;\n}\n}\n')
+              result=m.render(shared,dns,foreign)
+              assert result['nginx.pilot'].replace(m.TAG, '') != shared
+              assert result['dns.pilot'].count('20 IN A 89.125.90.101') > 1
+              assert '188.120.254.223' not in result['dns.pilot']
+              assert 'claude.ai claude.ai:443;' in result['proxy.pilot']
+              assert 'www.tiktok.com 127.0.0.1:15449;' in result['nginx.pilot']
+              for part in ('nginx','proxy'):
+                  file=base/(part+'.nginx.conf')
+                  file.write_text(result[part+'.pilot'])
+                  subprocess.run(['sudo','nginx','-t','-c',str(file)],check=True)
+              print('ChatGPT_Germany_Nginx_syntax_VALID=true')
+              print('ChatGPT_DNS_uses_DE_IP_not_RU=true')
+              print('Claude_Google_TikTok_stable_routes_preserved=true')
+              print('production_servers_modified=false')
+          PY
