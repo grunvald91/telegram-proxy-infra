@@ -1,4 +1,4 @@
-name: MNEBYDNS Meta PCAP six SNI 28-minute protected canary
+name: MNEBYDNS Meta PCAP TCP and QUIC 28-minute guarded canary
 on:
   push:
     branches: [diagnostics/mnebydns-meta-ingress-matrix-20261109]
@@ -35,6 +35,9 @@ jobs:
           bash -n scripts/mnebydns-meta-ru-deploy.sh
           bash -n scripts/mnebydns-meta-ru-rollback.sh
           python3 scripts/mnebydns-meta-overlay.py self-test
+          python3 scripts/test-mnebydns-meta-quic.py
+          bash -n scripts/mnebydns-meta-quic-stage.sh
+          bash -n scripts/mnebydns-meta-quic-rollback.sh
           sudo apt-get update -qq
           sudo apt-get install -qq -y sshpass
           id="$GITHUB_RUN_ID"
@@ -56,6 +59,8 @@ jobs:
               echo "live_Meta_canary_failed_starting_scoped_rollback=true"
               ru_ssh "test ! -s '$rubase/rollback.sh' || bash '$rubase/rollback.sh' '$rubase'" || echo "RU_rollback_NOT_CONFIRMED=true"
               de_ssh "test ! -s '$debase/rollback.sh' || bash '$debase/rollback.sh' '$debase'" || echo "DE_rollback_NOT_CONFIRMED=true"
+              ru_ssh "test ! -s '/opt/mnebydns-meta-quic-$id/rollback.sh' || bash '/opt/mnebydns-meta-quic-$id/rollback.sh' ru '$id'" || echo "RU_QUIC_rollback_NOT_CONFIRMED=true"
+              de_ssh "test ! -s '/opt/mnebydns-meta-quic-$id/rollback.sh' || bash '/opt/mnebydns-meta-quic-$id/rollback.sh' de '$id'" || echo "DE_QUIC_rollback_NOT_CONFIRMED=true"
             fi
             exit "$rc"
           }
@@ -107,6 +112,40 @@ jobs:
           if not all(ok for _,ok in rows):raise SystemExit('RU Meta public ingress test failed')
           print('RU_to_DE_public_ingress_TLS_12_of_12=PASS',flush=True)
           PY
+          # QUIC v1 UDP 443 is needed by the actual Android PCAPs.
+          # Stage on foreign private WG first, then RU public UDP 443.
+          # Independent per-node systemd rollback guards and strict Meta SNI
+          # allowlisting; do not modify any existing TCP/DNS/Xray backend.
+          udpwork="/tmp/mnebydns-meta-quic-$id"
+          udpbase="/opt/mnebydns-meta-quic-$id"
+          de_ssh "test ! -e '$udpwork' && mkdir -m 700 '$udpwork'"
+          tar -czf - -C scripts mnebydns-meta-quic.py mnebydns-meta-quic-stage.sh mnebydns-meta-quic-rollback.sh test-mnebydns-meta-quic.py |
+            de_ssh "tar -xzf - -C '$udpwork'"
+          de_ssh "bash '$udpwork/mnebydns-meta-quic-stage.sh' de '$id' '$deadline'"
+          ru_ssh "test ! -e '$udpwork' && mkdir -m 700 '$udpwork'"
+          tar -czf - -C scripts mnebydns-meta-quic.py mnebydns-meta-quic-stage.sh mnebydns-meta-quic-rollback.sh test-mnebydns-meta-quic.py |
+            ru_ssh "tar -xzf - -C '$udpwork'"
+          ru_ssh "bash '$udpwork/mnebydns-meta-quic-stage.sh' ru '$id' '$deadline'"
+          # Synthetic QUIC Initial, not a packet from the owner's PCAP.
+          # The full RU localhost -> WG -> DE UDP proxy is validated before DNS cutover.
+          ru_ssh "python3 - '$udpwork/test-mnebydns-meta-quic.py'" <<'PY'
+          import importlib.util,pathlib,socket,sys
+          path=pathlib.Path(sys.argv[1])
+          spec=importlib.util.spec_from_file_location('fixture',path)
+          assert spec and spec.loader
+          fixture=importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(fixture)
+          packet=fixture.fixture_sni('i.instagram.com')
+          with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as s:
+              s.sendto(packet,('127.0.0.1',443))
+          print('RU_Meta_synthetic_QUIC_Initial_sent=true',flush=True)
+          PY
+          # The stateless first Initial is authenticated and should appear as
+          # one admitted flow on the remote end. No client addresses logged.
+          sleep 14
+          de_ssh "journalctl -u 'mnebydns-meta-quic-de-$id.service' --since '2 minutes ago' --no-pager -o cat | grep -Eq 'admitted=[1-9][0-9]*'"
+          de_ssh "systemctl is-active --quiet 'mnebydns-meta-quic-de-$id-rollback.timer' && echo DE_UDP_WG_Meta_QUIC_PASS=true"
+          ru_ssh "systemctl is-active --quiet 'mnebydns-meta-quic-ru-$id-rollback.timer' && echo RU_UDP443_Meta_QUIC_PASS=true"
           de_ssh "bash '$dework/mnebydns-meta-de-activate.sh' '$debase'"
           # The GitHub runner cannot probe public 853: certificate-validated
           # DNS-over-TLS is checked on the German server without changing it.
@@ -156,7 +195,7 @@ jobs:
           PY
           de_ssh "systemctl is-active --quiet 'mnebydns-meta-de-watchdog-$id.timer' && echo DE_rollback_armed=true"
           ru_ssh "systemctl is-active --quiet 'mnebydns-meta-ru-watchdog-$id.timer' && echo RU_rollback_armed=true"
-          echo "Meta_QUIC_UDP443_not_in_this_TCP_pilot=true"
+          echo "Meta_QUIC_UDP443_MNEBYDNS_META_ONLY_ACTIVE=true"
           echo "Meta_Instagram_Threads_public_test_ACTIVE_UNTIL=$deadline"
           echo "Meta_android_application_NOT_YET_TESTED=true"
           echo "persistent_rollback_on_both_servers_armed=true"
