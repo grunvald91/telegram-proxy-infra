@@ -100,11 +100,12 @@ Description=Fail-safe for incomplete ChatGPT permanent promotion
 Type=oneshot
 ExecStart=/bin/bash $out/fallback.sh $checkpoint $new_checkpoint $id
 UNIT
+safety_deadline="$(date -u -d '+5 minutes' +'%Y-%m-%d %H:%M:%S UTC')"
 cat > "$out/$safety.timer" <<UNIT
 [Unit]
 Description=Restore stable five after incomplete ChatGPT promotion
 [Timer]
-OnActiveSec=4min
+OnCalendar=$safety_deadline
 Persistent=true
 AccuracySec=1s
 Unit=$safety.service
