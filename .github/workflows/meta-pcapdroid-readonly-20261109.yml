@@ -92,11 +92,19 @@ jobs:
           print(f'{role}_meta_quic_service_count={len(lines)}')
           print(f'{role}_meta_quic_running_count={sum(len(s.split()) > 3 and s.split()[3] == "running" for s in lines)}')
           if role == 'ru':
+              natcode, natout = run('nft', 'list', 'ruleset')
+              print(f'{role}_nft_udp443_rule_present={str(natcode == 0 and any("udp dport 443" in l for l in natout.splitlines())).lower()}')
+              icode, iout = run('iptables', '-t', 'nat', '-S')
+              print(f'{role}_iptables_nat_udp443_rule_present={str(icode == 0 and any("--dport 443" in l and "-p udp" in l for l in iout.splitlines())).lower()}')
               code, out = run('ss', '-H', '-lun', 'sport = :443')
               print(f'{role}_udp443_listener_present={str(code == 0 and bool(out.strip())).lower()}')
               code, out = run('ss', '-H', '-ltn', 'sport = :443')
               print(f'{role}_tcp443_listener_present={str(code == 0 and bool(out.strip())).lower()}')
           else:
+              code, out = run('ss', '-H', '-lun', 'sport = :19444')
+              print(f'{role}_udp19444_listener_present={str(code == 0 and bool(out.strip())).lower()}')
+              code, out = run('ss', '-H', '-ltn', 'sport = :19443')
+              print(f'{role}_tcp19443_listener_present={str(code == 0 and bool(out.strip())).lower()}')
               print(f'{role}_cryptography_available={str(importlib.util.find_spec("cryptography") is not None).lower()}')
               for hostname in ('i.instagram.com', 'graph.instagram.com', 'threads.com'):
                   safe = hostname.replace('.', '_')
@@ -128,7 +136,12 @@ jobs:
                   rc, raw = run('journalctl','-u',unit,'--no-pager','-o','cat','-n','120')
                   rows=[s for s in raw.splitlines() if s.startswith('META_DE ')] if rc == 0 else []
                   print(f'{role}_tcp_origin_sessions_sampled={len(rows)}')
-                  print(f'{role}_tcp_sessions_with_origin_reply={sum(int(v.group(1)) > 0 for v in (re.search(r"\brecv_from_origin=(\d+)", row) for row in rows) if v)}')
+                  reply_count = 0
+                  for row in rows:
+                      hit = re.search('recv_from_origin=([0-9]+)', row)
+                      if hit and int(hit.group(1)) > 0:
+                          reply_count += 1
+                  print(f'{role}_tcp_sessions_with_origin_reply={reply_count}')
                   break
           print(f'{role}_read_only_complete=true')
           PY
