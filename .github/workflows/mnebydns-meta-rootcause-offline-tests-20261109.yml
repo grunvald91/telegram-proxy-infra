@@ -1,4 +1,5 @@
 name: MNEBYDNS Meta root-cause full offline regression and nginx syntax
+# Re-verify the corrected full-field aggregate observer report parser.
 on:
   push:
     branches: [diagnostics/mnebydns-meta-rootcause-20261109]
