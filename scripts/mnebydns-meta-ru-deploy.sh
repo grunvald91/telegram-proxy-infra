@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Temporary RU:443 Meta-only SNI passthrough into pre-existing private WireGuard.
+# Temporary RU:443 Meta + ChatGPT SNI passthrough into pre-existing private WireGuard.
 # No new public listener, no modification of unrelated service backends.
 set -Eeuo pipefail
 (( EUID == 0 )) || exit 2
@@ -41,14 +41,34 @@ zones=(
  'facebook.net','fbcdn.net','fbsbx.com','fb.com',
  'meta.com','meta.ai','instagramstatic.com','igcdn.com','fbcdn.com',
 )
-pattern='~*^(?:[a-z0-9-]+\\.)*(?:'+'|'.join(re.escape(z) for z in zones)+')$'
-insert=('\n    instagramstatic-a.akamaihd.net 10.66.77.1:19443;\n'
-        '    '+pattern+' 10.66.77.1:19443;\n')
+chatgpt_zones=(
+ 'chatgpt.com','openai.com','oaistatic.com','oaiusercontent.com','oaistatsig.com',
+)
+# Third-party integrations are exact names, never unbounded proxy zones.
+chatgpt_exact=(
+ 'cdn.openaimerge.com','cdn.workos.com','challenges.cloudflare.com',
+ 'forwarder.workos.com','frontend-apps-multi-region.workos.com',
+ 'images.workoscdn.com','setup.workos.com','workos.imgix.net',
+ 'js.intercomcdn.com','js.stripe.com','o207216.ingest.sentry.io',
+ 'o33249.ingest.sentry.io','rum.browser-intake-datadoghq.com',
+ 'ct.sendgrid.net','humb.apple.com',
+)
+for host in chatgpt_zones+chatgpt_exact:
+    if host in body:
+        raise ValueError('ChatGPT SNI already owned by an existing RU route')
+pattern='~*^(?:[a-z0-9-]+\.)*(?:'+'|'.join(re.escape(z) for z in zones)+')$'
+chatgpt_pattern='~*^(?:[a-z0-9-]+\.)*(?:'+'|'.join(re.escape(z) for z in chatgpt_zones)+')$'
+insert=(
+    '\n    instagramstatic-a.akamaihd.net 10.66.77.1:19443;\n'
+    + ''.join('    '+host+' 10.66.77.1:19443;\n' for host in chatgpt_exact)
+    + '    '+pattern+' 10.66.77.1:19443;\n'
+    + '    '+chatgpt_pattern+' 10.66.77.1:19443;\n'
+)
 m=matches[0]
 out=src[:m.end(1)]+insert+src[m.end(1):]
 assert out.replace(insert,'',1)==src
 pathlib.Path(sys.argv[2]).write_text(out)
-print('ru_exact_sni_map_meta_only=true',flush=True)
+print('ru_exact_sni_map_meta_plus_chatgpt=true',flush=True)
 print('ru_sni_existing_default_and_other_routes_preserved=true',flush=True)
 PY
 chown --reference="$live" "$base/pilot"
