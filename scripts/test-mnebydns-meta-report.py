@@ -16,7 +16,7 @@ lines={
  'mnebydns-meta-quic-de-'+run+'.service':['meta_quic_de_active=2 admitted=4 upstream_rx=3 client_tx=3'],
  'mnebydns-meta-pilot-'+run+'.service':[
   'META_DE status=200 sent_to_ru=248 recv_from_ru=550 sent_to_origin=550 recv_from_origin=248 connect=0.12 duration=0.55',
-  'META_DE status=502 sent_to_ru=0 recv_from_ru=550 sent_to_origin=550 recv_from_origin=0 connect=- duration=7.0']}
+  'META_DE status=502 sent_to_ru=- recv_from_ru=550 sent_to_origin=550 recv_from_origin=- connect=- duration=7.0']}
 
 def source(unit):return lines.get(unit,[])
 out=io.StringIO()
