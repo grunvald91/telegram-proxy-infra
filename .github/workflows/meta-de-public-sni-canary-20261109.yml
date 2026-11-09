@@ -1,0 +1,117 @@
+name: MNEBYDNS DE public Meta SNI 11m guarded TLS canary
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths: [.github/workflows/meta-de-public-sni-canary-20261109.yml]
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-google-public-443-change
+  cancel-in-progress: false
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Meta-only Nginx scripts before touching any server
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          bash -n scripts/mnebydns-meta-de-stage.sh scripts/mnebydns-meta-de-rollback.sh scripts/mnebydns-meta-de-public-stage.sh scripts/mnebydns-meta-de-public-rollback.sh
+          python3 scripts/mnebydns-meta-overlay.py self-test
+          echo 'de_public_meta_canary_static_preflight_pass=true'
+      - name: Route Meta SNI only on DE, validate public TLS and restore exact baseline
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass >/dev/null
+          id="$GITHUB_RUN_ID"
+          [[ "$id" =~ ^[0-9]{9,13}$ ]]
+          dework="/tmp/mnebydns-meta-de-$id"
+          publicwork="/tmp/mnebydns-meta-de-public-$id"
+          debase="/opt/mnebydns-experiment-backups/$id"
+          pubbase="/opt/mnebydns-meta-de-public-backups/$id"
+          # Independent expiry of the public route occurs BEFORE sidecar expiry.
+          public_deadline="$(date -u -d '+11 minutes' +'%Y-%m-%d %H:%M:%S UTC')"
+          sidecar_deadline="$(date -u -d '+15 minutes' +'%Y-%m-%d %H:%M:%S UTC')"
+          de_ssh() {
+            SSHPASS="$DE_PASS" sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o ServerAliveInterval=5 -o LogLevel=ERROR root@89.125.90.101 "$@"
+          }
+          ru_ssh() {
+            SSHPASS="$RU_PASS" sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o ServerAliveInterval=5 -o LogLevel=ERROR root@188.120.254.223 "$@"
+          }
+          restore() {
+            code=$?
+            trap - EXIT
+            echo 'DE_Meta_public_rollback_requested=true'
+            if ! de_ssh "test ! -s '$pubbase/rollback.sh' || bash '$pubbase/rollback.sh' '$pubbase'"; then
+              echo 'DE_public_443_rollback_NOT_VERIFIED=true';code=1
+            fi
+            if ! de_ssh "test ! -s '$debase/rollback.sh' || bash '$debase/rollback.sh' '$debase'"; then
+              echo 'DE_private_sidecar_rollback_NOT_VERIFIED=true';code=1
+            fi
+            if ! de_ssh "systemctl is-active --quiet nginx && systemctl is-active --quiet mnebydns-dot.service && cmp -s \"\$(cat /opt/mnebydns-stable-checkpoints/current)\"/nginx.stable /etc/nginx/nginx.conf && cmp -s \"\$(cat /opt/mnebydns-stable-checkpoints/current)\"/dns.stable /opt/mnebydns-dot/Corefile"; then
+              echo 'DE_Nginx_or_DNS_baseline_NOT_VERIFIED=true';code=1
+            else
+              echo 'DE_public_443_DNS_baseline_VERIFIED=true'
+            fi
+            echo "DE_meta_canary_final_exit=$code"
+            exit "$code"
+          }
+          trap restore EXIT
+          echo "DE_meta_public_rollback_UTC=$public_deadline"
+          echo "DE_meta_private_rollback_UTC=$sidecar_deadline"
+          de_ssh "test ! -e '$dework' && mkdir -m 700 '$dework'"
+          tar -czf - -C scripts mnebydns-meta-overlay.py mnebydns-four-google-canary.py mnebydns-meta-de-stage.sh mnebydns-meta-de-rollback.sh |
+            de_ssh "tar -xzf - -C '$dework'"
+          de_ssh "bash '$dework/mnebydns-meta-de-stage.sh' '$dework' '$sidecar_deadline'"
+          de_ssh "test ! -e '$publicwork' && mkdir -m 700 '$publicwork'"
+          tar -czf - -C scripts mnebydns-meta-de-public-stage.sh mnebydns-meta-de-public-rollback.sh |
+            de_ssh "tar -xzf - -C '$publicwork'"
+          de_ssh "bash '$publicwork/mnebydns-meta-de-public-stage.sh' '$publicwork' '$public_deadline'"
+          # Independent public source; sockets use public DE IP rather than WireGuard.
+          ru_ssh 'python3 -' <<'PY'
+          import socket,ssl,subprocess,concurrent.futures
+          de='89.125.90.101'
+          route=subprocess.run(['ip','-4','route','get',de],capture_output=True,text=True,timeout=6)
+          if route.returncode or 'tg-relay' in route.stdout:raise SystemExit('non-independent DE public test route')
+          print('ru_to_de_public_direct_route=true',flush=True)
+          targets=['i.instagram.com','graph.instagram.com','threads.com',
+                   'gemini.google.com','chatgpt.com']
+          def check(host):
+              tcp=False;tls=False;err='none'
+              try:
+                  with socket.create_connection((de,443),timeout=7) as sock:
+                      tcp=True
+                      sock.settimeout(7)
+                      try:
+                          with ssl.create_default_context().wrap_socket(sock,server_hostname=host) as t:
+                              tls=bool(t.getpeercert())
+                      except Exception as exc:err=type(exc).__name__
+              except Exception as exc:err=type(exc).__name__
+              return host,tcp,tls,err
+          with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
+              results=list(pool.map(check,targets))
+          for host,tcp,tls,err in results:
+              key=host.replace('.','_')
+              print('de_public_canary_'+key+'_tcp='+str(tcp).lower(),flush=True)
+              print('de_public_canary_'+key+'_tls_verified='+str(tls).lower(),flush=True)
+              print('de_public_canary_'+key+'_error='+err,flush=True)
+          meta=[ok for host,tcp,ok,err in results if host in targets[:3]]
+          stable=[ok for host,tcp,ok,err in results if host in targets[3:]]
+          print('de_public_canary_meta_tls_success='+str(sum(meta)),flush=True)
+          print('de_public_canary_stable_tls_success='+str(sum(stable)),flush=True)
+          if not all(stable):raise SystemExit('existing stable Gemini/ChatGPT TLS regression')
+          if not all(meta):raise SystemExit('Meta public DE TLS still incomplete')
+          print('DE_public_Meta_3_plus_stable_2_TLS=PASS',flush=True)
+          PY
+          de_ssh "systemctl is-active --quiet 'mnebydns-meta-de-public-watchdog-$id.timer' && echo DE_public_rollback_timer_armed=true"
+          de_ssh "systemctl is-active --quiet 'mnebydns-meta-de-watchdog-$id.timer' && echo DE_private_rollback_timer_armed=true"
+          echo 'Meta_public_DE_test_finished_cleanly=true'
