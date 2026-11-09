@@ -1,0 +1,26 @@
+name: MNEBYDNS Meta guarded trial aggregate-only report
+on:
+  push:
+    branches: [diagnostics/mnebydns-meta-rootcause-20261109]
+    paths: [ops/mnebydns-meta-rootcause-report.trigger]
+permissions:
+  contents: read
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read previously installed aggregate counters; no configuration changes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          run_id="$(cat ops/mnebydns-meta-rootcause-report.trigger)"
+          [[ "$run_id" =~ ^[0-9]{9,13}$ ]] || exit 2
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          SSHPASS="$RU_PASS" sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@188.120.254.223 "python3 /tmp/mnebydns-meta-quic-$run_id/mnebydns-meta-report.py --role ru --run-id $run_id"
+          SSHPASS="$DE_PASS" sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@89.125.90.101 "python3 /tmp/mnebydns-meta-quic-$run_id/mnebydns-meta-report.py --role de --run-id $run_id"
+          echo "meta_aggregate_read_only_report_generated=true"

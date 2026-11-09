@@ -1,0 +1,20 @@
+name: MNEBYDNS Meta independent real QUIC reference only
+on:
+  push:
+    branches: [diagnostics/mnebydns-meta-rootcause-20261109]
+    paths: [.github/workflows/mnebydns-meta-rootcause-quic-reference-20261109.yml]
+permissions:
+  contents: read
+jobs:
+  external-reference:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify direct QUIC v1 TLS with Meta public origins without using MNEBYDNS
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m pip install --quiet 'aioquic>=1.0,<3'
+          python3 scripts/mnebydns-meta-quic-handshake-probe.py --mode direct --timeout 5
+          echo "direct_QUIC_reference_only_no_server_changes=true"

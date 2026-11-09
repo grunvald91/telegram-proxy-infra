@@ -1,0 +1,62 @@
+name: MNEBYDNS combined three apps - live read-only preflight
+on:
+  push:
+    branches: [diagnostics/mnebydns-meta-ingress-matrix-20261109]
+    paths: [.github/workflows/mnebydns-combined-live-readonly-preflight.yml]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Verify deployed five-service checkpoint and RU original SNI without changes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS" && test -n "$RU_PASS"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          ssh_de() { SSHPASS="$DE_PASS" sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@89.125.90.101 "$@"; }
+          ssh_ru() { SSHPASS="$RU_PASS" sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@188.120.254.223 "$@"; }
+          ssh_de 'python3 -' <<'PY'
+          import pathlib,subprocess
+          root=pathlib.Path('/opt/mnebydns-stable-checkpoints')
+          checkpoint=pathlib.Path((root/'current').read_text().strip())
+          assert checkpoint.parent==root and checkpoint.name.isdecimal()
+          for k,p in (('nginx','/etc/nginx/nginx.conf'),
+                      ('dns','/opt/mnebydns-dot/Corefile'),
+                      ('proxy','/etc/mnebydns-googlepilot/nginx.conf')):
+              assert pathlib.Path(p).read_bytes()==(checkpoint/(k+'.stable')).read_bytes(), k
+              print('DE_stable_'+k+'_matches_saved_checkpoint=true',flush=True)
+          for service in ('nginx','mnebydns-dot.service','mnebydns-googlepilot.service',
+                          'mnebydns-gemini.service','xray.service'):
+              subprocess.run(['systemctl','is-active','--quiet',service],check=True,timeout=8)
+          for port in ('853','15449'):
+              result=subprocess.run(['ss','-H','-lnt','sport = :'+port],
+                  check=True,text=True,capture_output=True,timeout=8)
+              assert result.stdout.strip(),port
+          result=subprocess.run(['ss','-H','-lnt','sport = :19443'],
+                                check=True,text=True,capture_output=True,timeout=8)
+          assert not result.stdout.strip()
+          assert not pathlib.Path('/etc/mnebydns-meta-pilot').exists()
+          print('DE_live_five_units_and_listeners=HEALTHY',flush=True)
+          print('DE_private_Meta_sidecar_not_present=true',flush=True)
+          PY
+          ssh_ru 'python3 -' <<'PY'
+          import pathlib,subprocess
+          base=pathlib.Path('/opt/mnebydns-meta-ru-backups/42538883926/before')
+          live=pathlib.Path('/etc/nginx/streams.d/01-mtproxy-443.conf')
+          assert live.read_bytes()==base.read_bytes(), 'RU original SNI drifted'
+          for name in ('nginx',):
+              subprocess.run(['systemctl','is-active','--quiet',name],check=True,timeout=8)
+          subprocess.run(['nginx','-t'],check=True,capture_output=True,timeout=8)
+          x=subprocess.run(['ip','-4','route','get','10.66.77.1'],
+              check=True,capture_output=True,text=True,timeout=8)
+          assert 'tg-relay' in x.stdout
+          print('RU_original_443_and_WireGuard_route=READY',flush=True)
+          PY
+          echo "live_readonly_preflight_success_no_configs_changed=true"

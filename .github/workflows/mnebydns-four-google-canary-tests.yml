@@ -1,0 +1,156 @@
+name: Validate MNEBYDNS experimental four-service canary offline
+on:
+  push:
+    branches: ['feature/mnebydns-meta-via-wireguard-pilot-20261109']
+    paths:
+      - 'scripts/mnebydns-four-google-canary.py'
+      - 'scripts/mnebydns-four-google-deploy.sh'
+      - 'scripts/mnebydns-four-google-rollback.sh'
+      - 'scripts/mnebydns-claude-handoff.sh'
+      - 'scripts/mnebydns-meta-ru-deploy.sh'
+      - 'scripts/mnebydns-meta-ru-rollback.sh'
+      - '.github/workflows/mnebydns-four-google-canary-tests.yml'
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify four product exact-host canary renderer and safe transactional guards
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-four-google-canary.py
+          python3 scripts/mnebydns-four-google-canary.py self-test
+          python3 - <<'PY'
+          import importlib.util,pathlib
+          path=pathlib.Path('scripts/mnebydns-four-google-canary.py')
+          spec=importlib.util.spec_from_file_location('canary',path)
+          m=importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(m)
+          added=('android.googleapis.com','firebaseinstallations.googleapis.com','gcm-http.googleapis.com')
+          assert all(h in m.HOSTS for h in added)
+          assert len(m.HOSTS)==174 and len(set(m.HOSTS))==174
+          safe_443=('pki.google.com','clients1.google.com','notifications.google.com')
+          assert all(h in m.HOSTS for h in safe_443)
+          assert all(h in m.DYNAMIC_SUFFIXES for h in ('googleapis.com','google.com'))
+          assert len(m.DYNAMIC_SUFFIXES)==97
+          assert m.RU_INGRESS=='188.120.254.223'
+          assert len(m.META_SUFFIXES)==17
+          assert all(m.is_meta(h) for h in ('instagram.com','www.instagram.com','threads.net','edge-mqtt.facebook.com'))
+          assert not any(m.is_meta(h) for h in ('api.x.ai','www.tiktok.com','claude.ai'))
+          assert 'listen 10.66.77.1:19443;' in m.proxy_config()
+          # Owner-directed temporary DNS-only redirect includes all system names.
+          android_system=('mtalk.google.com','mtalk4.google.com','time.google.com',
+                          'fcm.googleapis.com','fcm-xmpp.googleapis.com',
+                          'firebaseinstallations.googleapis.com','gcm-http.googleapis.com',
+                          'gcm-xmpp.googleapis.com','android.googleapis.com',
+                          'pki.google.com','clients1.google.com',
+                          'notifications.google.com','stun.l.google.com')
+          assert len(android_system)==13
+          assert all(h in m.HOSTS for h in android_system)
+          claude=('claude.ai','a.claude.ai','a-cdn.claude.ai',
+                  'assets.claude.ai','downloads.claude.ai','claude.com',
+                  'code.claude.com','platform.claude.com','api.anthropic.com',
+                  'a-api.anthropic.com','a-cdn.anthropic.com','s-cdn.anthropic.com',
+                  'assets-proxy.anthropic.com','statsig.anthropic.com',
+                  'bridge.claudeusercontent.com','claudeusercontent.com',
+                  'claudemcpcontent.com','claude.app')
+          assert len(claude)==18 and all(h in m.HOSTS for h in claude)
+          social=('instagram.com','www.instagram.com','graph.instagram.com',
+                  'api.instagram.com','cdninstagram.com','ig.me','instagr.am',
+                  'threads.com','www.threads.com','threads.net',
+                  'x.com','api.x.com','twitter.com','api.twitter.com','t.co',
+                  'twimg.com','pbs.twimg.com','video.twimg.com',
+                  'grok.com','grok.x.ai','x.ai','api.x.ai',
+                  'graph.facebook.com','connect.facebook.net')
+          assert all(h in m.HOSTS for h in social)
+          meta_extra=('meta.com','meta.ai','graph.threads.net',
+                      'edge-mqtt.facebook.com','rupload.facebook.com',
+                      'instagramstatic-a.akamaihd.net')
+          tiktok=('tiktok.com','api.tiktokv.com','api16-normal-c-alisg.tiktokv.com',
+                  'tiktokcdn.com','tiktokcdn-us.com','musical.ly',
+                  'api2.musical.ly','byteoversea.com','snssdk.com',
+                  'ibytedtos.com','ibyteimg.com','tiktokw.eu')
+          telegram=('telegram.org','web.telegram.org','api.telegram.org',
+                    't.me','telegra.ph','telegram.me','telegram.dog',
+                    'telegram-cdn.org','telegramusercontent.com')
+          assert all(h in m.HOSTS for h in (*meta_extra,*tiktok,*telegram))
+          assert all(z in m.DYNAMIC_SUFFIXES for z in (
+              'meta.ai','instagramstatic.com','tiktok.com','tiktokv.com',
+              'tiktokcdn.com','musical.ly','byteoversea.com',
+              'telegram.org','telegram-cdn.org','telegramusercontent.com'))
+          social_suffix=('instagram.com','cdninstagram.com','threads.com',
+                         'threads.net','facebook.com','facebook.net','fbcdn.net',
+                         'x.com','twitter.com','twimg.com','t.co',
+                         'grok.com','x.ai','grokusercontent.com')
+          assert all(h in m.DYNAMIC_SUFFIXES for h in social_suffix)
+          assert all(z in m.DYNAMIC_SUFFIXES for z in (
+              'claude.ai','claude.com','anthropic.com',
+              'claudeusercontent.com','claudemcpcontent.com','claude.app'))
+          fixture='''tls://.:853 {
+              template IN A gemini.google.com { match x }
+              cache 30
+          }
+          '''
+          rendered=m.render_dot(fixture)
+          for h in ('instagram.com','www.instagram.com','threads.com','graph.threads.net','edge-mqtt.facebook.com'):
+              assert ('template IN A '+h+' {') in rendered
+              section=rendered.split('template IN A '+h+' {',1)[1].split('\\n    }\\n',1)[0]
+              assert '188.120.254.223' in section
+          for h in ('api.x.ai','www.tiktok.com','claude.ai'):
+              section=rendered.split('template IN A '+h+' {',1)[1].split('\\n    }\\n',1)[0]
+              assert '89.125.90.101' in section
+          assert 'match '+m.META_DYNAMIC in rendered
+          assert 'match '+m.OTHER_DYNAMIC in rendered
+          assert all(('template IN A '+h+' {') in rendered for h in (*android_system,*claude,*social,*meta_extra,*tiktok,*telegram))
+          print('Android_Google_Claude_Meta_TikTok_Telegram_174_exact_97_suffixes=PASS')
+          PY
+          bash -n scripts/mnebydns-four-google-deploy.sh
+          bash -n scripts/mnebydns-four-google-rollback.sh
+          bash -n scripts/mnebydns-claude-handoff.sh
+          bash -n scripts/mnebydns-meta-ru-deploy.sh
+          bash -n scripts/mnebydns-meta-ru-rollback.sh
+          python3 - <<'PY'
+          from pathlib import Path
+          r=Path('scripts/mnebydns-four-google-rollback.sh').read_text()
+          d=Path('scripts/mnebydns-four-google-deploy.sh').read_text()
+          assert 'cmp -s "$base/$component.pilot" "$live"' in r
+          assert 'cmp -s "$base/$component.before" "$live"' in r
+          assert 'OnCalendar=$deadline' in d
+          assert 'Persistent=true' in d
+          assert 'systemctl enable --now "$watchdog.timer"' in d
+          assert 'systemd-analyze calendar "$deadline"' in d
+          assert r.index('systemctl stop mnebydns-googlepilot.service') > r.index('systemctl restart mnebydns-dot.service')
+          assert 'nginx -t' in d
+          assert 'systemctl reload nginx' in d
+          assert 'systemctl restart mnebydns-dot.service' in d
+          assert 'xray' in d and 'stitch.withgoogle.com' in d
+          assert 'MNEBYDNS Google Claude Meta TikTok Telegram short diagnostic pilot' in d
+          assert 'nginx -t -c "$base/nginx.pilot"' in d
+          h=Path('scripts/mnebydns-claude-handoff.sh').read_text()
+          assert 'bash "$old/rollback.sh" "$old"' in h
+          assert 'handoff_refused_unknown_production_configuration=true' in h
+          assert 'bash "$work/mnebydns-four-google-deploy.sh" "$work"' in h
+          assert 'cmp -s "$old/nginx.before" "$nginx"' in h
+          assert 'cmp -s "$old/dns.before" "$dns"' in h
+          assert 'systemctl is-active --quiet mnebydns-four-google-watchdog-42536213503.timer' in h
+          assert 'api.anthropic.com' in d and 'bridge.claudeusercontent.com' in d
+          for hst in ('instagram.com','threads.com','x.com','grok.com','api.x.ai','www.tiktok.com','api.tiktokv.com','t.me','api.telegram.org'):
+              assert hst in d
+          assert '/opt/mnebydns-googlepilot-backups/42536213503' in h
+          meta=Path('scripts/mnebydns-meta-ru-deploy.sh').read_text()
+          restore=Path('scripts/mnebydns-meta-ru-rollback.sh').read_text()
+          assert 'nginx -t' in meta and 'systemctl reload nginx' in meta
+          assert '35 minutes' in meta and 'Persistent=true' in meta
+          assert '10.66.77.1:19443' in meta
+          assert 'default 10.66.77.1:443;' in meta
+          assert 'stream_443_backend' in meta
+          assert 'cmp -s "$base/pilot" "$live"' in restore
+          assert 'ru_meta_rollback_refuses_unowned_config=true' in restore
+          assert 'telegram.org' not in meta
+          print('ru_meta_ingress_scope_and_rollback_contract=PASS')
+          print('transactional_auto_rollback_contract=PASS')
+          PY

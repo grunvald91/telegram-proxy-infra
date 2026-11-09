@@ -1,0 +1,585 @@
+#!/usr/bin/env python3
+"""Generate reversible MNEBYDNS *experimental* exact-host + video CDN routes.
+
+Never edits production files. Caller must separately validate and transact.
+A new isolated SNI service is used; existing VPN, Gemini, Discord, Telegram
+and other live ingress routes are byte-for-byte preserved.
+"""
+import pathlib
+import re
+import sys
+
+FOREIGN = "89.125.90.101"
+BACKEND = "127.0.0.1:15449"
+# Initial real-world operator experiment: 17 hosts passed foreign TLS,
+# several YouTube and Google-account endpoints failed direct RU TLS.
+# Only exact hostnames are redirected apart from Google's video CDN family.
+HOSTS = (
+    "jnn-pa.googleapis.com",
+    "waa-pa.clients6.google.com",
+    "www.googleapis.com",
+    "optimizationguide-pa.googleapis.com",
+    # Three Android/Google candidates surfaced by earlier owner VPN socket study.
+    # Their identity is NOT established by the study (shared Google IPs).
+    # This is an explicitly time-limited TCP/443 experiment only.
+    "android.googleapis.com",
+    "firebaseinstallations.googleapis.com",
+    "gcm-http.googleapis.com",
+    # Android HTTPS-only endpoints per official Android Enterprise network table.
+    # Port-dependent FCM/NTP are explicitly covered only for this temporary DNS test.
+    "pki.google.com",
+    "clients1.google.com",
+    "notifications.google.com",
+    # ONE-OFF user-directed test: even non-443 Android system DNS names
+    # resolve to the German ingress. These protocols are NOT relayed by
+    # the current TCP/443-only server and may fail until automatic rollback.
+    "mtalk.google.com",
+    "mtalk4.google.com",
+    "time.google.com",
+    "fcm.googleapis.com",
+    "fcm-xmpp.googleapis.com",
+    "gcm-xmpp.googleapis.com",
+    "stun.l.google.com",
+    # Claude's Web/Android, API, auth, static and bridge service destinations.
+    "claude.ai",
+    "a.claude.ai",
+    "a-cdn.claude.ai",
+    "assets.claude.ai",
+    "downloads.claude.ai",
+    "claude.com",
+    "code.claude.com",
+    "platform.claude.com",
+    "api.anthropic.com",
+    "a-api.anthropic.com",
+    "a-cdn.anthropic.com",
+    "s-cdn.anthropic.com",
+    "assets-proxy.anthropic.com",
+    "statsig.anthropic.com",
+    "bridge.claudeusercontent.com",
+    "claudeusercontent.com",
+    "claudemcpcontent.com",
+    "claude.app",
+    "www.youtube.com",
+    "youtubei.googleapis.com",
+    "i.ytimg.com",
+    "s.ytimg.com",
+    "yt3.ggpht.com",
+    "stitch.withgoogle.com",
+    "accounts.google.com",
+    "aistudio.google.com",
+    "generativelanguage.googleapis.com",
+    "oauth2.googleapis.com",
+    "lh5.googleusercontent.com",
+    "ssl.gstatic.com",
+    "fonts.googleapis.com",
+    "play.google.com",
+    "ogs.google.com",
+    "www.google.com",
+    "apis.google.com",
+    "lh3.googleusercontent.com",
+    "maps.gstatic.com",
+    "lh3.google.com",
+    "ogads-pa.clients6.google.com",
+    "csp.withgoogle.com",
+    "www.googletagmanager.com",
+    "fonts.gstatic.com",
+    "maps.googleapis.com",
+    "static.doubleclick.net",
+    "www.gstatic.com",
+    "td.doubleclick.net",
+    "googleads.g.doubleclick.net",
+    "www.google-analytics.com",
+    "encrypted-tbn0.gstatic.com",
+    "encrypted-tbn1.gstatic.com",
+    "encrypted-tbn2.gstatic.com",
+    "encrypted-tbn3.gstatic.com",
+    "streetviewpixels-pa.googleapis.com",
+    "content-autofill.googleapis.com",
+    "labs.google",
+    "youtube.com",
+    "m.youtube.com",
+    "youtu.be",
+    "accounts.youtube.com",
+    "www.youtube-nocookie.com",
+    "mail.google.com",
+    "drive.google.com",
+    "docs.google.com",
+    "sheets.google.com",
+    "calendar.google.com",
+    "photos.google.com",
+    "maps.google.com",
+    "myaccount.google.com",
+    "people.googleapis.com",
+    "storage.googleapis.com",
+    "youtube-nocookie.com",
+    "www.google.ru",
+    "www.google.de",
+    "www.google.co.uk",
+    # Time-limited Android-app candidate routes: Instagram, Threads, X and Grok.
+    "instagram.com",
+    "www.instagram.com",
+    "graph.instagram.com",
+    "api.instagram.com",
+    "i.instagram.com",
+    "cdninstagram.com",
+    "ig.me",
+    "instagr.am",
+    "threads.com",
+    "www.threads.com",
+    "threads.net",
+    "www.threads.net",
+    "x.com",
+    "api.x.com",
+    "twitter.com",
+    "api.twitter.com",
+    "t.co",
+    "twimg.com",
+    "pbs.twimg.com",
+    "video.twimg.com",
+    "grok.com",
+    "www.grok.com",
+    "grok.x.ai",
+    "x.ai",
+    "api.x.ai",
+    "grokusercontent.com",
+    "graph.facebook.com",
+    "b-graph.facebook.com",
+    "connect.facebook.net",
+    "mqtt-ig-p4.facebook.com",    # User-directed 30-minute Meta + TikTok + Telegram DNS candidate routes.
+    # Telegram native MTProto often uses literal DC IPs, NOT captured by DNS.
+    "meta.com",
+    "www.meta.com",
+    "meta.ai",
+    "graph.threads.net",
+    "www.facebook.com",
+    "edge-mqtt.facebook.com",
+    "mqtt.facebook.com",
+    "rupload.facebook.com",
+    "static.xx.fbcdn.net",
+    "instagramstatic-a.akamaihd.net",
+    "tiktok.com",
+    "www.tiktok.com",
+    "m.tiktok.com",
+    "api.tiktokv.com",
+    "api16-normal-c-useast1a.tiktokv.com",
+    "api16-core-c-alisg.tiktokv.com",
+    "api16-normal-c-alisg.tiktokv.com",
+    "api16-normal-useast5.us.tiktokv.com",
+    "tiktokv.com",
+    "tiktokcdn.com",
+    "tiktokcdn-eu.com",
+    "tiktokcdn-us.com",
+    "v16.tiktokcdn.com",
+    "musical.ly",
+    "api2.musical.ly",
+    "snssdk.com",
+    "sgsnssdk.com",
+    "ttwstatic.com",
+    "byteoversea.com",
+    "ibytedtos.com",
+    "ibyteimg.com",
+    "isnssdk.com",
+    "muscdn.com",
+    "tiktokw.eu",
+    "tiktokw.us",
+    "webcast.tiktokv.com",
+    "p16-tiktokcdn-com.akamaized.net",
+    "telegram.org",
+    "web.telegram.org",
+    "api.telegram.org",
+    "core.telegram.org",
+    "telegram.me",
+    "telegram.dog",
+    "t.me",
+    "telegra.ph",
+    "telesco.pe",
+    "telegram-cdn.org",
+    "cdn-telegram.org",
+    "telegramusercontent.com",
+    "translations.telegram.org",
+    "fragment.com",
+    "webk.telegram.org",
+    "webz.telegram.org",
+
+)
+# ONE-OFF 30-minute all-known-Android experiment, INCLUDING system non-443.
+# Broad Google + related service DNS suffixes are intentionally redirected to
+# foreign ingress. ONLY TCP/443 has an origin SNI relay; NTP/FCM/STUN ports
+# have no foreign forwarding service and may stop working during the pilot.
+DYNAMIC_SUFFIXES = (
+    "googlevideo.com", "ytimg.com", "ggpht.com",
+    "gstatic.com", "googleusercontent.com", "youtube.com",
+    "youtube-nocookie.com", "withgoogle.com",
+    "google.com", "googleapis.com", "google.ru", "google.de",
+    "google.co.uk", "googletagmanager.com", "google-analytics.com",
+    "doubleclick.net", "googleadservices.com",
+    "claude.ai", "claude.com", "anthropic.com",
+    "claudeusercontent.com", "claudemcpcontent.com", "claude.app",
+    "instagram.com",
+    "cdninstagram.com",
+    "instagr.am",
+    "ig.me",
+    "igsonar.com",
+    "threads.com",
+    "threads.net",
+    "facebook.com",
+    "facebook.net",
+    "fbcdn.net",
+    "fbsbx.com",
+    "fb.com",
+    "x.com",
+    "twitter.com",
+    "twimg.com",
+    "t.co",
+    "pscp.tv",
+    "ads-twitter.com",
+    "twtrdns.net",
+    "grok.com",
+    "x.ai",
+    "grokusercontent.com",
+    "grokipedia.com",    "meta.com",
+    "meta.ai",
+    "instagramstatic.com",
+    "igcdn.com",
+    "fbcdn.com",
+    "tiktok.com",
+    "tiktokcdn.com",
+    "tiktokcdn-us.com",
+    "tiktokcdn-eu.com",
+    "tiktokv.com",
+    "tiktokv.us",
+    "tiktokv.eu",
+    "tiktokw.us",
+    "tiktokw.eu",
+    "musical.ly",
+    "muscdn.com",
+    "ibytedtos.com",
+    "ibyteimg.com",
+    "byteoversea.com",
+    "byteoversea.net",
+    "snssdk.com",
+    "sgsnssdk.com",
+    "isnssdk.com",
+    "ttwstatic.com",
+    "ttlivecdn.com",
+    "ttwebview.com",
+    "bytedapm.com",
+    "bytegecko-i18n.com",
+    "pangle-ads.com",
+    "tiktokrow-cdn.com",
+    "ttdns2.com",
+    "tiktokeu-cdn.com",
+    "tiktokd.net",
+    "tiktokd.org",
+    "tiktokmusic.app",
+    "pstatp.com", "ipstatp.com", "byteimg.com",
+    "sgpstatp.com", "tik-tokapi.com",
+    "ttoverseaus.net",
+    "telegram.org",
+    "telegram.me",
+    "telegram.dog",
+    "t.me",
+    "telegra.ph",
+    "telesco.pe",
+    "telegram-cdn.org",
+    "cdn-telegram.org",
+    "telegramusercontent.com",
+    "fragment.com",
+
+)
+# Only these Meta domains are routed through the existing private RU<->DE
+# WireGuard link. This preserves already proven Germany-direct Google/Claude
+# and TikTok routes byte-for-byte.
+RU_INGRESS = "188.120.254.223"
+META_SUFFIXES = (
+    "instagram.com", "cdninstagram.com", "instagr.am", "ig.me",
+    "igsonar.com", "threads.com", "threads.net", "facebook.com",
+    "facebook.net", "fbcdn.net", "fbsbx.com", "fb.com",
+    "meta.com", "meta.ai", "instagramstatic.com", "igcdn.com", "fbcdn.com",
+)
+META_EXACT = ("instagramstatic-a.akamaihd.net",)
+META_DYNAMIC = r"(?i)^(?:[a-z0-9-]+[.])*(?:" + "|".join(
+    re.escape(x) for x in META_SUFFIXES) + r")[.]$"
+OTHER_SUFFIXES = tuple(x for x in DYNAMIC_SUFFIXES if x not in META_SUFFIXES)
+OTHER_DYNAMIC = r"(?i)^(?:[a-z0-9-]+[.])*(?:" + "|".join(
+    re.escape(x) for x in OTHER_SUFFIXES) + r")[.]$"
+
+
+def is_meta(host: str) -> bool:
+    return host in META_EXACT or any(
+        host == zone or host.endswith("." + zone) for zone in META_SUFFIXES
+    )
+
+VIDEO = r"(?i)^(?:[a-z0-9-]+[.])*(?:" + "|".join(
+    re.escape(x) for x in DYNAMIC_SUFFIXES) + r")[.]$"
+VIDEO_NGINX = r"~*^(?:[a-z0-9-]+\.)*(?:" + "|".join(
+    re.escape(x) for x in DYNAMIC_SUFFIXES) + r")$"
+MAP = re.compile(
+    r"(map\s+\$ssl_preread_server_name\s+\$direct_mtproxy_backend\s*\{)"
+    r"([^{}]*)(\})", re.S
+)
+RR = ("A","AAAA","HTTPS","SVCB","CNAME")
+
+
+def validate() -> None:
+    assert len(set(HOSTS)) == len(HOSTS)
+    for host in HOSTS:
+        assert re.fullmatch(r"[a-z0-9-]+(?:[.][a-z0-9-]+)+",host)
+        # Explicit temporary experiment includes FCM, NTP, STUN DNS names.
+    assert VIDEO_NGINX.startswith("~*^")
+
+
+def render_sni(nginx: str) -> str:
+    validate()
+    matches = list(MAP.finditer(nginx))
+    if len(matches) != 1:
+        raise ValueError("Unrecognized shared 443 SNI map")
+    section = matches[0]
+    old = section.group(2)
+    if old.count("gemini.google.com 127.0.0.1:15443;") != 1:
+        raise ValueError("Original Gemini SNI entry not verified")
+    if not re.search(r"(?m)^[ \t]*default[ \t]+\S+;",old):
+        raise ValueError("Original shared SNI fallback missing")
+    if "15449" in nginx or any(re.search(r"(?m)^\s*~\*?.*"+re.escape(zone)+r".*\S+;",old) for zone in DYNAMIC_SUFFIXES):
+        raise ValueError("Conflicting prior experimental route")
+    # Preserve existing exact names byte-for-byte, rather than attempting to
+    # redirect a name already owned by another verified localhost backend.
+    # The deployer must test public original TLS for every pre-existing host.
+    missing = []
+    for host in HOSTS:
+        present=re.findall(r"(?m)^[ \t]*"+re.escape(host)+r"[ \t]+([^;]+);",old)
+        if len(present)>1:
+            raise ValueError("Duplicate existing exact SNI route: "+host)
+        if present:
+            backend=present[0].strip()
+            if not re.fullmatch(r"127[.]0[.]0[.]1:[0-9]{2,5}",backend):
+                raise ValueError("Unsafe existing exact SNI owner: "+host)
+        else:
+            missing.append(host)
+    insertion = "\n" + "".join(f"        {host} {BACKEND};\n" for host in missing)
+    insertion += f"        {VIDEO_NGINX} {BACKEND};\n"
+    # Insert exact hosts BEFORE regex matching to avoid shadow by broad masks.
+    result = nginx[:section.end(2)] + insertion + nginx[section.end(2):]
+    if result.replace(insertion,"",1) != nginx:
+        raise AssertionError("Not additive")
+    return result
+
+
+def rr_template(host:str,kind:str,match:str|None=None,ip:str|None=None)->str:
+    pattern=match or ("^"+re.escape(host).replace(r"\.","[.]")+"[.]$")
+    if kind=="A":
+        target=ip or (RU_INGRESS if is_meta(host) else FOREIGN)
+        response=f'        answer "{{{{ .Name }}}} 20 IN A {target}"\n'
+    else:
+        response="        rcode NOERROR\n"
+    return (f"    template IN {kind} {host} {{\n"
+            f"        match {pattern}\n{response}"
+            "        fallthrough\n"
+            "    }\n")
+
+
+def render_dot(corefile:str)->str:
+    validate()
+    if corefile.count("template IN A gemini.google.com {")!=1:
+        raise ValueError("Existing gemini synthetic response missing")
+    marker="    cache 30\n"
+    if corefile.count(marker)!=1:
+        raise ValueError("Unknown CoreDNS pipeline")
+    for host in HOSTS:
+        if re.search(r"template IN (?:A|AAAA|HTTPS|SVCB|CNAME)\s+"+
+                     re.escape(host)+r"\s*\{",corefile):
+            raise ValueError("Target CoreDNS response already present: "+host)
+    if "googlevideo[.]com" in corefile:
+        raise ValueError("Conflicting old video rewrite")
+    insertion="\n    # MNEBYDNS 4-service USER CANARY; expires unless explicitly promoted\n"
+    for host in HOSTS:
+        for kind in RR:
+            insertion+=rr_template(host,kind)
+    for kind in RR:
+        insertion+=rr_template(".",kind,META_DYNAMIC,ip=RU_INGRESS)
+        insertion+=rr_template(".",kind,OTHER_DYNAMIC,ip=FOREIGN)
+    new=corefile.replace(marker,insertion+marker,1)
+    if new.replace(insertion,"",1)!=corefile:
+        raise AssertionError("Not additive")
+    return new
+
+
+def proxy_config()->str:
+    validate()
+    names="".join(f"        {h} {h}:443;\n" for h in HOSTS)
+    return (
+      "# MNEBYDNS experimental isolated foreign-origin TCP443 SNI passthrough\n"
+      "load_module /usr/lib/nginx/modules/ngx_stream_module.so;\n"
+      "worker_processes 1;\n"
+      "pid /run/mnebydns-googlepilot/nginx.pid;\n"
+      "error_log stderr warn;\n"
+      "events { worker_connections 192; }\n"
+      "stream {\n"
+      "    resolver 9.9.9.9 ipv6=off valid=30s;\n"
+      "    resolver_timeout 5s;\n"
+      "    map $ssl_preread_server_name $experimental_origin {\n"
+      "        default 127.0.0.1:1;\n"+names+
+      f"        {VIDEO_NGINX} $ssl_preread_server_name:443;\n"
+      "    }\n"
+      "    server {\n"
+      "        listen 127.0.0.1:15449;\n"
+      "        listen 10.66.77.1:19443;\n"
+      "        ssl_preread on;\n"
+      "        proxy_pass $experimental_origin;\n"
+      "        proxy_connect_timeout 7s;\n"
+      "        proxy_timeout 120s;\n"
+      "        proxy_buffer_size 16k;\n"
+      "        access_log off;\n"
+      "    }\n"
+      "}\n"
+    )
+
+
+def self_test()->None:
+    old_nginx=("stream {map $ssl_preread_server_name $direct_mtproxy_backend {\n"
+               "default 127.0.0.1:9000;\n"
+               "gemini.google.com 127.0.0.1:15443;\n"
+               "discord.com 127.0.0.1:15401;\n}\n}\n")
+    old_dns=("tls://.:853 {\n"
+             "    template IN A gemini.google.com { match ^gemini[.]google[.]com[.]$ }\n"
+             "    cache 30\n    forward . tls://9.9.9.9 {}\n}\n")
+    ns=render_sni(old_nginx)
+    nd=render_dot(old_dns)
+    assert ns != old_nginx and nd != old_dns
+    assert ns.count("gemini.google.com 127.0.0.1:15443;")==1
+    assert ns.count("discord.com 127.0.0.1:15401;")==1
+    assert len(HOSTS)>=50
+    for host in HOSTS:
+        assert ns.count("\n        "+host+" "+BACKEND+";")==1
+        assert nd.count("template IN A "+host+" {")==1
+    # Earlier exact SNI entries are preserved and never overridden.
+    already="www.google.com 127.0.0.1:15445;"
+    existing=old_nginx.replace(
+        "discord.com 127.0.0.1:15401;",
+        "discord.com 127.0.0.1:15401;\n"+already)
+    new_with_existing=render_sni(existing)
+    assert already in new_with_existing
+    assert new_with_existing.count("www.google.com 127.0.0.1:15449;")==0
+    assert "www.google.com" in existing_exact_hosts(existing)
+    assert "www.google.com" not in existing_exact_hosts(old_nginx)
+    assert nd.count("template IN A . {")==2
+    assert 'answer "{{ .Name }} 20 IN A '+FOREIGN+'"' in nd
+    assert ns.replace("\n"+"".join(f"        {host} {BACKEND};\n" for host in HOSTS)+
+                     f"        {VIDEO_NGINX} {BACKEND};\n","")==old_nginx
+    for kind in RR:
+        assert "template IN "+kind+" . {" in nd
+    # CoreDNS uses RE2 and Nginx uses PCRE; both wildcard expansions must
+    # actually match real Google media hostnames (not literal backslashes).
+    for domain in ("r3---sn-abcd.googlevideo.com","i.ytimg.com",
+                   "fonts.gstatic.com","abc.googleusercontent.com",
+                   "youtube.com","stitch.withgoogle.com"):
+        assert re.fullmatch(VIDEO,domain+".") is not None,domain
+        assert re.fullmatch(VIDEO_NGINX[2:],domain,re.IGNORECASE) is not None,domain
+    for domain in ("time.google.com","mtalk.google.com","stun.l.google.com",
+                   "firebaseinstallations.googleapis.com",
+                   "generativelanguage.googleapis.com",
+                   "fcm.googleapis.com","gcm-http.googleapis.com",
+                   "nested.client.google.com","nested.service.googleapis.com"):
+        assert re.fullmatch(VIDEO,domain+".") is not None,domain
+        assert re.fullmatch(VIDEO_NGINX[2:],domain,re.IGNORECASE) is not None,domain
+    for domain in ("claude.ai","a.claude.ai","new-service.claude.com",
+                   "api.anthropic.com","new-cdn.anthropic.com",
+                   "bridge.claudeusercontent.com","abc.claudemcpcontent.com",
+                   "sandbox.livepreview.claude.app"):
+        assert re.fullmatch(VIDEO,domain+".") is not None,domain
+        assert re.fullmatch(VIDEO_NGINX[2:],domain,re.IGNORECASE) is not None,domain
+    for domain in ("instagram.com","scontent.cdninstagram.com",
+                   "graphql.facebook.com","mqtt-ig-p4.facebook.com",
+                   "www.threads.com","threads.net",
+                   "api.x.com","pbs.twimg.com","mobile.twitter.com",
+                   "grok.com","api.x.ai","auth.grok.com"):
+        assert re.fullmatch(VIDEO,domain+".") is not None,domain
+        assert re.fullmatch(VIDEO_NGINX[2:],domain,re.IGNORECASE) is not None,domain
+    for domain in ("instagramstatic.com","meta.ai","www.meta.com",
+                   "api16-normal-va.tiktokv.com","p16-sign-va.tiktokcdn.com",
+                   "api2-16-h2.musical.ly","sf16-normal-useast1a.ibytedtos.com",
+                   "web.telegram.org","api.telegram.org","t.me",
+                   "cdn-xyz.telegram-cdn.org"):
+        assert re.fullmatch(VIDEO,domain+".") is not None,domain
+        assert re.fullmatch(VIDEO_NGINX[2:],domain,re.IGNORECASE) is not None,domain
+    for domain in ("cdn.servgo.ru","example.com","www.whatsapp.com"):
+        assert re.fullmatch(VIDEO,domain+".") is None,domain
+        assert re.fullmatch(VIDEO_NGINX[2:],domain,re.IGNORECASE) is None,domain
+    assert len(DYNAMIC_SUFFIXES)==97
+    assert len(META_SUFFIXES)==17
+    assert len(OTHER_SUFFIXES)==len(DYNAMIC_SUFFIXES)-len(META_SUFFIXES)
+    assert is_meta("www.instagram.com")
+    assert is_meta("scontent.cdninstagram.com")
+    assert is_meta("edge-mqtt.facebook.com")
+    assert is_meta("www.threads.com")
+    assert not is_meta("api.x.ai")
+    assert not is_meta("www.tiktok.com")
+    assert f'20 IN A {RU_INGRESS}' in nd
+    for h in ("instagram.com","threads.com","edge-mqtt.facebook.com"):
+        assert f"template IN A {h} {{" in nd
+    assert "listen 10.66.77.1:19443;" in proxy_config()
+
+    assert len(HOSTS)>=50
+    assert "default 127.0.0.1:1;" in proxy_config()
+    for bad in (old_nginx.replace("gemini.google.com", "x.example"),
+                old_nginx.replace("default ","unknown ")):
+        try:render_sni(bad)
+        except ValueError:pass
+        else:raise AssertionError("Fail-closed gate failed")
+    print("four_google_services_canary_self_test=PASS")
+    print("exact_hosts="+str(len(HOSTS)))
+    print("dynamic_https_google_owned_suffixes="+",".join(DYNAMIC_SUFFIXES))
+    print("Android_non443_system_domains_exact_DNS_only=true")
+    print("dynamic_google_and_system_suffixes="+str(len(DYNAMIC_SUFFIXES)))
+    print("no_live_network_change=yes")
+
+
+def existing_exact_hosts(source: str) -> tuple[str,...]:
+    m=list(MAP.finditer(source))
+    if len(m)!=1:raise ValueError("Shared SNI map not found")
+    body=m[0].group(2)
+    result=[]
+    for host in HOSTS:
+        matches=re.findall(r"(?m)^[ \t]*"+re.escape(host)+r"[ \t]+([^;]+);",body)
+        if len(matches)>1:raise ValueError("Duplicate host in legacy SNI map")
+        if matches:result.append(host)
+    return tuple(result)
+
+
+def main()->None:
+    if len(sys.argv)==3 and sys.argv[1]=="audit-existing":
+        original=pathlib.Path(sys.argv[2])
+        if not original.is_file() or original.is_symlink():
+            raise ValueError("Invalid Nginx source")
+        for host in existing_exact_hosts(original.read_text()):
+            print(host)
+        return
+    if len(sys.argv)==2 and sys.argv[1]=="self-test":
+        return self_test()
+    if len(sys.argv)!=5 or sys.argv[1]!="render":
+        raise SystemExit("usage: script.py self-test | render ORIGINAL_NGINX ORIGINAL_DOT DIRECTORY")
+    nginx=pathlib.Path(sys.argv[2])
+    dot=pathlib.Path(sys.argv[3])
+    dst=pathlib.Path(sys.argv[4])
+    if not nginx.is_file() or not dot.is_file() or not dst.is_dir():
+        raise ValueError("Missing input files or staged directory")
+    if dst.is_symlink():
+        raise ValueError("Unsafe stage destination")
+    outputs={
+        "nginx.pilot":render_sni(nginx.read_text()),
+        "dns.pilot":render_dot(dot.read_text()),
+        "proxy.pilot":proxy_config(),
+    }
+    for name,body in outputs.items():
+        target=dst/name
+        with target.open("x") as file:
+            file.write(body)
+        target.chmod(0o600)
+    print("four_google_services_exact_hosts_staged="+str(len(HOSTS)))
+    print("dynamic_google_https_suffixes_staged="+str(len(DYNAMIC_SUFFIXES)))
+    print("staging_output_complete=YES")
+    print("live_production_untouched=true")
+
+
+if __name__=="__main__":
+    main()

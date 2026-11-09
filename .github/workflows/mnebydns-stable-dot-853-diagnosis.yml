@@ -1,0 +1,47 @@
+name: MNEBYDNS stable DoT 853 live socket recovery diagnosis read-only
+on:
+  push:
+    branches: ['feature/mnebydns-stable-5services-20261109']
+    paths: ['.github/workflows/mnebydns-stable-dot-853-diagnosis.yml']
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    env:
+      PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Inspect DNS listening TCP port and resolver unit health on DE
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          SSHPASS="$PASS" sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@89.125.90.101 'python3 -' <<'PY'
+          import subprocess,socket,pathlib
+          for args in (['ss','-H','-lntp'],['systemctl','show','mnebydns-dot.service','-p','ActiveState','-p','SubState','-p','ExecMainStatus','-p','Result'],['journalctl','-u','mnebydns-dot.service','-n','12','--no-pager','-o','cat']):
+              r=subprocess.run(args,capture_output=True,text=True,timeout=8)
+              for line in r.stdout.splitlines():
+                  if '853' in line or args[0]=='systemctl' or args[0]=='journalctl':
+                      print('DE_STATUS='+line[:220],flush=True)
+          for host in ('127.0.0.1','89.125.90.101'):
+              try:
+                  with socket.create_connection((host,853),timeout=4):
+                      print('DE_local_TCP853_'+host+'=CONNECTED',flush=True)
+              except Exception as e:
+                  print('DE_local_TCP853_'+host+'='+type(e).__name__,flush=True)
+          core=pathlib.Path('/opt/mnebydns-dot/Corefile')
+          content=core.read_text()
+          print('corefile_has_tls853='+str('853' in content).lower(),flush=True)
+          print('corefile_bytes='+str(len(content)),flush=True)
+          PY
+          SSHPASS="$RU_PASS" sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@188.120.254.223 'python3 -' <<'PY'
+          import socket
+          try:
+              with socket.create_connection(('89.125.90.101',853),timeout=6):
+                  print('RU_to_DE_TCP853=CONNECTED',flush=True)
+          except Exception as e:
+              print('RU_to_DE_TCP853='+type(e).__name__,flush=True)
+          PY

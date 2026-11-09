@@ -1,0 +1,53 @@
+name: MNEBYDNS foreign egress country metadata check
+on:
+  push:
+    branches: ['feature/mnebydns-google-four-services-preflight-20261108']
+    paths: ['.github/workflows/mnebydns-google-egress-geo-readonly.yml']
+permissions:
+  contents: read
+jobs:
+  geo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      FOREIGN_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Compare public egress geo on both foreign and Russian nodes without logging IP
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          opts=(-o LogLevel=ERROR -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new)
+          for loc in foreign ru; do
+            if [[ "$loc" == foreign ]]; then
+              export SSHPASS="$FOREIGN_PASS"; server=root@89.125.90.101
+            else
+              export SSHPASS="$RU_PASS"; server=root@188.120.254.223
+            fi
+            sshpass -e ssh "${opts[@]}" "$server" "NODE_LABEL='$loc' python3 -" <<'PY'
+          import json,os,urllib.request
+          label=os.environ['NODE_LABEL']
+          headers={'User-Agent':'MNEBYDNS-readonly-egress-geo-audit/1.0'}
+          sources=(
+             ('ipinfo','https://ipinfo.io/json'),
+             ('ipwhois','https://ipwho.is/'),
+          )
+          for provider,url in sources:
+              try:
+                  request=urllib.request.Request(url,headers=headers)
+                  with urllib.request.urlopen(request,timeout=8) as res:
+                      data=json.loads(res.read(8000).decode())
+                  country=(data.get('country') if provider=='ipinfo'
+                           else data.get('country_code'))
+                  egress=data.get('ip')
+                  valid=isinstance(egress,str) and len(egress)>5
+                  if not valid or not isinstance(country,str):
+                      raise ValueError('Malformed geo response')
+                  print(f"node={label} provider={provider} country={country.upper()} "
+                        f"matches_foreign_ingress={str(egress=='89.125.90.101').lower()}",flush=True)
+              except Exception as error:
+                  print(f"node={label} provider={provider} lookup_error={type(error).__name__}",flush=True)
+          print('no_user_data_or_raw_egress_ip_logged=true')
+          PY
+          done

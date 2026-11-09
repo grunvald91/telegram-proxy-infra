@@ -1,0 +1,60 @@
+name: MNEBYDNS UDP443 firewall input audit read-only
+on:
+  push:
+    branches: [diagnostics/mnebydns-meta-ingress-matrix-20261109]
+    paths: [.github/workflows/mnebydns-meta-udp443-firewall-readonly-20261109.yml]
+permissions:
+  contents: read
+jobs:
+  input:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Examine current firewall policy and port 443 allow/deny on both hosts
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+          for role in ru de; do
+            if [[ "$role" == ru ]]; then
+              export SSHPASS="$RU_PASS"
+              target=188.120.254.223
+            else
+              export SSHPASS="$DE_PASS"
+              target=89.125.90.101
+            fi
+            sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new "root@$target" "python3 - '$role'" <<'PY'
+          import subprocess,sys,re,collections
+          role=sys.argv[1]
+          def run(args):
+              try:return subprocess.run(args,capture_output=True,text=True,timeout=8)
+              except (OSError,subprocess.TimeoutExpired):return None
+          print(role+'_firewall_read_only=true',flush=True)
+          for name,cmd in (('iptables',['iptables','-S','INPUT']),
+                           ('ip6tables',['ip6tables','-S','INPUT']),
+                           ('nft',['nft','list','ruleset']),
+                           ('ufw',['ufw','status'])):
+              p=run(cmd)
+              print(role+'_'+name+'_readable='+str(p is not None and p.returncode==0).lower(),flush=True)
+              if p is None or p.returncode!=0:continue
+              lines=p.stdout.splitlines()
+              if name=='iptables':
+                  policies=[line.strip().split()[-1] for line in lines if line.startswith('-P INPUT ')]
+                  print(role+'_ipv4_INPUT_default_policy='+(','.join(policies) or 'unknown'),flush=True)
+              if name=='ufw':
+                  status=next((line.strip() for line in lines if line.lower().startswith('status:')),'unknown')
+                  print(role+'_ufw_'+status.replace(' ','_'),flush=True)
+              interesting=[line.lower() for line in lines if re.search(r'(udp|443|19444|drop|reject|ct state|established|related)',line.lower())]
+              rules443=[x for x in interesting if re.search(r'(443|19444)',x)]
+              print(role+'_'+name+'_rules_443_references='+str(len(rules443)),flush=True)
+              for targetport in ('443','19444'):
+                  incl=[x for x in rules443 if re.search(r'(?<![0-9])'+targetport+r'(?![0-9])',x)]
+                  print(role+'_'+name+'_port'+targetport+'_rule_count='+str(len(incl)),flush=True)
+                  for action in ('accept','drop','reject'):
+                      print(role+'_'+name+'_port'+targetport+'_'+action+'_mentions='+str(sum(re.search(r'\b'+action+r'\b',x) is not None for x in incl)),flush=True)
+          PY
+          done

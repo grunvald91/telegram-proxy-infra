@@ -1,0 +1,42 @@
+name: MNEBYDNS stable five service restart incident read-only diagnosis
+on:
+  push:
+    branches: ['feature/mnebydns-stable-5services-20261109']
+    paths: ['.github/workflows/mnebydns-stable-incident-diagnose.yml']
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    env:
+      PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Inspect exact stable promotion stage and isolated proxy systemd failure
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$PASS"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass
+          SSHPASS="$PASS" sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@89.125.90.101 'python3 -' <<'PY'
+          import pathlib,subprocess
+          old=pathlib.Path('/opt/mnebydns-googlepilot-backups/42538883926')
+          staged=pathlib.Path('/opt/mnebydns-stable-checkpoints/42541370669')
+          for name,path in (('nginx','/etc/nginx/nginx.conf'),('dns','/opt/mnebydns-dot/Corefile'),('proxy','/etc/mnebydns-googlepilot/nginx.conf')):
+              live=pathlib.Path(path)
+              if not live.is_file():state='MISSING'
+              elif (staged/(name+'.stable')).is_file() and live.read_bytes()==(staged/(name+'.stable')).read_bytes():state='STABLE'
+              elif (old/(name+'.pilot')).is_file() and live.read_bytes()==(old/(name+'.pilot')).read_bytes():state='PILOT'
+              elif (old/(name+'.before')).is_file() and live.read_bytes()==(old/(name+'.before')).read_bytes():state='BASELINE'
+              else:state='OTHER'
+              print(name+'_config_state='+state,flush=True)
+          for unit in ('mnebydns-googlepilot.service','mnebydns-dot.service','nginx','xray.service','mnebydns-four-google-watchdog-42538883926.timer'):
+              p=subprocess.run(['systemctl','show',unit,'-p','ActiveState','-p','SubState','-p','Result','-p','ExecMainStatus'],capture_output=True,text=True,timeout=5)
+              print('unit_'+unit+' '+p.stdout.strip().replace('\n',';'),flush=True)
+          l=subprocess.run(['journalctl','-u','mnebydns-googlepilot.service','-n','15','--no-pager','-o','cat'],capture_output=True,text=True,timeout=8)
+          print('isolated_proxy_last_logs='+l.stdout[-1600:].replace('\n',' | '),flush=True)
+          s=subprocess.run(['ss','-H','-lnt'],capture_output=True,text=True,timeout=5)
+          print('proxy_15449_listening='+str(any(line.split()[3].endswith(':15449') for line in s.stdout.splitlines())),flush=True)
+          print('read_only=true',flush=True)
+          PY

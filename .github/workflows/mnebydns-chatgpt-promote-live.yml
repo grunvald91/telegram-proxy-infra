@@ -1,0 +1,41 @@
+name: ChatGPT stable promotion guarded
+on:
+  push:
+    branches: [diagnostics/mnebydns-meta-ingress-matrix-20261109]
+    paths: [ops/diagnostics/mnebydns-chatgpt-promotion-approved.txt]
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-google-public-443-change
+  cancel-in-progress: false
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore old Meta route and persist verified ChatGPT overlay
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS" && test -n "$RU_PASS"
+          bash -n scripts/mnebydns-chatgpt-promote-current-canary.sh
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          id=42553135266
+          ssh_de() { SSHPASS="$DE_PASS" sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new root@89.125.90.101 "$@"; }
+          ssh_ru() { SSHPASS="$RU_PASS" sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new root@188.120.254.223 "$@"; }
+          ru="/opt/mnebydns-meta-ru-backups/$id"
+          de="/opt/mnebydns-combined-backups/$id"
+          work="/tmp/mnebydns-combined-de-$id"
+          ssh_ru "test -s '$ru/rollback.sh' && cmp -s '$ru/pilot' /etc/nginx/streams.d/01-mtproxy-443.conf"
+          ssh_de "cmp -s '$de/dns.pilot' /opt/mnebydns-dot/Corefile && systemctl is-active --quiet 'mnebydns-combined-de-watchdog-$id.timer'"
+          ssh_ru "bash '$ru/rollback.sh' '$ru'"
+          ssh_ru "cmp -s '$ru/before' /etc/nginx/streams.d/01-mtproxy-443.conf"
+          ssh_de "umask 077; cat > '$work/promote.sh'" < scripts/mnebydns-chatgpt-promote-current-canary.sh
+          ssh_de "bash '$work/promote.sh' '$de' '$work'"
+          ssh_de "test \"\$(cat /opt/mnebydns-stable-checkpoints/current)\" = /opt/mnebydns-stable-checkpoints/$id"
+          echo "ChatGPT_promoted_permanently_with_existing_five_services=true"

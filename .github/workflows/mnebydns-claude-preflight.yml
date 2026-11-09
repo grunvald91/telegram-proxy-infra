@@ -1,0 +1,51 @@
+name: MNEBYDNS Claude network and active pilot preflight (read only)
+on:
+  push:
+    branches: ['feature/mnebydns-claude-google-combined-30m-20261109']
+    paths: ['.github/workflows/mnebydns-claude-preflight.yml']
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      SSHPASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Query German origin TLS and current prior canary status
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$SSHPASS"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@89.125.90.101 'python3 -' <<'PY'
+          import pathlib,subprocess,ssl,socket,concurrent.futures,datetime
+          base=pathlib.Path('/opt/mnebydns-googlepilot-backups/42532077031')
+          for k,path in (('nginx','/etc/nginx/nginx.conf'),('dns','/opt/mnebydns-dot/Corefile')):
+              live=pathlib.Path(path).read_bytes()
+              state='PILOT' if (base/(k+'.pilot')).is_file() and live==(base/(k+'.pilot')).read_bytes() else ('BASELINE' if (base/(k+'.before')).is_file() and live==(base/(k+'.before')).read_bytes() else 'OTHER')
+              print('old_'+k+'_state='+state,flush=True)
+          for name in ('mnebydns-googlepilot.service','mnebydns-four-google-watchdog-42532077031.timer','nginx','mnebydns-dot.service','xray.service'):
+              x=subprocess.run(['systemctl','is-active',name],capture_output=True,text=True,timeout=5)
+              print('unit_'+name+'='+x.stdout.strip(),flush=True)
+          print('foreign_utc='+datetime.datetime.now(datetime.timezone.utc).isoformat(),flush=True)
+          hosts=('claude.ai','api.anthropic.com','a-api.anthropic.com','a-cdn.anthropic.com','s-cdn.anthropic.com','a.claude.ai','a-cdn.claude.ai','assets.claude.ai','platform.claude.com','code.claude.com','claude.com','bridge.claudeusercontent.com','statsig.anthropic.com','claudemcpcontent.com')
+          def probe(host):
+              try:
+                  with socket.create_connection((host,443),timeout=5) as sock:
+                      sock.settimeout(5)
+                      with ssl.create_default_context().wrap_socket(sock,server_hostname=host) as tls:
+                          return host,True,tls.version()
+              except Exception as exc:
+                  return host,False,type(exc).__name__
+          with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+              result=list(ex.map(probe,hosts))
+          for host,ok,detail in result:
+              print('foreign_origin_TLS='+host+' valid='+str(ok).lower()+' result='+detail,flush=True)
+          checks=dict((h,ok) for h,ok,_ in result)
+          for h in ('claude.ai','api.anthropic.com','platform.claude.com'):
+              if not checks[h]:raise SystemExit('Claude core origin not reachable: '+h)
+          print('claude_core_foreign_tls_ready=yes',flush=True)
+          print('read_only_no_production_changes=yes',flush=True)
+          PY

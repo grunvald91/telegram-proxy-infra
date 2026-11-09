@@ -1,0 +1,195 @@
+name: MNEBYDNS Meta PCAP live readonly 2026-11-09
+on:
+  push:
+    branches: [diagnostics/mnebydns-meta-ingress-matrix-20261109]
+    paths: [.github/workflows/mnebydns-meta-pcap-20261109-readonly.yml]
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-meta-pcap-readonly
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: External TLS attempts from independent GitHub runner (not mobile operator)
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import concurrent.futures,ssl,socket,time
+          jobs=[('RU_meta_iglite','188.120.254.223','iglite-z.instagram.com'),
+                ('RU_meta_i','188.120.254.223','i.instagram.com'),
+                ('RU_meta_threads','188.120.254.223','threads.com'),
+                ('DE_stable_claude','89.125.90.101','claude.ai'),
+                ('RU_existing_site','188.120.254.223','servgo.ru')]
+          def probe(item):
+              name,ip,sni=item
+              try:
+                  with socket.create_connection((ip,443),timeout=4) as sock:
+                      sock.settimeout(5)
+                      with ssl.create_default_context().wrap_socket(sock,server_hostname=sni) as conn:
+                          return name,'CERT_VALID_TLS_'+str(conn.version())
+              except Exception as e:return name,type(e).__name__
+          with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
+              for name,result in ex.map(probe,jobs):print(name+'='+result,flush=True)
+          print('external_not_equivalent_to_mobile_operator=true')
+          PY
+      - name: Read-only verified status of 89 (stable DNS + proxy)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS" && test -n "$RU_PASS"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@89.125.90.101 'python3 -' <<'PY'
+          import pathlib,subprocess
+          root=pathlib.Path('/opt/mnebydns-stable-checkpoints')
+          try:
+              chk=pathlib.Path((root/'current').read_text().strip())
+              assert chk.parent==root
+              for kind,path in (('nginx','/etc/nginx/nginx.conf'),('dns','/opt/mnebydns-dot/Corefile'),('proxy','/etc/mnebydns-googlepilot/nginx.conf')):
+                  ok=(chk/(kind+'.stable')).read_bytes()==pathlib.Path(path).read_bytes()
+                  print('DE_stable_'+kind+'_checkpoint_match='+str(ok).lower(),flush=True)
+              dns=pathlib.Path('/opt/mnebydns-dot/Corefile').read_text()
+              for host in ('instagram.com','threads.com','iglite-z.instagram.com','test-gateway.instagram.com'):
+                  print('DE_Corefile_contains_'+host+'='+str(host in dns).lower(),flush=True)
+          except Exception as exc: print('DE_checkpoint_status='+type(exc).__name__,flush=True)
+          for unit in ('mnebydns-dot.service','mnebydns-googlepilot.service','nginx.service','xray.service'):
+              r=subprocess.run(['systemctl','is-active',unit],capture_output=True,text=True,timeout=5)
+              print('DE_unit_'+unit+'='+r.stdout.strip(),flush=True)
+          print('DE_meta_sidecar_live_directory='+str(pathlib.Path('/etc/mnebydns-meta-pilot').exists()).lower(),flush=True)
+          r=subprocess.run(['ss','-H','-lun','sport = :443'],capture_output=True,text=True,timeout=5)
+          print('DE_udp443_listener_count='+str(len(r.stdout.splitlines())),flush=True)
+          print('DE_audit_read_only=true')
+          PY
+      - name: Read-only status of 188 (SNI mapping / rollback)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@188.120.254.223 'python3 -' <<'PY'
+          import pathlib,subprocess,ssl,socket
+          live=pathlib.Path('/etc/nginx/streams.d/01-mtproxy-443.conf')
+          before=pathlib.Path('/opt/mnebydns-meta-ru-backups/42553135266/before')
+          current=live.read_bytes()
+          print('RU_nginx_original_baseline='+str(before.is_file() and current==before.read_bytes()).lower(),flush=True)
+          print('RU_Meta_private_WG_19443_mapping_present='+str(b'10.66.77.1:19443' in current).lower(),flush=True)
+          n=subprocess.run(['nginx','-t'],capture_output=True,text=True,timeout=7)
+          print('RU_nginx_syntax_ok='+str(n.returncode==0).lower(),flush=True)
+          n=subprocess.run(['ss','-H','-lnt','sport = :443'],capture_output=True,text=True,timeout=5)
+          print('RU_tcp443_listener_present='+str(bool(n.stdout.strip())).lower(),flush=True)
+          n=subprocess.run(['ss','-H','-lun','sport = :443'],capture_output=True,text=True,timeout=5)
+          print('RU_udp443_listener_count='+str(len(n.stdout.splitlines())),flush=True)
+          for sni in ('iglite-z.instagram.com','i.instagram.com','test-gateway.instagram.com','threads.com'):
+              try:
+                  with socket.create_connection(('127.0.0.1',443),timeout=4) as sock:
+                      sock.settimeout(5)
+                      with ssl.create_default_context().wrap_socket(sock,server_hostname=sni) as tls:
+                          result='VALID_TLS_'+str(tls.version())
+              except Exception as e:result=type(e).__name__
+              print('RU_local443_'+sni+'='+result,flush=True)
+          print('RU_audit_read_only=true',flush=True)
+          PY
+# Read-only repeat after Android PCAP 2026-11-09 11:19 MSK; no routing modifications.
+
+      - name: Classify historical Nginx errors during Android PCAP (no payload or client IP)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get install -qq -y sshpass
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@89.125.90.101 'python3 -' <<'PY'
+          import re,subprocess
+          cmd=['journalctl','-u','mnebydns-meta-pilot-42583884583.service','--since','2026-11-09 08:18:00 UTC','--until','2026-11-09 08:23:00 UTC','--no-pager','-o','cat']
+          r=subprocess.run(cmd,capture_output=True,text=True,timeout=12)
+          lines=r.stdout.splitlines()
+          print('DE_journal_read_ok='+str(r.returncode==0).lower())
+          print('DE_captured_meta_service_log_lines='+str(len(lines)))
+          for category,pat in [('dns_resolver',r'resolver|could not be resolved|host not found'),('upstream_error',r'upstream|connect.*failed|no live'),('capacity',r'worker_connections|too many open files|resource temporarily unavailable'),('timeout',r'timed out|timeout'),('reset',r'connection reset|broken pipe'),('permission',r'permission denied|forbidden')]:
+              print('DE_meta_'+category+'_events='+str(sum(bool(re.search(pat,line,re.I)) for line in lines)))
+          print('DE_historical_logs_only=true')
+          PY
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@188.120.254.223 'python3 -' <<'PY'
+          import pathlib,re,subprocess
+          path=pathlib.Path('/var/log/nginx/error.log')
+          chunk=b''
+          if path.is_file():
+              with path.open('rb') as fh:
+                  fh.seek(max(0,path.stat().st_size-6000000))
+                  chunk=fh.read().decode('utf-8','replace')
+          lines=[s for s in chunk.splitlines() if re.search(r'2026/11/09 08:(18|19|20|21|22):',s)]
+          print('RU_nginx_error_log_readable='+str(path.is_file()).lower())
+          print('RU_nginx_error_lines_in_PCAP_window='+str(len(lines)))
+          for category,pat in [('upstream_error',r'upstream|connect.*failed|no live'),('capacity',r'worker_connections|too many open files'),('timeout',r'timed out|timeout'),('reset',r'connection reset|broken pipe')]:
+              print('RU_meta_'+category+'_events='+str(sum(bool(re.search(pat,line,re.I)) for line in lines)))
+          print('RU_historical_logs_only=true')
+          PY
+
+      - name: Classify exact nginx resolver error reason without log contents
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get install -qq -y sshpass
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@89.125.90.101 'python3 -' <<'PY'
+          import re,subprocess
+          r=subprocess.run(['journalctl','-u','mnebydns-meta-pilot-42583884583.service','--since','2026-11-09 08:18:00 UTC','--until','2026-11-09 08:23:00 UTC','--no-pager','-o','cat'],capture_output=True,text=True,timeout=12)
+          lines=r.stdout.splitlines()
+          patterns={
+             'no_resolver_defined':r'no resolver defined',
+             'dns_resolution_failed':r'could not be resolved|host not found',
+             'dns_resolver_timeout':r'resolver.*timed out|could not be resolved.*110|could not be resolved.*timed out',
+             'dns_servfail':r'could not be resolved.*(?:SERVFAIL|server failure)',
+             'dns_nxdomain':r'could not be resolved.*(?:NXDOMAIN|not found)',
+             'no_live_upstreams':r'no live upstreams',
+             'connection_refused':r'connection refused|connect\\(\\) failed.*111',
+             'network_unreachable':r'network is unreachable|no route to host',
+             'upstream_timeout':r'upstream.*timed out',
+             'nginx_too_many_connections':r'worker_connections are not enough|too many open files',
+             'permission_denied':r'permission denied',
+          }
+          for label,pat in patterns.items():
+              print('DE_error_reason_'+label+'='+str(sum(bool(re.search(pat,line,re.I)) for line in lines)),flush=True)
+          print('DE_error_reason_dns_nxdomain_code3='+str(sum('(3: Host not found)' in line for line in lines)),flush=True)
+          print('DE_error_reason_dns_servfail_code2='+str(sum('(2: Server failure)' in line for line in lines)),flush=True)
+          print('DE_error_log_total='+str(len(lines)),flush=True)
+          print('DE_error_log_content_omitted=true',flush=True)
+          PY
+
+      - name: Identify only Meta names rejected by live upstream DNS (no client identifiers)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get install -qq -y sshpass
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@89.125.90.101 'python3 -' <<'PY'
+          import re,subprocess,socket,struct
+          r=subprocess.run(['journalctl','-u','mnebydns-meta-pilot-42583884583.service','--since','2026-11-09 08:18:00 UTC','--until','2026-11-09 08:23:00 UTC','--no-pager','-o','cat'],capture_output=True,text=True,timeout=10)
+          names=[]
+          for line in r.stdout.splitlines():
+              if 'could not be resolved' not in line.lower():continue
+              ms=re.findall(r'(?i)[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:instagram\.com|threads\.net|threads\.com|facebook\.com|fbcdn\.net)',line)
+              names.extend(ms)
+          names=sorted(set(names))
+          print('DE_Meta_NXDOMAIN_affected_hostnames='+','.join(names) if names else 'DE_Meta_NXDOMAIN_hostnames_not_extracted',flush=True)
+          observed=sorted(set(names+['iglite-z.instagram.com','i.instagram.com','i-fallback.instagram.com','test-gateway.instagram.com','graph.instagram.com','threads.com']))
+          def ask(host,server):
+              try:
+                  qid=14789
+                  packet=struct.pack('!HHHHHH',qid,256,1,0,0,0)+b''.join(bytes([len(w)])+w.encode() for w in host.split('.'))+b'\0'+struct.pack('!HH',1,1)
+                  with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as s:
+                      s.settimeout(2);s.sendto(packet,(server,53));reply,_=s.recvfrom(4096)
+                  if len(reply)<12 or struct.unpack('!H',reply[:2])[0]!=qid:return 'invalid_response'
+                  flags=int.from_bytes(reply[2:4],'big')
+                  return 'rcode_'+str(flags&15)+'_answers_'+str(int.from_bytes(reply[6:8],'big'))
+              except Exception as e:return type(e).__name__
+          for name in observed:
+              print('DE_upstream_DNS_'+name+'_Quad9='+ask(name,'9.9.9.9')+'_Cloudflare='+ask(name,'1.1.1.1'),flush=True)
+          print('DNS_tests_read_only_no_client_data=true')
+          PY

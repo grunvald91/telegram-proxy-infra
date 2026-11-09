@@ -1,0 +1,86 @@
+name: MNEBYDNS Meta two-node timed canary offline safety gates
+on:
+  push:
+    branches: [diagnostics/mnebydns-meta-ingress-matrix-20261109]
+    paths:
+      - .github/workflows/mnebydns-meta-canary-safety.yml
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check exact snapshots, isolated proxy, same absolute deadline and watchdog recovery
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y shellcheck nginx libnginx-mod-stream
+          scripts=(scripts/mnebydns-meta-de-rollback.sh
+                   scripts/mnebydns-meta-de-stage.sh
+                   scripts/mnebydns-meta-de-activate.sh
+                   scripts/mnebydns-meta-ru-deploy.sh
+                   scripts/mnebydns-meta-ru-rollback.sh)
+          for name in "${scripts[@]}"; do bash -n "$name"; done
+          shellcheck -S warning "${scripts[@]}"
+          python3 scripts/mnebydns-meta-overlay.py self-test
+          python3 -m py_compile scripts/mnebydns-meta-overlay.py
+          python3 - <<'PY'
+          from pathlib import Path
+          root=Path('scripts')
+          stage=(root/'mnebydns-meta-de-stage.sh').read_text()
+          activate=(root/'mnebydns-meta-de-activate.sh').read_text()
+          rollback=(root/'mnebydns-meta-de-rollback.sh').read_text()
+          ru=(root/'mnebydns-meta-ru-deploy.sh').read_text()
+          renderer=(root/'mnebydns-meta-overlay.py').read_text()
+          for tag,code in [('DE stage',stage),('DE switch',activate),('DE rollback',rollback)]:
+              assert 'stable-manifest.sha256' in code,tag
+              assert 'mnebydns-stable-checkpoints' in code,tag
+          assert 'Persistent=true' in stage
+          assert 'OnCalendar=$deadline' in stage
+          assert 'OnCalendar=$deadline' in ru
+          assert "expiry - now >= 120" in ru
+          assert 'DE_Meta_DNS_pilot_verified=true' in rollback
+          assert 'DE_rollback_refuses_unowned_dns_change=true' in rollback
+          assert 'DE_rollback_refuses_unowned_existing_' in rollback
+          assert 'mnebydns-dot.service' in activate
+          assert 'mnebydns-googlepilot.service' not in rollback
+          assert 'systemctl restart mnebydns-googlepilot.service' not in activate
+          assert 'systemctl reload nginx' not in activate
+          assert '10.66.77.1:19443' in renderer
+          assert 'RU = "188.120.254.223"' in renderer
+          assert 'default 127.0.0.1:1;' in renderer
+          assert 'api.telegram.org' in renderer
+          print('two_node_watchdog_and_stable_five_rollback_contract=PASS')
+          PY
+          temp="$(mktemp -d)"
+          cat > "$temp/Corefile" <<'CORE'
+          tls://.:853 {
+              template IN A gemini.google.com { match ^gemini[.]google[.]com[.]$ }
+              cache 30
+              forward . tls://9.9.9.9 {}
+          }
+          CORE
+          python3 scripts/mnebydns-meta-overlay.py render "$temp/Corefile" "$temp"
+          python3 - "$temp" <<'PY'
+          from pathlib import Path
+          import sys
+          root=Path(sys.argv[1])
+          before=(root/'Corefile').read_bytes()
+          after=(root/'dns.pilot').read_bytes()
+          assert after.endswith(before.split(b'    cache 30\n')[1])
+          assert b'    cache 30\n' in after
+          assert b'188.120.254.223' in after
+          assert b'api.telegram.org' not in after
+          proxy=(root/'proxy.meta').read_text()
+          assert 'listen 10.66.77.1:19443;' in proxy
+          assert 'listen 0.0.0.0' not in proxy
+          print('additive_CoreDNS_Meta_only_overlay=PASS')
+          PY
+          sed 's/listen 10.66.77.1:19443;/listen 127.0.0.1:19443;/' "$temp/proxy.meta" > "$temp/nginx.local"
+          sudo install -d -m 700 /run/mnebydns-meta-pilot
+          sudo nginx -t -c "$temp/nginx.local"
+          echo meta_canary_full_offline_gates=PASS
+          echo no_production_services_modified=true
