@@ -1,0 +1,49 @@
+name: MNEBYDNS three-app combined routing offline acceptance
+on:
+  push:
+    branches: [diagnostics/mnebydns-meta-ingress-matrix-20261109]
+    paths:
+      - scripts/mnebydns-combined-*.py
+      - scripts/mnebydns-combined-*.sh
+      - .github/workflows/mnebydns-combined-three-apps-offline.yml
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run combined DNS renderer and shell safety checks with no production changes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-combined-render.py scripts/mnebydns-chatgpt-de-overlay.py scripts/mnebydns-meta-overlay.py scripts/mnebydns-stable-five-render.py
+          python3 scripts/mnebydns-combined-render.py self-test
+          for f in scripts/mnebydns-combined-de-stage.sh scripts/mnebydns-combined-de-activate.sh scripts/mnebydns-combined-de-rollback.sh scripts/mnebydns-meta-ru-deploy.sh scripts/mnebydns-meta-ru-rollback.sh; do
+            bash -n "$f"
+          done
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y nginx libnginx-mod-stream shellcheck
+          shellcheck -S warning scripts/mnebydns-combined-de-stage.sh scripts/mnebydns-combined-de-activate.sh scripts/mnebydns-combined-de-rollback.sh
+          python3 - <<'PY'
+          from pathlib import Path
+          stage=Path('scripts/mnebydns-combined-de-stage.sh').read_text()
+          act=Path('scripts/mnebydns-combined-de-activate.sh').read_text()
+          back=Path('scripts/mnebydns-combined-de-rollback.sh').read_text()
+          for code in (stage,act,back):
+              assert 'stable-manifest.sha256' in code
+              assert 'mnebydns-stable-checkpoints' in code
+              assert 'mnebyvpn-public-route.lock' in code
+          assert 'OnCalendar=$deadline' in stage
+          assert 'Persistent=true' in stage
+          assert 'systemctl is-active --quiet "$watch.timer"' in act
+          assert 'systemctl reload nginx' in act
+          assert 'systemctl restart mnebydns-dot.service' in back
+          assert 'combined-manifest.sha256' in back
+          assert 'cmp -s "$base/$kind.pilot" "$live"' in back
+          assert act.index('mv -f "/etc/mnebydns-googlepilot/nginx.conf.new-$id"') < act.index('mv -f "/etc/nginx/nginx.conf.new-$id"') < act.index('mv -f "/opt/mnebydns-dot/Corefile.new-$id"')
+          assert back.index('if cmp -s "$base/dns.pilot"') < back.index('if cmp -s "$base/nginx.pilot"')
+          print('combined_independent_watchdog_safe_rollback_STATIC_PASS=true')
+          PY
+          echo "combined_no_live_changes_offline=PASS"
