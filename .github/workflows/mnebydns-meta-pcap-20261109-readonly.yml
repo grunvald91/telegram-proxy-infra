@@ -145,8 +145,8 @@ jobs:
              'no_resolver_defined':r'no resolver defined',
              'dns_resolution_failed':r'could not be resolved|host not found',
              'dns_resolver_timeout':r'resolver.*timed out|could not be resolved.*110|could not be resolved.*timed out',
-             'dns_servfail':r'could not be resolved.*(?:SERVFAIL|server failure|\\(2:)',
-             'dns_nxdomain':r'could not be resolved.*(?:NXDOMAIN|not found|\\(3:)',
+             'dns_servfail':r'could not be resolved.*(?:SERVFAIL|server failure)',
+             'dns_nxdomain':r'could not be resolved.*(?:NXDOMAIN|not found)',
              'no_live_upstreams':r'no live upstreams',
              'connection_refused':r'connection refused|connect\\(\\) failed.*111',
              'network_unreachable':r'network is unreachable|no route to host',
@@ -156,6 +156,8 @@ jobs:
           }
           for label,pat in patterns.items():
               print('DE_error_reason_'+label+'='+str(sum(bool(re.search(pat,line,re.I)) for line in lines)),flush=True)
+          print('DE_error_reason_dns_nxdomain_code3='+str(sum('(3: Host not found)' in line for line in lines)),flush=True)
+          print('DE_error_reason_dns_servfail_code2='+str(sum('(2: Server failure)' in line for line in lines)),flush=True)
           print('DE_error_log_total='+str(len(lines)),flush=True)
           print('DE_error_log_content_omitted=true',flush=True)
           PY
