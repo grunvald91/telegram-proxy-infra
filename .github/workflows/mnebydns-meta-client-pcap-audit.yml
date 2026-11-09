@@ -1,0 +1,77 @@
+name: MNEBYDNS PCAP client path read-only audit
+on:
+  push:
+    branches: [diagnostics/meta-pcap-client-20261109]
+    paths: [.github/workflows/mnebydns-meta-client-pcap-audit.yml]
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-client-pcap-audit
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Read-only listener SNI and error counters on RU188
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          SSHPASS="$RU_PASS" sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o LogLevel=ERROR root@188.120.254.223 'python3 -' <<'PY'
+          import pathlib,subprocess,re,collections,datetime
+          def call(cmd,timeout=8):
+              p=subprocess.run(cmd,text=True,capture_output=True,timeout=timeout)
+              return p.returncode,p.stdout
+          c=pathlib.Path('/etc/nginx/streams.d/01-mtproxy-443.conf').read_text()
+          print('RU_stream_has_meta_temporary_route=', '10.66.77.1:19443' in c)
+          print('RU_stream_has_meta_regex=', bool(re.search(r'instagram\\.com',c)))
+          print('RU_stream_has_fbcdn_regex=', bool(re.search(r'fbcdn\\.net',c)))
+          print('RU_nginx_config_valid=',call(['nginx','-t'])[0]==0)
+          print('RU_nginx_active=',call(['systemctl','is-active','nginx'])[1].strip())
+          print('RU_tcp443_listeners=',len(call(['ss','-Hlnt','sport = :443'])[1].splitlines()))
+          print('RU_udp443_listeners=',len(call(['ss','-Hlun','sport = :443'])[1].splitlines()))
+          timers=call(['systemctl','list-timers','--no-pager','--all'])[1]
+          print('RU_meta_rollback_timer_armed=', 'mnebydns-meta-ru-watchdog-42583884583' in timers)
+          for host in ('i.instagram.com','i-fallback.instagram.com','test-gateway.instagram.com','iglite-z.instagram.com','z-m-gateway.facebook.com','graph.instagram.com','threads.com'):
+              cmd=['curl','--noproxy','*','-sS','-o','/dev/null','-w','%{ssl_verify_result} %{time_appconnect}', '--connect-timeout','3','--max-time','5','--resolve',host+':443:127.0.0.1','https://'+host+'/']
+              p=subprocess.run(cmd,text=True,capture_output=True,timeout=7)
+              # Curl success can be HTTP 403: tested here is TLS certificate, not application access.
+              print('RU_local_tls_'+host+'='+('PASS' if p.returncode==0 and p.stdout.startswith('0 ') else type(p).__name__+'_rc_'+str(p.returncode)))
+          counted=collections.Counter()
+          for logfile in pathlib.Path('/var/log/nginx').glob('*error*.log'):
+              try:
+                  lines=logfile.open(errors='replace').readlines()[-15000:]
+              except OSError: continue
+              for l in lines:
+                  if not re.match(r'2026/11/09 08:(1[5-9]|2[0-2]):',l):continue
+                  for category,pattern in {'upstream_timeout':'upstream timed out','connect_failed':'connect() failed','no_live_upstream':'no live upstreams','preread':'preread','refused':'Connection refused'}.items():
+                      if pattern in l:counted[category]+=1
+          for key in sorted(counted):print('RU_nginx_0815_0822_'+key+'='+str(counted[key]))
+          print('RU_error_window_UTC=2026-11-09T08:15-08:22; payloads_and_source_addresses_not_logged')
+          print('RU_read_only=true')
+          PY
+      - name: Read-only DE89 Meta sidecar and server egress status
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          SSHPASS="$DE_PASS" sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o LogLevel=ERROR root@89.125.90.101 'python3 -' <<'PY'
+          import subprocess,pathlib,re
+          def call(cmd):
+              try:
+                  p=subprocess.run(cmd,text=True,capture_output=True,timeout=8)
+                  return p.returncode,p.stdout.strip()
+              except Exception:return -1,''
+          print('DE_meta_pilot_directory=',pathlib.Path('/etc/mnebydns-meta-pilot').is_dir())
+          print('DE_meta_sidecar_active=',call(['systemctl','is-active','mnebydns-meta-pilot-42583884583.service'])[1])
+          print('DE_meta_rollback_timer_active=',call(['systemctl','is-active','mnebydns-meta-de-watchdog-42583884583.timer'])[1])
+          print('DE_private_19443_listener=',bool(call(['ss','-Hlnt','sport = :19443'])[1]))
+          print('DE_private_19443_WG_route_exists=',bool(call(['ip','-4','addr','show','dev','tg-relay'])[1]))
+          print('DE_core_dns_active=',call(['systemctl','is-active','mnebydns-dot.service'])[1])
+          print('DE_stable_proxy_active=',call(['systemctl','is-active','mnebydns-googlepilot.service'])[1])
+          print('DE_read_only=true')
+          PY
