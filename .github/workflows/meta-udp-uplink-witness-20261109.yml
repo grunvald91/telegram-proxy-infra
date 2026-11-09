@@ -1,0 +1,79 @@
+name: MNEBYDNS RU external UDP443 passive packet witness
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths: [.github/workflows/meta-udp-uplink-witness-20261109.yml]
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-meta-uplink-witness
+  cancel-in-progress: false
+jobs:
+  witness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Observe RU NIC only while DE sends three synthetic QUIC Initials
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS" && test -n "$RU_PASS"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass >/dev/null
+          ru_ssh() { SSHPASS="$RU_PASS" sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@188.120.254.223 "$@"; }
+          de_ssh() { SSHPASS="$DE_PASS" sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@89.125.90.101 "$@"; }
+          ru_ssh 'python3 -' <<'PY'
+          import subprocess,re
+          def count():
+              r=subprocess.run(['nft','list','ruleset'],capture_output=True,text=True,timeout=8)
+              if r.returncode:return None
+              rows=[x for x in r.stdout.splitlines() if 'udp dport 443' in x]
+              nums=[int(m.group(1)) for row in rows if (m:=re.search('counter packets ([0-9]+)',row))]
+              return sum(nums) if nums else None
+          print('ru_nft_udp443_packets_before='+str(count() if count() is not None else 'unknown'),flush=True)
+          PY
+          # Passive 12-second capture; no packets or IP addresses are retained/logged.
+          ru_ssh 'bash -s' <<'SH' &
+          set -u
+          if ! command -v tcpdump >/dev/null 2>&1; then
+             echo 'ru_tcpdump_available=false'
+             exit 0
+          fi
+          echo 'ru_tcpdump_available=true'
+          timeout 12s tcpdump -i any -n -q -l 'src host 89.125.90.101 and udp and dst port 443' 2>/dev/null |
+            awk 'END {print "ru_udp443_packets_from_de_observed=" NR}'
+          exit 0
+          SH
+          capture=$!
+          sleep 3
+          de_ssh 'python3 -' <<'PY'
+          import importlib.util,pathlib,socket,time
+          fixture=pathlib.Path('/tmp/mnebydns-meta-quic-42656055187/test-mnebydns-meta-quic.py')
+          if not fixture.is_file():raise SystemExit('canary fixture expired')
+          spec=importlib.util.spec_from_file_location('quic_fixture',fixture)
+          m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+          datagram=m.fixture_sni('i.instagram.com')
+          with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as sock:
+              for _ in range(3):
+                  sock.sendto(datagram,('188.120.254.223',443))
+                  time.sleep(.35)
+          print('DE_to_RU_public_synthetic_initials_sent=3',flush=True)
+          PY
+          wait "$capture" || echo 'ru_capture_transport_incomplete=true'
+          ru_ssh 'python3 -' <<'PY'
+          import subprocess,re
+          r=subprocess.run(['nft','list','ruleset'],capture_output=True,text=True,timeout=8)
+          rows=[x for x in r.stdout.splitlines() if 'udp dport 443' in x] if r.returncode==0 else []
+          nums=[int(m.group(1)) for row in rows if (m:=re.search('counter packets ([0-9]+)',row))]
+          print('ru_nft_udp443_packets_after='+str(sum(nums) if nums else 'unknown'),flush=True)
+          unit='mnebydns-meta-quic-ru-42656055187.service'
+          logs=subprocess.run(['journalctl','-u',unit,'-o','cat','--no-pager','-n','50'],capture_output=True,text=True,timeout=7).stdout
+          lines=[line for line in logs.splitlines() if line.startswith('meta_quic_ru_active=')]
+          if lines:
+              m=re.search(r'(?:^|\s)rx=(\d+)(?:\s|$)',lines[-1])
+              print('ru_quic_ingress_rx_after='+str(int(m.group(1)) if m else 'unknown'),flush=True)
+          PY
