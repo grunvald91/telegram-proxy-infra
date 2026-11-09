@@ -3,7 +3,7 @@
 # No new public listener, no modification of unrelated service backends.
 set -Eeuo pipefail
 (( EUID == 0 )) || exit 2
-[[ $# == 1 && "$1" =~ ^/tmp/mnebydns-meta-ru-[0-9]+$ ]] || exit 2
+[[ ( $# == 1 || $# == 2 ) && "$1" =~ ^/tmp/mnebydns-meta-ru-[0-9]+$ ]] || exit 2
 work="$1"
 runid="${work##*-}"
 [[ "$runid" =~ ^[0-9]+$ ]] || exit 2
@@ -56,7 +56,17 @@ chmod --reference="$live" "$base/pilot"
 watch_service="/etc/systemd/system/$name.service"
 watch_timer="/etc/systemd/system/$name.timer"
 test ! -e "$watch_service" && test ! -e "$watch_timer"
-deadline="$(date -u -d '+35 minutes' +'%Y-%m-%d %H:%M:%S UTC')"
+if [[ $# == 2 ]]; then
+  deadline="$2"
+  [[ "$deadline" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}[[:space:]][0-9]{2}:[0-9]{2}:[0-9]{2}[[:space:]]UTC$ ]] || exit 2
+  now="$(date -u +%s)"
+  expiry="$(date -u -d "$deadline" +%s)"
+  (( expiry - now >= 120 && expiry - now <= 3600 )) || {
+    echo "ru_shared_deadline_out_of_bounds=true"; exit 2;
+  }
+else
+  deadline="$(date -u -d '+35 minutes' +'%Y-%m-%d %H:%M:%S UTC')"
+fi
 systemd-analyze calendar "$deadline" >/dev/null
 cat > "$base/$name.service" <<UNIT
 [Unit]
