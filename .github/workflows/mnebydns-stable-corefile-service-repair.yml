@@ -1,0 +1,24 @@
+name: MNEBYDNS stable CoreDNS service recovery
+on:
+  push:
+    branches: ['feature/mnebydns-stable-5services-20261109']
+    paths: ['.github/workflows/mnebydns-stable-corefile-service-repair.yml']
+permissions:
+  contents: read
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    env:
+      SSH_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Recover public DNS service from the already verified stable checkpoint
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          bash -n scripts/mnebydns-stable-corefile-repair.sh
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          export SSHPASS="$SSH_PASS"
+          sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@89.125.90.101 'bash -se' < scripts/mnebydns-stable-corefile-repair.sh
