@@ -281,7 +281,7 @@ def main():
     args=p.parse_args()
     if args.pcap:consume_file(args.pcap,args.role)
     else:
-        if args.seconds<5 or args.seconds>900:raise SystemExit('observer window must be 5..900 seconds')
+        if args.seconds<5 or args.seconds>1800:raise SystemExit('observer window must be 5..1800 seconds')
         if not re.fullmatch(r'[a-zA-Z0-9_-]{1,24}',args.interface):raise SystemExit('invalid interface')
         capture_live(args.role,args.interface,args.seconds)
 
