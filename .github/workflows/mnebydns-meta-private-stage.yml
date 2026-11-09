@@ -32,10 +32,11 @@ jobs:
           cleanup() {
             rc=$?
             trap - EXIT
-            SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 "bash -s -- '$work' '$unit'" <<'CLEAN' || true
+            SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 "bash -s -- '$work' '$unit'" <<'CLEAN' || { echo "cleanup_SSH_failed=true"; exit 6; }
           set -Eeuo pipefail
           work="$1"; unit="$2"
           systemctl stop "$unit.service" >/dev/null 2>&1 || true
+          if systemctl is-active --quiet "$unit.service"; then echo "temporary_service_still_running=true"; exit 6; fi
           if test -f /etc/mnebydns-meta-private/nginx.conf &&
              test -f "$work/proxy.meta" &&
              cmp -s /etc/mnebydns-meta-private/nginx.conf "$work/proxy.meta"; then
@@ -48,9 +49,14 @@ jobs:
           for pair in nginx:/etc/nginx/nginx.conf dns:/opt/mnebydns-dot/Corefile proxy:/etc/mnebydns-googlepilot/nginx.conf; do
             kind="${pair%%:*}"; dest="${pair#*:}"
             cmp -s "$checkpoint/$kind.stable" "$dest" || { echo "stable_drift=$kind"; exit 4; }
-            echo "stable_$kind_preserved=true"
+            echo "stable_${kind}_preserved=true"
           done
           if [[ "$work" =~ ^/tmp/mnebydns-meta-private-[0-9]+$ ]]; then rm -rf -- "$work"; fi
+          if test -d /tmp/mnebydns-meta-private-42545223255 &&
+             ! systemctl is-active --quiet mnebydns-meta-private-42545223255.service; then
+            rm -rf -- /tmp/mnebydns-meta-private-42545223255
+            echo "previous_trial_temporary_files_removed=true"
+          fi
           echo "temporary_Meta_sidecar_stopped=true"
           CLEAN
             exit "$rc"
