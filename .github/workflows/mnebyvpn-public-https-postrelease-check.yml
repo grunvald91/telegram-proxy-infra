@@ -42,15 +42,16 @@ jobs:
           echo 'compact_release_sha_verified=true'
           # Pure HTTP GET checks: no payment or VPN state is mutated.
           page="$(curl -fsS --max-time 6 http://127.0.0.1:8792/)"
-          printf '%s' "$page" | grep -Fq 'id="journey-landing"'
-          printf '%s' "$page" | grep -Fq '/journey.js'
+          [[ "$page" == *'id="journey-landing"'* ]]
+          [[ "$page" == *'/journey.js'* ]]
           echo 'compact_homepage_rendered=true'
           for route in /journey.js /journey.css /about.js /payment/success /payment/return; do
             code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 7 "http://127.0.0.1:8792$route")"
             echo "compact_route_${route}=${code}"
             test "$code" = 200
           done
-          if curl -fsS --max-time 8 --resolve mnebyvpn.site:443:127.0.0.1             https://mnebyvpn.site/ | grep -Fq '/journey.js'; then
+          tls_page="$(curl -fsS --max-time 8 --resolve mnebyvpn.site:443:127.0.0.1 https://mnebyvpn.site/)"
+          if [[ "$tls_page" == *'/journey.js'* ]]; then
             echo 'compact_nginx_local_tls=true'
           else
             echo 'compact_nginx_local_tls=false'
