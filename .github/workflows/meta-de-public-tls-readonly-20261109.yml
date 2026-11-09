@@ -1,0 +1,90 @@
+name: MNEBYDNS Meta public DE TLS selection audit (read only)
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths: [.github/workflows/meta-de-public-tls-readonly-20261109.yml]
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Verify TCP connection and certificate separately from GitHub runner
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import socket,ssl,concurrent.futures
+          targets=[
+              ('de','89.125.90.101','i.instagram.com'),
+              ('de','89.125.90.101','graph.instagram.com'),
+              ('de','89.125.90.101','threads.com'),
+              ('de','89.125.90.101','gemini.google.com'),
+              ('de','89.125.90.101','chatgpt.com'),
+              ('ru','188.120.254.223','i.instagram.com'),
+              ('ru','188.120.254.223','threads.com'),
+          ]
+          def probe(x):
+              label,ip,name=x
+              tcp=False;tls=False;failure='none'
+              try:
+                  with socket.create_connection((ip,443),timeout=6) as sock:
+                      tcp=True
+                      sock.settimeout(6)
+                      try:
+                          with ssl.create_default_context().wrap_socket(sock,server_hostname=name) as session:
+                              tls=bool(session.getpeercert())
+                      except Exception as exc:failure=type(exc).__name__
+              except Exception as exc:failure=type(exc).__name__
+              return label,name,tcp,tls,failure
+          with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+              results=list(pool.map(probe,targets))
+          for label,name,tcp,tls,failure in results:
+              key=label+'_'+name.replace('.','_')
+              print('runner_'+key+'_tcp_connected='+str(tcp).lower(),flush=True)
+              print('runner_'+key+'_tls_verified='+str(tls).lower(),flush=True)
+              print('runner_'+key+'_failure='+failure,flush=True)
+          print('read_only_runner_tcp_tls_matrix_complete=true')
+          PY
+      - name: Independently probe DE public TLS from RU, without WG
+        shell: bash
+        env:
+          SSHPASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass >/dev/null
+          sshpass -e ssh -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=12 root@188.120.254.223 'python3 -' <<'PY'
+          import subprocess,socket,ssl,concurrent.futures
+          de='89.125.90.101'
+          route=subprocess.run(['ip','-4','route','get',de],capture_output=True,text=True,timeout=5)
+          independent=route.returncode==0 and 'tg-relay' not in route.stdout
+          print('ru_to_de_public_not_wireguard='+str(independent).lower(),flush=True)
+          if not independent:raise SystemExit('Public route not independent')
+          names=['i.instagram.com','graph.instagram.com','threads.com','gemini.google.com','chatgpt.com']
+          def probe(name):
+              connected=False;verified=False;failure='none'
+              try:
+                  with socket.create_connection((de,443),timeout=7) as sock:
+                      connected=True
+                      sock.settimeout(7)
+                      try:
+                          with ssl.create_default_context().wrap_socket(sock,server_hostname=name) as sess:
+                              verified=bool(sess.getpeercert())
+                      except Exception as exc:failure=type(exc).__name__
+              except Exception as exc:failure=type(exc).__name__
+              return name,connected,verified,failure
+          with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+              results=list(pool.map(probe,names))
+          for name,tcp,tls,failure in results:
+              key=name.replace('.','_')
+              print('ru_to_de_'+key+'_tcp_connected='+str(tcp).lower(),flush=True)
+              print('ru_to_de_'+key+'_tls_verified='+str(tls).lower(),flush=True)
+              print('ru_to_de_'+key+'_failure='+failure,flush=True)
+          print('read_only_ru_to_de_public_matrix_complete=true')
+          PY
