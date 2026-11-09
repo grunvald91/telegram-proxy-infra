@@ -1,0 +1,61 @@
+name: MNEBYDNS code review read-only post-watchdog state verification
+on:
+  push:
+    branches: ['review/mnebydns-meta-split-20261109']
+    paths: ['.github/workflows/mnebydns-review-live-state.yml']
+permissions:
+  contents: read
+jobs:
+  state:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Read-only snapshot and watchdog status (no changes)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASSWORD" && test -n "$DE_PASSWORD"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass
+          opts=(-o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new)
+          SSHPASS="$DE_PASSWORD" sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY'
+          import pathlib,subprocess,datetime
+          print('DE_UTC='+datetime.datetime.now(datetime.timezone.utc).isoformat(),flush=True)
+          base=pathlib.Path('/opt/mnebydns-googlepilot-backups/42538883926')
+          for k,path in (('nginx','/etc/nginx/nginx.conf'),('dns','/opt/mnebydns-dot/Corefile')):
+              live=pathlib.Path(path)
+              before=base/(k+'.before')
+              pilot=base/(k+'.pilot')
+              if not live.is_file() or not before.is_file() or not pilot.is_file():state='MISSING_SNAPSHOT'
+              elif live.read_bytes()==before.read_bytes():state='BASELINE'
+              elif live.read_bytes()==pilot.read_bytes():state='PILOT'
+              else:state='OTHER'
+              print('DE_'+k+'_state='+state,flush=True)
+          for unit in ('mnebydns-googlepilot.service','mnebydns-four-google-watchdog-42538883926.timer',
+                       'nginx','mnebydns-dot.service','mnebydns-gemini.service','xray.service'):
+              x=subprocess.run(['systemctl','is-active',unit],capture_output=True,text=True,timeout=5)
+              print('DE_'+unit+'_state='+x.stdout.strip(),flush=True)
+          p=subprocess.run(['ss','-H','-lnt'],capture_output=True,text=True,timeout=5)
+          for port in (15449,19443):
+              print('DE_'+str(port)+'_listener_present='+str(any(l.split()[3].endswith(':'+str(port)) for l in p.stdout.splitlines())).lower(),flush=True)
+          print('DE_read_only=true',flush=True)
+          PY
+          SSHPASS="$RU_PASSWORD" sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -' <<'PY'
+          import pathlib,subprocess,datetime
+          print('RU_UTC='+datetime.datetime.now(datetime.timezone.utc).isoformat(),flush=True)
+          base=pathlib.Path('/opt/mnebydns-meta-ru-backups/42538883926')
+          live=pathlib.Path('/etc/nginx/streams.d/01-mtproxy-443.conf')
+          before=base/'before';pilot=base/'pilot'
+          if not live.is_file() or not before.is_file() or not pilot.is_file():state='MISSING_SNAPSHOT'
+          elif live.read_bytes()==before.read_bytes():state='BASELINE'
+          elif live.read_bytes()==pilot.read_bytes():state='PILOT'
+          else:state='OTHER'
+          print('RU_stream443_state='+state,flush=True)
+          for unit in ('mnebydns-meta-ru-watchdog-42538883926.timer','nginx','xray.service'):
+              x=subprocess.run(['systemctl','is-active',unit],capture_output=True,text=True,timeout=5)
+              print('RU_'+unit+'_state='+x.stdout.strip(),flush=True)
+          print('RU_read_only=true',flush=True)
+          PY
