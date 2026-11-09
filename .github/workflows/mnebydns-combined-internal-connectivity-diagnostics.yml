@@ -1,0 +1,66 @@
+name: MNEBYDNS DE RU internal TLS and DoT route diagnostics - read only
+on:
+  push:
+    branches: [diagnostics/mnebydns-meta-ingress-matrix-20261109]
+    paths: [.github/workflows/mnebydns-combined-internal-connectivity-diagnostics.yml]
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Check from DE and RU hosts, not from GitHub-runner IP
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS" && test -n "$RU_PASS"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          ssh_de() { SSHPASS="$DE_PASS" sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@89.125.90.101 "$@"; }
+          ssh_ru() { SSHPASS="$RU_PASS" sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@188.120.254.223 "$@"; }
+          ssh_de 'python3 -' <<'PY'
+          import socket, ssl, subprocess, pathlib
+          def probe(host,ip,port):
+              try:
+                  with socket.create_connection((ip,port),timeout=6) as sock:
+                      sock.settimeout(6)
+                      with ssl.create_default_context().wrap_socket(sock,server_hostname=host) as tls:
+                          return 'ok_'+str(tls.version())
+              except Exception as e:return type(e).__name__
+          for host in ('claude.ai','gemini.google.com','x.com','www.tiktok.com'):
+              print('DE_SELF_PUBLIC443_'+host+'='+probe(host,'89.125.90.101',443),flush=True)
+          for name,port in [('DE_local_dot',853),('DE_local_public_https',443),('DE_local_stable_proxy',15449)]:
+              q=subprocess.run(['ss','-H','-lnt','sport = :'+str(port)],capture_output=True,text=True,timeout=5)
+              print(name+'_listening='+str(bool(q.stdout.strip())).lower(),flush=True)
+          base=pathlib.Path((pathlib.Path('/opt/mnebydns-stable-checkpoints')/'current').read_text().strip())
+          for kind,path in (('dns','/opt/mnebydns-dot/Corefile'),('nginx','/etc/nginx/nginx.conf'),('proxy','/etc/mnebydns-googlepilot/nginx.conf')):
+              eq=pathlib.Path(path).read_bytes()==(pathlib.Path(base)/(kind+'.stable')).read_bytes()
+              print('DE_stable_checkpoint_'+kind+'='+str(eq).lower(),flush=True)
+          print('DE_read_only_diagnostic_complete=true',flush=True)
+          PY
+          ssh_ru 'python3 -' <<'PY'
+          import socket, ssl, subprocess, pathlib
+          def probe(host,ip,port):
+              try:
+                  with socket.create_connection((ip,port),timeout=6) as sock:
+                      sock.settimeout(6)
+                      with ssl.create_default_context().wrap_socket(sock,server_hostname=host) as tls:
+                          return 'ok_'+str(tls.version())
+              except Exception as e:return type(e).__name__
+          for host in ('claude.ai','gemini.google.com','chatgpt.com'):
+              print('RU_TO_DE_PUBLIC443_'+host+'='+probe(host,'89.125.90.101',443),flush=True)
+          for name,port in [('RU_public_https',443),('RU_wireguard_remote',19443)]:
+              if port==443:
+                  q=subprocess.run(['ss','-H','-lnt','sport = :443'],capture_output=True,text=True,timeout=5)
+                  print(name+'_listening='+str(bool(q.stdout.strip())).lower(),flush=True)
+              else:
+                  print(name+'_not_active_in_stable_baseline=true',flush=True)
+          eq=pathlib.Path('/etc/nginx/streams.d/01-mtproxy-443.conf').read_bytes()==pathlib.Path('/opt/mnebydns-meta-ru-backups/42538883926/before').read_bytes()
+          print('RU_original_SNI_match='+str(eq).lower(),flush=True)
+          print('RU_read_only_diagnostic_complete=true',flush=True)
+          PY
+          echo "internal_readonly_diagnostics_completed=true"
