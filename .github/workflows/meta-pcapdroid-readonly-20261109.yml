@@ -91,6 +91,26 @@ jobs:
           lines = [s for s in out.splitlines() if '.service' in s and '.timer' not in s]
           print(f'{role}_meta_quic_service_count={len(lines)}')
           print(f'{role}_meta_quic_running_count={sum(len(s.split()) > 3 and s.split()[3] == "running" for s in lines)}')
+          # Read-only identification of who owns the expected UDP port.
+          listen_port = 443 if role == 'ru' else 19444
+          rc, sockets = run('ss','-H','-lunp','sport = :'+str(listen_port))
+          pids = set(int(x) for x in re.findall(r'\bpid=(\d+)', sockets)) if rc == 0 else set()
+          print(f'{role}_udp_listener_ss_exit={rc}')
+          print(f'{role}_udp_listener_owner_pid_count={len(pids)}')
+          owners = set()
+          relay = False
+          for pid in pids:
+              try:
+                  cmdline = open('/proc/'+str(pid)+'/cmdline','rb').read().decode('utf-8','replace')
+                  cgroup = open('/proc/'+str(pid)+'/cgroup','r').read()
+              except (OSError,UnicodeError):
+                  continue
+              if 'mnebydns-meta-quic-' in cmdline or 'mnebydns-meta-quic-' in cgroup:
+                  relay = True
+              owners.update(re.findall(r'([A-Za-z0-9_.-]+\.service)',cgroup))
+          print(f'{role}_udp_meta_quic_owner_detected={str(relay).lower()}')
+          safe = sorted(n for n in owners if n.startswith('mnebydns-') or n.startswith('nginx') or n.startswith('xray'))
+          print(f'{role}_udp_owner_scoped_services={",".join(safe[:4]) or "none"}')
           if role == 'ru':
               natcode, natout = run('nft', 'list', 'ruleset')
               print(f'{role}_nft_udp443_rule_present={str(natcode == 0 and any("udp dport 443" in l for l in natout.splitlines())).lower()}')
