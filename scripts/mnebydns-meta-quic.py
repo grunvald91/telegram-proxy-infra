@@ -33,7 +33,10 @@ META_SUFFIXES = (
     "meta.ai", "instagramstatic.com", "igcdn.com", "fbcdn.com",
 )
 META_EXACT = frozenset(("instagramstatic-a.akamaihd.net",))
-MAX_DATAGRAM = 1450
+# QUIC datagrams larger than 1450 bytes (e.g. coalesced packets) are valid.
+# Do not silently discard server responses that exceed a typical initial MTU.
+MAX_DATAGRAM = 8192
+MAX_PENDING_BYTES = 16384
 MAX_FLOWS = 128
 IDLE_SECONDS = 65
 
@@ -190,7 +193,9 @@ class ConnectedDatagram(asyncio.DatagramProtocol):
         flow = self.router.flows.get(self.client)
         if flow:
             flow.last = time.monotonic()
+            self.router.counters['upstream_rx'] += 1
             self.router.transport.sendto(data, self.client)
+            self.router.counters['client_tx'] += 1
 
     def error_received(self, exc):
         self.router.discard(self.client)
@@ -201,7 +206,10 @@ class MetaRouter(asyncio.DatagramProtocol):
         self.role, self.peer, self.listen_ip = role, peer, listen_ip
         self.transport = None
         self.flows: dict[tuple[str, int], Flow] = {}
-        self.counters = {"admitted":0, "rejected":0, "expired":0, "resolve_error":0}
+        # Aggregate counters only: never log app payloads, user IPs or SNI.
+        self.counters = {"admitted":0, "rejected":0, "expired":0, "resolve_error":0,
+                         "rx":0, "to_upstream":0, "upstream_rx":0, "client_tx":0,
+                         "oversize":0, "undersize":0, "peer_drop":0, "overflow":0}
 
     def connection_made(self, transport):
         self.transport = transport
@@ -214,37 +222,58 @@ class MetaRouter(asyncio.DatagramProtocol):
             flow.transport.close()
 
     def datagram_received(self, packet: bytes, source: tuple[str,int]):
-        if len(packet)>MAX_DATAGRAM or len(packet)<20: return
-        if self.role=='de' and source[0] != self.peer: return
-        flow=self.flows.get(source)
+        # Count all incoming datagrams before rejecting: otherwise an external
+        # firewall fault is indistinguishable from parser/size rejection.
+        self.counters['rx'] += 1
+        if len(packet) > MAX_DATAGRAM:
+            self.counters['oversize'] += 1
+            return
+        if len(packet) < 20:
+            self.counters['undersize'] += 1
+            return
+        if self.role == 'de' and source[0] != self.peer:
+            self.counters['peer_drop'] += 1
+            return
+        flow = self.flows.get(source)
         if flow:
-            flow.last=time.monotonic()
-            if flow.transport: flow.transport.sendto(packet)
-            elif len(flow.pending)<8:flow.pending.append(packet)
+            flow.last = time.monotonic()
+            if flow.transport:
+                flow.transport.sendto(packet)
+                self.counters['to_upstream'] += 1
+            elif len(flow.pending) < 8 and sum(map(len, flow.pending)) + len(packet) <= MAX_PENDING_BYTES:
+                flow.pending.append(packet)
+            else:
+                self.counters['overflow'] += 1
             return
-        if len(self.flows)>=MAX_FLOWS:return
-        name=initial_sni(packet)
+        if len(self.flows) >= MAX_FLOWS:
+            self.counters['overflow'] += 1
+            return
+        name = initial_sni(packet)
         if not allowed(name):
-            self.counters['rejected']+=1
+            self.counters['rejected'] += 1
             return
-        flow=Flow(pending=[packet]);self.flows[source]=flow
+        flow = Flow(pending=[packet]); self.flows[source] = flow
         asyncio.create_task(self.establish(source,name,flow))
+
+    async def destination_for(self, name: str) -> tuple[str, int]:
+        """Private/WG or validated public Meta origin; override in local tests."""
+        if self.role == 'ru':
+            return '10.66.77.1', 19444
+        return await asyncio.to_thread(public_ipv4, name), 443
 
     async def establish(self, source: tuple[str,int], name: str, flow: Flow):
         try:
-            if self.role=='ru':
-                host,port='10.66.77.1',19444
-                bind=('0.0.0.0',0)
-            else:
-                host=await asyncio.to_thread(public_ipv4,name)
-                port=443
-                bind=('0.0.0.0',0)
+            host,port = await self.destination_for(name)
             loop=asyncio.get_running_loop()
-            transport,_=await loop.create_datagram_endpoint(lambda:ConnectedDatagram(self,source),local_addr=bind,remote_addr=(host,port))
+            transport,_=await loop.create_datagram_endpoint(
+                lambda:ConnectedDatagram(self,source),
+                local_addr=('0.0.0.0',0),remote_addr=(host,port))
             if self.flows.get(source) is not flow:
                 transport.close();return
             flow.transport=transport
-            for item in flow.pending:transport.sendto(item)
+            for item in flow.pending:
+                transport.sendto(item)
+                self.counters['to_upstream'] += 1
             flow.pending.clear()
             self.counters['admitted']+=1
         except Exception:
