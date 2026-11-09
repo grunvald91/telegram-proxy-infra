@@ -1,0 +1,71 @@
+name: MNEBYDNS Meta root-cause full offline regression and nginx syntax
+on:
+  push:
+    branches: [diagnostics/mnebydns-meta-rootcause-20261109]
+    paths: [.github/workflows/mnebydns-meta-rootcause-offline-tests-20261109.yml]
+permissions:
+  contents: read
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test QUIC, packet observer, DNS overlay and guarded re-test controls
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -c 'import cryptography'
+          python3 -m py_compile scripts/mnebydns-meta-quic.py scripts/test-mnebydns-meta-quic.py scripts/mnebydns-meta-packet-observer.py scripts/test-mnebydns-meta-packet-observer.py scripts/mnebydns-meta-overlay.py scripts/mnebydns-meta-quic-handshake-probe.py
+          python3 scripts/test-mnebydns-meta-quic.py
+          python3 scripts/test-mnebydns-meta-packet-observer.py
+          python3 scripts/mnebydns-meta-overlay.py self-test
+          for file in scripts/mnebydns-meta-de-stage.sh scripts/mnebydns-meta-de-activate.sh scripts/mnebydns-meta-de-rollback.sh scripts/mnebydns-meta-ru-deploy.sh scripts/mnebydns-meta-ru-rollback.sh scripts/mnebydns-meta-quic-stage.sh scripts/mnebydns-meta-quic-rollback.sh; do bash -n "$file"; done
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('.github/workflows/mnebydns-meta-rootcause-guarded-live-20261109.yml').read_text()
+          assert 'paths: [ops/mnebydns-meta-rootcause-arm.txt]' in p
+          assert 'branches: [diagnostics/mnebydns-meta-rootcause-20261109]' in p
+          assert 'persistent_rollback_on_both_servers_armed=true' in p
+          assert 'DE_passive_stage_observer_ACTIVE=true' in p
+          assert 'RU_passive_stage_observer_ACTIVE=true' in p
+          assert 'Meta_public_RU_443_external_certificate_4_of_4=PASS' in p
+          assert 'QUIC_external_RU_return_path_FAIL' in p
+          assert 'QUIC_external_RU_certificate_' in p
+          assert 'QUIC_source_is_GitHub_runner_NOT_mobile_network=true' in Path('scripts/mnebydns-meta-quic-handshake-probe.py').read_text()
+          assert 'QUIC_ADMISSION_ONLY=true' in p
+          assert 'No_new_phone_PCAP_needed' not in p or 'NO_NEW_PHONE_PCAP_REQUIRED=true' in p
+          assert '--seconds 1350' not in p
+          assert 'Meta_PCAP_13_plus_stable_6_verified_DNS=PASS' in p
+          for server in ('ru','de'):
+              assert "mnebydns-meta-observe-"+server+"-$id" in p
+          print('meta_guarded_canary_prepared_not_started=PASS')
+          PY
+      - name: Validate isolated Nginx stream configuration with nginx -t
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y nginx libnginx-mod-stream
+          test -s /usr/lib/nginx/modules/ngx_stream_module.so
+          work="$(mktemp -d)"
+          trap 'rm -rf -- "$work"' EXIT
+          cat > "$work/Corefile" <<'CORE'
+          tls://.:853 {
+              template IN A gemini.google.com {
+                  match ^gemini[.]google[.]com[.]$
+                  answer "{{ .Name }} 20 IN A 89.125.90.101"
+              }
+              cache 30
+              forward . tls://9.9.9.9 {}
+          }
+          CORE
+          python3 scripts/mnebydns-meta-overlay.py render "$work/Corefile" "$work/output" || {
+            mkdir -p "$work/output"
+            python3 scripts/mnebydns-meta-overlay.py render "$work/Corefile" "$work/output"
+          }
+          sudo install -d -m 700 /run/mnebydns-meta-pilot
+          sudo nginx -t -c "$work/output/proxy.meta"
+          grep -F 'access_log /dev/stdout meta_stage;' "$work/output/proxy.meta"
+          grep -F 'worker_connections 384' "$work/output/proxy.meta"
+          echo 'meta_DE_isolated_Nginx_config_syntax=PASS'
