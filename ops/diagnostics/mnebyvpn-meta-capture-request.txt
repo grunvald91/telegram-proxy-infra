@@ -1,0 +1,1 @@
+Operator explicitly confirmed on 2026-11-09 all active MNEBYVPN connections belong to them and their VPN is enabled. Authorized one-time, 15-second idle baseline plus 90-second read-only metadata capture for Instagram and Threads; no payload, identifiers or persistent packet traces. OpenAI/ChatGPT DNS is a separate follow-up and not changed by this run.
