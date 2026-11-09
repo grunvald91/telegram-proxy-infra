@@ -19,6 +19,8 @@ jobs:
           python3 -m py_compile scripts/mnebydns-meta-quic.py scripts/test-mnebydns-meta-quic.py scripts/mnebydns-meta-packet-observer.py scripts/test-mnebydns-meta-packet-observer.py scripts/mnebydns-meta-overlay.py scripts/mnebydns-meta-quic-handshake-probe.py
           python3 scripts/test-mnebydns-meta-quic.py
           python3 scripts/test-mnebydns-meta-packet-observer.py
+          python3 -m py_compile scripts/mnebydns-meta-report.py scripts/test-mnebydns-meta-report.py
+          python3 scripts/test-mnebydns-meta-report.py
           python3 scripts/mnebydns-meta-overlay.py self-test
           for file in scripts/mnebydns-meta-de-stage.sh scripts/mnebydns-meta-de-activate.sh scripts/mnebydns-meta-de-rollback.sh scripts/mnebydns-meta-ru-deploy.sh scripts/mnebydns-meta-ru-rollback.sh scripts/mnebydns-meta-quic-stage.sh scripts/mnebydns-meta-quic-rollback.sh; do bash -n "$file"; done
           python3 - <<'PY'
@@ -37,6 +39,10 @@ jobs:
           assert 'No_new_phone_PCAP_needed' not in p or 'NO_NEW_PHONE_PCAP_REQUIRED=true' in p
           assert '--seconds 1350' not in p
           assert 'Meta_PCAP_13_plus_stable_6_verified_DNS=PASS' in p
+          assert 'PRE_PHONE_baseline_captured_before_DNS_cutover=true' in p
+          assert "'meta_stage_ru_capture_ready=true'" in p
+          assert "'meta_stage_de_capture_ready=true'" in p
+          assert p.count('mnebydns-meta-report.py') == 2
           for server in ('ru','de'):
               assert "mnebydns-meta-observe-"+server+"-$id" in p
           print('meta_guarded_canary_prepared_not_started=PASS')
