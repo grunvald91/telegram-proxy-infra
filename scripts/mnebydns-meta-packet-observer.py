@@ -278,9 +278,13 @@ def capture_live(role,interface,seconds):
     buf=bytearray(); head=None
     deadline=time.monotonic()+seconds
     next_report=time.monotonic()+10
+    stop={'requested':False}
+    old_term=signal.getsignal(signal.SIGTERM)
+    signal.signal(signal.SIGTERM,lambda *_:stop.__setitem__('requested',True))
     try:
-        while time.monotonic()<deadline:
+        while time.monotonic()<deadline and not stop['requested']:
             if proc.poll() is not None:
+                if stop['requested']:break
                 raise RuntimeError('tcpdump stopped unexpectedly with exit='+str(proc.returncode))
             ready,_,_=select.select([fd],[],[],min(1.0,max(0,deadline-time.monotonic())))
             if ready:
@@ -299,6 +303,7 @@ def capture_live(role,interface,seconds):
         obs.report(final=True)
         return obs
     finally:
+        signal.signal(signal.SIGTERM,old_term)
         if proc.poll() is None:
             proc.send_signal(signal.SIGINT)
         try:proc.wait(timeout=4)
