@@ -35,6 +35,6 @@ jobs:
       - name: Install isolated kernel test requirements
         run: |
           sudo apt-get update -qq
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq iproute2 iptables tcpdump libnetfilter-queue1
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq iproute2 iptables tcpdump ethtool libnetfilter-queue1
       - name: Run real TCP SYN-ACK NFQUEUE test only inside network namespaces
         run: sudo bash scripts/tests/integration_mnebydns_synack_netns.sh
