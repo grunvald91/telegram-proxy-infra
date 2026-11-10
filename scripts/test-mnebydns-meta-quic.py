@@ -21,7 +21,7 @@ def varint_2(x: int) -> bytes:
     return bytes((0x40 | (x >> 8), x & 255))
 
 
-def fixture_sni(domain: str) -> bytes:
+def fixture_sni(domain: str, before_crypto: bytes = b'') -> bytes:
     """Original synthetic ClientHello embedded inside QUIC Initial v1."""
     hostname = domain.encode('ascii')
     server_name = b'\x00' + struct.pack('!H', len(hostname)) + hostname
@@ -44,7 +44,7 @@ def fixture_sni(domain: str) -> bytes:
     unprotected = (b'\xc1\x00\x00\x00\x01' + bytes((len(dcid),)) + dcid +
                    b'\x00\x00' + varint_2(length) + pn.to_bytes(2,'big'))
     assert len(unprotected) == 20
-    padded = crypto + b'\x00' * (length - 2 - 16 - len(crypto))
+    padded = before_crypto + crypto + b'\x00' * (length - 2 - 16 - len(before_crypto) - len(crypto))
     assert len(padded) == length - 2 - 16
     nonce = bytes(a^b for a,b in zip(iv,pn.to_bytes(12,'big')))
     encrypted = AESGCM(key).encrypt(nonce,padded,unprotected)
@@ -58,16 +58,22 @@ def fixture_sni(domain: str) -> bytes:
 
 
 def run():
-    targets=('threads.com','www.threads.com','graph.threads.com',
-             'threads.net','www.threads.net','graph.threads.net')
+    targets=('i.instagram.com','i-fallback.instagram.com',
+             'test-gateway.instagram.com','graph.instagram.com',
+             'graph.facebook.com','threads.com',
+             'fake-tracker.fbcdn.net')
     for host in targets:
         assert mod.allowed(host)
         result=mod.initial_sni(fixture_sni(host))
         assert result==host,(host,result)
-    for host in ('i.instagram.com','graph.instagram.com','graph.facebook.com','evilinstagram.com','instagram.com.evil.org',
+        # QUIC Initial legally permits PING and ACK frames before CRYPTO.
+        assert mod.initial_sni(fixture_sni(host, b'\x01')) == host
+        assert mod.initial_sni(fixture_sni(host, b'\x02\x00\x00\x00\x00')) == host
+        assert mod.initial_sni(fixture_sni(host, b'\x03\x00\x00\x00\x00\x00\x00\x00')) == host
+    for host in ('evilinstagram.com','instagram.com.evil.org',
                  'internal.local','127.0.0.1','foo.telegram.org'):
         assert not mod.allowed(host)
-    for invalid in (b'\x00'*1252,fixture_sni('www.threads.com')[:-1],
+    for invalid in (b'\x00'*1252,fixture_sni('i.instagram.com')[:-1],
                     b'\x11'*999):
         assert mod.initial_sni(invalid) is None
     assert mod.MAX_FLOWS<=256
@@ -79,6 +85,7 @@ def run():
     assert router.counters['emsgsize']==1
     import asyncio
     asyncio.run(test_local_response_path())
+    print('meta_quic_rfc9000_initial_ping_ack_ecn_frame_order=PASS')
     print('meta_quic_local_two_hop_UDP_roundtrip=PASS')
     print('meta_quic_synthetic_v1_7_domains=PASS')
     print('meta_quic_non_Meta_rejected=PASS')
@@ -130,7 +137,7 @@ async def test_local_response_path():
         client=Client()
         client_transport,_=await loop.create_datagram_endpoint(lambda:client,local_addr=('127.0.0.1',0))
         transports.append(client_transport)
-        data=fixture_sni('www.threads.com')
+        data=fixture_sni('i.instagram.com')
         client_transport.sendto(data,ru_transport.get_extra_info('sockname'))
         await asyncio.wait_for(client.event.wait(),3.0)
         assert client.data==mark+data[:16],client.data
