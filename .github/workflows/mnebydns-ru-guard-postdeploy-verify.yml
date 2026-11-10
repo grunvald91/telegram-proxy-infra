@@ -4,6 +4,7 @@ on:
     branches: [experiment/instagram-synack-window-canary-20261110]
     paths:
       - '.github/workflows/mnebydns-ru-guard-postdeploy-verify.yml'
+      - 'docs/mnebydns-android-mobile-field-test.md'
   workflow_dispatch:
 permissions:
   contents: read
