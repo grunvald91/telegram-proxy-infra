@@ -1,0 +1,38 @@
+name: Threads origin real HTTP3 handshake from DE temporary environment
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths: [.github/workflows/threads-www-real-http3-origin-20261110.yml]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test QUIC TLS and HTTP3 to real original Threads domains from DE; clean temp packages
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          test -n "$DE_PASS"
+          id="$GITHUB_RUN_ID"
+          [[ "$id" =~ ^[0-9]{9,13}$ ]]
+          work="/tmp/mnebydns-threads-h3-probe-$id"
+          de_ssh() {
+            SSHPASS="$DE_PASS" sshpass -e ssh -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=12 root@89.125.90.101 "$@"
+          }
+          cleanup(){
+            de_ssh "rm -rf -- '$work'" || true
+          }
+          trap cleanup EXIT
+          de_ssh "test ! -e '$work' && mkdir -m 700 '$work'"
+          de_ssh "cat > '$work/probe.py'" < scripts/threads-www-h3-origin-20261110.py
+          de_ssh "python3 --version && python3 -m pip --version"
+          de_ssh "python3 -m pip install --disable-pip-version-check --no-input --quiet --target '$work/deps' aioquic==1.2.0"
+          de_ssh "cd '$work' && PYTHONPATH='$work/deps' timeout 47s python3 '$work/probe.py'"
+          echo 'threads_real_http3_origin_test_completed=true'
