@@ -1,0 +1,116 @@
+name: MNEBYDNS paid-ingress IPv6 feasibility (read-only, aggregate)
+on:
+  push:
+    branches: ['feat/mnebydns-feasibility-84']
+    paths: ['.github/workflows/mnebydns-paid-ingress-ipv6-readonly.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read-only aggregate IPv6 and ingress capability checks
+        shell: bash
+        env:
+          RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+          FOREIGN_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          echo 'purpose=feasibility-only'
+          echo 'network_changes=false'
+          echo 'credentials_logged=false'
+          echo 'routing_or_client_ipv6_verified=false'
+          for site in ru foreign; do
+            case "$site" in
+              ru)
+                host="$(awk -F "'" '/^[[:space:]]*HOST: / {print $2; exit}' .github/workflows/mnebyvpn-current-deployment-audit.yml)"
+                password="$RU_PASSWORD"
+                ;;
+              foreign)
+                host="$(awk -F "'" '/^[[:space:]]*FOREIGN_HOST: / {print $2; exit}' .github/workflows/mnebyvpn-relay89-public-audit.yml)"
+                password="$FOREIGN_PASSWORD"
+                ;;
+            esac
+            echo "site=$site"
+            if ! [[ "$host" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || [[ -z "$password" ]]; then
+              echo 'preflight=BLOCKED_MISSING_EXISTING_HOST_OR_SECRET'
+              exit 2
+            fi
+            export SSHPASS="$password"
+            timeout 60 sshpass -e ssh -o StrictHostKeyChecking=accept-new \
+              -o ConnectTimeout=12 -o LogLevel=ERROR "root@$host" 'python3 -' <<'PY'
+          import ipaddress
+          import json
+          import re
+          import shutil
+          import socket
+          import subprocess
+
+          def json_cmd(*command):
+              try:
+                  p = subprocess.run(command, capture_output=True, text=True, timeout=8)
+                  return json.loads(p.stdout) if p.returncode == 0 else []
+              except (OSError, ValueError, subprocess.TimeoutExpired):
+                  return []
+
+          addresses = json_cmd('ip', '-j', '-6', 'address', 'show')
+          routes = json_cmd('ip', '-j', '-6', 'route', 'show', 'table', 'main')
+          public_addresses = []
+          prefix_has_multiple_hosts = False
+          for interface in addresses:
+              for info in interface.get('addr_info', []):
+                  try:
+                      ip = ipaddress.IPv6Address(info['local'].split('%')[0])
+                      prefix = int(info['prefixlen'])
+                  except (ValueError, KeyError, TypeError):
+                      continue
+                  if ip.is_global and info.get('scope') == 'global':
+                      public_addresses.append(ip)
+                      if prefix <= 64:
+                          prefix_has_multiple_hosts = True
+          routed_global_prefix = False
+          default_route = False
+          for route in routes:
+              dst = route.get('dst', '')
+              if dst in ('default', '::/0'):
+                  default_route = True
+                  continue
+              try:
+                  net = ipaddress.IPv6Network(dst, strict=False)
+              except (ValueError, TypeError):
+                  continue
+              if net.network_address.is_global and 0 < net.prefixlen <= 64:
+                  routed_global_prefix = True
+          try:
+              listeners = subprocess.run(['ss', '-H', '-lnt6'], capture_output=True,
+                                         text=True, timeout=8)
+              ipv6_listening = listeners.returncode == 0 and bool(listeners.stdout.strip())
+          except (OSError, subprocess.TimeoutExpired):
+              ipv6_listening = False
+          try:
+              with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as sock:
+                  sock.settimeout(4)
+                  sock.connect(('2606:4700:4700::1111', 443))
+              ipv6_egress = True
+          except OSError:
+              ipv6_egress = False
+          print('public_ipv6_assigned_count=' + str(len(public_addresses)))
+          print('public_interface_prefix_at_most_64=' + str(prefix_has_multiple_hosts).lower())
+          print('global_ipv6_route_prefix_at_most_64=' + str(routed_global_prefix).lower())
+          print('ipv6_default_route=' + str(default_route).lower())
+          print('ipv6_egress_tcp443=' + str(ipv6_egress).lower())
+          print('ipv6_listener_present=' + str(ipv6_listening).lower())
+          print('nginx_binary_present=' + str(bool(shutil.which('nginx'))).lower())
+          print('inbound_client_reachability_not_tested=true')
+          print('unique_destination_attribution_not_tested=true')
+          print('no_changes=true')
+          PY
+          done
+          echo 'preflight=READ_ONLY_COMPLETE'
