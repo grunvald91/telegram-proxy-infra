@@ -1,0 +1,48 @@
+name: Threads live TCP observer read-only aggregate report
+on:
+  push:
+    branches: [diagnostics/threads-only-guarded-retest-20261110]
+    paths: [.github/workflows/threads-42811200019-observer-readonly-report-20261110.yml]
+permissions:
+  contents: read
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Read aggregate ClientHello stage counts and no data or IP
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          for role in ru de; do
+            if [[ "$role" == ru ]]; then export SSHPASS="$RU_PASS"; addr=188.120.254.223
+            else export SSHPASS="$DE_PASS"; addr=89.125.90.101; fi
+            sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR "root@$addr" "python3 - '$role'" <<'PY'
+          import subprocess,sys,re
+          role=sys.argv[1]; unit=f'threads-feed-observer-{role}-42811200019.service'
+          p=subprocess.run(['journalctl','-u',unit,'--since','2026-11-10 12:12:00 UTC','-o','cat','--no-pager'],capture_output=True,text=True,timeout=15)
+          rows=[r for r in p.stdout.splitlines() if r.startswith('meta_stage_'+role+'_WINDOW_') or r.startswith('meta_stage_'+role+'_FINAL_')]
+          print(role+'_snapshots_count='+str(len(rows)),flush=True)
+          print(role+'_active='+str(subprocess.run(['systemctl','is-active','--quiet',unit]).returncode==0).lower(),flush=True)
+          if not rows:print(role+'_no_observer_samples_yet=true',flush=True)
+          for label,row in [('first',rows[0] if rows else ''),('latest',rows[-1] if rows else '')]:
+              if not row:continue
+              parts={}
+              for x in row.split():
+                  k,sep,v=x.rpartition('=')
+                  if sep and v.isdecimal():
+                      k=k.split('_WINDOW_',1)[-1].split('_FINAL_',1)[-1]
+                      parts[k]=int(v)
+              for k in ('tcp_syn_in','tcp_synack_out','tcp_clienthello_in',
+                        'tcp_clienthello_meta_in','tcp_clienthello_other_or_ech_in',
+                        'tcp_payload_packets_in','tcp_payload_packets_out',
+                        'tcp_reset_in','tcp_reset_out','tcp_hello_fragment_in',
+                        'udp_in','udp_out','udp_quic_v1_initial_in'):
+                  print(role+'_'+label+'_'+k+'='+str(parts.get(k,0)),flush=True)
+          print(role+'_aggregate_only_no_pcap_or_client_IPs=true',flush=True)
+          PY
+          done
