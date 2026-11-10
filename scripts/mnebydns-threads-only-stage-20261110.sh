@@ -2,7 +2,7 @@
 # Stage a bounded Threads-only SmartDNS canary on DE. No other domains changed.
 set -Eeuo pipefail
 (( EUID==0 )) || exit 2
-[[ $# == 2 && "$1" =~ ^/tmp/mnebydns-threads-canary-[0-9]{9,13}$ ]] || exit 2
+[[ $# == 2 && "$1" =~ ^/tmp/mnebydns-(threads-canary|meta-quic)-[0-9]{9,13}$ ]] || exit 2
 work="$1"; deadline="$2"
 id="$(basename "$work" | cut -d- -f4)"
 [[ "$id" =~ ^[0-9]{9,13}$ ]] || exit 2
