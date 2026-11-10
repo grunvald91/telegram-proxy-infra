@@ -35,6 +35,7 @@ FILES=(
     "mnebydns-owner-domain-stage-20261110.sh",
     "mnebydns-owner-domain-rollback-20261110.sh",
     "mnebydns-owner-domain-confirm-20261110.sh",
+    "mnebydns-owner-domain-remove-20261110.sh",
 )
 TIMEOUT=90
 
@@ -80,10 +81,6 @@ def sql(query:str)->str:
                "-U mnebyvpn_stage -d mnebyvpn_stage -c "+shlex.quote(query),45)
 
 
-def one(sql_query:str)->str:
-    return sql(sql_query).splitlines()[0] if sql(sql_query).splitlines() else ""
-
-
 def get_task():
     query=(
         "SELECT id||'|'||domain||'|'||status||'|'||revision||'|'||"
@@ -92,10 +89,11 @@ def get_task():
         "coalesce(extract(epoch from updated_at)::bigint::text,'')"
         " FROM dns_admin_domains"
         " WHERE status IN ('APPLY_REQUESTED','PROBING','CONFIRM_REQUESTED',"
-        "'ROLLBACK_REQUESTED','REMOVAL_PENDING','CANARY')"
+        "'CONFIRMING','ROLLBACK_REQUESTED','REMOVAL_PENDING','REMOVING','CANARY')"
         " ORDER BY CASE status WHEN 'ROLLBACK_REQUESTED' THEN 0"
-        " WHEN 'CONFIRM_REQUESTED' THEN 1 WHEN 'REMOVAL_PENDING' THEN 2"
-        " WHEN 'PROBING' THEN 3 WHEN 'APPLY_REQUESTED' THEN 4 ELSE 5 END,"
+        " WHEN 'CONFIRMING' THEN 1 WHEN 'CONFIRM_REQUESTED' THEN 2"
+        " WHEN 'REMOVING' THEN 3 WHEN 'REMOVAL_PENDING' THEN 4"
+        " WHEN 'PROBING' THEN 5 WHEN 'APPLY_REQUESTED' THEN 6 ELSE 7 END,"
         " updated_at,id LIMIT 1"
     )
     raw=sql(query).strip()
@@ -193,10 +191,6 @@ def tls_public_route(host:str)->None:
                shlex.quote(host)+" "+shlex.quote(EDGE),30)
     if "owner_domain_ru_public_TLS_verified=true" not in output:
         raise RuntimeError("PUBLIC_TLS_VERIFICATION_FAILED")
-
-
-def sql_change(query:str)->bool:
-    return sql(query).strip()=="1"
 
 
 def update_error(item,code:str)->None:
