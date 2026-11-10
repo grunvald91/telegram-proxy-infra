@@ -26,3 +26,5 @@ jobs:
           echo "infra_fallback_bot_token_available=$FALLBACK_AVAILABLE"
           echo "infra_server188_ssh_available=$SSH_AVAILABLE"
           echo 'Secret values not printed, copied, or otherwise used.'
+
+# 2026-11-10: audit token availability for native Stars invoice initiated by Telegram HTML Bubble.
