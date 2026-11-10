@@ -50,8 +50,9 @@ jobs:
           recs=[x for x in (p.stdout or '').splitlines() if x.startswith('meta_quic_'+role+'_active=')] if p else []
           print(role+'_quic_counter_samples='+str(len(recs)),flush=True)
           if recs:
-              for field,val in re.findall(r'([a-z_]+)=(\\d+)',recs[-1]):
-                  if field in {'active','admitted','rejected','expired','resolve_error','rx','to_upstream','upstream_rx','client_tx','oversize','undersize','peer_drop','overflow','socket_error','emsgsize'}:
+              for item in recs[-1].split():
+                  field,sep,val=item.partition('=')
+                  if sep and val.isdecimal() and field in {'active','admitted','rejected','expired','resolve_error','rx','to_upstream','upstream_rx','client_tx','oversize','undersize','peer_drop','overflow','socket_error','emsgsize'}:
                       print(role+'_quic_last_'+field+'='+val,flush=True)
           def tls(target,host):
               try:
@@ -60,10 +61,10 @@ jobs:
                       with ssl.create_default_context().wrap_socket(sock,server_hostname=host) as wrapped:
                           return host,'certificate_verified'
               except Exception as e:return host,type(e).__name__
-          tests=[('89.125.90.101','www.threads.com'),('188.120.254.223','www.threads.com'),('89.125.90.101','threads.com')]
+          tests=[('89.125.90.101','www.threads.com'),('188.120.254.223','www.threads.com'),('10.66.77.1','www.threads.com'),('89.125.90.101','threads.com')]
           with concurrent.futures.ThreadPoolExecutor(max_workers=3) as ex:
               for (target,host),(h,outcome) in zip(tests,ex.map(lambda v:tls(*v),tests)):
-                  print(role+'_from_'+('RU' if target.startswith('188') else 'DE')+'_public_TLS_'+host+'='+outcome,flush=True)
+                  print(role+'_from_'+('WG_DE' if target.startswith('10.') else ('RU' if target.startswith('188') else 'DE'))+'_public_TLS_'+host+'='+outcome,flush=True)
           print(role+'_READONLY_COMPLETE=true',flush=True)
           PY
           done
