@@ -41,3 +41,7 @@ Mnebyvpn main [0cb28e4a74718cf0c08cc4c0bb5c1929c29a7553](https://github.com/grun
 ## 2026-11-10 · Реальная аватарка в Telegram HTML Bubble
 
 Визуальное исправление [PR #97](https://github.com/grunvald91/Mnebyvpn/pull/97) в MNEBYVPN `main`: [394d1a1c868021071e953a0bf940fcd4b3ffdfa5](https://github.com/grunvald91/Mnebyvpn/commit/394d1a1c868021071e953a0bf940fcd4b3ffdfa5). Исходный CI [42871683213](https://github.com/grunvald91/Mnebyvpn/actions/runs/42871683213) success. Зафиксирован настоящий аватар MNEBYVPN (Земля и разрушенная стена) как локальное встроенное изображение в HTML Bubble, фирменная цветовая схема, сохранены цены VPN и оплата Stars. Запрос на штатный guarded bot deploy через сервер188 с canary/rollback. Не менять DNS, сетевые процессы, nginx, TLS и другие контейнеры. Живой платёж Stars и VPN выдача требуют отдельного подтверждения E2E.
+
+## 2026-11-10 · Final width-200 Telegram Bubble fix
+
+MNEBYVPN main [277eaccfab97b1fff422e8d8fb3c35356326d8c8](https://github.com/grunvald91/Mnebyvpn/commit/277eaccfab97b1fff422e8d8fb3c35356326d8c8) ([PR #98](https://github.com/grunvald91/Mnebyvpn/pull/98)), CI [42872566634](https://github.com/grunvald91/Mnebyvpn/actions/runs/42872566634) success: narrow Telegram widget 200px no overflow, same avatar and Stars checkout. Request bot-only guarded canary deployment with rollback. No DNS, network or payment backend changes; live Stars charge remains unverified until real payment E2E.
