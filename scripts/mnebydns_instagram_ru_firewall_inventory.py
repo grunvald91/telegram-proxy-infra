@@ -71,6 +71,32 @@ def firewall_summary():
     else:
         print("nft_inspect=UNAVAILABLE")
 
+def output_rule_summary():
+    for table in ("raw","mangle","nat","filter","security"):
+        p=run(["iptables","-w","-t",table,"-S","OUTPUT"])
+        if not p or p.returncode:
+            print(f"output_{table}_inspection=UNAVAILABLE")
+            continue
+        print(f"output_{table}_inspection=OK")
+        lines=[line for line in p.stdout.splitlines() if line.startswith("-A ")]
+        print(f"output_{table}_rules={len(lines)}")
+        for i,line in enumerate(lines[:80],1):
+            action=re.search(r"(?:-j|--jump)\\s+(\\S+)",line)
+            target=action.group(1) if action else "CONTINUE"
+            sport443=bool(re.search(r"--sport\\s+443\\b",line))
+            dport443=bool(re.search(r"--dport\\s+443\\b",line))
+            queue=bool(re.search(r"--queue-num\\s+",line))
+            mark="MARK" in line or "--mark" in line
+            verdict=target in ("DROP","REJECT","NFQUEUE","MARK","CONNMARK","TPROXY")
+            if sport443 or dport443 or queue or mark or verdict:
+                print(f"output_{table}_rule_{i}=target:{target},sport443:{str(sport443).lower()},"
+                      f"dport443:{str(dport443).lower()},queue:{str(queue).lower()},"
+                      f"mark:{str(mark).lower()},source_scoped:{str(' -s ' in line).lower()}")
+    p=run(["nft","list","ruleset"])
+    if p and p.returncode==0:
+        print("nft_output_explicit_sport443="+str(len(re.findall(r"tcp\\s+sport\\s+443\\b",p.stdout))))
+        print("nft_output_drop_tokens="+str(len(re.findall(r"\\bdrop\\b",p.stdout))))
+
 def host_checks():
     for p in ("/run/systemd/system","/proc/net/netfilter/nfnetlink_queue"):
         print("path_"+p.replace("/","_")+"="+str(pathlib.Path(p).exists()).lower())
@@ -81,4 +107,5 @@ def host_checks():
 if __name__=="__main__":
     owner_summary()
     firewall_summary()
+    output_rule_summary()
     host_checks()
