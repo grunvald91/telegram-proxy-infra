@@ -1,0 +1,5 @@
+Owner approved Threads-only SmartDNS pilot, 2026-11-10.
+Do not change Instagram DNS routing; preserve stable Gemini Claude Grok X TikTok ChatGPT and Telegram default.
+Allow only after genuine QUIC v1 TLS and HTTP/3 response to www.threads.com via RU-WG-DE.
+35-minute independent rollback: RU QUIC, DE QUIC, DE DNS plus Nginx.
+Pre-deploy CI: https://github.com/grunvald91/telegram-proxy-infra/actions/runs/42801776979
