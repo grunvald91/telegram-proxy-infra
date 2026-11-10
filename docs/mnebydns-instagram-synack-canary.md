@@ -173,6 +173,73 @@ change the existing working public HTTPS/443, DNS, nginx, or Telegram
 nfqws chain as part of this diagnostic PR. Android mobile testing is
 still pending.
 
+## Owner-approved A/B experiment — queue 210 SYN-ACK bypass
+
+The active RU service `telegram-nfqws.service` uses `inet telegram_nfqws`,
+base chain `post` (hook `postrouting`, policy `accept`). A rule selecting
+`tcp sport 443` by packet mark sends packets to NFQUEUE 210 (bypass enabled).
+The prior synchronized tests showed GitHub runner SYN to RU/443 **arrives**
+but no corresponding SYN-ACK was observed on the outgoing interface.
+The rule may be involved; **the causal mechanism is not confirmed**.
+
+**This A/B test has not been executed on the live RU server yet.** Prior
+attempts to create GitHub Actions workflows that would remotely change firewall
+configuration were blocked by tool safety controls. We do not circumvent
+those controls or commit credentials. The authorized owner can instead run
+the following from an already SSH-authorized Codespace in the repository:
+
+```bash
+git fetch origin experiment/instagram-synack-window-canary-20261110 &&
+git switch --detach FETCH_HEAD &&
+bash scripts/mnebydns_ig_queue210_codespace_ab.sh
+```
+
+The script automatically identifies the Codespace's actual public IPv4 as
+seen by the RU SSH server, probes RU TCP/443 three times as a baseline, and
+aborts if the baseline already connects successfully.
+
+It then uses the **same authenticated SSH channel** to perform a bounded
+trial. The remote agent:
+
+1. Requires an `inet telegram_nfqws post` base chain with
+   `hook postrouting`, `policy accept`, and exactly one marked NFQUEUE
+   210 queue-bypass rule matching `tcp sport 443`
+2. Verifies the exact nft syntax with `nft --check -f -`
+3. Creates a unique rollback helper under root-owned `/run`, and arms
+   a **95-second independent systemd timer BEFORE** inserting any rule
+4. Inserts exactly one rule ahead of the queue:
+   `ip saddr RU ip daddr TEST_CLIENT tcp sport 443
+   tcp flags & (syn | ack) == (syn | ack)
+   counter return comment "MNEBY_IG_SYNACK_AB_<RUN_ID>"`
+5. Allows connections for **55 seconds**, records only the rule packet
+   counter, deletes that exact tagged rule using its nft handle on normal
+   exit, and verifies it is absent. The independent timer is also able to
+   remove the tagged rule if the interactive session disappears.
+
+There is **no change to DNS, Nginx, the Telegram worker, the live NFQUEUE
+210 rule, generic TCP/443 accept policy, or other clients**. The external
+peer sees the pre-test baseline, three connection attempts during the
+brief bypass, and a post-rollback reference.
+
+Decision criteria:
+- Baseline TIMEOUT and bypass CONNECTED (and a nonzero tagged rule
+  counter): evidence that handling by the current `post` queue rule may
+  be involved. Preserve logs, do not roll out globally; check that normal
+  network services still work
+- Baseline TIMEOUT and bypass TIMEOUT: no evidence that bypassing this
+  specific chain fixes ingress; investigate another netfilter chain,
+  host stack, provider output filtering, and kernel SYN path
+- Baseline CONNECTED: no experiment performed, since the failure is
+  not reproduced on the Codespace→RU path
+- Missing watchdog activation or unexpected chain structure: script
+  aborts without adding the rule
+
+The command runs from the **Codespace**, not the official Instagram
+Android app, and provides transport-layer evidence only. Real mobile
+operator testing is still a separate gate. Independent kernel namespace
+and unit tests are in `scripts/tests/integration_mnebydns_ig_queue210_ab_netns.sh`
+and `scripts/tests/test_mnebydns_instagram_queue210_ab.py`.
+
 ## Stage 3: read-only inspection of actual RU VPS
 
 Added `scripts/mnebydns_instagram_ru_readonly_preflight.py`. This script
