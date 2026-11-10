@@ -92,7 +92,7 @@ jobs:
           grep -E '^(phone_|generator_).*' "$logfile" || true
           grep -q '^phone_test_rule_absent=true$' "$logfile"
           grep -q '^phone_original_queue_preserved=true$' "$logfile"
-          if grep -q '^phone_test=ALREADY_REACHABLE_NO_FIREWALL_CHANGE
+          if grep -q '^phone_test=BASELINE_SYNACK_OR_ACK_SEEN_NO_FIREWALL_CHANGE
           echo 'phone_test=COMPLETED_SCOPE_AND_CLEANUP_VERIFIED'
       - name: Independent read-only postcheck of server and Telegram
         if: always()
