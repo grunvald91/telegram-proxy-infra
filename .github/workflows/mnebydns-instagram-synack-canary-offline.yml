@@ -8,6 +8,9 @@ on:
       - 'scripts/tests/test_mnebydns_instagram_queue210_ab.py'
       - 'scripts/tests/integration_mnebydns_ig_queue210_ab_netns.sh'
       - 'scripts/mnebydns_nfqws_synack_guard_render.py'
+      - 'scripts/mnebydns_nfqws_guard_stage.py'
+      - 'scripts/mnebydns_nfqws_guard_live_canary.py'
+      - 'scripts/tests/test_mnebydns_nfqws_guard_live_canary.py'
       - 'scripts/tests/test_mnebydns_nfqws_synack_guard_render.py'
       - 'scripts/tests/integration_mnebydns_nfqws_guard_restart_netns.sh'
       - 'scripts/tests/integration_mnebydns_nfqws_guard_real_tcp_netns.sh'
@@ -38,7 +41,7 @@ jobs:
       - name: Bash syntax
         run: bash -n scripts/mnebydns-synack-window-canary.sh scripts/mnebydns_instagram_ru_ingress_reach.sh scripts/mnebydns_ig_queue210_codespace_ab.sh
       - name: Python syntax
-        run: python3 -m py_compile scripts/mnebydns_synack_window_canary.py scripts/mnebydns_synack_listener.py scripts/mnebydns_nfq_failopen.py scripts/mnebydns_synack_netns_probe.py scripts/mnebydns_instagram_ru_readonly_preflight.py scripts/mnebydns_instagram_queue210_synack_ab.py scripts/mnebydns_nfqws_synack_guard_render.py
+        run: python3 -m py_compile scripts/mnebydns_synack_window_canary.py scripts/mnebydns_synack_listener.py scripts/mnebydns_nfq_failopen.py scripts/mnebydns_synack_netns_probe.py scripts/mnebydns_instagram_ru_readonly_preflight.py scripts/mnebydns_instagram_queue210_synack_ab.py scripts/mnebydns_nfqws_synack_guard_render.py scripts/mnebydns_nfqws_guard_stage.py scripts/mnebydns_nfqws_guard_live_canary.py
   kernel-netns:
     runs-on: ubuntu-latest
     timeout-minutes: 8
