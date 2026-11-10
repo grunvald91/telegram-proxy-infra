@@ -91,5 +91,25 @@ if ssh "${SSH_OPTS[@]}" "$REMOTE" 'nft -a list chain inet telegram_nfqws post' |
 fi
 echo "rollback_verification=PASS"
 echo "phase=AFTER_ROLLBACK"
-probe restored
+RESTORED="$(probe restored)"
+printf '%s\n' "$RESTORED"
+# The counter belongs to the *temporary* per-peer SYN-ACK return rule.
+# A successful connect without a counter hit is not evidence about queue 210.
+COUNTER="$(sed -nE 's/^synack_ab_rule_counter=\\(([0-9]+),[[:space:]]*[0-9]+\\).*$/\\1/p' "$LOG" | tail -n1)"
+if [[ "$COUNTER" =~ ^[0-9]+$ ]]; then
+    echo "synack_ab_bypass_counter_packets=$COUNTER"
+else
+    echo "synack_ab_bypass_counter_packets=UNKNOWN"
+fi
+if grep -q '^bypass_connected=true' <<< "$ACTIVE"; then
+    if grep -q '^restored_connected=false' <<< "$RESTORED" && [[ "$COUNTER" =~ ^[0-9]+$ ]] && (( COUNTER > 0 )); then
+        echo "ab_interpretation=QUEUE210_PATH_IS_A_PLAUSIBLE_CAUSE_REQUIRES_CONFIRMATION"
+    else
+        echo "ab_interpretation=INCONCLUSIVE_OR_TRANSIENT_CONNECTIVITY"
+    fi
+elif [[ "$COUNTER" =~ ^[0-9]+$ ]] && (( COUNTER > 0 )); then
+    echo "ab_interpretation=BYPASS_RULE_MATCHED_BUT_TCP443_STILL_FAILED"
+else
+    echo "ab_interpretation=NO_EVIDENCE_BYPASS_RULE_AFFECTED_TEST_FLOW"
+fi
 echo "A_B_RESULT_COMPLETE"
