@@ -173,6 +173,45 @@ change the existing working public HTTPS/443, DNS, nginx, or Telegram
 nfqws chain as part of this diagnostic PR. Android mobile testing is
 still pending.
 
+## RU NFQUEUE 210 controlled A/B — measured success (10 November 2026)
+
+A **live, narrowly scoped** GitHub Actions run was authorized and executed:
+[Actions #42880528120](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/42880528120),
+commit `7bb97d9`. It used the runner's public IPv4 as observed by the
+pinned-host-key RU SSH connection and checked its equality with public HTTP
+egress IP before any firewall modification. The experiment restricted the
+temporary `nft return` rule to **outbound TCP SYN-ACK from RU:443 to the
+single runner IPv4**, never changing the existing `queue 210` rule or
+stopping `telegram-nfqws.service`.
+
+| Phase | Outcome |
+| --- | --- |
+| Before | Three TCP/443 connection attempts failed (timeout/error) |
+| Scoped SYN-ACK queue-210 bypass active | TCP/443 connection **succeeded** |
+| Scoped bypass rule counter | **3 packets, 180 bytes** |
+| Immediate nft rule cleanup | **DONE** |
+| GitHub Actions tagged-rule absence check | **PASS** |
+| After rollback | Three TCP/443 connection attempts failed again |
+
+The remote agent pre-armed an independent systemd timer with 95-second
+expiry before insertion, and removed the rule after a 55-second active
+window. GitHub Actions verified the rule was absent after immediate
+cleanup. **The workflow succeeded.** This shows a reproducible
+correlation with a strong A/B indication that the RU postrouting
+NFQUEUE-210 processing path prevents TCP/443 setup **from this runner**.
+It does **not** prove a particular user-space verdict inside `nfqws`,
+all-operator behavior, or operation of the unchanged Android Instagram
+application. No ClientHello/SNI was transmitted during the TCP-only A/B.
+Other DPI limitations remain open.
+
+Next decision: investigate the scope of the existing
+`inet telegram_nfqws post` mark + queue rule and plan a separate,
+regression-tested SYN-ACK-only exception that leaves all other Telegram
+handling intact. Do not generalize a one-peer A/B into a global
+production firewall change without testing other ingress and egress
+paths. Verify after-test stable services, existing queue-210 service,
+and permanent absence of experimental rules.
+
 ## Owner-approved A/B experiment — queue 210 SYN-ACK bypass
 
 The active RU service `telegram-nfqws.service` uses `inet telegram_nfqws`,
