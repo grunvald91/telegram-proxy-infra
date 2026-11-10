@@ -4,6 +4,7 @@ from pathlib import Path
 import importlib.util
 import socket
 import struct
+import tempfile
 import unittest
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -62,6 +63,19 @@ class PhoneFlowTests(unittest.TestCase):
         self.assertIn('sh(["nft", "-f", "-"]',code)
         for unsafe in ("delete table", "flush ruleset", '["systemctl", "restart"', "ufw disable"):
             self.assertNotIn(unsafe,code)
+
+    def test_watchdog_is_self_contained_and_handle_only(self):
+        with tempfile.TemporaryDirectory() as folder:
+            helper=Path(folder)/"rollback.py"
+            mod.watchdog(helper,"MNEBY_PHONE_TCP_202611101122")
+            content=helper.read_text()
+            compile(content,str(helper),"exec")
+            self.assertIn("MNEBY_PHONE_TCP_202611101122",content)
+            self.assertIn("delete",content)
+            self.assertIn("handle",content)
+            self.assertNotIn("delete table",content)
+            self.assertNotIn("systemctl restart",content)
+            self.assertTrue(helper.stat().st_mode & 0o100)
 
     def test_packet_parser_rejects_truncated_or_non_ip(self):
         self.assertIsNone(mod.packet(b"short",socket.inet_aton(self.PEER)))
