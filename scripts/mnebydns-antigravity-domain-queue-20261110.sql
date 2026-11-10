@@ -20,6 +20,7 @@ INSERT INTO antigravity_requested_hosts (domain) VALUES
 INSERT INTO dns_admin_domains (domain, product, status, requested_by, updated_by)
   SELECT domain, 'Antigravity', 'PENDING', NULL, NULL
   FROM antigravity_requested_hosts
+  WHERE true  -- Disambiguate INSERT..SELECT..ON CONFLICT in PostgreSQL.
   ON CONFLICT (domain) DO NOTHING;
 
 SELECT 'antigravity_queue_entries=' || count(*)
