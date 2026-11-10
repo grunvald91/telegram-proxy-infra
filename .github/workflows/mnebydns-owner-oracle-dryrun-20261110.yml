@@ -59,6 +59,35 @@ jobs:
             fi
           done
           if (( drift )); then
+            # Read-only inspection: never promote a checkpoint or overwrite
+            # another experiment's current CoreDNS/Nginx configuration.
+            echo 'owner_dns_readonly_drift_diagnostic_begin'
+            date -u '+owner_dns_probe_utc=%Y-%m-%dT%H:%M:%SZ'
+            for kind in dns nginx proxy; do
+              case "$kind" in
+                dns)live=/opt/mnebydns-dot/Corefile;;
+                nginx)live=/etc/nginx/nginx.conf;;
+                proxy)live=/etc/mnebydns-googlepilot/nginx.conf;;
+              esac
+              stable="$root/$kind.stable"
+              printf 'owner_dns_%s_checkpoint_sha256=' "$kind"
+              sha256sum "$stable" | cut -d' ' -f1
+              printf 'owner_dns_%s_live_sha256=' "$kind"
+              sha256sum "$live" | cut -d' ' -f1
+              printf 'owner_dns_%s_checkpoint_mtime_epoch=' "$kind"
+              stat -c '%Y' "$stable"
+              printf 'owner_dns_%s_live_mtime_epoch=' "$kind"
+              stat -c '%Y' "$live"
+              printf 'owner_dns_%s_added_lines_count=' "$kind"
+              diff --unchanged-line-format='' --old-line-format='' --new-line-format='%L' "$stable" "$live" | wc -l
+              printf 'owner_dns_%s_removed_lines_count=' "$kind"
+              diff --unchanged-line-format='' --old-line-format='%L' --new-line-format='' "$stable" "$live" | wc -l
+            done
+            echo 'owner_dns_related_rollback_timers_begin'
+            systemctl list-timers --all --plain --no-legend 2>/dev/null |
+              grep -Ei 'mnebydns.*rollback|threads.*rollback|threads.*watchdog' || true
+            echo 'owner_dns_related_rollback_timers_end'
+            echo 'owner_dns_readonly_drift_diagnostic_end'
             echo 'owner_dns_dryrun_refused_while_other_routes_changed=true'
             exit 1
           fi
