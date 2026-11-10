@@ -3,6 +3,8 @@ on:
   pull_request:
     paths:
       - 'scripts/mnebydns_synack_window_canary.py'
+      - 'scripts/mnebydns_synack_netns_probe.py'
+      - 'scripts/tests/integration_mnebydns_synack_netns.sh'
       - 'scripts/mnebydns_synack_listener.py'
       - 'scripts/mnebydns_nfq_failopen.py'
       - 'scripts/mnebydns-synack-window-canary.sh'
@@ -24,4 +26,15 @@ jobs:
       - name: Bash syntax
         run: bash -n scripts/mnebydns-synack-window-canary.sh
       - name: Python syntax
-        run: python3 -m py_compile scripts/mnebydns_synack_window_canary.py scripts/mnebydns_synack_listener.py scripts/mnebydns_nfq_failopen.py
+        run: python3 -m py_compile scripts/mnebydns_synack_window_canary.py scripts/mnebydns_synack_listener.py scripts/mnebydns_nfq_failopen.py scripts/mnebydns_synack_netns_probe.py
+  kernel-netns:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install isolated kernel test requirements
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq iproute2 iptables tcpdump libnetfilter-queue1
+      - name: Run real TCP SYN-ACK NFQUEUE test only inside network namespaces
+        run: sudo bash scripts/tests/integration_mnebydns_synack_netns.sh
