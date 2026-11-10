@@ -25,3 +25,7 @@
 ## 2026-11-10 · Ручное управление Smart DNS
 
 После успешного CI [Mnebyvpn main 15de829e1e05d1ee3d7ae1fca8283e8e24b04951](https://github.com/grunvald91/Mnebyvpn/commit/15de829e1e05d1ee3d7ae1fca8283e8e24b04951) запрошена публикация Telegram-бота с owner-only меню доменов (PR #87), двухэтапным подтверждением маршрутов и миграцией 0109. Автоматический canary должен сохранить текущий контейнер при ошибке. Этот релиз не меняет Oracle, CoreDNS, Nginx, Xray или внешний DNS. Для автоматического применения маршрутов нужен отдельно проверенный infrastructure PR #63.
+
+## 2026-11-10 · Покупка VPN через HTML Bubble
+
+Источник MNEBYVPN main: [7c47f87512f04e36cf24f618f9720647a17748ce](https://github.com/grunvald91/Mnebyvpn/commit/7c47f87512f04e36cf24f618f9720647a17748ce), PR #92. CI исходника: [42824984339](https://github.com/grunvald91/Mnebyvpn/actions/runs/42824984339) — success. Разрешена изолированная публикация существующего Telegram-бота: экран тарифов VPN теперь sendWidget HTML с Telegram Stars; платежи и выдача не менялись. Этот commit документации запускает стандартный проверяемый bot auto-release на сервер 188 с canary и rollback. Наличие успешного деплоя не означает проверку живой покупки Stars.
