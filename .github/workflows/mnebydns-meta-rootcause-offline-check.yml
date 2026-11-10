@@ -1,0 +1,49 @@
+name: MNEBYDNS Meta root-cause complete offline gate
+on:
+  push:
+    branches: [diagnostics/mnebydns-meta-rootcause-20261109]
+    paths: [.github/workflows/mnebydns-meta-rootcause-offline-check.yml]
+permissions:
+  contents: read
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Offline observer, parser, SNI, workflow, rollback regression
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-meta-packet-observer.py scripts/mnebydns-meta-quic-handshake-probe.py scripts/mnebydns-meta-quic.py scripts/test-mnebydns-meta-quic.py scripts/mnebydns-meta-overlay.py
+          python3 scripts/test-mnebydns-meta-packet-observer.py
+          python3 scripts/test-mnebydns-meta-quic.py
+          python3 scripts/mnebydns-meta-overlay.py self-test
+          bash -n scripts/mnebydns-meta-de-stage.sh
+          bash -n scripts/mnebydns-meta-de-activate.sh
+          bash -n scripts/mnebydns-meta-de-rollback.sh
+          bash -n scripts/mnebydns-meta-ru-deploy.sh
+          bash -n scripts/mnebydns-meta-ru-rollback.sh
+          bash -n scripts/mnebydns-meta-quic-stage.sh
+          bash -n scripts/mnebydns-meta-quic-rollback.sh
+          python3 - <<'PY'
+          from pathlib import Path
+          import yaml
+          p=Path('.github/workflows/mnebydns-meta-rootcause-guarded-live-20261109.yml')
+          s=p.read_text()
+          # yaml.safe_load interprets plain 'on' as boolean under YAML 1.1:
+          data=yaml.safe_load(s)
+          assert data.get('on',data.get(True))['push']['paths']==['ops/mnebydns-meta-rootcause-arm.txt']
+          assert s.count('mnebydns-meta-packet-observer.py')>=4
+          assert 'Meta_public_RU_443_external_certificate_4_of_4=PASS' in s
+          assert 'QUIC_external_RU_return_path_FAIL_for_' in s
+          assert 'DE_UDP_WG_Meta_QUIC_ADMISSION_ONLY=true' in s
+          assert 'RU_UDP443_Meta_QUIC_ADMISSION_ONLY=true' in s
+          assert 'Meta_android_application_NOT_YET_TESTED=true' in s
+          assert 'persistent_rollback_on_both_servers_armed=true' in s
+          assert 'Meta_Instagram_Threads_public_test_ACTIVE_UNTIL' in s
+          assert 'i-fallback.instagram.com' in s
+          assert s.count('mnebydns-meta-quic-rollback.sh')>=3
+          print('meta_explicit_arming_and_rollback_guard=PASS')
+          PY
+          echo 'meta_offline_rootcause_gate=PASS'
