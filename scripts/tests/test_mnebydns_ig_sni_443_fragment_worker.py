@@ -10,7 +10,7 @@ BASE=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(BASE))
 import mnebydns_ig_sni_443_fragment_worker as worker
 RU="188.120.254.223"
-PEER="185.137.178.123"
+PEER="9.9.9.9"
 OTHER="203.0.113.42"
 
 def packet(*,src=RU,dst=PEER,sport=443,flags=0x12,window=64240,options=b"\x03\x03\x07\x01",payload=b"",frag=0,protocol=6):
