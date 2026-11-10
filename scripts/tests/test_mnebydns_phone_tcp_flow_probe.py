@@ -4,6 +4,7 @@ from pathlib import Path
 import importlib.util
 import socket
 import struct
+import ipaddress
 import tempfile
 import unittest
 
@@ -35,6 +36,19 @@ class PhoneFlowTests(unittest.TestCase):
         self.assertFalse(mod.match_challenge(self.parse(src="1.1.1.1",dport=80,flags=0x18,payload=payload),self.NONCE))
         self.assertFalse(mod.match_challenge(self.parse(dport=80,flags=0x18,payload=payload),self.NONCE[:-1]+"0"))
         self.assertFalse(mod.match_challenge(self.parse(dport=80,flags=0x18,payload=b"GET /other HTTP/1.1\r\n"),self.NONCE))
+
+    def test_auto_peer_requires_fresh_http_challenge(self):
+        payload=("GET /mneby-"+self.NONCE+" HTTP/1.1\\r\\nHost: test\\r\\n\\r\\n").encode()
+        correct=frame(self.PEER,self.RU,51413,80,0x18,payload)
+        self.assertEqual(mod.infer_peer_from_challenge(correct,self.NONCE),
+                         ipaddress.IPv4Address(self.PEER))
+        self.assertIsNone(mod.infer_peer_from_challenge(correct,self.NONCE[:-1]+"0"))
+        self.assertIsNone(mod.infer_peer_from_challenge(
+            frame("192.0.2.123",self.RU,51413,80,0x18,payload),self.NONCE))
+        self.assertIsNone(mod.infer_peer_from_challenge(
+            frame(self.PEER,self.RU,51413,443,0x18,payload),self.NONCE))
+        self.assertIsNone(mod.infer_peer_from_challenge(
+            frame(self.PEER,self.RU,51413,80,0x18,payload)[:30],self.NONCE))
 
     def test_pick_exact_peer_syn_and_ignore_unrelated_tcp(self):
         self.assertEqual(mod.pick_syn(self.parse()),51413)
