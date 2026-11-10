@@ -218,6 +218,14 @@ def apply(item):
     if not RUNID.isdigit() or not (9<=len(RUNID)<=13):
         raise ValueError("Invalid GitHub RUN_ID")
     id=item["id"];rev=item["revision"];host=item["domain"]
+    # A second independent canary cannot be staged while a previous test is
+    # live; otherwise exact stable checkpoint equality would fail.
+    existing=sql("SELECT count(*) FROM dns_admin_domains WHERE id<>"+id+
+        " AND status IN ('PROBING','CANARY','CONFIRM_REQUESTED','CONFIRMING',"
+        "'ROLLBACK_REQUESTED','REMOVING')")
+    if int(existing)>0:
+        print("owner_domain_wait_for_previous_canary=true",flush=True)
+        return
     claimed=sql("UPDATE dns_admin_domains SET status='PROBING',"
       " canary_run_id="+RUNID+",updated_at=now()"
       " WHERE id="+id+" AND revision="+rev+
