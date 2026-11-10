@@ -1,0 +1,56 @@
+name: "MNEBYDNS isolated exact-host preflight (READ ONLY)"
+on:
+  push:
+    branches: [fix/owner-smartdns-hardening-e2e-20261110]
+    paths: [".github/workflows/mnebydns-owner-test-host-readonly-20261110.yml"]
+permissions:
+  contents: read
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      TARGET: www.rfc-editor.org
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check pinned server, stable baseline and exact host roundtrip
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          export SSHPASS="$DE_PASS"
+          remote=root@89.125.90.101
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no)
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          sshpass -e ssh "${opts[@]}" "$remote" '
+            set -Eeuo pipefail
+            root=$(cat /opt/mnebydns-stable-checkpoints/current)
+            (cd "$root" && sha256sum -c stable-manifest.sha256 >/dev/null)
+            cmp -s "$root/dns.stable" /opt/mnebydns-dot/Corefile
+            cmp -s "$root/nginx.stable" /etc/nginx/nginx.conf
+            cmp -s "$root/proxy.stable" /etc/mnebydns-googlepilot/nginx.conf
+            systemctl is-active --quiet nginx
+            systemctl is-active --quiet mnebydns-dot.service
+            echo owner_e2e_baseline_stable=true
+          '
+          sshpass -e ssh "${opts[@]}" "$remote" 'cat /opt/mnebydns-dot/Corefile' > "$tmp/Corefile"
+          sshpass -e ssh "${opts[@]}" "$remote" 'cat /etc/nginx/nginx.conf' > "$tmp/nginx.conf"
+          origin="$(sshpass -e ssh "${opts[@]}" "$remote" "python3 - probe --domain '$TARGET'" < scripts/mnebydns-owner-domain-render-20261110.py)"
+          [[ "$origin" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          python3 scripts/mnebydns-owner-domain-render-20261110.py render-add --domain "$TARGET" --ip "$origin" --core "$tmp/Corefile" --nginx "$tmp/nginx.conf" --out "$tmp"
+          python3 - "$tmp" "$TARGET" <<'PY'
+          import pathlib,sys,importlib.util
+          root=pathlib.Path(sys.argv[1])
+          spec=importlib.util.spec_from_file_location('r','scripts/mnebydns-owner-domain-render-20261110.py')
+          mod=importlib.util.module_from_spec(spec);spec.loader.exec_module(mod)
+          host=sys.argv[2]
+          assert mod.core_remove((root/'dns.pilot').read_text(),host)==(root/'Corefile').read_text()
+          assert mod.nginx_remove((root/'nginx.pilot').read_text(),host)==(root/'nginx.conf').read_text()
+          print('owner_e2e_exclusive_exact_host_roundtrip=PASS')
+          PY
+          echo "owner_e2e_test_host=$TARGET"
+          echo "owner_e2e_public_origin_pinned=$origin"
+          echo 'owner_e2e_preflight=PASS_NO_SERVER_CONFIG_CHANGE'

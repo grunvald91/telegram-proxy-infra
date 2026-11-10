@@ -126,5 +126,67 @@ class OwnerDomainInterruptedStageContracts(TestCase):
         error.assert_not_called()
 
 
+class OwnerDomainLiveHealthAndSSH(TestCase):
+    def test_ssh_strictly_pins_host_key_even_with_password(self):
+        self.assertTrue(owner.PINNED_SSH_HOSTS.exists())
+        with patch.object(owner, "cmd", return_value="OK") as runner, \
+             patch.dict(owner.os.environ, {"DE_PASS": "testing-only"}):
+            self.assertEqual(owner.ssh("de", "true"), "OK")
+        args=runner.call_args.args[0]
+        self.assertIn("StrictHostKeyChecking=yes", args)
+        self.assertIn("HostKeyAlgorithms=ssh-ed25519", args)
+        self.assertIn("UserKnownHostsFile="+str(owner.PINNED_SSH_HOSTS), args)
+        self.assertNotIn("StrictHostKeyChecking=accept-new", args)
+
+    def test_active_health_green_keeps_exact_pinned_ip_and_clears_only_own_error(self):
+        statements=[]
+        def query(q):
+            statements.append(q)
+            if q.startswith("SELECT"):return "18|www.python.org|93.184.215.14|5"
+            return ""
+        with patch.object(owner, "sql", side_effect=query), \
+             patch.object(owner, "live_checkpoint_unchanged", return_value=True), \
+             patch.object(owner, "ssh", side_effect=lambda role, cmd, timeout=90:
+                          "ACTIVE_PINNED_ROUTE_VERIFIED" if "set -Eeuo" in cmd else "ACTIVE_PINNED_ORIGIN_TLS_OK"), \
+             patch.object(owner, "oracle_canary_check") as dns, \
+             patch.object(owner, "tls_public_route") as tls:
+            owner.active_health()
+        self.assertEqual(dns.call_args.args, ("www.python.org", True))
+        tls.assert_called_once_with("www.python.org")
+        self.assertTrue(any("last_error_code=NULL" in q and
+                            "last_error_code='ACTIVE_ROUTE_CHECK_FAILED'" in q for q in statements))
+        self.assertFalse(any("status='CANCELLED'" in q or "status='FAILED'" in q for q in statements))
+
+    def test_active_health_failure_is_reported_without_dns_mutation(self):
+        statements=[]
+        def query(q):
+            statements.append(q)
+            if q.startswith("SELECT"):return "18|www.python.org|93.184.215.14|5"
+            return ""
+        with patch.object(owner, "sql", side_effect=query), \
+             patch.object(owner, "live_checkpoint_unchanged", return_value=True), \
+             patch.object(owner, "ssh", side_effect=RuntimeError("origin down")), \
+             patch.object(owner, "rollback", side_effect=AssertionError("must not rollback")), \
+             patch.object(owner, "oracle_canary_check", side_effect=AssertionError("must not run")), \
+             patch.object(owner, "tls_public_route", side_effect=AssertionError("must not run")):
+            owner.active_health()
+        self.assertTrue(any("last_error_code='ACTIVE_ROUTE_CHECK_FAILED'" in q for q in statements))
+        self.assertFalse(any("status='FAILED'" in q or "status='CANCELLED'" in q for q in statements))
+
+    def test_active_health_drift_must_not_overwrite_failure_status(self):
+        with patch.object(owner, "live_checkpoint_unchanged", return_value=False), \
+             patch.object(owner, "sql") as queries:
+            owner.active_health()
+        queries.assert_not_called()
+
+    def test_main_idle_work_cycle_invokes_active_monitor(self):
+        with patch.object(owner, "get_task", return_value=None), \
+             patch.object(owner, "active_health") as health, \
+             patch.object(owner.sys, "argv", ["controller", "run"]):
+            owner.main()
+        health.assert_called_once()
+
+
+
 if __name__ == "__main__":
     main()
