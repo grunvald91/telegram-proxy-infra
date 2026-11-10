@@ -33,6 +33,5 @@ jobs:
                 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
                 -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
           echo "mnebydns_field_audit=RU_READ_ONLY"
-          timeout 50s sshpass -e ssh "${opts[@]}" root@188.120.254.223
-             "python3 -" < scripts/mnebydns_instagram_ru_readonly_preflight.py
+          timeout 50s sshpass -e ssh "${opts[@]}" root@188.120.254.223 "python3 -" < scripts/mnebydns_instagram_ru_readonly_preflight.py
           echo "mnebydns_field_audit=COMPLETE_NO_MUTATIONS"
