@@ -206,8 +206,29 @@ def main():
             if port is None:
                 print("phone_test=NO_HTTPS_SYN_NO_FIREWALL_CHANGE", flush=True)
                 return
-            # The first SYN may already have been lost; later SYN retransmit
-            # will traverse the narrowly matched nft return rule.
+            # Observe the matched 5-tuple *before* adding any exception.
+            # If this path already receives a SYN-ACK, do not mutate nftables.
+            baseline_synack=0
+            baseline_ack=0
+            deadline = time.monotonic() + 2.6
+            while time.monotonic() < deadline:
+                try:
+                    parsed=packet(s.recv(2048),peer.packed)
+                except socket.timeout:
+                    continue
+                if not parsed:continue
+                inbound, sport, dport, flags, payload=parsed
+                if not inbound and sport==443 and dport==port and (flags & 0x12)==0x12:
+                    baseline_synack+=1
+                if inbound and sport==port and dport==443 and (flags & 0x10) and not (flags & 0x02):
+                    baseline_ack+=1
+            print("phone_baseline_synack="+str(baseline_synack),flush=True)
+            print("phone_baseline_ack="+str(baseline_ack),flush=True)
+            if baseline_synack or baseline_ack:
+                print("phone_test=ALREADY_REACHABLE_NO_FIREWALL_CHANGE",flush=True)
+                return
+            # The first SYN might have been lost; a later retransmission
+            # from the same observed NAT source port can match this rule.
             rule = nft_rule(peer, port, tag)
             sh(["nft", "--check", "-f", "-"], data=rule)
             watchdog(path, tag)
