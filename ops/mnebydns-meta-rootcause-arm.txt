@@ -9,3 +9,7 @@ No permanent promotion; stable six routes remain guarded.
 Retry after fixing Nginx syslog logging startup: 2026-11-10.
 CI proof: https://github.com/grunvald91/telegram-proxy-infra/actions/runs/42794641631
 Previous abort and clean rollback: https://github.com/grunvald91/telegram-proxy-infra/actions/runs/42793798436
+
+Third guarded attempt: independent DE vs GitHub runner public Meta SNI comparison, 2026-11-10.
+Offline CI: https://github.com/grunvald91/telegram-proxy-infra/actions/runs/42795514148
+Previous public DE->RU source-specific TLS timeout: https://github.com/grunvald91/telegram-proxy-infra/actions/runs/42794751071
