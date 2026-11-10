@@ -271,25 +271,101 @@ def apply(item):
         raise
 
 
+def is_confirmed(runid:str)->bool:
+    if not re.fullmatch(r"[1-9][0-9]{8,12}",runid):raise ValueError("Bad canary ID")
+    base=BASE+"/"+runid
+    result=ssh("de","if test -f "+shlex.quote(base+"/confirmed")+
+               "; then echo true; else echo false; fi")
+    return result.strip()=="true"
+
+
 def confirm(item):
     id=item["id"];rev=item["revision"];runid=item["run"];domain=item["domain"]
     if not runid:raise RuntimeError("No canary ID to confirm")
-    expiry=int(item["expires"] or 0)
-    if expiry-int(time.time())<300:
-        raise RuntimeError("Confirmation too late for safe action")
-    oracle_canary_check(domain,True)
-    tls_public_route(domain)
+    if item["status"]=="CONFIRM_REQUESTED":
+        claimed=sql("UPDATE dns_admin_domains SET status='CONFIRMING',"
+            "updated_at=now() WHERE id="+id+" AND revision="+rev+
+            " AND status='CONFIRM_REQUESTED' RETURNING id")
+        if claimed!=id:
+            print("owner_domain_confirm_claim_lost=true",flush=True)
+            return
+    elif item["status"]!="CONFIRMING":
+        raise ValueError("Not in confirmed owner state")
     base=BASE+"/"+runid
-    output=ssh("de","bash "+shlex.quote(base+"/confirm.sh")+" "+shlex.quote(base),60)
-    if "owner_domain_confirmed_stable=true" not in output and \
-       "owner_domain_already_confirmed=true" not in output:
-        raise RuntimeError("Checkpoint was not confirmed")
+    expiry=int(item["expires"] or 0)
+    if not is_confirmed(runid):
+        if expiry-int(time.time())<300:
+            rollback(runid)
+            update_error(item,"CONFIRMATION_EXPIRED_BEFORE_COMMIT")
+            print("owner_domain_confirmation_expired_rolled_back=true",flush=True)
+            return
+        oracle_canary_check(domain,True)
+        tls_public_route(domain)
+        output=ssh("de","bash "+shlex.quote(base+"/confirm.sh")+" "+shlex.quote(base),60)
+        if "owner_domain_confirmed_stable=true" not in output and \
+           "owner_domain_already_confirmed=true" not in output:
+            raise RuntimeError("Checkpoint not confirmed")
     updated=sql("UPDATE dns_admin_domains SET status='ACTIVE',"
         "confirmed_at=now(),updated_at=now(),last_error_code=NULL"
-        " WHERE id="+id+" AND revision="+rev+" AND status='CONFIRM_REQUESTED'"
+        " WHERE id="+id+" AND revision="+rev+" AND status='CONFIRMING'"
         " AND canary_run_id="+runid+" RETURNING id")
     if updated!=id:raise RuntimeError("DB confirmation incomplete")
     print("owner_domain_ACTIVE_verified="+domain,flush=True)
+
+
+def remove(item):
+    if not RUNID.isdigit() or not (9<=len(RUNID)<=13):
+        raise ValueError("Invalid GitHub RUN_ID")
+    id=item["id"];rev=item["revision"];domain=item["domain"]
+    if item["status"]=="REMOVAL_PENDING":
+        claimed=sql("UPDATE dns_admin_domains SET status='REMOVING',"
+            "canary_run_id="+RUNID+",updated_at=now()"
+            " WHERE id="+id+" AND revision="+rev+
+            " AND status='REMOVAL_PENDING' RETURNING id")
+        if claimed!=id:return
+        runid=RUNID
+        try:
+            transfer_to_de()
+            deadline=(dt.datetime.now(dt.timezone.utc)+dt.timedelta(minutes=15)).strftime(
+                "%Y-%m-%d %H:%M:%S UTC")
+            command="bash "+shlex.quote(WORK+"/mnebydns-owner-domain-remove-20261110.sh")+" "+ \
+                " ".join(shlex.quote(x) for x in (WORK,RUNID,domain,deadline))
+            staged=ssh("de",command,90)
+            if "owner_domain_removal_canary_active=true" not in staged:
+                raise RuntimeError("Removal stage not active")
+            oracle_canary_check(domain,False)
+            base=BASE+"/"+RUNID
+            verified=ssh("de","bash "+shlex.quote(base+"/confirm.sh")+" "+shlex.quote(base),60)
+            if "owner_domain_confirmed_stable=true" not in verified:
+                raise RuntimeError("Removal stable checkpoint not promoted")
+        except Exception:
+            try:
+                if not is_confirmed(runid):
+                    rollback(runid)
+            except Exception:
+                print("owner_domain_removal_rollback_UNVERIFIED=true",flush=True)
+                raise
+            if not is_confirmed(runid):
+                sql("UPDATE dns_admin_domains SET status='ACTIVE',"
+                    "last_error_code='REMOVAL_ABORTED',updated_at=now()"
+                    " WHERE id="+id+" AND revision="+rev+" AND status='REMOVING'")
+                raise
+    else:
+        runid=item["run"]
+        if not runid:raise RuntimeError("Missing removal instance")
+        if not is_confirmed(runid):
+            rollback(runid)
+            sql("UPDATE dns_admin_domains SET status='ACTIVE',"
+                "last_error_code='REMOVAL_INTERRUPTED',updated_at=now()"
+                " WHERE id="+id+" AND revision="+rev+" AND status='REMOVING'")
+            return
+    updated=sql("UPDATE dns_admin_domains SET status='CANCELLED',"
+                "confirmed_at=NULL,canary_expires_at=NULL,"
+                "verified_origin_ip=NULL,updated_at=now(),last_error_code=NULL"
+                " WHERE id="+id+" AND revision="+rev+" AND status='REMOVING'"
+                " AND canary_run_id="+runid+" RETURNING id")
+    if updated!=id:raise RuntimeError("Removal completed but DB not updated")
+    print("owner_domain_removed_and_confirmed="+domain,flush=True)
 
 
 def cancel_canary(item,expired=False):
