@@ -130,7 +130,7 @@ async def test_local_response_path():
         client=Client()
         client_transport,_=await loop.create_datagram_endpoint(lambda:client,local_addr=('127.0.0.1',0))
         transports.append(client_transport)
-        data=fixture_sni('i.instagram.com')
+        data=fixture_sni('www.threads.com')
         client_transport.sendto(data,ru_transport.get_extra_info('sockname'))
         await asyncio.wait_for(client.event.wait(),3.0)
         assert client.data==mark+data[:16],client.data
