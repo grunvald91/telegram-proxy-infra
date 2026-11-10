@@ -1,0 +1,70 @@
+name: Threads live stalled-feed per-hop read-only triage
+on:
+  push:
+    branches: [diagnostics/threads-only-guarded-retest-20261110]
+    paths: [.github/workflows/threads-42811200019-live-triage-20261110.yml]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Numeric-only QUIC counters, scoped active DNS config, no user packet contents
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass
+          for role in ru de; do
+            if [[ "$role" == ru ]]; then export SSHPASS="$RU_PASS"; dest=188.120.254.223
+            else export SSHPASS="$DE_PASS"; dest=89.125.90.101; fi
+            sshpass -e ssh -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=12 "root@$dest" "python3 - '$role'" <<'PY'
+          import subprocess,sys,re,pathlib,datetime
+          role=sys.argv[1]; rid='42811200019'
+          def run(*a,timeout=10):
+              try: return subprocess.run(a,capture_output=True,text=True,timeout=timeout)
+              except Exception as ex: print(role+'_probe_tool_error='+type(ex).__name__,flush=True); return None
+          print(role+'_triage_readonly=true',flush=True)
+          for kind in ('service','timer'):
+              name=f'mnebydns-meta-quic-{role}-{rid}'
+              if kind=='timer':name+='-rollback'
+              p=run('systemctl','is-active',name+'.'+kind)
+              print(role+'_QUIC_'+kind+'_status='+((p.stdout or '').strip() if p else 'unknown'),flush=True)
+          if role=='de':
+              p=run('systemctl','is-active',f'mnebydns-threads-rollback-{rid}.timer')
+              print('de_threads_DNS_rollback_status='+((p.stdout or '').strip() if p else 'unknown'),flush=True)
+              cfg=pathlib.Path('/opt/mnebydns-dot/Corefile')
+              base=pathlib.Path(f'/opt/mnebydns-threads-canary/{rid}/dns.pilot')
+              print('de_Threads_and_shared_API_pilot_matches_live='+str(cfg.is_file() and base.is_file() and cfg.read_bytes()==base.read_bytes()).lower(),flush=True)
+              if cfg.is_file():
+                  text=cfg.read_text()
+                  print('de_Threads_exact_www_rule='+str('match (?i)^www[.]threads[.]com[.]$' in text).lower(),flush=True)
+                  print('de_shared_API_exact_i_rule='+str('match (?i)^i[.]instagram[.]com[.]$' in text).lower(),flush=True)
+          else:
+              p=run('ip','-4','route','get','10.66.77.1')
+              print('ru_WG_route_present='+str(bool(p and p.returncode==0 and 'tg-relay' in p.stdout)).lower(),flush=True)
+              cfg=pathlib.Path('/etc/nginx/streams.d/01-mtproxy-443.conf')
+              if cfg.is_file():
+                  t=cfg.read_text()
+                  print('ru_Threads_SNI_explicit='+str(bool(re.search(r'threads[.]com.*10[.]66[.]77[.]1',t))).lower(),flush=True)
+                  print('ru_Threads_SNI_default_private_WG='+str('default 10.66.77.1:443;' in t).lower(),flush=True)
+          p=run('journalctl','-u',f'mnebydns-meta-quic-{role}-{rid}.service',
+                '--since','2026-11-10 11:53:00 UTC','--no-pager','-o','cat')
+          data=[line for line in (p.stdout or '').splitlines() if line.startswith('meta_quic_'+role+'_active=')] if p else []
+          print(role+'_QUIC_samples='+str(len(data)),flush=True)
+          if data:
+              for label,line in [('first',data[0]),('last',data[-1])]:
+                  fields={}
+                  for item in line.split():
+                      k,sep,v=item.partition('=')
+                      if sep and v.isdecimal() and k in ('active','admitted','rx','to_upstream','upstream_rx','client_tx','rejected','expired','resolve_error','oversize','undersize','peer_drop','overflow','socket_error','emsgsize'):fields[k]=int(v)
+                  for key,val in fields.items():print(f'{role}_QUIC_{label}_{key}={val}',flush=True)
+          p=run('ss','-H','-lun', 'sport = :443' if role=='ru' else 'sport = :19444')
+          print(role+'_QUIC_listener_present='+str(bool(p and p.stdout.strip())).lower(),flush=True)
+          print(role+'_read_only_finished=true',flush=True)
+          PY
+          done
