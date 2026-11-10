@@ -61,6 +61,55 @@ def state_sql(update,expected):
     if changed!=test_id:
         raise RuntimeError("E2E state transition rejected: "+expected)
 
+def recover_only_our_confirmed_test_route():
+    """Safely remove an E2E-owned ACTIVE route stranded by the prior crash.
+
+    Never change owner-added domains or unrelated active services; route must
+    exist in both current committed configs before scheduling guarded removal.
+    """
+    global test_id
+    status=db("SELECT status FROM dns_admin_domains WHERE domain='"+TARGET+"'")
+    product=db("SELECT product FROM dns_admin_domains WHERE domain='"+TARGET+"'")
+    if status!="ACTIVE" or product!="e2e-test":
+        return
+    if not owner.live_checkpoint_unchanged():
+        raise RuntimeError("E2E recovery refused on drifted live checkpoint")
+    test_id=db("SELECT id FROM dns_admin_domains WHERE domain='"+TARGET+"'"
+               " AND product='e2e-test' AND status='ACTIVE'")
+    if not re.fullmatch(r"[1-9][0-9]{0,14}",test_id):
+        raise RuntimeError("Invalid test-route recovery identity")
+    mark=owner._render.mark(TARGET)
+    proof=("set -Eeuo pipefail; "
+           "root=$(cat /opt/mnebydns-stable-checkpoints/current); "
+           "(cd \"$root\" && sha256sum -c stable-manifest.sha256 >/dev/null); "
+           "cmp -s \"$root/dns.stable\" /opt/mnebydns-dot/Corefile; "
+           "cmp -s \"$root/nginx.stable\" /etc/nginx/nginx.conf; "
+           "grep -Fq -- "+shlex.quote(mark)+" /opt/mnebydns-dot/Corefile; "
+           "grep -Fq -- "+shlex.quote(mark)+" /etc/nginx/nginx.conf; "
+           "echo OWN_TEST_ROUTE_EXACTLY_PRESENT")
+    if owner.ssh("de",proof,40).strip()!="OWN_TEST_ROUTE_EXACTLY_PRESENT":
+        raise RuntimeError("Live route proof missing: refuse recovery")
+    state_sql(
+        "UPDATE dns_admin_domains SET status='REMOVAL_PENDING',"
+        "revision=revision+1,updated_at=now() WHERE id="+test_id+
+        " AND status='ACTIVE' AND product='e2e-test'",
+        "RECOVER_PREVIOUS_TEST")
+    set_phase(9)
+    owner.remove(row())
+    expect_state("CANCELLED")
+    if not owner.live_checkpoint_unchanged():
+        raise RuntimeError("Previous E2E recovery did not commit clean baseline")
+    absence=("set -Eeuo pipefail; "
+             "! grep -Fq -- "+shlex.quote(mark)+" /opt/mnebydns-dot/Corefile; "
+             "! grep -Fq -- "+shlex.quote(mark)+" /etc/nginx/nginx.conf; "
+             "systemctl is-active --quiet mnebydns-dot.service; "
+             "ss -H -lnt 'sport = :853' | grep -Fq '89.125.90.101:853'; "
+             "echo OWN_TEST_ROUTE_ABSENT_AND_DOT_READY")
+    if owner.ssh("de",absence,40).strip()!="OWN_TEST_ROUTE_ABSENT_AND_DOT_READY":
+        raise RuntimeError("Recovered E2E test hostname not fully removed")
+    print("owner_e2e_previous_confirmed_route_recovered=PASS",flush=True)
+
+
 def main():
     global test_id
     if os.environ.get("GITHUB_REF")!="refs/heads/main" or \
@@ -71,6 +120,9 @@ def main():
     ensure_empty_queue()
     if not owner.live_checkpoint_unchanged():
         raise RuntimeError("E2E skipped: unrelated live canary or checkpoint drift")
+    # On an earlier failed test the *test-only* route was confirmed, then the
+    # removal was reverted safely. Remove it first before taking baseline hashes.
+    recover_only_our_confirmed_test_route()
     # A failed previous E2E may leave only its own CANCELLED row. Reuse only
     # that exact verified marker; never touch an owner-entered custom domain.
     foreign=db("SELECT count(*) FROM dns_admin_domains WHERE domain='"+TARGET+"'"
