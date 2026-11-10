@@ -58,6 +58,7 @@ for kind in dns nginx; do
 done
 nginx -t -c "$base/nginx.pilot" >/dev/null 2>&1
 install -m 700 "$work/mnebydns-owner-domain-rollback-20261110.sh" "$base/rollback.sh"
+install -m 700 "$work/mnebydns-owner-domain-confirm-20261110.sh" "$base/confirm.sh"
 cat > "$base/$name.service" <<UNIT
 [Unit]
 Description=Restore owner-domain $id canary if not manually confirmed
