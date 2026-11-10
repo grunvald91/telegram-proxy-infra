@@ -11,10 +11,10 @@ import sys
 
 TAG="MNEBYDNS_SYNACK_CANARY_PEER_V1"
 QUEUE_LINE='        nft add rule inet telegram_nfqws post oifname "$WAN_IF" tcp sport 443 ct reply packets 1-20 meta mark and 0x40000000 == 0 counter queue num "$QUEUE" bypass comment telegram-nfqws'
-CASE_LINE='    apply:\n        remove_all\n'
+CASE_LINE='    apply)\n        remove_all\n'
 CONFIG_LINE='SYNACK_FILE="@{MNEBYDNS_SYNACK_CANARY_FILE:-/etc/mnebydns/telegram-synack-canary-ipv4}"'.replace('@{',chr(36)+'{')
 
-BEFORE_REMOVE="""    apply:
+BEFORE_REMOVE="""    apply)
         # Validate the opt-in peer before touching the current nft ruleset.
         SYNACK_CLIENT=
         if [ -e "$SYNACK_FILE" ]; then
