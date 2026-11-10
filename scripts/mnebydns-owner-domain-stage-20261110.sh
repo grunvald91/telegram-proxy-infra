@@ -46,6 +46,7 @@ install -d -m 700 /opt/mnebydns-owner-domain "$base"
 cp -p "$dns" "$base/dns.before"
 cp -p "$nginx" "$base/nginx.before"
 printf '%s\n' "$domain" > "$base/domain"
+printf '%s\n' add > "$base/mode"
 printf '%s\n' "$origin" > "$base/origin-ip"
 python3 "$work/mnebydns-owner-domain-render-20261110.py" render-add \
  --domain "$domain" --ip "$origin" \
