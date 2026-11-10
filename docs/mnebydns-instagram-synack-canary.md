@@ -1,6 +1,17 @@
 # MNEBYDNS Instagram SNI experiment — isolated SYN-ACK canary
 
-**Status: experimental only. Not deployed on either VPS. Android Instagram E2E not verified.**
+**Status 10 November 2026:** The **opt-in queue210 guard generator code is installed on the RU VPS**, with the client allow-list **disabled**. The separate TCP/18443 window-clamp experiment has **not** been deployed. Android Instagram E2E is **not yet verified**.
+
+## RU live install and regression evidence — 10 November 2026
+
+1. [Read-only generator fingerprint #42885120840](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/42885120840) verified the actual installed `/usr/local/sbin/telegram-nfqws-rules` matched the repository's legacy snapshot byte-for-byte (SHA-256 `c95ea1ad1bc1b801fef6c7ce1d89a99c93d5c823595b605aaf595480607c0cb6`).
+2. [Guarded generator installation #42885852171](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/42885852171) backed up the exact original to `/var/backups/mnebydns-nfqws/telegram-nfqws-rules.42885852171.bak`, then atomically installed a version with an **optional per-public-IPv4 SYN-ACK exception** (new SHA-256 `8beeffbe10e7da097e10bde4b1ef568219d52c2f1c04b189e71602069de9ec3f`). This did **not restart the service, rewrite live nftables or activate any allow-list**.
+3. [Live staged-generator canary #42886577572](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/42886577572): GitHub runner TCP/443 failed in 3 pre-test attempts; using the installed generator with a **temporary one-peer allow file under /run** allowed TCP/443 to connect, with 3 packets matching its SYN-ACK exception; after normal removal it failed in 3 further attempts. A systemd timer was armed for independent emergency deletion. This exercise temporarily recreated **only** the `telegram_nfqws` nft table; it did not restart Telegram, DNS, Nginx, or WireGuard.
+4. [Independent post-deploy read-only audit #42887008891](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/42887008891) passed ten server checks: guarded script SHA, backup SHA, original queue210 rule, no experimental guard, Telegram and Nginx services active, HTTPS listener, queue210 handler bound, absent persistent allow-list and absent temporary peer file. External certificate-validated DoT queries remained successful; Gemini and Claude still returned DE routing.
+
+**Production distinction:** Source code for *an opt-in exception* is installed durably, but the exception is **not enabled for any client**. External connection failures on TCP/443 remain after a test ends; no global traffic bypass is asserted. The installed generator will recreate the original queue210 path on service restart as long as the default allow-IP file is absent. Do **not** add a broad allow-list or imply that official Instagram works based on a single GitHub runner A/B.
+
+**Next field gate:** plan an explicit, temporally bounded Android mobile-provider TCP/443 test, using only one validated public source IP while acknowledging CGNAT shared-IP caveats. Do not modify Instagram Smart DNS mappings until ingress and TLS routing are separately verified.
 
 ## What changed after PR #68 review
 
