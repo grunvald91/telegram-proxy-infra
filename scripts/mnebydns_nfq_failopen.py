@@ -7,12 +7,27 @@ import ctypes.util
 import errno
 import logging
 import os
+import signal
 import struct
 
 LOG = logging.getLogger("mnebydns.nfq")
 NF_ACCEPT = 1
 NFQNL_COPY_PACKET = 2
 NFQA_CFG_F_FAIL_OPEN = 1
+
+
+def arm_parent_death_signal():
+    """Terminate a test child if the supervising Bash script is SIGKILLed."""
+    parent = os.getppid()
+    if parent == 1:
+        raise RuntimeError("Refusing orphaned canary process")
+    libc = C.CDLL(None, use_errno=True)
+    libc.prctl.restype = C.c_int
+    libc.prctl.argtypes = [C.c_int, C.c_ulong, C.c_ulong, C.c_ulong, C.c_ulong]
+    if libc.prctl(1, signal.SIGTERM, 0, 0, 0) != 0:  # PR_SET_PDEATHSIG
+        raise OSError(C.get_errno(), "prctl(PR_SET_PDEATHSIG) failed")
+    if os.getppid() != parent:
+        raise RuntimeError("Parent exited during canary startup")
 
 
 def load_library():
