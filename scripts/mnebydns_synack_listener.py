@@ -51,6 +51,8 @@ def main():
             p.error("Public IPv4 only")
     if args.port != 18443:
         p.error("Only port 18443 allowed")
+    from mnebydns_nfq_failopen import arm_parent_death_signal
+    arm_parent_death_signal()
     try:
         serve(args.bind, args.client, args.port, args.ready_file)
     finally:
