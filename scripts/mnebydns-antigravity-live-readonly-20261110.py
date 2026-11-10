@@ -2,6 +2,7 @@
 """Read-only live DNS/TLS check for all owner-requested Google Antigravity hosts."""
 from __future__ import annotations
 import importlib.util
+import time
 from pathlib import Path
 
 root=Path(__file__).resolve().parent
@@ -16,7 +17,16 @@ def main():
         try:
             owner.oracle_canary_check(host,True)
             print("antigravity_live_dns="+host+":PASS",flush=True)
-            owner.tls_public_route(host)
+            # Only retry a transient TLS probe, never a DNS policy violation.
+            # Keep strict certificate verification on all attempts.
+            for attempt in range(3):
+                try:
+                    owner.tls_public_route(host)
+                    break
+                except RuntimeError:
+                    if attempt == 2:
+                        raise
+                    time.sleep(1 + attempt)
             print("antigravity_live_tls="+host+":PASS",flush=True)
             results[host]="LIVE_DOT_TLS_VERIFIED"
         except Exception as exc:
