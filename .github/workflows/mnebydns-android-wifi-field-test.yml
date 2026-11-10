@@ -92,7 +92,65 @@ jobs:
           grep -E '^(phone_|generator_).*' "$logfile" || true
           grep -q '^phone_test_rule_absent=true$' "$logfile"
           grep -q '^phone_original_queue_preserved=true$' "$logfile"
-          grep -q '^phone_single_flow_rule_active=true$' "$logfile" || { echo 'phone_test=INCOMPLETE_NO_MATCHED_HTTPS_SYN'; exit 1; }
+          if grep -q '^phone_test=ALREADY_REACHABLE_NO_FIREWALL_CHANGE
+          echo 'phone_test=COMPLETED_SCOPE_AND_CLEANUP_VERIFIED'
+      - name: Independent read-only postcheck of server and Telegram
+        if: always()
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS"
+          export SSHPASS="$RU_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -' <<'PY'
+          import pathlib,subprocess,sys
+          def read(args):
+              p=subprocess.run(args,capture_output=True,text=True,timeout=12)
+              if p.returncode:raise SystemExit('postcheck command failed')
+              return p.stdout
+          table=read(['nft','-a','list','chain','inet','telegram_nfqws','post'])
+          rule=any('tcp sport 443' in l and 'to 210' in l and 'bypass' in l for l in table.splitlines())
+          no_guard='MNEBY_PHONE_TCP_' not in table
+          worker=subprocess.run(['systemctl','is-active','--quiet','telegram-nfqws.service'],timeout=9).returncode==0
+          nginx=subprocess.run(['systemctl','is-active','--quiet','nginx.service'],timeout=9).returncode==0
+          tests={'queue210_preserved':rule,'phone_guard_absent':no_guard,'telegram_active':worker,'nginx_active':nginx}
+          for k,v in tests.items():print('phone_postcheck_'+k+'='+('PASS' if v else 'FAIL'),flush=True)
+          if not all(tests.values()):sys.exit(1)
+          PY
+ "$logfile"; then
+            echo 'phone_test=BASELINE_ALREADY_WORKS_NO_RULE_INSTALLED'
+            exit 0
+          fi
+          grep -q '^phone_single_flow_rule_active=true
+          echo 'phone_test=COMPLETED_SCOPE_AND_CLEANUP_VERIFIED'
+      - name: Independent read-only postcheck of server and Telegram
+        if: always()
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS"
+          export SSHPASS="$RU_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -' <<'PY'
+          import pathlib,subprocess,sys
+          def read(args):
+              p=subprocess.run(args,capture_output=True,text=True,timeout=12)
+              if p.returncode:raise SystemExit('postcheck command failed')
+              return p.stdout
+          table=read(['nft','-a','list','chain','inet','telegram_nfqws','post'])
+          rule=any('tcp sport 443' in l and 'to 210' in l and 'bypass' in l for l in table.splitlines())
+          no_guard='MNEBY_PHONE_TCP_' not in table
+          worker=subprocess.run(['systemctl','is-active','--quiet','telegram-nfqws.service'],timeout=9).returncode==0
+          nginx=subprocess.run(['systemctl','is-active','--quiet','nginx.service'],timeout=9).returncode==0
+          tests={'queue210_preserved':rule,'phone_guard_absent':no_guard,'telegram_active':worker,'nginx_active':nginx}
+          for k,v in tests.items():print('phone_postcheck_'+k+'='+('PASS' if v else 'FAIL'),flush=True)
+          if not all(tests.values()):sys.exit(1)
+          PY
+ "$logfile" || { echo 'phone_test=INCOMPLETE_NO_MATCHED_HTTPS_SYN'; exit 1; }
           echo 'phone_test=COMPLETED_SCOPE_AND_CLEANUP_VERIFIED'
       - name: Independent read-only postcheck of server and Telegram
         if: always()
