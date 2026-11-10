@@ -1,0 +1,20 @@
+name: MNEBYDNS Instagram SYN-ACK canary offline checks
+on:
+  pull_request:
+    paths:
+      - 'scripts/mnebydns_synack_window_canary.py'
+      - 'scripts/mnebydns-synack-window-canary.sh'
+      - 'scripts/tests/test_mnebydns_synack_window_canary.py'
+      - '.github/workflows/mnebydns-instagram-synack-canary-offline.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_synack_window_canary.py' -v
+      - run: bash -n scripts/mnebydns-synack-window-canary.sh
+      - run: python3 -m py_compile scripts/mnebydns_synack_window_canary.py
