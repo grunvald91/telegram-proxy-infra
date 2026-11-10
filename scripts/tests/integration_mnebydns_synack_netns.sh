@@ -3,7 +3,7 @@
 # No firewall rules outside the test server namespace. Requires CAP_NET_ADMIN.
 set -Eeuo pipefail
 [[ "$(id -u)" -eq 0 ]] || { echo 'Run as root on disposable CI runner' >&2; exit 2; }
-for bin in ip iptables tcpdump python3 timeout; do command -v "$bin" >/dev/null; done
+for bin in ip iptables tcpdump ethtool python3 timeout; do command -v "$bin" >/dev/null; done
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PROBE="$ROOT/scripts/mnebydns_synack_netns_probe.py"
 WORK="$(mktemp -d)"
@@ -40,6 +40,12 @@ ip -n "$NS_SERVER" link set "$VETH_SERVER" up
 ip -n "$NS_CLIENT" link set "$VETH_CLIENT" up
 ip -n "$NS_SERVER" link set lo up
 ip -n "$NS_CLIENT" link set lo up
+# Crucial: offloaded checksums appear invalid in tcpdump even in the baseline.
+# Disable checksum/TCP segmentation offload on BOTH test veth interfaces.
+ip netns exec "$NS_SERVER" ethtool -K "$VETH_SERVER" tx off tso off gso off gro off
+ip netns exec "$NS_CLIENT" ethtool -K "$VETH_CLIENT" tx off tso off gso off gro off
+ip netns exec "$NS_SERVER" ethtool -k "$VETH_SERVER" | grep -q 'tx-checksumming: off'
+ip netns exec "$NS_CLIENT" ethtool -k "$VETH_CLIENT" | grep -q 'tx-checksumming: off'
 
 # This listener cannot serve Internet traffic (192.0.2.0/24 in an isolated ns).
 ip netns exec "$NS_SERVER" python3 -u "$PROBE" listener --count 3 --ready "$WORK/listener.ready" &
