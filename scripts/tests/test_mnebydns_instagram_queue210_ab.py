@@ -41,9 +41,7 @@ class Queue210BypassTests(TestCase):
                     mod.ensure_preflight(bad)
 
     def test_rule_handle_and_counter_are_bound_to_unique_comment(self):
-        after = NORMAL.replace("        meta mark", '''        ip saddr 188.120.254.223 ip daddr 203.0.113.11 tcp sport 443
-                tcp flags & (syn | ack) == (syn | ack) counter packets 3 bytes 180
-                return comment "MNEBY_IG_SYNACK_AB_202611101122" # handle 88
+        after = NORMAL.replace("        meta mark", '''        ip saddr 188.120.254.223 ip daddr 203.0.113.11 tcp sport 443 tcp flags & (syn | ack) == (syn | ack) counter packets 3 bytes 180 return comment "MNEBY_IG_SYNACK_AB_202611101122" # handle 88
         meta mark''')
         tag = "MNEBY_IG_SYNACK_AB_202611101122"
         self.assertEqual(mod.tagged_handles(after, tag), [88])
