@@ -15,7 +15,7 @@ RU = "188.120.254.223"
 DE = "89.125.90.101"
 HOSTS = ("i.instagram.com", "graph.instagram.com", "www.threads.com",
          "gemini.google.com", "claude.ai")
-TCP = ((RU, 443), (RU, 18443), (DE, 853))
+TCP = ((RU, 22), (RU, 80), (RU, 443), (RU, 18443), (DE, 443), (DE, 853))
 
 
 def tcp_probe(host: str, port: int):
