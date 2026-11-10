@@ -24,7 +24,9 @@ def render_dns(src: str) -> str:
     if src.count("MNEBYDNS_THREADS_ONLY_20261110")!=1:
         raise ValueError("Threads-only DNS pilot not present")
     for host in HOSTS:
-        if re.search(r"template\s+IN\s+(?:A|AAAA|HTTPS|SVCB|CNAME)\s+[^\n{}]*\{[^{}]*"+re.escape(host).replace(r"\.","[.]"),src,re.I):
+        # Refuse any existing spelling of the host, including CoreDNS regex
+        # notation. A second owner must never silently override production.
+        if host in src or host.replace(".", "[.]") in src:
             raise ValueError("Shared API host already has an owner: "+host)
     addition="\n    # "+MARK+" temporary per-host addition, expires with Threads pilot\n"
     for record in ("A","AAAA","HTTPS","SVCB","CNAME"):
@@ -74,7 +76,7 @@ def self_test():
     assert "graph.facebook.com" not in d+n
     assert "graph.instagram.com" not in d+n
     assert "www.instagram.com" not in d+n
-    assert all(d.count(host.replace(".","[.]"))>=0 for host in HOSTS)
+    assert all(d.count(host.replace(".", "[.]"))==5 for host in HOSTS)
     try:render_dns(d)
     except ValueError:pass
     else:raise AssertionError("Double-patch allowed")
