@@ -32,7 +32,13 @@ jobs:
           trap cleanup EXIT
           de_ssh "test ! -e '$work' && mkdir -m 700 '$work'"
           de_ssh "cat > '$work/probe.py'" < scripts/threads-www-h3-origin-20261110.py
-          de_ssh "python3 --version && python3 -m pip --version"
-          de_ssh "python3 -m pip install --disable-pip-version-check --no-input --quiet --target '$work/deps' aioquic==1.2.0"
+          # Ubuntu DE has Python 3.10 but no system pip. Transfer a pure Python
+          # pip wheel; run it via PYTHONPATH only from the temporary work dir.
+          python3 -m pip download --disable-pip-version-check --quiet --no-deps --dest "$RUNNER_TEMP" pip==24.3.1
+          wheel="$RUNNER_TEMP/pip-24.3.1-py3-none-any.whl"
+          test -s "$wheel"
+          de_ssh "cat > '$work/pip.whl'" < "$wheel"
+          de_ssh "python3 --version && PYTHONPATH='$work/pip.whl' python3 -m pip --version"
+          de_ssh "PYTHONPATH='$work/pip.whl' python3 -m pip install --disable-pip-version-check --no-cache-dir --no-input --quiet --target '$work/deps' aioquic==1.2.0"
           de_ssh "cd '$work' && PYTHONPATH='$work/deps' timeout 47s python3 '$work/probe.py'"
           echo 'threads_real_http3_origin_test_completed=true'
