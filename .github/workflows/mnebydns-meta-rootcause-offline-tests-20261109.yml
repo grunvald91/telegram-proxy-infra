@@ -1,5 +1,5 @@
 name: MNEBYDNS Meta root-cause full offline regression and nginx syntax
-# Re-verify the corrected full-field aggregate observer report parser.
+# Review 2026-11-10: RFC9000 Initial frame order and segmented TCP ClientHello regression.
 on:
   push:
     branches: [diagnostics/mnebydns-meta-rootcause-20261109]
@@ -20,6 +20,14 @@ jobs:
           python3 -m py_compile scripts/mnebydns-meta-quic.py scripts/test-mnebydns-meta-quic.py scripts/mnebydns-meta-packet-observer.py scripts/test-mnebydns-meta-packet-observer.py scripts/mnebydns-meta-overlay.py scripts/mnebydns-meta-quic-handshake-probe.py
           python3 scripts/test-mnebydns-meta-quic.py
           python3 scripts/test-mnebydns-meta-packet-observer.py
+          python3 - <<'PY'
+          from pathlib import Path
+          q=Path('scripts/mnebydns-meta-quic.py').read_text()
+          o=Path('scripts/mnebydns-meta-packet-observer.py').read_text()
+          assert 'if typ in (2, 3):' in q and 'if typ == 1: continue' in q
+          assert 'MAX_TCP_HELLO_BUFFER = 16384' in o
+          print('meta_quic_rfc_and_tcp_fragment_regression_gate=PASS')
+          PY
           python3 -m py_compile scripts/mnebydns-meta-report.py scripts/test-mnebydns-meta-report.py
           python3 scripts/test-mnebydns-meta-report.py
           python3 scripts/mnebydns-meta-overlay.py self-test
