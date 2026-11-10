@@ -1,0 +1,4 @@
+# Enrolled 2026-11-10 using live SSH server public keys AND matching ssh-keyscan; see Actions 42836994664.
+# Trust root: prior authenticated production SSH channel, not an independent off-band fingerprint.
+188.120.254.223 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIC+RGTajPK5EHRvBT1p6Rj0KmrAbd8fiF/gv+dygqOHq
+89.125.90.101 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG8FYeNxaI64SnAeXVq4HDlKoQvSeBHqgP1EBBKKPz/x
