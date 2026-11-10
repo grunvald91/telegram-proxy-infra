@@ -90,10 +90,13 @@ def get_task():
         " FROM dns_admin_domains"
         " WHERE status IN ('APPLY_REQUESTED','PROBING','CONFIRM_REQUESTED',"
         "'CONFIRMING','ROLLBACK_REQUESTED','REMOVAL_PENDING','REMOVING','CANARY')"
-        " ORDER BY CASE status WHEN 'ROLLBACK_REQUESTED' THEN 0"
-        " WHEN 'CONFIRMING' THEN 1 WHEN 'CONFIRM_REQUESTED' THEN 2"
-        " WHEN 'REMOVING' THEN 3 WHEN 'REMOVAL_PENDING' THEN 4"
-        " WHEN 'PROBING' THEN 5 WHEN 'APPLY_REQUESTED' THEN 6 ELSE 7 END,"
+        # Expired canaries outrank new activation requests: otherwise a
+        # queued APPLY_REQUESTED item can starve CANARY cleanup indefinitely.
+        " ORDER BY CASE WHEN status='ROLLBACK_REQUESTED' THEN 0"
+        " WHEN status='CANARY' AND canary_expires_at<=now() THEN 0"
+        " WHEN status='CONFIRMING' THEN 1 WHEN status='CONFIRM_REQUESTED' THEN 2"
+        " WHEN status='REMOVING' THEN 3 WHEN status='REMOVAL_PENDING' THEN 4"
+        " WHEN status='PROBING' THEN 5 WHEN status='APPLY_REQUESTED' THEN 6 ELSE 7 END,"
         " updated_at,id LIMIT 1"
     )
     raw=sql(query).strip()
