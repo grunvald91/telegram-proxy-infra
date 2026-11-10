@@ -203,6 +203,6 @@ jobs:
           echo 'threads_combined_DNS_and_QUIC_test=PASS'
           echo "threads_combined_rollback_deadline_UTC=$deadline"
           echo "threads_quic_rollback_deadline_UTC=$deadline"
-          echo 'threads_quic_no_DNS_TCP_VPN_firewall_changes=true'
+          echo 'threads_non_Threads_DNS_routes_VPN_and_firewall_unchanged=true'
           echo 'threads_combined_DNS_and_QUIC_pilot_active_android_app_NOT_TESTED=true'
           trap - EXIT
