@@ -309,9 +309,44 @@ def apply(item):
 def is_confirmed(runid:str)->bool:
     if not re.fullmatch(r"[1-9][0-9]{8,12}",runid):raise ValueError("Bad canary ID")
     base=BASE+"/"+runid
-    result=ssh("de","if test -f "+shlex.quote(base+"/confirmed")+
-               "; then echo true; else echo false; fi")
-    return result.strip()=="true"
+    # Recover after atomic checkpoint promotion but before 'confirmed' touch.
+    # A checkpoint equal to the pilot is proof of a committed transition;
+    # merely having a sentinel, or an uncommitted live pilot, is not.
+    command=(
+        "set -Eeuo pipefail; base="+shlex.quote(base)+"; "
+        "if test -f \"$base/confirmed\"; then echo true; exit 0; fi; "
+        "root=$(cat /opt/mnebydns-stable-checkpoints/current); "
+        "if test -d \"$root\" && "
+        "(cd \"$root\" && sha256sum -c stable-manifest.sha256 >/dev/null) && "
+        "cmp -s \"$root/dns.stable\" \"$base/dns.pilot\" && "
+        "cmp -s \"$root/nginx.stable\" \"$base/nginx.pilot\" && "
+        "cmp -s /opt/mnebydns-dot/Corefile \"$base/dns.pilot\" && "
+        "cmp -s /etc/nginx/nginx.conf \"$base/nginx.pilot\"; then "
+        "bash \"$base/confirm.sh\" \"$base\" >/dev/null; echo true; "
+        "else echo false; fi"
+    )
+    return ssh("de",command,60).strip()=="true"
+
+
+def verified_live_confirmed(runid:str)->None:
+    if not re.fullmatch(r"[1-9][0-9]{8,12}",runid):raise ValueError("Bad canary ID")
+    base=BASE+"/"+runid
+    command=(
+        "set -Eeuo pipefail; base="+shlex.quote(base)+"; "
+        "test -f \"$base/confirmed\"; "
+        "root=$(cat /opt/mnebydns-stable-checkpoints/current); "
+        "(cd \"$root\" && sha256sum -c stable-manifest.sha256 >/dev/null); "
+        "cmp -s \"$root/dns.stable\" \"$base/dns.pilot\"; "
+        "cmp -s \"$root/nginx.stable\" \"$base/nginx.pilot\"; "
+        "cmp -s /opt/mnebydns-dot/Corefile \"$base/dns.pilot\"; "
+        "cmp -s /etc/nginx/nginx.conf \"$base/nginx.pilot\"; "
+        "nginx -t >/dev/null 2>&1; "
+        "systemctl is-active --quiet nginx; "
+        "systemctl is-active --quiet mnebydns-dot.service; "
+        "echo OWNER_CONFIRMED_LIVE"
+    )
+    if ssh("de",command,45).strip()!="OWNER_CONFIRMED_LIVE":
+        raise RuntimeError("CONFIRMED_LIVE_PROOF_FAILED")
 
 
 def confirm(item):
@@ -340,6 +375,11 @@ def confirm(item):
         if "owner_domain_confirmed_stable=true" not in output and \
            "owner_domain_already_confirmed=true" not in output:
             raise RuntimeError("Checkpoint not confirmed")
+    # Revalidate even on recovery: a checkpoint marker alone is not a live
+    # connectivity result and must not turn the DB row into ACTIVE.
+    verified_live_confirmed(runid)
+    oracle_canary_check(domain,True)
+    tls_public_route(domain)
     updated=sql("UPDATE dns_admin_domains SET status='ACTIVE',"
         "confirmed_at=now(),updated_at=now(),last_error_code=NULL"
         " WHERE id="+id+" AND revision="+rev+" AND status='CONFIRMING'"
