@@ -12,7 +12,6 @@ from pathlib import Path
 import sys
 
 HOST="iglite-z.instagram.com"
-META_ORIGIN="57.144.244.32"
 EDGE="89.125.90.101"
 BASE=Path(__file__).resolve().parent
 _SOURCE=BASE/"mnebydns-owner-domain-render-20261110.py"
@@ -22,19 +21,20 @@ if spec is None or spec.loader is None:
 m=importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 
-def render(core:str, nginx:str) -> tuple[str,str]:
+def render(core:str, nginx:str, origin_ip:str) -> tuple[str,str]:
     assert m.validate_domain(HOST)==HOST
-    assert m.validated_public_ip(META_ORIGIN)==META_ORIGIN
+    if m.validated_public_ip(origin_ip)!=origin_ip:
+        raise ValueError("Origin must be a public canonical IPv4 literal")
     assert EDGE==m.EDGE
     c=m.core_add(core,HOST)
-    n=m.nginx_add(nginx,HOST,META_ORIGIN)
+    n=m.nginx_add(nginx,HOST,origin_ip)
     if m.core_remove(c,HOST)!=core or m.nginx_remove(n,HOST)!=nginx:
         raise AssertionError("Exact-host renderer did not roundtrip cleanly")
     if c.count("match ^"+re.escape(HOST).replace(r"\.", "[.]")+r"[.]$")!=5:
         raise AssertionError("Must match exactly five DNS response types")
-    if n.count("        "+HOST+" "+META_ORIGIN+":443;")!=1:
+    if n.count("        "+HOST+" "+origin_ip+":443;")!=1:
         raise AssertionError("Expected only one exact-host Nginx SNI route")
-    for unsafe in ("*.instagram.com","*.facebook.com","~iglite","default "+META_ORIGIN):
+    for unsafe in ("*.instagram.com","*.facebook.com","~iglite","default "+origin_ip):
         if c.count(unsafe)!=core.count(unsafe) or n.count(unsafe)!=nginx.count(unsafe):
             raise AssertionError("Unsafe wildcard/regex/default route detected")
     return c,n
@@ -50,7 +50,10 @@ def main():
         raise ValueError("Output staging directory must be a real directory")
     core=Path(args.core).read_text()
     nginx=Path(args.nginx).read_text()
-    new_core,new_nginx=render(core,nginx)
+    # Probe at candidate-generation time, from the network where this script runs.
+    # A new address must be independently validated from the DE VPS before rollout.
+    fresh_origin=m.origin_ip(HOST)
+    new_core,new_nginx=render(core,nginx,fresh_origin)
     for name,data in (("Corefile.iglite.preview",new_core),("nginx.conf.iglite.preview",new_nginx)):
         target=dest/name
         if target.exists() or target.is_symlink():
@@ -59,7 +62,7 @@ def main():
     print("iglite_preview=RENDERED_ONLY_NO_LIVE_CHANGES",flush=True)
     print("iglite_exact_host="+HOST,flush=True)
     print("iglite_dns_edge="+EDGE,flush=True)
-    print("iglite_verified_meta_origin="+META_ORIGIN,flush=True)
+    print("iglite_fresh_tls_verified_origin="+fresh_origin,flush=True)
 
 if __name__=="__main__":
     main()
