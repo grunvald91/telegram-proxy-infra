@@ -113,8 +113,26 @@ def remove_own(tag: str):
     return len(handles)
 
 
+def make_rule(peer: str, tag: str) -> str:
+    return (
+        f'insert rule inet telegram_nfqws post '
+        f'ip saddr {SERVER} ip daddr {peer} '
+        'tcp sport 443 tcp flags & (syn | ack) == (syn | ack) '
+        f'counter return comment "{tag}"\\n'
+    )
+
+
 def main():
-    if os.geteuid() != 0 or len(sys.argv) != 3:
+    if os.geteuid() != 0:
+        raise SystemExit("Run as root from authorized SSH")
+    if len(sys.argv) == 2 and sys.argv[1] == "--validate-only":
+        ensure_preflight(chain())
+        test_rule = make_rule("192.0.2.45", "MNEBY_IG_SYNACK_AB_DRY_RUN_ONLY")
+        shell(["nft", "--check", "-f", "-"], input=test_rule)
+        print("queue210_live_chain_preflight=PASS", flush=True)
+        print("queue210_live_rule_check_only=PASS_NO_CHANGES", flush=True)
+        return
+    if len(sys.argv) != 3:
         raise SystemExit("Usage: root python3 - TEST_PEER_PUBLIC_IPV4 UNIQUE_NUMERIC_RUN_ID")
     if not all(shutil.which(x) for x in ("nft", "systemd-run", "systemctl", "python3")):
         raise RuntimeError("Missing required system tools")
@@ -146,12 +164,7 @@ def main():
         rollback = ROLLBACK_DIR / ("rollback-" + runid + ".py")
         write_watchdog(rollback, tag)
 
-        rule = (
-            f'insert rule inet telegram_nfqws post '
-            f'ip saddr {SERVER} ip daddr {peer} '
-            'tcp sport 443 tcp flags & (syn | ack) == (syn | ack) '
-            f'counter return comment "{tag}"\n'
-        )
+        rule = make_rule(peer, tag)
         # -c validates grammar and existing chain but makes no rule changes.
         shell(["nft", "--check", "-f", "-"], input=rule)
         try:
