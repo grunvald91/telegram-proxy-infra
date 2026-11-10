@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Offline exact Instagram Lite route preview and roundtrip regression tests."""
 import importlib.util
+import re
 from pathlib import Path
 import unittest
 
@@ -24,7 +25,7 @@ class LiteRouteSafety(unittest.TestCase):
         self.assertEqual(lite.EDGE,"89.125.90.101")
         self.assertEqual(lite.META_ORIGIN,"57.144.244.32")
         core,nginx=lite.render(CORE,NGINX)
-        self.assertEqual(core.count("match ^iglite-z[.]instagram[.]com[.]$"),5)
+        self.assertEqual(core.count("match ^"+re.escape(lite.HOST).replace(r"\.", "[.]")+r"[.]$"),5)
         self.assertEqual(nginx.count("iglite-z.instagram.com 57.144.244.32:443;"),1)
         self.assertNotIn("*.instagram.com",core+nginx)
         self.assertNotIn("*.facebook.com",core+nginx)
