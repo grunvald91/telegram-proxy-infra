@@ -99,10 +99,9 @@ def stage(candidate:Path, base_sha:str, candidate_sha:str, runid:str):
             backup.unlink(missing_ok=True)
             raise
         mode=stat.S_IMODE(TARGET.stat().st_mode)
-        changed=False
+        changed=True
         try:
             atomic_file(TARGET,candidate_bytes,mode)
-            changed=True
             if digest(TARGET.read_bytes())!=candidate_sha:
                 raise RuntimeError("Post-install generator digest mismatch")
             if ALLOW.exists() or ALLOW.is_symlink():
