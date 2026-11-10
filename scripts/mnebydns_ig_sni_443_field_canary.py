@@ -156,6 +156,7 @@ class OnePeerPacketCounts:
         self.inbound_syn=0
         self.outbound_synack=0
         self.inbound_payload=0
+        self.outbound_payload=0
         self.inbound_first4=0
         self.inbound_first_other=0
         self._seen_ports=set()
@@ -184,6 +185,8 @@ class OnePeerPacketCounts:
             self.inbound_syn+=1
         if outbound and (flags&0x12)==0x12:
             self.outbound_synack+=1
+        if outbound and len(tcp)>header:
+            self.outbound_payload+=1
         if inbound and len(tcp)>header:
             self.inbound_payload+=1
             # Ephemeral source ports are used only to dedupe first segments,
@@ -200,6 +203,7 @@ class OnePeerPacketCounts:
             ("phone_ingress_syn",self.inbound_syn),
             ("phone_egress_synack",self.outbound_synack),
             ("phone_inbound_data_packets",self.inbound_payload),
+            ("phone_server_data_packets",self.outbound_payload),
             ("phone_first_data_4bytes",self.inbound_first4),
             ("phone_first_data_other_size",self.inbound_first_other),
         ):
