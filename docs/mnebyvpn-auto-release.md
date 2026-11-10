@@ -45,3 +45,7 @@ Mnebyvpn main [0cb28e4a74718cf0c08cc4c0bb5c1929c29a7553](https://github.com/grun
 ## 2026-11-10 · Final width-200 Telegram Bubble fix
 
 MNEBYVPN main [277eaccfab97b1fff422e8d8fb3c35356326d8c8](https://github.com/grunvald91/Mnebyvpn/commit/277eaccfab97b1fff422e8d8fb3c35356326d8c8) ([PR #98](https://github.com/grunvald91/Mnebyvpn/pull/98)), CI [42872566634](https://github.com/grunvald91/Mnebyvpn/actions/runs/42872566634) success: narrow Telegram widget 200px no overflow, same avatar and Stars checkout. Request bot-only guarded canary deployment with rollback. No DNS, network or payment backend changes; live Stars charge remains unverified until real payment E2E.
+
+## 2026-11-10 · Verified inherited MNEBYDNS Antigravity routes (COVERED)
+
+MNEBYVPN main [77f3a150dc3d81505589e526d4bdd1f042389684](https://github.com/grunvald91/Mnebyvpn/commit/77f3a150dc3d81505589e526d4bdd1f042389684), PR #100, includes migration 0110 and owner-only bot UI for independently verified inherited CoreDNS/Nginx domain coverage, without allowing the user to remove shared routes. Source CI 42880094469 passed. Request guarded normal bot deployment and migration with backup via existing auto-bot workflow. Live route proof: [42879814092](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/42879814092), 12/12 DoT and TLS verified. No DNS/Nginx restart or additional host-route changes in this release.
