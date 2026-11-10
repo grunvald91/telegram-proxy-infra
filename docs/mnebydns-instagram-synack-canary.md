@@ -92,6 +92,38 @@ sudo MNEBYDNS_ROLLBACK=YES bash scripts/mnebydns-synack-window-canary.sh TEST_PU
 
 Inspect the tagged rules after cleanup and independently after the watchdog deadline; do not infer success from a script exit alone. The timer does not undo external rules created by other operators.
 
+## External public readiness measurements — 10 November 2026
+
+An actual GitHub-hosted runner was used as the source of the test,
+with **no SSH, no server-side changes, no app traffic and no mobile operator**.
+See [Actions #42868024325](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/42868024325).
+
+| TCP target | From GitHub runner |
+| --- | --- |
+| RU 188.120.254.223:22 | Connected, 189 ms |
+| RU 188.120.254.223:80 | Connected, 187 ms |
+| RU 188.120.254.223:443 | TCP timeout after 4004 ms |
+| RU 188.120.254.223:18443 | TCP timeout after 4004 ms |
+| DE 89.125.90.101:443 | TCP timeout after 4004 ms |
+| DE 89.125.90.101:853 | Connected, 148 ms |
+
+The DoT server `dns.mnebyvpn.site:853` passed TLS certificate
+verification and replied with NOERROR to each A query. Both
+`i.instagram.com`, `graph.instagram.com` and `www.threads.com`
+resolved to addresses that were **neither** RU nor DE; the existing
+Instagram/Threads canary remains disabled in public DNS. Working
+`gemini.google.com` and `claude.ai` queries returned DE as before.
+
+**Conclusions restricted to this vantage point:** both RU ports 443 and
+18443 were not TCP-connectable from this runner within four seconds,
+whereas RU ports 22/80 were. DE port 443 also timed out from the same
+runner, while DE 853 responded. This does **not** identify whether a
+host firewall, provider routing, anti-abuse filtering or an intermediate
+middlebox caused the timeouts. No operator TSPU inference is possible
+from this external probe, and no actual Android Instagram end-to-end
+connection was attempted. An additional read-only RU firewall/listener
+inventory is necessary before the next live canary.
+
 ## Stage 3: read-only inspection of actual RU VPS
 
 Added `scripts/mnebydns_instagram_ru_readonly_preflight.py`. This script
