@@ -57,3 +57,15 @@ jobs:
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq iproute2 nftables iptables
       - name: Test exact Android TCP443 nft and iptables rules in disposable namespace
         run: sudo bash scripts/tests/integration_mnebydns_ig_sni_443_firewall_netns.sh
+  public-network-readonly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: External runner baseline - never a mobile ISP or Instagram app result
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns_instagram_public_readiness.py
+          python3 scripts/mnebydns_instagram_public_readiness.py
