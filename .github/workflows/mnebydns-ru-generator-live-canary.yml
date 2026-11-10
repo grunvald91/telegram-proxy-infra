@@ -1,0 +1,104 @@
+name: MNEBYDNS RU verified generator one-peer live canary
+on:
+  push:
+    branches: [experiment/instagram-synack-window-canary-20261110]
+    paths:
+      - '.github/workflows/mnebydns-ru-generator-live-canary.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-ru-generator-live-canary-exclusive
+  cancel-in-progress: false
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify local safety and prepare pinned SSH
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS"
+          python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_nfqws_guard_live_canary.py' -v
+          python3 -m py_compile scripts/mnebydns_nfqws_guard_live_canary.py
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+      - name: Validate same runner source and reproduce pre-canary TCP443 timeout
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          peer="$(sshpass -e ssh "${opts[@]}" root@188.120.254.223 'printf "%s" "${SSH_CONNECTION%% *}"')"
+          httpip="$(curl -4fsS --max-time 8 https://api.ipify.org)"
+          python3 - "$peer" "$httpip" <<'PY'
+          import ipaddress,sys
+          a,b=(ipaddress.IPv4Address(x) for x in sys.argv[1:])
+          if not a.is_global or a!=b:raise SystemExit('Egress mismatch; abort')
+          PY
+          echo "TEST_PEER=$peer" >> "$GITHUB_ENV"
+          for i in 1 2 3; do
+            if timeout 4 bash -c 'echo > /dev/tcp/188.120.254.223/443' 2>/dev/null; then
+              echo 'baseline_443=CONNECTED_SKIP_CANARY'
+              exit 0
+            fi
+            echo "baseline_attempt_${i}=TIMEOUT_OR_ERROR"
+          done
+          echo 'BASELINE_FAILED=YES' >> "$GITHUB_ENV"
+      - name: Enable staged generator with only runner IPv4, compare, restore
+        if: env.BASELINE_FAILED == 'YES'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          log="$RUNNER_TEMP/mnebydns-generator-canary.log"
+          timeout 100s sshpass -e ssh "${opts[@]}" root@188.120.254.223 "python3 - '$TEST_PEER' '$GITHUB_RUN_ID'" < scripts/mnebydns_nfqws_guard_live_canary.py > "$log" 2>&1 &
+          remote=$!
+          trap 'kill "$remote" 2>/dev/null || true' EXIT
+          ready=0
+          for i in $(seq 1 90); do
+            if grep -q '^generator_canary=READY$' "$log" 2>/dev/null; then ready=1; break; fi
+            if ! kill -0 "$remote" 2>/dev/null; then break; fi
+            sleep 0.25
+          done
+          if [[ "$ready" != 1 ]]; then cat "$log"; exit 1; fi
+          connected=0
+          for i in 1 2 3; do
+            if timeout 4 bash -c 'echo > /dev/tcp/188.120.254.223/443' 2>/dev/null; then connected=1; fi
+          done
+          echo "generator_canary_tcp443_connected=$connected"
+          wait "$remote"
+          trap - EXIT
+          cat "$log" | grep -E '^generator_canary_'
+          grep -q '^generator_canary=FINISHED_ORIGINAL_QUEUE_RETAINED$' "$log"
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -' <<'PY'
+          import pathlib,re,subprocess,sys
+          def output(args):
+              p=subprocess.run(args,capture_output=True,text=True,timeout=12)
+              if p.returncode:raise SystemExit('postcheck command failure')
+              return p.stdout
+          table=output(['nft','-a','list','chain','inet','telegram_nfqws','post'])
+          original=any('tcp sport 443' in row and 'to 210' in row for row in table.splitlines())
+          no_guard='MNEBYDNS_SYNACK_CANARY_PEER_V1' not in table
+          worker=subprocess.run(['systemctl','is-active','--quiet','telegram-nfqws.service'],timeout=8).returncode==0
+          has_peerfile=any(pathlib.Path('/run').glob('mnebydns-synack-peer-*'))
+          for k,v in [('original_queue210',original),('guard_removed',no_guard),('telegram_worker_active',worker),('peer_file_removed',not has_peerfile)]:
+              print('generator_canary_post_'+k+'='+('PASS' if v else 'FAIL'),flush=True)
+          if not all((original,no_guard,worker,not has_peerfile)):sys.exit(1)
+          PY
+          for i in 1 2 3; do
+            if timeout 4 bash -c 'echo > /dev/tcp/188.120.254.223/443' 2>/dev/null; then echo "restored_attempt_${i}=CONNECTED";
+            else echo "restored_attempt_${i}=TIMEOUT_OR_ERROR"; fi
+          done
+          echo "generator_canary_outcome_observed=$connected"
