@@ -46,14 +46,22 @@ jobs:
           root="$(cat /opt/mnebydns-stable-checkpoints/current)"
           (cd "$root" && sed -n 's/^[a-f0-9]\{64\}[[:space:]][ *]*//p' stable-manifest.sha256 | head -n 12)
           echo 'owner_dns_checkpoint_entries_end'
+          drift=0
           for kind in dns nginx proxy; do
             case "$kind" in
               dns)live=/opt/mnebydns-dot/Corefile;;
               nginx)live=/etc/nginx/nginx.conf;;
               proxy)live=/etc/mnebydns-googlepilot/nginx.conf;;
             esac
-            cmp -s "$root/$kind.stable" "$live"
+            if ! cmp -s "$root/$kind.stable" "$live"; then
+              echo "owner_dns_stable_baseline_drift_${kind}=true"
+              drift=1
+            fi
           done
+          if (( drift )); then
+            echo 'owner_dns_dryrun_refused_while_other_routes_changed=true'
+            exit 1
+          fi
           echo 'owner_dns_stable_baseline_exact=true'
           for domain in oracle.com www.oracle.com cloud.oracle.com; do
             out="$tmp/$domain"
