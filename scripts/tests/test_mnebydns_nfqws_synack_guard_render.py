@@ -38,6 +38,7 @@ class GuardRendererTests(TestCase):
 
     def test_refuse_changed_or_duplicated_generators(self):
         samples=[
+            self.source+'\n# MNEBYDNS_SYNACK_CANARY_PEER_V1 (forged marker only)\n',
             self.source.replace("QUEUE=210","QUEUE=211"),
             self.source.replace("WAN_IF=ens3","WAN_IF=eth0"),
             self.source.replace(m.QUEUE_LINE,m.QUEUE_LINE+"\n"+m.QUEUE_LINE),
