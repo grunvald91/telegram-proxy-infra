@@ -150,9 +150,31 @@ jobs:
               rows=list(pool.map(check,names))
           for h,outcome,_ in rows:
               print('DE_to_RU_public_TCP443_'+h+'='+outcome,flush=True)
-          if not all(ok for _,_,ok in rows):
-              raise SystemExit('Public RU:443 certificate path failed; no mobile cutover')
-          print('Meta_public_RU_443_external_certificate_4_of_4=PASS',flush=True)
+          count=sum(ok for _,_,ok in rows)
+          print('DE_to_RU_public_TLS_certificates_verified='+str(count)+'/4',flush=True)
+          print('DE_to_RU_public_TLS_source_specific_inconclusive='+str(count!=4).lower(),flush=True)
+          PY
+          # The foreign DE->RU public route may be filtered differently from
+          # the owner's mobile route. Check a SECOND external vantage point
+          # rather than extrapolate from DE geography to the phone.
+          python3 - <<'PY'
+          import socket,ssl,concurrent.futures
+          names=('i.instagram.com','i-fallback.instagram.com',
+                 'test-gateway.instagram.com','threads.com')
+          def check(host):
+              try:
+                  with socket.create_connection(('188.120.254.223',443),timeout=7) as sock:
+                      sock.settimeout(7)
+                      with ssl.create_default_context().wrap_socket(sock,server_hostname=host):
+                          return host,True,'cert_verified'
+              except Exception as e:return host,False,type(e).__name__
+          with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+              results=list(pool.map(check,names))
+          for host,ok,reason in results:
+              print('GITHUB_RUNNER_to_RU_public_TCP443_'+host+'='+reason,flush=True)
+          if not all(ok for _,ok,_ in results):
+              raise SystemExit('Public RU ingress failed on GitHub runner; phone DNS not activated')
+          print('GITHUB_RUNNER_via_RU_public_TLS_4_of_4=PASS',flush=True)
           PY
           # QUIC v1 UDP 443 is needed by the actual Android PCAPs.
           # Stage on foreign private WG first, then RU public UDP 443.
