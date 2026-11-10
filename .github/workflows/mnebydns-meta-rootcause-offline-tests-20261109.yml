@@ -1,5 +1,5 @@
 name: MNEBYDNS Meta root-cause full offline regression and nginx syntax
-# Review 2026-11-10: after live runtime alert, syslog session logging replaces invalid /dev/stdout.
+# Review 2026-11-10: independent public SNI vantage and SIGTERM aggregate final sample.
 on:
   push:
     branches: [diagnostics/mnebydns-meta-rootcause-20261109]
@@ -40,7 +40,10 @@ jobs:
           assert 'persistent_rollback_on_both_servers_armed=true' in p
           assert 'DE_passive_stage_observer_ACTIVE=true' in p
           assert 'RU_passive_stage_observer_ACTIVE=true' in p
-          assert 'Meta_public_RU_443_external_certificate_4_of_4=PASS' in p
+          assert 'GITHUB_RUNNER_via_RU_public_TLS_4_of_4=PASS' in p
+          assert 'DE_to_RU_public_TLS_source_specific_inconclusive' in p
+          assert "signal.signal(signal.SIGTERM" in Path('scripts/mnebydns-meta-packet-observer.py').read_text()
+          assert 'Meta_public_RU_443_external_certificate_4_of_4=PASS' not in p
           assert 'QUIC_external_RU_return_path_FAIL' in p
           assert 'QUIC_external_RU_certificate_' in p
           assert 'QUIC_source_is_GitHub_runner_NOT_mobile_network=true' in Path('scripts/mnebydns-meta-quic-handshake-probe.py').read_text()
