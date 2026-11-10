@@ -188,5 +188,33 @@ class OwnerDomainLiveHealthAndSSH(TestCase):
 
 
 
+class OwnerDomainPsqlResultParsing(TestCase):
+    def test_production_sql_uses_quiet_tuple_output_for_cas_returning_id(self):
+        with patch.object(owner, "ssh", return_value="42") as remote:
+            self.assertEqual(owner.sql("UPDATE dns_admin_domains SET revision=revision+1 RETURNING id"), "42")
+        command=remote.call_args.args[1]
+        self.assertIn("psql -XqAt -v ON_ERROR_STOP=1", command)
+        self.assertNotIn("psql -v ON_ERROR_STOP=1 -At", command)
+
+    def test_claim_can_progress_after_psql_command_tag_fix(self):
+        row={"id":"42","revision":"2","domain":"www.rfc-editor.org",
+             "status":"APPLY_REQUESTED","run":"","updated":"0","expires":""}
+        queries=[]
+        def query(statement):
+            queries.append(statement)
+            if "count(*)" in statement:return "0"
+            if "RETURNING id" in statement:return "42"
+            return ""
+        with patch.object(owner, "RUNID", "428400112231"), \
+             patch.object(owner, "sql", side_effect=query), \
+             patch.object(owner, "live_checkpoint_unchanged", return_value=True), \
+             patch.object(owner, "transfer_to_de", side_effect=RuntimeError("stop after claim")), \
+             patch.object(owner, "rollback_or_unchanged"), \
+             patch.object(owner, "update_error"):
+            with self.assertRaisesRegex(RuntimeError, "stop after claim"):
+                owner.apply(row)
+        self.assertTrue(any("status='PROBING'" in q and "RETURNING id" in q for q in queries))
+
+
 if __name__ == "__main__":
     main()

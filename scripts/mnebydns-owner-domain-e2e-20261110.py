@@ -71,18 +71,32 @@ def main():
     ensure_empty_queue()
     if not owner.live_checkpoint_unchanged():
         raise RuntimeError("E2E skipped: unrelated live canary or checkpoint drift")
-    if db("SELECT count(*) FROM dns_admin_domains WHERE domain='"+TARGET+"'")!="0":
-        raise RuntimeError("E2E test host already in user domain list; refusing override")
+    # A failed previous E2E may leave only its own CANCELLED row. Reuse only
+    # that exact verified marker; never touch an owner-entered custom domain.
+    foreign=db("SELECT count(*) FROM dns_admin_domains WHERE domain='"+TARGET+"'"
+               " AND (product<>'e2e-test' OR status<>'CANCELLED')")
+    if foreign!="0":
+        raise RuntimeError("E2E test host already in use; refusing override")
+    previous=db("SELECT id FROM dns_admin_domains WHERE domain='"+TARGET+"'"
+                " AND product='e2e-test' AND status='CANCELLED'")
     before=saved_hashes()
     test_id=""
     last_run=""
     passed=False
     try:
-        test_id=db(
-            "INSERT INTO dns_admin_domains(domain,product,status) "
-            "VALUES ('"+TARGET+"','e2e-test','APPLY_REQUESTED') RETURNING id")
+        if previous:
+            if not re.fullmatch(r"[1-9][0-9]{0,14}",previous):
+                raise RuntimeError("Untrusted prior test row ID")
+            test_id=db("UPDATE dns_admin_domains SET status='APPLY_REQUESTED',"
+                       "revision=revision+1,canary_run_id=NULL,canary_expires_at=NULL,"
+                       "last_error_code=NULL,updated_at=now() WHERE id="+previous+
+                       " AND status='CANCELLED' AND product='e2e-test' RETURNING id")
+        else:
+            test_id=db(
+                "INSERT INTO dns_admin_domains(domain,product,status) "
+                "VALUES ('"+TARGET+"','e2e-test','APPLY_REQUESTED') RETURNING id")
         if not re.fullmatch(r"[1-9][0-9]{0,14}",test_id):
-            raise RuntimeError("Cannot create isolated owner E2E row")
+            raise RuntimeError("Cannot create or claim isolated owner E2E row")
         print("owner_e2e_test_db_id="+test_id,flush=True)
         # phase 1: add / verify / confirm / remove
         last_run=set_phase(1)

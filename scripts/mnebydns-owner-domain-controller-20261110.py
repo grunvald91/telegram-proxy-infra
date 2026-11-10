@@ -82,7 +82,7 @@ def transfer_to_de()->None:
 def sql(query:str)->str:
     # Only internally generated SQL containing checked integer identifiers
     # is accepted. PostgreSQL never sees arbitrary user-authored SQL.
-    return ssh("ru", "docker exec mnebyvpn-stage-postgres psql -v ON_ERROR_STOP=1 -At "
+    return ssh("ru", "docker exec mnebyvpn-stage-postgres psql -XqAt -v ON_ERROR_STOP=1 "
                "-U mnebyvpn_stage -d mnebyvpn_stage -c "+shlex.quote(query),45)
 
 

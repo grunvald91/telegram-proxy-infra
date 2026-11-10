@@ -2,7 +2,9 @@ name: "MNEBYDNS owner one-shot live exact-host E2E with rollback"
 on:
   push:
     branches: [main]
-    paths: [".github/workflows/mnebydns-owner-e2e-live-20261110.yml"]
+    paths:
+      - ".github/workflows/mnebydns-owner-e2e-live-20261110.yml"
+      - "scripts/mnebydns-owner-domain-e2e-20261110.py"
   pull_request:
     branches: [main]
     paths:
