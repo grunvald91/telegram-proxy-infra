@@ -57,6 +57,19 @@ class FailOpenTests(TestCase):
             self.assertIn("nfq_destroy_queue", fake.calls)
             self.assertIn("nfq_close", fake.calls)
 
+    def test_parent_death_signal_refuses_orphan(self):
+        with mock.patch.object(nfq.os, "getppid", return_value=1):
+            with self.assertRaisesRegex(RuntimeError, "orphaned"):
+                nfq.arm_parent_death_signal()
+
+    def test_parent_death_signal_arms_before_work(self):
+        from types import SimpleNamespace
+        prctl = mock.Mock(return_value=0)
+        with mock.patch.object(nfq.os, "getppid", side_effect=[321, 321]):
+            with mock.patch.object(nfq.C, "CDLL", return_value=SimpleNamespace(prctl=prctl)):
+                nfq.arm_parent_death_signal()
+        prctl.assert_called_once_with(1, nfq.signal.SIGTERM, 0, 0, 0)
+
     def test_missing_native_library_is_explicit_error(self):
         with mock.patch.object(nfq.C.util, "find_library", return_value=None):
             with self.assertRaisesRegex(RuntimeError, "not installed"):
