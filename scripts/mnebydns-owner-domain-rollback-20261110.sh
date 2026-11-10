@@ -14,6 +14,30 @@ live_dns=/opt/mnebydns-dot/Corefile
 live_nginx=/etc/nginx/nginx.conf
 exec 9>/run/lock/mnebyvpn-public-route.lock
 flock -w 55 9 || { echo 'owner_domain_rollback_lock_unavailable=true'; exit 3; }
+# After a successful owner-confirmed promotion, the timer remains armed
+# until expiry but MUST NOT revert a later stable checkpoint.
+confirmed=false
+if test -f "$base/confirmed"; then
+  confirmed=true
+else
+  checkpoint="$(cat /opt/mnebydns-stable-checkpoints/current 2>/dev/null || true)"
+  if [[ "$checkpoint" =~ ^/opt/mnebydns-stable-checkpoints/[0-9]+$ ]] &&
+     test -f "$base/domain"; then
+    domain="$(cat "$base/domain")"
+    marker="MNEBYDNS_OWNER_EXACT_$(printf '%s' "$domain" | tr . _)"
+    if grep -Fq "$marker" "$checkpoint/dns.stable" &&
+       grep -Fq "$marker" "$checkpoint/nginx.stable"; then
+      confirmed=true
+    fi
+  fi
+fi
+if [[ "$confirmed" == true ]]; then
+  systemctl disable --now "$name.timer" >/dev/null 2>&1 || true
+  rm -f -- "/etc/systemd/system/$name.timer"
+  systemctl daemon-reload
+  echo 'owner_domain_canary_confirmed_no_rollback=true'
+  exit 0
+fi
 for kind in dns nginx; do
   case "$kind" in
     dns) current="$live_dns";;
