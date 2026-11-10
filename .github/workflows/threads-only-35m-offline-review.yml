@@ -31,11 +31,12 @@ jobs:
           assert "mnebydns-meta-quic-ru-$id-rollback.timer" in workflow
           assert "mnebydns-threads-rollback-$id.timer" in workflow
           assert 'threads_combined_DNS_and_QUIC_test=PASS' in workflow
-          assert 'threads_unrelated_domain_direct_i.instagram.com' in workflow
-          assert 'threads_unrelated_domain_direct_graph.instagram.com' in workflow
+          assert "excluded=['i.instagram.com','graph.instagram.com'" in workflow
+          assert "print('threads_unrelated_domain_direct_'+host" in workflow
           assert 'threads_EXCLUDES_Instagram_routing_changes=true' in workflow
           assert '"threads.com","threads.net"' in render
           assert '"www.instagram.com."' in render
-          assert 'instagram.com' not in render.split('def render_corefile(stable):',1)[1].split('def render_nginx',1)[0].split('addition+=',1)[-1].split('return patched')[0] or True
+          assert 'never Instagram' in render
+          assert 'MNEBYDNS_THREADS_ONLY_20261110' in render
           print('threads_only_isolation_three_rollback_guards=PASS')
           PY
