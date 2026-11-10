@@ -56,12 +56,19 @@ jobs:
           def json_cmd(*command):
               try:
                   p = subprocess.run(command, capture_output=True, text=True, timeout=8)
-                  return json.loads(p.stdout) if p.returncode == 0 else []
-              except (OSError, ValueError, subprocess.TimeoutExpired):
-                  return []
+                  if p.returncode != 0:
+                      raise RuntimeError('ip command failed')
+                  result = json.loads(p.stdout)
+                  if not isinstance(result, list):
+                      raise RuntimeError('ip command returned non-array JSON')
+                  return result
+              except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired):
+                  print('iproute2_json_preflight=FAILED')
+                  raise SystemExit(3)
 
           addresses = json_cmd('ip', '-j', '-6', 'address', 'show')
           routes = json_cmd('ip', '-j', '-6', 'route', 'show', 'table', 'main')
+          print('iproute2_json_preflight=PASS')
           public_addresses = []
           prefix_has_multiple_hosts = False
           for interface in addresses:
