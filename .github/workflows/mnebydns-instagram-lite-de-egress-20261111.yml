@@ -1,0 +1,68 @@
+name: MNEBYDNS Instagram Lite DE egress and checkpoint read-only gate
+on:
+  push:
+    branches: [audit/mnebydns-instagram-lite-20261111]
+    paths:
+      - '.github/workflows/mnebydns-instagram-lite-de-egress-20261111.yml'
+permissions:
+  contents: read
+jobs:
+  egress:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install pinned SSH client and validate access
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+      - name: Validate unmodified DE live configuration and Instagram Lite TLS egress
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY'
+          import pathlib,socket,ssl,subprocess,time
+          host='iglite-z.instagram.com'
+          for target in ('57.144.244.32','157.240.0.160'):
+              t=time.monotonic()
+              try:
+                  sock=socket.create_connection((target,443),timeout=7)
+                  sock.settimeout(7)
+                  tls=ssl.create_default_context().wrap_socket(sock,server_hostname=host)
+                  print('de_meta_tls_target='+target+' status=VERIFIED version='+str(tls.version())+' seconds='+str(round(time.monotonic()-t,2)),flush=True)
+                  tls.close()
+              except Exception as exc:
+                  print('de_meta_tls_target='+target+' status=FAILED type='+type(exc).__name__,flush=True)
+          base=pathlib.Path('/opt/mnebydns-stable-checkpoints/current')
+          core=pathlib.Path('/opt/mnebydns-dot/Corefile')
+          nginx=pathlib.Path('/etc/nginx/nginx.conf')
+          proxy=pathlib.Path('/etc/mnebydns-googlepilot/nginx.conf')
+          if base.is_file():
+              name=base.read_text().strip()
+              root=pathlib.Path(name)
+              print('de_checkpoint_dir_exists='+str(root.is_dir()).lower(),flush=True)
+              for key,p in (('dns',core),('nginx',nginx),('proxy',proxy)):
+                  expected=root/(key+'.stable')
+                  same=expected.is_file() and p.is_file() and expected.read_bytes()==p.read_bytes()
+                  print('de_checkpoint_'+key+'_matches='+str(same).lower(),flush=True)
+          else:print('de_checkpoint_current=MISSING',flush=True)
+          for svc in ('nginx.service','mnebydns-dot.service','mnebydns-googlepilot.service'):
+              active=subprocess.run(['systemctl','is-active','--quiet',svc],timeout=9).returncode==0
+              print('de_service_'+svc.replace('.service','')+'_active='+str(active).lower(),flush=True)
+          if core.is_file():
+              text=core.read_text()
+              print('de_core_anchor_gemini_count='+str(text.count('template IN A gemini.google.com {')),flush=True)
+              print('de_core_cache_30_count='+str(text.count('    cache 30')),flush=True)
+          PY
