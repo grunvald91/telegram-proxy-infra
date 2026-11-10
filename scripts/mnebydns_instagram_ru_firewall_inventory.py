@@ -97,6 +97,39 @@ def output_rule_summary():
         print("nft_output_explicit_sport443="+str(len(re.findall(r"tcp\s+sport\s+443\b",p.stdout))))
         print("nft_output_drop_tokens="+str(len(re.findall(r"\bdrop\b",p.stdout))))
 
+def nft_443_rule_summary():
+    p=run(["nft","-a","list","ruleset"])
+    if not p or p.returncode:
+        print("nft_rule_context=UNAVAILABLE")
+        return
+    table="unknown"
+    chain="unknown"
+    hook="unknown"
+    for line in p.stdout.splitlines():
+        tm=re.search(r"^\s*table\s+(ip|ip6|inet|bridge)\s+(\S+)",line)
+        if tm:
+            table=tm.group(1)+":"+tm.group(2)
+            chain="unknown"
+            hook="unknown"
+        cm=re.search(r"^\s*chain\s+(\S+)\s*\{",line)
+        if cm:
+            chain=cm.group(1)
+            hook="unknown"
+        hm=re.search(r"\bhook\s+(input|output|prerouting|postrouting|forward)\b",line)
+        if hm:
+            hook=hm.group(1)
+        if re.search(r"\btcp\s+sport\s+443\b",line):
+            target=next((x for x in ("drop","reject","accept","return","queue","dnat","snat","redirect","jump")
+                         if re.search(r"\b"+x+r"\b",line)), "other")
+            print(f"nft_sport443_rule=table:{table},chain:{chain},hook:{hook},target:{target},"
+                  f"source_match:{str(bool(re.search(r'\b(?:saddr|daddr)\b',line))).lower()},"
+                  f"ct_state:{str('ct state' in line).lower()},mark:{str('mark' in line).lower()}")
+        if hook=="output" and re.search(r"\b(drop|reject)\b",line):
+            print(f"nft_output_reject_rule=table:{table},chain:{chain},"
+                  f"sport443:{str(bool(re.search(r'tcp\s+sport\s+443\b',line))).lower()},"
+                  f"source_scoped:{str(bool(re.search(r'\b(?:saddr|daddr)\b',line))).lower()}")
+    print("nft_rule_context=READ_ONLY_COMPLETE")
+
 def host_checks():
     for p in ("/run/systemd/system","/proc/net/netfilter/nfnetlink_queue"):
         print("path_"+p.replace("/","_")+"="+str(pathlib.Path(p).exists()).lower())
@@ -108,4 +141,5 @@ if __name__=="__main__":
     owner_summary()
     firewall_summary()
     output_rule_summary()
+    nft_443_rule_summary()
     host_checks()
