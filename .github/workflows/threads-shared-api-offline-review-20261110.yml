@@ -14,6 +14,7 @@ jobs:
       - name: Test strict one-host i.instagram.com additive patch and QUIC regression
         run: |
           set -Eeuo pipefail
+          bash -n scripts/mnebydns-threads-api-live-stage-20261110.sh
           python3 -m py_compile scripts/mnebydns-threads-api-add-20261110.py
           python3 scripts/mnebydns-threads-api-add-20261110.py self-test
           python3 scripts/mnebydns-threads-only-render-20261110.py self-test
@@ -25,6 +26,13 @@ jobs:
           assert 'MNEBYDNS_THREADS_SHARED_API_I_20261110' in source
           assert 'for record in ("A","AAAA","HTTPS","SVCB","CNAME")' in source
           assert 'render_nginx' in source and 'render_dns' in source
+          stage=Path('scripts/mnebydns-threads-api-live-stage-20261110.sh').read_text()
+          assert 'shared-api-stage-dns.original' in stage
+          assert 'shared-api-stage-nginx.original' in stage
+          assert 'trap restore_on_error EXIT' in stage
+          assert 'systemctl is-active --quiet "$name.timer"' in stage
+          assert 'cmp -s "$base/dns.pilot" "$live_dns"' in stage
+          assert 'cmp -s "$base/nginx.pilot" "$live_nginx"' in stage
           assert 'render_dns(d)' in source # refuses second patch
           print('threads_one_shared_Instagram_API_only_regression=PASS')
           PY
