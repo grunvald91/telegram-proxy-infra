@@ -7,7 +7,7 @@ set -Eeuo pipefail
 role="$1"; id="$2"; deadline="$3"
 [[ "$deadline" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}[[:space:]][0-9]{2}:[0-9]{2}:[0-9]{2}[[:space:]]UTC$ ]] || exit 2
 now="$(date -u +%s)"; expiry="$(date -u -d "$deadline" +%s)"
-(( expiry-now>=180 && expiry-now<=1800 )) || exit 2
+(( expiry-now>=180 && expiry-now<=3600 )) || exit 2
 work="/tmp/mnebydns-meta-quic-$id"
 base="/opt/mnebydns-meta-quic-$id"
 unit="mnebydns-meta-quic-$role-$id"
