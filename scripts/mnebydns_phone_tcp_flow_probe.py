@@ -264,7 +264,7 @@ def main():
             if not handles(chain(), tag):
                 print("phone_test_rule_absent=true",flush=True)
             original=chain()
-            good=any("tcp sport 443" in l and re.search(r"\\bto\\s+210\\b",l) for l in original.splitlines())
+            good=any("tcp sport 443" in l and re.search(r"\bto\s+210\b",l) for l in original.splitlines())
             print("phone_original_queue_preserved="+str(good).lower(),flush=True)
             if not good:
                 raise RuntimeError("Original NFQUEUE210 rule unexpectedly absent")
