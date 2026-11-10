@@ -4,6 +4,11 @@ on:
     paths:
       - 'scripts/mnebydns_synack_window_canary.py'
       - 'scripts/mnebydns_instagram_queue210_synack_ab.py'
+      - 'scripts/mnebydns_phone_tcp_flow_probe.py'
+      - 'scripts/tests/test_mnebydns_phone_tcp_flow_probe.py'
+      - 'scripts/tests/integration_mnebydns_phone_tcp_flow_netns.sh'
+      - '.github/workflows/mnebydns-android-wifi-field-test.yml'
+      - 'docs/mnebydns-android-mobile-field-test.md'
       - 'scripts/mnebydns_ig_queue210_codespace_ab.sh'
       - 'scripts/tests/test_mnebydns_instagram_queue210_ab.py'
       - 'scripts/tests/integration_mnebydns_ig_queue210_ab_netns.sh'
@@ -41,7 +46,7 @@ jobs:
       - name: Bash syntax
         run: bash -n scripts/mnebydns-synack-window-canary.sh scripts/mnebydns_instagram_ru_ingress_reach.sh scripts/mnebydns_ig_queue210_codespace_ab.sh
       - name: Python syntax
-        run: python3 -m py_compile scripts/mnebydns_synack_window_canary.py scripts/mnebydns_synack_listener.py scripts/mnebydns_nfq_failopen.py scripts/mnebydns_synack_netns_probe.py scripts/mnebydns_instagram_ru_readonly_preflight.py scripts/mnebydns_instagram_queue210_synack_ab.py scripts/mnebydns_nfqws_synack_guard_render.py scripts/mnebydns_nfqws_guard_stage.py scripts/mnebydns_nfqws_guard_live_canary.py
+        run: python3 -m py_compile scripts/mnebydns_synack_window_canary.py scripts/mnebydns_synack_listener.py scripts/mnebydns_nfq_failopen.py scripts/mnebydns_synack_netns_probe.py scripts/mnebydns_instagram_ru_readonly_preflight.py scripts/mnebydns_instagram_queue210_synack_ab.py scripts/mnebydns_nfqws_synack_guard_render.py scripts/mnebydns_nfqws_guard_stage.py scripts/mnebydns_nfqws_guard_live_canary.py scripts/mnebydns_phone_tcp_flow_probe.py
   kernel-netns:
     runs-on: ubuntu-latest
     timeout-minutes: 8
@@ -55,6 +60,8 @@ jobs:
         run: sudo bash scripts/tests/integration_mnebydns_synack_netns.sh
       - name: Verify nft queue210 SYN-ACK bypass grammar and exact handle removal in netns
         run: sudo bash scripts/tests/integration_mnebydns_ig_queue210_ab_netns.sh
+      - name: Verify one exact NAT TCP five-tuple return rule without table rebuild
+        run: sudo bash scripts/tests/integration_mnebydns_phone_tcp_flow_netns.sh
       - name: Verify queue210 generator survives simulated nfqws service restart
         run: sudo bash scripts/tests/integration_mnebydns_nfqws_guard_restart_netns.sh
       - name: Verify strict per-peer guard counts actual SYN-ACK in veth namespaces
