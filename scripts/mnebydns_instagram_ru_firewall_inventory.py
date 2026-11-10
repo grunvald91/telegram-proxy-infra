@@ -137,6 +137,20 @@ def nfqws_postrouting_audit():
         print("telegram_nfqws_nft_table=UNAVAILABLE")
         return
     print("telegram_nfqws_nft_table=AVAILABLE")
+    # A return verdict is safe as a bypass only if post is the expected
+    # postrouting base chain with an ACCEPT policy. Do not print raw rules.
+    in_post=False
+    for line in p.stdout.splitlines():
+        if re.search(r"^\\s*chain\\s+post\\s*\\{", line):
+            in_post=True
+            print("telegram_post_chain_found=true")
+        elif in_post and re.search(r"^\\s*\\}", line):
+            in_post=False
+        if in_post and "hook postrouting" in line:
+            print("telegram_post_hook_postrouting=true")
+            print("telegram_post_policy_accept="+str(bool(re.search(r"\\bpolicy\\s+accept\\s*;",line))).lower())
+            match=re.search(r"\\bpriority\\s+([^;]+)",line)
+            print("telegram_post_priority="+(match.group(1).strip().split()[0] if match else "unknown"))
     for line in p.stdout.splitlines():
         if "tcp sport 443" not in line:
             continue
