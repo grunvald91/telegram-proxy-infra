@@ -34,8 +34,15 @@ def listener(ready: str, count: int):
                 raise RuntimeError("Namespace listener received a foreign client")
             with conn:
                 conn.settimeout(3)
-                block = conn.recv(16384)
-                if not block or b"i.instagram.com" not in block:
+                block = bytearray()
+                while len(block) < 16384:
+                    chunk = conn.recv(16384 - len(block))
+                    if not chunk:
+                        break
+                    block.extend(chunk)
+                    if b"i.instagram.com" in block:
+                        break
+                if b"i.instagram.com" not in block:
                     raise AssertionError("Expected authentic TLS ClientHello with SNI")
                 print(f"listener_received_tls_clienthello_bytes={len(block)}", flush=True)
 
