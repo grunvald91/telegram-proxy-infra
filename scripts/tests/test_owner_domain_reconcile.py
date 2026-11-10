@@ -49,9 +49,20 @@ class OwnerDomainConfirmContracts(TestCase):
         row = confirm_row("REMOVING")
         with patch.object(owner, "is_confirmed", return_value=True), \
              patch.object(owner, "rollback", side_effect=AssertionError("must not rollback")), \
+             patch.object(owner, "verified_live_confirmed"), \
+             patch.object(owner, "oracle_canary_check"), \
              patch.object(owner, "sql", side_effect=lambda q: statements.append(q) or "101"):
             owner.remove(row)
         self.assertTrue(any("status='CANCELLED'" in q and "status='REMOVING'" in q for q in statements))
+
+    def test_recovered_removal_fails_closed_on_unverified_live_state(self):
+        statements = []
+        with patch.object(owner, "is_confirmed", return_value=True), \
+             patch.object(owner, "verified_live_confirmed", side_effect=RuntimeError("drift")), \
+             patch.object(owner, "sql", side_effect=lambda q: statements.append(q) or "101"):
+            with self.assertRaisesRegex(RuntimeError, "drift"):
+                owner.remove(confirm_row("REMOVING"))
+        self.assertFalse(any("status='CANCELLED'" in q for q in statements))
 
     def test_uncommitted_removal_rolls_back_before_cancelling(self):
         statements = []
