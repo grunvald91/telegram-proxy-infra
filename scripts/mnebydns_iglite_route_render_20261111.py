@@ -34,7 +34,7 @@ def render(core:str, nginx:str) -> tuple[str,str]:
     if n.count("        "+HOST+" "+META_ORIGIN+":443;")!=1:
         raise AssertionError("Expected only one exact-host Nginx SNI route")
     for unsafe in ("*.instagram.com","*.facebook.com","~iglite","default "+META_ORIGIN):
-        if unsafe in c[len(core):] or unsafe in n[len(nginx):]:
+        if c.count(unsafe)!=core.count(unsafe) or n.count(unsafe)!=nginx.count(unsafe):
             raise AssertionError("Unsafe wildcard/regex/default route detected")
     return c,n
 
