@@ -155,7 +155,21 @@ def initial_sni(packet: bytes) -> Optional[str]:
         # PADDING (0x00) and CRYPTO (0x06) are sufficient for the observed PCAPs.
         while offset < len(plain):
             typ = plain[offset]; offset += 1
-            if typ == 0: continue
+            if typ == 0: continue  # PADDING
+            if typ == 1: continue  # PING (permitted in Initial per RFC 9000)
+            if typ in (2, 3):  # ACK / ACK_ECN, also valid in Initial
+                _, offset = varint(plain, offset)  # Largest Acknowledged
+                _, offset = varint(plain, offset)  # ACK Delay
+                ranges, offset = varint(plain, offset)
+                _, offset = varint(plain, offset)  # First ACK Range
+                if ranges > 64: return None  # Bound untrusted parsing work
+                for _ in range(ranges):
+                    _, offset = varint(plain, offset)  # Gap
+                    _, offset = varint(plain, offset)  # ACK Range
+                if typ == 3:
+                    for _ in range(3):
+                        _, offset = varint(plain, offset)  # ECN counts
+                continue
             if typ != 6: return None
             crypto_offset, offset = varint(plain, offset)
             length, offset = varint(plain, offset)
