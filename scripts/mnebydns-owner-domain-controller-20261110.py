@@ -119,8 +119,11 @@ def dns_q(host:str,kind=1)->tuple[int,list[str]]:
         tcp.settimeout(9)
         with ssl.create_default_context().wrap_socket(tcp,server_hostname="dns.mnebyvpn.site") as tls:
             tls.sendall(len(packet).to_bytes(2,"big")+packet)
-            head=tls.recv(2)
-            if len(head)!=2:raise RuntimeError("No DoT length prefix")
+            head=bytearray()
+            while len(head)<2:
+                chunk=tls.recv(2-len(head))
+                if not chunk:raise RuntimeError("No DoT length prefix")
+                head.extend(chunk)
             size=int.from_bytes(head,"big")
             if size<12 or size>4096:raise RuntimeError("Invalid DoT response size")
             buf=bytearray()
