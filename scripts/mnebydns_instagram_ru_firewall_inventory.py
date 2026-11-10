@@ -131,6 +131,41 @@ def nft_443_rule_summary():
                   f"sport443:{str(sport443).lower()},source_scoped:{str(src_match).lower()}")
     print("nft_rule_context=READ_ONLY_COMPLETE")
 
+def nfqws_postrouting_audit():
+    p=run(["nft","-a","list","table","inet","telegram_nfqws"])
+    if not p or p.returncode:
+        print("telegram_nfqws_nft_table=UNAVAILABLE")
+        return
+    print("telegram_nfqws_nft_table=AVAILABLE")
+    for line in p.stdout.splitlines():
+        if "tcp sport 443" not in line:
+            continue
+        queue_match=re.search(r"\bqueue\s+(?:num\s+)?(\d+)",line)
+        queue_num=queue_match.group(1) if queue_match else "UNKNOWN"
+        print("telegram_nfqws_sport443_queue="+queue_num)
+        print("telegram_nfqws_sport443_bypass="+str("bypass" in line).lower())
+        print("telegram_nfqws_sport443_has_mark_match="+str("mark" in line).lower())
+        print("telegram_nfqws_sport443_has_ctstate="+str("ct state" in line).lower())
+        print("telegram_nfqws_sport443_has_ipv4_scope="+str(bool(re.search(r"\bip\s+(?:saddr|daddr)\b",line))).lower())
+        print("telegram_nfqws_sport443_has_syn_only="+str("tcp flags" in line).lower())
+    proc=pathlib.Path("/proc/net/netfilter/nfnetlink_queue")
+    if proc.exists():
+        for line in proc.read_text().splitlines():
+            cols=line.split()
+            if len(cols)>=7:
+                print("native_nfqueue_active_id="+cols[0])
+                print("native_nfqueue_depth="+cols[2])
+                print("native_nfqueue_kernel_dropped="+cols[5])
+                print("native_nfqueue_user_dropped="+cols[6])
+    p=run(["systemctl","list-units","--all","--no-legend","--no-pager","*nfqws*"])
+    if p and p.returncode==0:
+        for line in p.stdout.splitlines():
+            parts=line.split()
+            if parts and "nfqws" in parts[0]:
+                print("nfqws_systemd_unit="+parts[0])
+                print("nfqws_systemd_active="+str("active" in parts[:4]).lower())
+    print("telegram_nfqws_postrouting_audit=READ_ONLY_COMPLETE")
+
 def host_checks():
     for p in ("/run/systemd/system","/proc/net/netfilter/nfnetlink_queue"):
         print("path_"+p.replace("/","_")+"="+str(pathlib.Path(p).exists()).lower())
@@ -143,4 +178,5 @@ if __name__=="__main__":
     firewall_summary()
     output_rule_summary()
     nft_443_rule_summary()
+    nfqws_postrouting_audit()
     host_checks()
