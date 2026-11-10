@@ -46,5 +46,5 @@ jobs:
           assert raw.count("mnebydns-meta-quic-de-$id") >= 3
           assert raw.count("mnebydns-threads-rollback-$id") >= 2
           assert "trap cleanup EXIT" in raw and "code!=0" in raw
-          print("threads_full_feed_original_rollback_and_one_shared_API=PASS",flush=True)
+          print("threads_four_captured_feed_hosts_independent_rollback=PASS",flush=True)
           PY
