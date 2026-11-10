@@ -1,0 +1,71 @@
+name: Threads www QUIC origin support and DE UDP443 readiness (read-only)
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths: [.github/workflows/threads-www-h3-origin-readonly-20261110.yml]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Check DE real Threads origin TLS/Alt-Svc and socket availability
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          SSHPASS="$DE_PASS" sshpass -e ssh -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=12 root@89.125.90.101 'bash -s' <<'SH'
+          set -Eeuo pipefail
+          echo 'de_udp443_port_listeners_begin'
+          ss -H -lun 'sport = :443' || true
+          echo 'de_udp443_port_listeners_end'
+          echo 'de_curl_version='
+          curl -V | head -n 1
+          echo 'de_curl_http3_support='
+          if curl -V | grep -qi HTTP3; then echo 'true'; else echo 'false'; fi
+          echo 'de_python_aioquic_avail='
+          if python3 -c 'import aioquic' 2>/dev/null; then echo 'true';else echo 'false';fi
+          python3 - <<'PY'
+          import ssl,socket,ipaddress
+          for host in ("www.threads.com","threads.com","graph.threads.com","www.threads.net"):
+              ips=[]
+              for record in socket.getaddrinfo(host,443,socket.AF_INET,socket.SOCK_STREAM):
+                  ip=record[4][0]
+                  if ip not in ips:ips.append(ip)
+              print('origin_'+host+'_public_A_count='+str(len(ips)),flush=True)
+              ok=False
+              for ip in ips[:3]:
+                  if ip in ('89.125.90.101','188.120.254.223') or not ipaddress.ip_address(ip).is_global:
+                      continue
+                  try:
+                      with socket.create_connection((ip,443),timeout=7) as tcp:
+                          tcp.settimeout(7)
+                          ctx=ssl.create_default_context()
+                          ctx.set_alpn_protocols(['h2','http/1.1'])
+                          with ctx.wrap_socket(tcp,server_hostname=host) as tls:
+                              ok=bool(tls.getpeercert())
+                              alpn=tls.selected_alpn_protocol()
+                              print('origin_'+host+'_tls_verified='+str(ok).lower()+'_alpn='+str(alpn),flush=True)
+                              if alpn=='http/1.1':
+                                  request=f'HEAD / HTTP/1.1\r\nHost: {host}\r\nUser-Agent: MNEBYDNS-Canary/1.0\r\nConnection: close\r\n\r\n'
+                                  tls.sendall(request.encode())
+                                  head=b''
+                                  while b'\r\n\r\n' not in head and len(head)<16000:
+                                      data=tls.recv(2048)
+                                      if not data:break
+                                      head+=data
+                                  for line in head.split(b'\r\n'):
+                                      if line.lower().startswith((b'alt-svc:',b'http/1.1')):
+                                          print('origin_'+host+'_header='+line.decode('ascii','replace')[:240],flush=True)
+                              break
+                  except Exception as exc:
+                      print('origin_'+host+'_tls_error='+type(exc).__name__,flush=True)
+              print('origin_'+host+'_tls_working='+str(ok).lower(),flush=True)
+          PY
+          echo 'origin_readonly_no_prod_changes=true'
+          SH
