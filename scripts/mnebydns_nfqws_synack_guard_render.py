@@ -48,7 +48,9 @@ GUARD_LINE="""        if [ -n "$SYNACK_CLIENT" ]; then
 
 def render(original: str) -> str:
     if TAG in original:
-        if original.count(TAG)==1 and original.count(QUEUE_LINE)==1:
+        if (original.count(TAG)==1 and original.count(QUEUE_LINE)==1
+            and CONFIG_LINE in original and BEFORE_REMOVE in original
+            and GUARD_LINE in original):
             return original
         raise ValueError("Unexpected existing canary guard")
     if original.count(QUEUE_LINE)!=1 or original.count(CASE_LINE)!=1:
