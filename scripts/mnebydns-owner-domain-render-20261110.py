@@ -92,7 +92,7 @@ def core_add(stable: str, domain: str) -> str:
             + "        fallthrough\n"
             "    }\n"
         )
-    prefix += "    "+end
+    prefix += end
     out = stable.replace(CACHE_ANCHOR, prefix+CACHE_ANCHOR, 1)
     if out.replace(prefix, "", 1) != stable:
         raise AssertionError("CoreDNS edit must be additive")
