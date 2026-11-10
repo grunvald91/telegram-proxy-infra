@@ -1,0 +1,5 @@
+Owner confirmation: "Запускай тест", 2026-11-10. 35-minute guarded Threads-only trial.
+Four exact names observed in phone PCAP: i.instagram.com, i-fallback.instagram.com, test-gateway.instagram.com, z-m-gateway.facebook.com.
+Do not wildcard Instagram, preserve Gemini, Claude, ChatGPT, Grok, X, TikTok, Oracle and unrelated routes.
+Fail closed if checkpoint differs, or QUIC/TLS/DNS verification fails; independently restore RU, DE UDP and DE DNS/NGINX at deadline.
+Offline reviewed: https://github.com/grunvald91/telegram-proxy-infra/actions/runs/42818603571
