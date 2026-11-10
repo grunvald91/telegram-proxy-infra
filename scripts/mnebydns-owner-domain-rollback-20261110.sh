@@ -63,6 +63,15 @@ if cmp -s "$base/dns.pilot" "$live_dns"; then
   mv -f "$live_dns.owner-rollback-$id" "$live_dns"
   systemctl restart mnebydns-dot.service
 fi
+# The rollback is successful only when DoT has re-opened public port 853.
+for attempt in $(seq 1 60); do
+  if systemctl is-active --quiet mnebydns-dot.service &&
+     ss -H -lnt 'sport = :853' | grep -Fq '89.125.90.101:853'; then
+    break
+  fi
+  sleep .2
+done
+ss -H -lnt 'sport = :853' | grep -Fq '89.125.90.101:853'
 cmp -s "$base/dns.before" "$live_dns"
 cmp -s "$base/nginx.before" "$live_nginx"
 systemctl is-active --quiet nginx
