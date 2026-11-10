@@ -33,3 +33,7 @@
 ## 2026-11-10 · Отображение ошибок ACTIVE доменов
 
 Mnebyvpn main [0cb28e4a74718cf0c08cc4c0bb5c1929c29a7553](https://github.com/grunvald91/Mnebyvpn/commit/0cb28e4a74718cf0c08cc4c0bb5c1929c29a7553), verified CI [42839511601](https://github.com/grunvald91/Mnebyvpn/actions/runs/42839511601), owner-only DNS admin UI now marks `ACTIVE_ROUTE_CHECK_FAILED` in list/card. Request existing guarded Telegram bot auto deployment; does not change CoreDNS/Nginx or pre-existing Oracle routes.
+
+## 2026-11-10 · Неоновый Telegram HTML Bubble покупки VPN
+
+После [PR #94](https://github.com/grunvald91/Mnebyvpn/pull/94) исходник `Mnebyvpn/main` [c902aa492a73d6f4d7444f8e5b474f8aed707fb9](https://github.com/grunvald91/Mnebyvpn/commit/c902aa492a73d6f4d7444f8e5b474f8aed707fb9) прошёл [CI 42848328078](https://github.com/grunvald91/Mnebyvpn/actions/runs/42848328078) (success). Дизайн покупки VPN изменён на лёгкий неоновый cyan/indigo/violet с воздушными кнопками; валюта Stars, цены, серверные ключи тарифа, платёжный обработчик и выдача VPN не менялись. Запрос только на guarded canary-redeploy MNEBYVPN Telegram-бота через существующий SSH-путь (с rollback). Сетевые сервисы, DNS и nginx не затрагивать. Живую оплату Stars считать НЕ ПРОВЕРЕННОЙ до E2E.
