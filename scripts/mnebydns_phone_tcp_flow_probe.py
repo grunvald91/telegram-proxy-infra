@@ -107,7 +107,7 @@ def infer_peer_from_challenge(frame, nonce):
     Only a coordination signal, NOT authentication or device identification.
     No source IP is printed or saved in a file.
     """
-    if len(frame)<54 or frame[12:14]!=b"\\x08\\x00" or frame[14]>>4!=4:
+    if len(frame)<54 or frame[12:14]!=b"\x08\x00" or frame[14]>>4!=4:
         return None
     src=ipaddress.IPv4Address(frame[26:30])
     if not src.is_global or src==RU:
