@@ -61,11 +61,10 @@ def counts(text, tag):
 
 def ensure_preflight(current):
     # Abort instead of editing a changed or unfamiliar chain.
-    expected = re.search(
-        r"chain post\s*\{\s*type filter hook postrouting\b[^;]*;\s*policy accept;",
-        current,
-    )
-    if not expected:
+    has_chain = bool(re.search(r"(?m)^\s*chain\s+post\s*\{", current))
+    has_hook = bool(re.search(r"\btype\s+filter\s+hook\s+postrouting\b", current))
+    has_accept = bool(re.search(r"\bpolicy\s+accept\s*;", current))
+    if not (has_chain and has_hook and has_accept):
         raise RuntimeError("Expected postrouting filter base chain with ACCEPT policy not found")
     queued = [x for x in current.splitlines()
               if "tcp sport 443" in x and
