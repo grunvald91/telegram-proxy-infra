@@ -92,6 +92,48 @@ sudo MNEBYDNS_ROLLBACK=YES bash scripts/mnebydns-synack-window-canary.sh TEST_PU
 
 Inspect the tagged rules after cleanup and independently after the watchdog deadline; do not infer success from a script exit alone. The timer does not undo external rules created by other operators.
 
+## Stage 3: read-only inspection of actual RU VPS
+
+Added `scripts/mnebydns_instagram_ru_readonly_preflight.py`. This script
+does **not** install anything, touch public TCP/443, alter DNS, start a
+listener, open firewall ports, or capture user traffic. It prints a bounded,
+non-sensitive summary of port ownership, queue 211, existing canary rules,
+iptables backend, nftables and systemd capabilities. The script and its
+mocked unit tests are validated by PR CI.
+
+**Remote execution has not been performed or authenticated in this stage.**
+A new CI workflow that would inject the RU SSH password was not permitted,
+so no credentials are copied into a new workflow or written to the
+repository. A trusted operator can run the following **read-only**
+command from an already SSH-authorized Codespace, using the enrolled
+SSH host public key in this repo:
+
+```bash
+ssh -o StrictHostKeyChecking=yes \
+  -o HostKeyAlgorithms=ssh-ed25519 \
+  -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" \
+  -o GlobalKnownHostsFile=/dev/null \
+  -o UpdateHostKeys=no \
+  root@188.120.254.223 'python3 -' \
+  < scripts/mnebydns_instagram_ru_readonly_preflight.py
+```
+
+The command must be invoked with this PR branch checked out; it relies on
+existing authorized SSH and does not configure or acquire credentials.
+It fails if 18443 is occupied, queue 211 is already owned, a tagged canary
+iptables rule is present, or the rollback timer appears active. Missing
+native libnetfilter_queue is reported separately and must be resolved
+during a scheduled test window, **not** by this audit.
+
+**No permanent rollout is warranted by this read-only audit.** A user-space
+`curl --connect-to` probe to port 18443 is suitable for TCP transport
+research, but the *official unchanged Instagram Android application*
+continues to open HTTPS port 443. Achieving a safely isolated mobile
+Instagram test on that port requires a dedicated ingress IP or a separately
+reviewed per-flow isolation mechanism; neither has been demonstrated on
+the current server. Do not route the public Instagram DNS name to this
+experimental acceptor.
+
 ## Acceptance gates
 
 1. Offline tests and CI green.
