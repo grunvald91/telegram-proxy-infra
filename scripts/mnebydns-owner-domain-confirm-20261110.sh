@@ -18,13 +18,26 @@ live_nginx=/etc/nginx/nginx.conf
 
 exec 9>/run/lock/mnebyvpn-public-route.lock
 flock -w 35 9 || exit 3
-if test -f "$base/confirmed"; then
-  current="$(cat /opt/mnebydns-stable-checkpoints/current)"
-  cmp -s "$current/dns.stable" "$base/dns.pilot"
-  cmp -s "$current/nginx.stable" "$base/nginx.pilot"
+# Crash-recovery: the checkpoint pointer may have been promoted just
+# before the process crashed, but before 'confirmed' was written. The
+# independent timer must not undo a committed checkpoint, and retry must
+# be able to finish the database transition after proving the live state.
+current="$(cat /opt/mnebydns-stable-checkpoints/current)"
+[[ "$current" =~ ^/opt/mnebydns-stable-checkpoints/[0-9]+$ ]] || exit 4
+(cd "$current" && sha256sum -c stable-manifest.sha256 >/dev/null)
+if cmp -s "$current/dns.stable" "$base/dns.pilot" &&
+   cmp -s "$current/nginx.stable" "$base/nginx.pilot"; then
+  cmp -s "$base/dns.pilot" "$live_dns"
+  cmp -s "$base/nginx.pilot" "$live_nginx"
+  nginx -t >/dev/null 2>&1
+  systemctl is-active --quiet nginx
+  systemctl is-active --quiet mnebydns-dot.service
+  touch "$base/confirmed"
   echo 'owner_domain_already_confirmed=true'
   exit 0
 fi
+# A stray sentinel alone is never permission to claim a successful route.
+test ! -f "$base/confirmed" || { echo 'owner_domain_confirmed_state_drift=true'; exit 4; }
 systemctl is-active --quiet "$name.timer"
 test -s "$base/$name.timer"
 # Confirmation must precede automatic rollback by at least 4 minutes.
