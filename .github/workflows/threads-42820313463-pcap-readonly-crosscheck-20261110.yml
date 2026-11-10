@@ -1,0 +1,92 @@
+name: Threads 16h01 phone PCAP live hop and SNI crosscheck read-only
+on:
+  push:
+    branches: [diagnostics/threads-only-guarded-retest-20261110]
+    paths: [.github/workflows/threads-42820313463-pcap-readonly-crosscheck-20261110.yml]
+permissions:
+  contents: read
+jobs:
+  crosscheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Read counters and verify same SNI on RU private, RU public and DE public paths
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          for role in ru de; do
+            if [[ "$role" == ru ]]; then export SSHPASS="$RU_PASS"; dest=188.120.254.223
+            else export SSHPASS="$DE_PASS"; dest=89.125.90.101; fi
+            sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o LogLevel=ERROR "root@$dest" "python3 - '$role'" <<'PY'
+          import sys,re,subprocess,ssl,socket,concurrent.futures
+          role=sys.argv[1];rid='42820313463'
+          hosts=('i.instagram.com','test-gateway.instagram.com',
+                 'z-m-gateway.facebook.com','i-fallback.instagram.com')
+          def run(*c):
+              try:return subprocess.run(c,capture_output=True,text=True,timeout=10)
+              except Exception:return None
+          print(role+'_pcap_crosscheck_read_only=true',flush=True)
+          for kind in ('service','timer'):
+              unit=f'mnebydns-meta-quic-{role}-{rid}'
+              if kind=='timer':unit+='-rollback'
+              p=run('systemctl','is-active',unit+'.'+kind)
+              print(role+'_quic_'+kind+'_active='+str(bool(p and p.stdout.strip()=='active')).lower(),flush=True)
+          if role=='de':
+              p=run('systemctl','is-active',f'mnebydns-threads-rollback-{rid}.timer')
+              print('de_threads_dns_rollback_active='+str(bool(p and p.stdout.strip()=='active')).lower(),flush=True)
+              p=run('cmp','-s','/opt/mnebydns-dot/Corefile',f'/opt/mnebydns-threads-canary/{rid}/dns.pilot')
+              print('de_live_DNS_equals_exact_pilot='+str(bool(p and p.returncode==0)).lower(),flush=True)
+          else:
+              p=run('ip','-4','route','get','10.66.77.1')
+              print('ru_10_66_77_1_WG_route='+str(bool(p and 'tg-relay' in p.stdout)).lower(),flush=True)
+          p=run('journalctl','-u',f'mnebydns-meta-quic-{role}-{rid}.service',
+                '--since','2026-11-10 12:58:00 UTC','-o','cat','--no-pager')
+          rows=[x for x in (p.stdout or '').splitlines() if x.startswith('meta_quic_'+role+'_active=')] if p else []
+          print(role+'_quic_counter_records='+str(len(rows)),flush=True)
+          if rows:
+              for label,line in (('first',rows[0]),('last',rows[-1])):
+                  for token in line.split():
+                      field,sep,val=token.partition('=')
+                      if sep and val.isdecimal() and field in ('active','admitted','rejected','expired','rx',
+                          'to_upstream','upstream_rx','client_tx','peer_drop','undersize',
+                          'oversize','resolve_error','socket_error','emsgsize'):
+                          print(f'{role}_quic_{label}_{field}={val}',flush=True)
+          def test(arg):
+              dest,host,tag=arg
+              try:
+                  with socket.create_connection((dest,443),timeout=7) as raw:
+                      raw.settimeout(7)
+                      with ssl.create_default_context().wrap_socket(raw,server_hostname=host) as tls:
+                          return tag,host,'cert_verified' if tls.getpeercert() else 'empty_certificate'
+              except Exception as e:
+                  return tag,host,type(e).__name__
+          targets=[('188.120.254.223','ru_public')]
+          if role=='ru':targets.append(('10.66.77.1','wg_de_private'))
+          inputs=[(dest,host,tag) for dest,tag in targets for host in hosts]
+          with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+              for tag,host,result in pool.map(test,inputs):
+                  print(f'{role}_sni_{tag}_{host}={result}',flush=True)
+          print(role+'_read_only_completed=true',flush=True)
+          PY
+          done
+          python3 - <<'PY'
+          import ssl,socket,concurrent.futures
+          hosts=('i.instagram.com','test-gateway.instagram.com',
+                 'z-m-gateway.facebook.com','i-fallback.instagram.com')
+          def test(host):
+              try:
+                  with socket.create_connection(('188.120.254.223',443),timeout=7) as raw:
+                      raw.settimeout(7)
+                      with ssl.create_default_context().wrap_socket(raw,server_hostname=host) as tls:
+                          return host, 'cert_verified' if tls.getpeercert() else 'empty_certificate'
+              except Exception as e:return host,type(e).__name__
+          with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+              for host,result in pool.map(test,hosts):
+                  print('runner_to_ru_public_TLS_'+host+'='+result,flush=True)
+          print('threads_public_vantage_comparison_complete=true',flush=True)
+          PY
