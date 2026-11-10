@@ -202,7 +202,7 @@ def update_error(item,code:str)->None:
     sql("UPDATE dns_admin_domains SET status='FAILED',last_error_code='"+code+
         "',updated_at=now(),canary_expires_at=NULL"
         " WHERE id="+id+" AND revision="+rev+
-        " AND status IN ('PROBING','APPLY_REQUESTED','CANARY','CONFIRM_REQUESTED','ROLLBACK_REQUESTED')")
+        " AND status IN ('PROBING','APPLY_REQUESTED','CANARY','CONFIRM_REQUESTED','CONFIRMING','ROLLBACK_REQUESTED')")
 
 
 def rollback(runid:str)->None:
@@ -400,7 +400,7 @@ def main():
     print("owner_domain_queue_action="+status,flush=True)
     if status=="APPLY_REQUESTED":
         apply(item)
-    elif status=="CONFIRM_REQUESTED":
+    elif status in ("CONFIRM_REQUESTED","CONFIRMING"):
         confirm(item)
     elif status=="ROLLBACK_REQUESTED":
         cancel_canary(item)
@@ -410,16 +410,14 @@ def main():
         else:
             print("owner_domain_canary_wait_for_user=true",flush=True)
     elif status=="PROBING":
-        # Previous CI attempt may have crashed after staging. Never accept
-        # orphaned test routes as permanent; try its independent rollback.
+        # Crash recovery: never accept orphaned tests as permanent.
         if int(time.time())-int(item["updated"] or 0)>12*60:
             if item["run"]:rollback(item["run"])
             update_error(item,"INTERRUPTED_OWNER_DEPLOY")
         else:
             print("owner_domain_probe_in_progress=true",flush=True)
-    elif status=="REMOVAL_PENDING":
-        print("owner_domain_remove_requires_guarded_worker=true",flush=True)
-        # No claim of successful removal until separate guarded remove action.
+    elif status in ("REMOVAL_PENDING","REMOVING"):
+        remove(item)
     else:
         raise RuntimeError("Unsupported job state")
 
