@@ -19,6 +19,8 @@ import os
 from pathlib import Path
 import re
 import shutil
+import socket
+import struct
 import subprocess
 import sys
 import time
@@ -146,6 +148,63 @@ def queue_ready(worker,marker):
         time.sleep(.1)
     raise RuntimeError("Queue211 worker did not report ready")
 
+class OnePeerPacketCounts:
+    """Minimal AF_PACKET metadata counters: no payload, SNI, ports or IP logged."""
+    def __init__(self,peer):
+        self.peer=ipaddress.IPv4Address(peer).packed
+        self.server=ipaddress.IPv4Address(RU).packed
+        self.inbound_syn=0
+        self.outbound_synack=0
+        self.inbound_payload=0
+        self.inbound_first4=0
+        self.inbound_first_other=0
+        self._seen_ports=set()
+
+    def observe(self,frame:bytes):
+        if len(frame)<54 or frame[12:14]!=b"\x08\x00":
+            return
+        ip=frame[14:]
+        if ip[0] >> 4 != 4 or ip[9]!=6:
+            return
+        ihl=(ip[0]&15)*4
+        if ihl<20 or len(ip)<ihl+20:
+            return
+        iplen=struct.unpack_from("!H",ip,2)[0]
+        if iplen<ihl+20 or iplen>len(ip):
+            return
+        tcp=ip[ihl:iplen]
+        header=(tcp[12]>>4)*4
+        if header<20 or len(tcp)<header:
+            return
+        sport,dport=struct.unpack_from("!HH",tcp)
+        flags=tcp[13]
+        inbound=ip[12:16]==self.peer and ip[16:20]==self.server and dport==443
+        outbound=ip[12:16]==self.server and ip[16:20]==self.peer and sport==443
+        if inbound and (flags&0x12)==0x02:
+            self.inbound_syn+=1
+        if outbound and (flags&0x12)==0x12:
+            self.outbound_synack+=1
+        if inbound and len(tcp)>header:
+            self.inbound_payload+=1
+            # Ephemeral source ports are used only to dedupe first segments,
+            # never printed, persisted, or sent to another system.
+            if sport not in self._seen_ports and len(self._seen_ports)<150:
+                self._seen_ports.add(sport)
+                if len(tcp)-header==4:
+                    self.inbound_first4+=1
+                else:
+                    self.inbound_first_other+=1
+
+    def output(self):
+        for name,value in (
+            ("phone_ingress_syn",self.inbound_syn),
+            ("phone_egress_synack",self.outbound_synack),
+            ("phone_inbound_data_packets",self.inbound_payload),
+            ("phone_first_data_4bytes",self.inbound_first4),
+            ("phone_first_data_other_size",self.inbound_first_other),
+        ):
+            print("ig443_"+name+"="+str(value),flush=True)
+
 def stage_watchdog(peer,runid):
     ROOT.mkdir(mode=0o700,parents=True,exist_ok=True)
     if ROOT.is_symlink():
@@ -199,11 +258,19 @@ def canary(peer,runid):
                 print("ig443_single_ipv4_peer_443_canary=ACTIVE",flush=True)
                 print("ig443_window_bytes=4",flush=True)
                 print("ig443_duration_seconds="+str(TEST_TIME),flush=True)
-                end=time.monotonic()+TEST_TIME
-                while time.monotonic()<end:
-                    if worker.poll() is not None:
-                        raise RuntimeError("Queue211 handler unexpectedly exited")
-                    time.sleep(.25)
+                counts=OnePeerPacketCounts(peer)
+                # AF_PACKET observes one exact peer/port on ens3. Unlike
+                # PCAPdroid this is actual server-side wire metadata.
+                with socket.socket(socket.AF_PACKET,socket.SOCK_RAW,socket.htons(0x0800)) as sniffer:
+                    sniffer.bind(("ens3",0))
+                    sniffer.settimeout(.3)
+                    deadline=time.monotonic()+TEST_TIME
+                    while time.monotonic()<deadline:
+                        if worker.poll() is not None:
+                            raise RuntimeError("Queue211 handler unexpectedly exited")
+                        try: counts.observe(sniffer.recv(8192))
+                        except socket.timeout: pass
+                counts.output()
                 snap=chain()
                 own=own_handles(snap,tag)
                 print("ig443_bypass_rule_present_before_cleanup="+str(len(own)==1).lower(),flush=True)
