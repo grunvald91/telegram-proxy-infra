@@ -121,3 +121,5 @@ jobs:
           DATABASE_URL: "sqlite+aiosqlite:///:memory:"
           BOT_TOKEN: test-token
         run: python -m unittest discover -s tests -p test_mnebyvpn_mail.py -v
+
+# 2026-11-10: read-only audit of native HTML Bubble Stars checkout transport.
