@@ -21,14 +21,17 @@ if test -f "$base/confirmed"; then
   confirmed=true
 else
   checkpoint="$(cat /opt/mnebydns-stable-checkpoints/current 2>/dev/null || true)"
+  # A committed add OR removal may lose its 'confirmed' sentinel in the
+  # tiny crash window after checkpoint promotion. Equality of the complete
+  # checkpoint and live pilot is stronger proof than presence/absence of
+  # a hostname marker, which is absent after a successful removal.
   if [[ "$checkpoint" =~ ^/opt/mnebydns-stable-checkpoints/[0-9]+$ ]] &&
-     test -f "$base/domain" && test "$(cat "$base/mode" 2>/dev/null)" = add; then
-    domain="$(cat "$base/domain")"
-    marker="MNEBYDNS_OWNER_EXACT_$(printf '%s' "$domain" | tr . _)"
-    if grep -Fq "$marker" "$checkpoint/dns.stable" &&
-       grep -Fq "$marker" "$checkpoint/nginx.stable"; then
-      confirmed=true
-    fi
+     (cd "$checkpoint" && sha256sum -c stable-manifest.sha256 >/dev/null) &&
+     cmp -s "$checkpoint/dns.stable" "$base/dns.pilot" &&
+     cmp -s "$checkpoint/nginx.stable" "$base/nginx.pilot" &&
+     cmp -s "$base/dns.pilot" "$live_dns" &&
+     cmp -s "$base/nginx.pilot" "$live_nginx"; then
+    confirmed=true
   fi
 fi
 if [[ "$confirmed" == true ]]; then
