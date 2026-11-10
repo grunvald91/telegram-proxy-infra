@@ -1,0 +1,51 @@
+name: MNEBYDNS owner E2E post-failure server status (READ ONLY)
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/mnebydns-owner-e2e-postfailure-audit-20261110.yml']
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read-only DNS, process, checkpoint and exact test-row audit
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no)
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 '
+            set -u
+            base=$(cat /opt/mnebydns-stable-checkpoints/current)
+            echo "owner_audit_checkpoint_path=$base"
+            (cd "$base" && sha256sum -c stable-manifest.sha256 >/dev/null) && echo "owner_audit_checkpoint_manifest=PASS" || echo "owner_audit_checkpoint_manifest=FAIL"
+            for pair in "dns:/opt/mnebydns-dot/Corefile" "nginx:/etc/nginx/nginx.conf" "proxy:/etc/mnebydns-googlepilot/nginx.conf"; do
+              kind=${pair%%:*}; live=${pair#*:}
+              cmp -s "$base/$kind.stable" "$live" && echo "owner_audit_${kind}_equals_checkpoint=true" || echo "owner_audit_${kind}_equals_checkpoint=false"
+            done
+            systemctl is-active mnebydns-dot.service || true
+            systemctl is-failed mnebydns-dot.service || true
+            systemctl --no-pager --full status mnebydns-dot.service | tail -n 21 || true
+            ss -H -lnt sport = :853 || true
+            nginx -t 2>&1 | tail -n 4 || true
+            grep -Fq MNEBYDNS_OWNER_EXACT_www_rfc-editor_org /opt/mnebydns-dot/Corefile && echo "owner_audit_test_host_core_present=true" || echo "owner_audit_test_host_core_present=false"
+            grep -Fq MNEBYDNS_OWNER_EXACT_www_rfc-editor_org /etc/nginx/nginx.conf && echo "owner_audit_test_host_nginx_present=true" || echo "owner_audit_test_host_nginx_present=false"
+            for f in /opt/mnebydns-owner-domain/*/mode; do
+              test -f "$f" || continue
+              b=${f%/mode}
+              d=$(cat "$b/domain" 2>/dev/null || :)
+              if test "$d" = www.rfc-editor.org; then
+                echo "owner_audit_test_run_dir=$(basename "$b") mode=$(cat "$f") confirmed=$(test -f "$b/confirmed" && echo yes || echo no)"
+              fi
+            done
+            journalctl -u mnebydns-dot.service --no-pager --since "2026-11-10 15:05:00 UTC" -n 45 -o short-iso | tail -n 45
+          '
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 "docker exec mnebyvpn-stage-postgres psql -XqAt -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage -c \"SELECT 'owner_audit_db='||domain||'|'||status||'|'||revision||'|'||coalesce(canary_run_id::text,'')||'|'||coalesce(last_error_code,'') FROM dns_admin_domains WHERE domain='www.rfc-editor.org';\""
