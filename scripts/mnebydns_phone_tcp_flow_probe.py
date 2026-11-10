@@ -32,8 +32,8 @@ LOCK = Path("/run/lock/mnebydns-nfqws-guard-install.lock")
 ROOT = Path("/run/mnebydns-phone-flow")
 TABLE = ["inet", "telegram_nfqws", "post"]
 TAG_PREFIX = "MNEBY_PHONE_TCP_"
-CAPTURE_LIMIT = 32
-LIVE_LIMIT = 23
+CAPTURE_LIMIT = 150
+LIVE_LIMIT = 30
 WATCHDOG_SECONDS = 75
 
 def sh(args, *, data=None, timeout=12, check=True):
@@ -263,7 +263,11 @@ def main():
             # No table recreation or worker restart, even on failures.
             if not handles(chain(), tag):
                 print("phone_test_rule_absent=true",flush=True)
-            print("phone_original_queue_preserved=true",flush=True)
+            original=chain()
+            good=any("tcp sport 443" in l and re.search(r"\\bto\\s+210\\b",l) for l in original.splitlines())
+            print("phone_original_queue_preserved="+str(good).lower(),flush=True)
+            if not good:
+                raise RuntimeError("Original NFQUEUE210 rule unexpectedly absent")
 
 if __name__ == "__main__":
     main()
