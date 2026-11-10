@@ -31,6 +31,22 @@ jobs:
           set -Eeuo pipefail
           python3 -m py_compile scripts/mnebydns_phone_tcp_flow_probe.py
           python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_phone_tcp_flow_probe.py' -v
+      - name: Parse YAML and enforce manual-only dispatch
+        run: |
+          set -Eeuo pipefail
+          python3 -m pip install --quiet pyyaml
+          python3 - <<'PY'
+          import yaml
+          from pathlib import Path
+          file=Path('.github/workflows/mnebydns-android-wifi-field-test.yml')
+          data=yaml.load(file.read_text(),Loader=yaml.BaseLoader)
+          assert isinstance(data,dict)
+          assert set(data['on']) == {'workflow_dispatch'}, data.get('on')
+          inputs=data['on']['workflow_dispatch']['inputs']
+          assert set(inputs)=={'phone_public_ipv4','access_network','confirmation'}
+          assert inputs['access_network']['options']==['wifi','cellular']
+          print('manual_workflow_yaml_dispatch_only=PASS')
+          PY
       - name: Check manual-only workflow and no auto execution
         run: |
           set -Eeuo pipefail
