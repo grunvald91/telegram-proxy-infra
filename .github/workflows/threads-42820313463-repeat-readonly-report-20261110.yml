@@ -1,0 +1,57 @@
+name: Threads last phone repeat compare RU and DE live TLS counters
+on:
+  push:
+    branches: [diagnostics/threads-only-guarded-retest-20261110]
+    paths: [.github/workflows/threads-42820313463-repeat-readonly-report-20261110.yml]
+permissions:
+  contents: read
+jobs:
+  read:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Fetch only numeric per-hop aggregate windows, never raw packets or IP
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass
+          for role in ru de; do
+            if [[ "$role" == ru ]]; then export SSHPASS="$RU_PASS"; dest=188.120.254.223
+            else export SSHPASS="$DE_PASS"; dest=89.125.90.101; fi
+            sshpass -e ssh -o LogLevel=ERROR -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new "root@$dest" "python3 - '$role'" <<'PY'
+          import subprocess,sys,re
+          role=sys.argv[1]
+          unit=f'threads-ingress-{role}-42820313463.service'
+          p=subprocess.run(['journalctl','--utc','-u',unit,'--since','2026-11-10 13:13:00 UTC','-o','short-iso','--no-pager'],capture_output=True,text=True,timeout=15)
+          lines=[x for x in p.stdout.splitlines() if 'meta_stage_'+role+'_WINDOW_' in x or 'meta_stage_'+role+'_FINAL_' in x]
+          active=subprocess.run(['systemctl','is-active','--quiet',unit],capture_output=True).returncode==0
+          print(f'{role}_observer_active={str(active).lower()}',flush=True)
+          print(f'{role}_observer_windows={len(lines)}',flush=True)
+          selected=lines[-12:]
+          fields=('tcp_syn_in','tcp_synack_out','tcp_clienthello_in',
+                  'tcp_clienthello_meta_in','tcp_clienthello_other_or_ech_in',
+                  'tcp_payload_packets_in','tcp_payload_packets_out',
+                  'tcp_reset_in','tcp_reset_out','tcp_hello_fragment_in',
+                  'udp_in','udp_out','udp_quic_v1_initial_in')
+          def parse(x):
+              res={}
+              for item in x.split():
+                  key,sep,value=item.rpartition('=')
+                  if not sep or not value.isdecimal():continue
+                  for f in fields:
+                      if key.endswith('_'+f):res[f]=int(value);break
+              return res
+          for line in selected:
+              row=parse(line)
+              timestamp=line[:26].replace(' ','_')
+              print(role+'_window_at_'+timestamp+' '+' '.join(k+'='+str(row.get(k,0)) for k in fields),flush=True)
+          if len(lines)>1:
+              a,b=parse(lines[0]),parse(lines[-1])
+              print(role+'_whole_observation_delta '+' '.join(k+'='+str(b.get(k,0)-a.get(k,0)) for k in fields),flush=True)
+          print(role+'_no_packet_payload_persisted=true',flush=True)
+          PY
+          done
