@@ -1,0 +1,30 @@
+name: Threads one-host feed API additive offline review
+on:
+  push:
+    branches: [diagnostics/threads-only-guarded-retest-20261110]
+    paths: [.github/workflows/threads-shared-api-offline-review-20261110.yml]
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test strict one-host i.instagram.com additive patch and QUIC regression
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-threads-api-add-20261110.py
+          python3 scripts/mnebydns-threads-api-add-20261110.py self-test
+          python3 scripts/mnebydns-threads-only-render-20261110.py self-test
+          python3 scripts/test-mnebydns-meta-quic.py
+          python3 - <<'PY'
+          from pathlib import Path
+          source=Path('scripts/mnebydns-threads-api-add-20261110.py').read_text()
+          assert "HOST=\"i.instagram.com\"" in source
+          assert 'MNEBYDNS_THREADS_SHARED_API_I_20261110' in source
+          assert 'for record in ("A","AAAA","HTTPS","SVCB","CNAME")' in source
+          assert 'render_nginx' in source and 'render_dns' in source
+          assert 'render_dns(d)' in source # refuses second patch
+          print('threads_one_shared_Instagram_API_only_regression=PASS')
+          PY
