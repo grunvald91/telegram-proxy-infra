@@ -10,6 +10,7 @@ on:
       - 'scripts/tests/test_mnebydns_ig_sni_443_fragment_worker.py'
       - 'scripts/tests/test_mnebydns_ig_sni_443_field_canary.py'
       - 'scripts/tests/integration_mnebydns_ig_sni_443_firewall_netns.sh'
+      - 'scripts/tests/integration_mnebydns_ig_sni_443_onwire_netns.sh'
   pull_request:
     paths:
       - '.github/workflows/mnebydns-instagram-sni-443-frag-offline.yml'
@@ -18,6 +19,7 @@ on:
       - 'scripts/tests/test_mnebydns_ig_sni_443_fragment_worker.py'
       - 'scripts/tests/test_mnebydns_ig_sni_443_field_canary.py'
       - 'scripts/tests/integration_mnebydns_ig_sni_443_firewall_netns.sh'
+      - 'scripts/tests/integration_mnebydns_ig_sni_443_onwire_netns.sh'
 permissions:
   contents: read
 jobs:
@@ -46,7 +48,7 @@ jobs:
           echo 'original_18443_regression=PASS'
   kernel-netns-firewall:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
         with:
@@ -54,9 +56,11 @@ jobs:
       - name: Prepare isolated kernel test tools
         run: |
           sudo apt-get update -qq
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq iproute2 nftables iptables
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq iproute2 nftables iptables tcpdump ethtool libnetfilter-queue1
       - name: Test exact Android TCP443 nft and iptables rules in disposable namespace
         run: sudo bash scripts/tests/integration_mnebydns_ig_sni_443_firewall_netns.sh
+      - name: Real encrypted ClientHello on 443 - verify SYNACK window and packet checksum
+        run: sudo bash scripts/tests/integration_mnebydns_ig_sni_443_onwire_netns.sh
   public-network-readonly:
     runs-on: ubuntu-latest
     timeout-minutes: 5
