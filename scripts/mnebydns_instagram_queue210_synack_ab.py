@@ -118,7 +118,7 @@ def make_rule(peer: str, tag: str) -> str:
         f'insert rule inet telegram_nfqws post '
         f'ip saddr {SERVER} ip daddr {peer} '
         'tcp sport 443 tcp flags & (syn | ack) == (syn | ack) '
-        f'counter return comment "{tag}"\\n'
+        f'counter return comment "{tag}"\n'
     )
 
 
