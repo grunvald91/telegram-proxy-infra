@@ -1,0 +1,57 @@
+name: MNEBYDNS Meta aborted public-SNI test per-hop counters read-only
+on:
+  push:
+    branches: [diagnostics/mnebydns-meta-rootcause-20261109]
+    paths: [.github/workflows/mnebydns-meta-public-sni-abort-counters-20261110.yml]
+permissions:
+  contents: read
+jobs:
+  gather:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Read only numeric stage counters from aborted external test on both hosts
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS" && test -n "$RU_PASS"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass
+          for role in ru de; do
+            if [[ $role == ru ]]; then
+              export SSHPASS="$RU_PASS"; target=188.120.254.223
+            else
+              export SSHPASS="$DE_PASS"; target=89.125.90.101
+            fi
+            sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o LogLevel=ERROR root@"$target" "python3 - '$role'" <<'PY'
+          import subprocess,re,sys,collections
+          role=sys.argv[1]
+          runid='42794751071'
+          u=f'mnebydns-meta-observe-{role}-{runid}.service'
+          def j(args):
+              p=subprocess.run(['journalctl',*args,'--since','2026-11-10 09:55:20 UTC','--until','2026-11-10 09:57:00 UTC','--no-pager','-o','cat'],capture_output=True,text=True,timeout=12)
+              return p.stdout.splitlines()
+          rows=j(['-u',u])
+          print(role+'_observer_logrows='+str(len(rows)),flush=True)
+          for mark in ('WINDOW','FINAL'):
+              lines=[s for s in rows if s.startswith('meta_stage_'+role+'_'+mark+'_')]
+              print(role+'_observer_'+mark+'_samples='+str(len(lines)),flush=True)
+              if lines:
+                  fields=re.findall(r'\bmeta_stage_'+role+'_'+mark+r'_([a-z_]+)=(\d+)',lines[-1])
+                  for k,v in fields:print(role+'_observer_'+mark+'_'+k+'='+v,flush=True)
+          if role=='de':
+              unit=f'mnebydns-meta-pilot-{runid}.service'
+              lines=j(['-u',unit])
+              syslog=j(['-t','mnebydns_meta'])
+              allrows=[x for x in lines+syslog if x.startswith('META_DE ')]
+              # Avoid double-count when syslog records are also in the unit journal.
+              uniq=list(dict.fromkeys(allrows))
+              print('de_meta_stream_aggregate_session_samples='+str(len(uniq)),flush=True)
+              print('de_meta_stream_sessions_with_origin_reply='+str(sum(re.search(r'\brecv_from_origin=[1-9]',x) is not None for x in uniq)),flush=True)
+              print('de_meta_stream_sessions_with_no_origin_reply='+str(sum(re.search(r'\brecv_from_origin=(?:0|-)\b?',x) is not None for x in uniq)),flush=True)
+          print(role+'_archived_stage_counters_only_no_payload_or_IP=true',flush=True)
+          PY
+          done
