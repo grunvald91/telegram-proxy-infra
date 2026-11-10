@@ -479,6 +479,78 @@ def cancel_canary(item,expired=False):
     print("owner_domain_rollback_completed=true",flush=True)
 
 
+
+def active_health():
+    """Inspect one ACTIVE row per idle cycle; never change a working route.
+
+    The upstream can change after confirmation. Keep the pinned IP until an
+    explicit, separately reviewed owner canary. Surface a health error in
+    Telegram rather than silently replacing the address.
+    """
+    if not live_checkpoint_unchanged():
+        print("owner_domain_active_audit_deferred_checkpoint_drift=true",flush=True)
+        return
+    raw=sql("SELECT id||'|'||domain||'|'||coalesce(verified_origin_ip::text,'')||'|'||"
+            "revision FROM dns_admin_domains WHERE status='ACTIVE' ORDER BY id")
+    entries=[line.split("|") for line in raw.splitlines() if line.strip()]
+    if not entries:
+        print("owner_domain_no_active_owner_routes=true",flush=True)
+        return
+    if len(entries)>500 or any(len(e)!=4 for e in entries):
+        raise RuntimeError("Invalid ACTIVE domain health queue")
+    # Across five-minute scheduler ticks this checks each active entry in turn.
+    idx=int(time.time()//300)%len(entries)
+    id,domain,ip,rev=entries[idx]
+    if not re.fullmatch(r"[1-9][0-9]{0,14}",id) or \
+       not re.fullmatch(r"[1-9][0-9]{0,14}",rev):
+        raise RuntimeError("Invalid ACTIVE row identifier")
+    domain=_render.validate_domain(domain)
+    try:
+        _render.validated_public_ip(ip)
+        tag=_render.mark(domain)
+        probe=(
+            "set -Eeuo pipefail; "
+            "root=$(cat /opt/mnebydns-stable-checkpoints/current); "
+            "(cd \"$root\" && sha256sum -c stable-manifest.sha256 >/dev/null); "
+            "cmp -s \"$root/dns.stable\" /opt/mnebydns-dot/Corefile; "
+            "cmp -s \"$root/nginx.stable\" /etc/nginx/nginx.conf; "
+            "grep -Fq -- "+shlex.quote(tag)+" /opt/mnebydns-dot/Corefile; "
+            "grep -Fq -- "+shlex.quote(tag)+" /etc/nginx/nginx.conf; "
+            "grep -Fq -- "+shlex.quote(domain+" "+ip+":443;")+
+                " /etc/nginx/nginx.conf; "
+            "nginx -t >/dev/null 2>&1; "
+            "systemctl is-active --quiet nginx; "
+            "systemctl is-active --quiet mnebydns-dot.service; "
+            "echo ACTIVE_PINNED_ROUTE_VERIFIED"
+        )
+        if ssh("de",probe,40).strip()!="ACTIVE_PINNED_ROUTE_VERIFIED":
+            raise RuntimeError("ACTIVE_CHECKPOINT_ROUTE_MISMATCH")
+        # Both origin IP and end-to-end SNI must validate TLS independently.
+        origin_py=("import ssl,socket,sys;"
+                   "s=socket.create_connection((sys.argv[2],443),timeout=8);"
+                   "s.settimeout(8);"
+                   "ssl.create_default_context().wrap_socket(s,server_hostname=sys.argv[1]).close();"
+                   "print('ACTIVE_PINNED_ORIGIN_TLS_OK')")
+        result=ssh("de","python3 -c "+shlex.quote(origin_py)+" "+
+                   shlex.quote(domain)+" "+shlex.quote(ip),30)
+        if "ACTIVE_PINNED_ORIGIN_TLS_OK" not in result:
+            raise RuntimeError("ACTIVE_ORIGIN_TLS_FAILED")
+        oracle_canary_check(domain,True)
+        tls_public_route(domain)
+    except Exception as exc:
+        # Set only an error indicator. Never mutate live CoreDNS, Nginx or
+        # existing upstream. The owner must approve any future remediation.
+        sql("UPDATE dns_admin_domains SET last_error_code='ACTIVE_ROUTE_CHECK_FAILED'"
+            " WHERE id="+id+" AND revision="+rev+" AND status='ACTIVE'")
+        print("owner_domain_ACTIVE_health_alert="+domain+
+              " error_class="+type(exc).__name__,flush=True)
+        return
+    sql("UPDATE dns_admin_domains SET last_error_code=NULL"
+        " WHERE id="+id+" AND revision="+rev+" AND status='ACTIVE'"
+        " AND last_error_code='ACTIVE_ROUTE_CHECK_FAILED'")
+    print("owner_domain_ACTIVE_health_verified="+domain,flush=True)
+
+
 def main():
     if len(sys.argv)==2 and sys.argv[1]=="self-test":
         assert _render.validate_domain("oracle.com")=="oracle.com"
@@ -491,6 +563,7 @@ def main():
     item=get_task()
     if not item:
         print("owner_domain_queue_empty=true",flush=True)
+        active_health()
         return
     status=item["status"]
     print("owner_domain_queue_action="+status,flush=True)
