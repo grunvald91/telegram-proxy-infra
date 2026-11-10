@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Release 2026-11-10: real globe image (no wireframe) and visual QA on 360x740, 390x844, 1440x900. MNEBYVPN main a3b439454ab27c0c33079d848efc39a5671a77c0, CI 42812596643, browser QA 42812212367. Web assets only; preserve VPN/DNS/checkout.
 # Release 2026-11-09: tested globe storefront and email-first 24h trial source 53a6cab2d67743957f2d3c74fecac1a0e1d7b0cb after green CI 42607480711 and screenshot QA 42607233826. No deploy logic or VPN/DNS/payments changes.
 # Release 2026-11-09: compact neon storefront visual QA at 360x740, 390x844, 1440x900; source 4e264f097ead5899cf52b0961aed4db06e1399e1, green main CI 42552734811. Website-only, preserve VPN/DNS/payment state.
 # Release request 2026-11-09: publish tested compact website source aa5ba3e121d6183d918040a903213e272e2ce5f0 after green CI 42545724393. No deployment logic changes.
