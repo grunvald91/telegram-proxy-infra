@@ -96,6 +96,7 @@ class ScopedAndroidCanary(unittest.TestCase):
         RU=canary.RU
         obs.observe(wire(PEER,RU,55011,443,0x02))
         obs.observe(wire(RU,PEER,443,55011,0x12))
+        obs.observe(wire(RU,PEER,443,55011,0x18,b"hidden encrypted server data"))
         obs.observe(wire(PEER,RU,55011,443,0x18,b"1234"))
         obs.observe(wire(PEER,RU,55011,443,0x18,b"second data"))
         obs.observe(wire(PEER,RU,55012,443,0x18,b"long ClientHello"))
@@ -110,6 +111,8 @@ class ScopedAndroidCanary(unittest.TestCase):
         self.assertNotIn("55011",output.getvalue())
         self.assertNotIn("second data",output.getvalue())
         self.assertIn("ig443_phone_first_data_4bytes=1",output.getvalue())
+        self.assertIn("ig443_phone_server_data_packets=1",output.getvalue())
+        self.assertNotIn("hidden encrypted server data",output.getvalue())
 
     def test_rollback_script_stdlib_only_imports(self):
         source=(BASE/"mnebydns_ig_sni_443_field_canary.py").read_text()
