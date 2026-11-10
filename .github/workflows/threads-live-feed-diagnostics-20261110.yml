@@ -1,0 +1,69 @@
+name: Threads live feed stalled read-only packet and TLS diagnostics
+on:
+  push:
+    branches: [diagnostics/threads-only-guarded-retest-20261110]
+    paths: [.github/workflows/threads-live-feed-diagnostics-20261110.yml]
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Read only Threads pilot state, traffic counts, SNI map and external TCP fallback
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          for role in ru de; do
+            if [[ "$role" == ru ]]; then export SSHPASS="$RU_PASS"; ip=188.120.254.223;
+            else export SSHPASS="$DE_PASS"; ip=89.125.90.101; fi
+            sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new "root@$ip" "python3 - '$role'" <<'PY'
+          import subprocess,sys,re,pathlib,ssl,socket,concurrent.futures
+          role=sys.argv[1]; rid='42801877302'
+          def run(*cmd,timeout=12):
+              try:return subprocess.run(cmd,text=True,capture_output=True,timeout=timeout)
+              except Exception:return None
+          print(role+'_diag_readonly=true',flush=True)
+          for u in (f'mnebydns-meta-quic-{role}-{rid}.service', f'mnebydns-meta-quic-{role}-{rid}-rollback.timer'):
+              p=run('systemctl','is-active',u)
+              print(role+'_unit_'+u.replace('.','_')+'_status='+((p.stdout or '').strip() if p else 'unknown'),flush=True)
+          if role=='de':
+              unit=f'mnebydns-threads-rollback-{rid}.timer'
+              p=run('systemctl','is-active',unit)
+              print('de_threads_DNS_rollback_timer_status='+((p.stdout or '').strip() if p else 'unknown'),flush=True)
+              p=run('cmp','-s','/opt/mnebydns-dot/Corefile',f'/opt/mnebydns-threads-canary/{rid}/dns.pilot')
+              print('de_threads_DNS_pilot_currently_active='+str(bool(p and p.returncode==0)).lower(),flush=True)
+          else:
+              cfg=pathlib.Path('/etc/nginx/streams.d/01-mtproxy-443.conf')
+              txt=cfg.read_text() if cfg.is_file() else ''
+              print('ru_explicit_www_threads_sni_rule='+str(bool(re.search(r'(?im)^\\s*(?:www[.]threads[.]com|~\\*.*threads)',txt))).lower(),flush=True)
+              print('ru_public_port443_stream_config_present='+str(bool(txt)).lower(),flush=True)
+          p=run('ss','-H','-lnt','sport = :443')
+          ports=(p.stdout or '').splitlines() if p else []
+          print(role+'_tcp443_listeners='+str(len(ports)),flush=True)
+          print(role+'_tcp443_any_OR_wireguard_bind='+str(any('0.0.0.0:443' in x or '10.66.77.1:443' in x for x in ports)).lower(),flush=True)
+          p=run('journalctl','-u',f'mnebydns-meta-quic-{role}-{rid}.service','--since','2026-11-10 10:45:00 UTC','--no-pager','-o','cat')
+          recs=[x for x in (p.stdout or '').splitlines() if x.startswith('meta_quic_'+role+'_active=')] if p else []
+          print(role+'_quic_counter_samples='+str(len(recs)),flush=True)
+          if recs:
+              for field,val in re.findall(r'([a-z_]+)=(\\d+)',recs[-1]):
+                  if field in {'active','admitted','rejected','expired','resolve_error','rx','to_upstream','upstream_rx','client_tx','oversize','undersize','peer_drop','overflow','socket_error','emsgsize'}:
+                      print(role+'_quic_last_'+field+'='+val,flush=True)
+          def tls(target,host):
+              try:
+                  with socket.create_connection((target,443),timeout=5) as sock:
+                      sock.settimeout(5)
+                      with ssl.create_default_context().wrap_socket(sock,server_hostname=host) as wrapped:
+                          return host,'certificate_verified'
+              except Exception as e:return host,type(e).__name__
+          tests=[('89.125.90.101','www.threads.com'),('188.120.254.223','www.threads.com'),('89.125.90.101','threads.com')]
+          with concurrent.futures.ThreadPoolExecutor(max_workers=3) as ex:
+              for (target,host),(h,outcome) in zip(tests,ex.map(lambda v:tls(*v),tests)):
+                  print(role+'_from_'+('RU' if target.startswith('188') else 'DE')+'_public_TLS_'+host+'='+outcome,flush=True)
+          print(role+'_READONLY_COMPLETE=true',flush=True)
+          PY
+          done
