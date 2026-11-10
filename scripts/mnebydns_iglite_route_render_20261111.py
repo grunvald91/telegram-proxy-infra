@@ -7,6 +7,7 @@ constraints. The result is a PILOT ONLY; never write live config here.
 from __future__ import annotations
 import argparse
 import importlib.util
+import re
 from pathlib import Path
 import sys
 
@@ -29,7 +30,7 @@ def render(core:str, nginx:str) -> tuple[str,str]:
     n=m.nginx_add(nginx,HOST,META_ORIGIN)
     if m.core_remove(c,HOST)!=core or m.nginx_remove(n,HOST)!=nginx:
         raise AssertionError("Exact-host renderer did not roundtrip cleanly")
-    if c.count("match ^iglite-z[.]instagram[.]com[.]$")!=5:
+    if c.count("match ^"+re.escape(HOST).replace(r"\.", "[.]")+r"[.]$")!=5:
         raise AssertionError("Must match exactly five DNS response types")
     if n.count("        "+HOST+" "+META_ORIGIN+":443;")!=1:
         raise AssertionError("Expected only one exact-host Nginx SNI route")
