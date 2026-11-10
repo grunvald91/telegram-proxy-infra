@@ -1,0 +1,71 @@
+name: "MNEBYDNS: owner-approved Antigravity live activation (12 exact hosts)"
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - ".github/workflows/mnebydns-antigravity-live-20261110.yml"
+      - "scripts/mnebydns-antigravity-owner-live-activate-20261110.py"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/mnebydns-antigravity-live-20261110.yml"
+      - "scripts/mnebydns-antigravity-owner-live-activate-20261110.py"
+
+permissions:
+  contents: read
+concurrency:
+  # Same exclusive lock as the production owner-domain reconciler.
+  group: mnebydns-google-public-443-change
+  cancel-in-progress: false
+
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Run owner domain controller and Antigravity exact-host validation
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-antigravity-owner-live-activate-20261110.py \
+            scripts/mnebydns-owner-domain-controller-20261110.py \
+            scripts/mnebydns-owner-domain-render-20261110.py
+          python3 scripts/mnebydns-owner-domain-render-20261110.py self-test
+          python3 scripts/mnebydns-owner-domain-controller-20261110.py self-test
+          python3 scripts/mnebydns-antigravity-owner-live-activate-20261110.py self-test
+          python3 -m unittest discover -s scripts/tests -p 'test_owner_domain_*.py' -v
+          test "$(grep -c ' ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts)" -eq 2
+          ! grep -Eq 'accept-new|StrictHostKeyChecking=no' scripts/mnebydns-owner-domain-controller-20261110.py
+          bash -n scripts/mnebydns-owner-domain-stage-20261110.sh \
+            scripts/mnebydns-owner-domain-rollback-20261110.sh \
+            scripts/mnebydns-owner-domain-confirm-20261110.sh
+          echo 'antigravity_owner_live_offline_gate=PASS'
+  live:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: offline
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Guard credentials and install SSH password client
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass >/dev/null
+          echo 'antigravity_owner_live_credentials_present=true'
+      - name: Sequential verified Antigravity production activation with independent rollback
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/mnebydns-antigravity-owner-live-activate-20261110.py run
