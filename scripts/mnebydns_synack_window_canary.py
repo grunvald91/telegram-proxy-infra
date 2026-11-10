@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
-"""Experimental IPv4 SYN-ACK receive-window clamp for an ALLOWLISTED test peer.
+"""Experimental SYN-ACK clamp for a SINGLE dedicated TCP test listener.
 
-NOT a production DPI solution. Only the SYN-ACK is changed; Linux's internal
-TCP control block is *not* changed. A later ACK may advertise a larger window
-and defeat the intended split. Do not modify TCP Window Scale negotiation.
+Not production Instagram bypass. Never touches shared HTTPS/443 or DNS.
 """
 from __future__ import annotations
 
@@ -13,6 +11,7 @@ import logging
 import struct
 
 LOG = logging.getLogger("mnebydns.synack")
+TEST_PORT = 18443
 
 
 def checksum(data: bytes) -> int:
@@ -25,14 +24,14 @@ def checksum(data: bytes) -> int:
 
 
 def clamp_synack(packet: bytes, *, server: str, client: str,
-                 port: int = 443, window: int = 4) -> bytes:
-    """Return a modified IPv4 SYN-ACK packet or identical bytes if out of scope.
+                 port: int = TEST_PORT, window: int = 4) -> bytes:
+    """Mutate only TCP window and TCP checksum in validated IPv4 test SYN-ACK.
 
-    Never changes payload, TCP options or the IPv4 checksum. Skips fragments,
-    malformed packets and anything outside the exact server/client/port tuple.
+    Preserves TCP Window Scale and all other TCP/IP options. The first client
+    data packet is NOT guaranteed to be 4 bytes: measure on the wire.
     """
-    if not 1 <= window <= 65535 or not 1 <= port <= 65535:
-        raise ValueError("Invalid TCP window/port")
+    if port != TEST_PORT or not 1 <= window <= 65535:
+        raise ValueError("Dedicated canary port 18443 and valid receive window required")
     if len(packet) < 40 or packet[0] >> 4 != 4:
         return packet
     ihl = (packet[0] & 0x0f) * 4
@@ -42,7 +41,7 @@ def clamp_synack(packet: bytes, *, server: str, client: str,
     if total_length != len(packet):
         return packet
     frag = struct.unpack_from("!H", packet, 6)[0]
-    if frag & 0x3fff:  # MF or nonzero fragment offset
+    if frag & 0x3fff:
         return packet
     if packet[12:16] != ipaddress.IPv4Address(server).packed:
         return packet
@@ -54,7 +53,8 @@ def clamp_synack(packet: bytes, *, server: str, client: str,
     tcp_hlen = (tcp[12] >> 4) * 4
     if tcp_hlen < 20 or tcp_hlen > len(tcp):
         return packet
-    if tcp[13] != 0x12 or len(tcp) != tcp_hlen:  # SYN|ACK, no data
+    if tcp[13] & 0x3f != 0x12 or len(tcp) != tcp_hlen:
+        # SYN|ACK with optional ECE/CWR for ECN; never RST/FIN/PSH/payload.
         return packet
     out = bytearray(packet)
     struct.pack_into("!H", out, ihl + 14, window)
@@ -67,53 +67,28 @@ def clamp_synack(packet: bytes, *, server: str, client: str,
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--server", default="188.120.254.223")
-    parser.add_argument("--client", required=True, help="Single TEST client public IPv4")
-    parser.add_argument("--port", type=int, default=443)
+    parser.add_argument("--client", required=True)
+    parser.add_argument("--port", type=int, default=TEST_PORT)
     parser.add_argument("--queue", type=int, default=211)
     parser.add_argument("--window", type=int, default=4)
+    parser.add_argument("--ready-file", required=True)
     args = parser.parse_args()
     for name in (args.server, args.client):
         ip = ipaddress.ip_address(name)
         if ip.version != 4 or not ip.is_global:
             parser.error("server/client must be public IPv4 addresses")
-    if args.server == args.client or not 1 <= args.port <= 65535 or not 1 <= args.window <= 65535:
-        parser.error("Invalid test tuple")
+    if args.server == args.client or args.port != TEST_PORT or not 1 <= args.window <= 65535:
+        parser.error("Only dedicated port 18443 is permitted; distinct peers required")
     if not 1 <= args.queue <= 65535:
         parser.error("Invalid NFQUEUE number")
-    try:
-        from netfilterqueue import NetfilterQueue
-    except ImportError as error:
-        parser.error("Install python3-netfilterqueue on the TEST host: " + str(error))
-
-    tally = {"changed": 0, "untouched": 0}
-
-    def handle(pkt):
-        try:
-            original = pkt.get_payload()
-            modified = clamp_synack(original, server=args.server, client=args.client,
-                                    port=args.port, window=args.window)
-            if modified != original:
-                pkt.set_payload(modified)
-                tally["changed"] += 1
-            else:
-                tally["untouched"] += 1
-        except Exception:
-            # Fail open on unexpected data; never stall unrelated connections.
-            tally["untouched"] += 1
-            LOG.exception("Failed to inspect one packet; passed unchanged")
-        finally:
-            pkt.accept()
-
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-    queue = NetfilterQueue()
-    queue.bind(args.queue, handle, max_len=256)
-    try:
-        LOG.info("CANARY ONLY: server=%s client=%s port=%s window=%s queue=%s",
-                 args.server, args.client, args.port, args.window, args.queue)
-        queue.run()
-    finally:
-        queue.unbind()
-        LOG.info("Changed SYN-ACK=%s untouched=%s", tally["changed"], tally["untouched"])
+    from mnebydns_nfq_failopen import run_queue
+    logging.basicConfig(level=logging.INFO)
+    LOG.info("Experimental queue: %s:%d -> %s window=%d",
+             args.server, args.port, args.client, args.window)
+    run_queue(args.queue,
+              lambda p: clamp_synack(p, server=args.server, client=args.client,
+                                     port=args.port, window=args.window),
+              ready_file=args.ready_file)
 
 
 if __name__ == "__main__":
