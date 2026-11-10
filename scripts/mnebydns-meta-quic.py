@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Isolated Threads-only QUIC v1 UDP relay through existing RU<->DE WireGuard.
+"""Isolated Meta-only QUIC v1 UDP relay through existing RU<->DE WireGuard.
 
 Roles:
   ru: public UDP/443 -> 10.66.77.1:19444 via dedicated per-flow sockets
@@ -28,9 +28,12 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 INITIAL_V1_SALT = bytes.fromhex("38762cf7f55934b34d179ae6a4c80cadccbb7f0a")
 META_SUFFIXES = (
-    "threads.com", "threads.net",
+    "instagram.com", "cdninstagram.com", "instagr.am", "ig.me",
+    "igsonar.com", "threads.com", "threads.net", "facebook.com",
+    "facebook.net", "fbcdn.net", "fbsbx.com", "fb.com", "meta.com",
+    "meta.ai", "instagramstatic.com", "igcdn.com", "fbcdn.com",
 )
-META_EXACT = frozenset(())
+META_EXACT = frozenset(("instagramstatic-a.akamaihd.net",))
 # QUIC datagrams larger than 1450 bytes (e.g. coalesced packets) are valid.
 # Do not silently discard server responses that exceed a typical initial MTU.
 MAX_DATAGRAM = 8192
@@ -152,7 +155,21 @@ def initial_sni(packet: bytes) -> Optional[str]:
         # PADDING (0x00) and CRYPTO (0x06) are sufficient for the observed PCAPs.
         while offset < len(plain):
             typ = plain[offset]; offset += 1
-            if typ == 0: continue
+            if typ == 0: continue  # PADDING
+            if typ == 1: continue  # PING (permitted in Initial per RFC 9000)
+            if typ in (2, 3):  # ACK / ACK_ECN, also valid in Initial
+                _, offset = varint(plain, offset)  # Largest Acknowledged
+                _, offset = varint(plain, offset)  # ACK Delay
+                ranges, offset = varint(plain, offset)
+                _, offset = varint(plain, offset)  # First ACK Range
+                if ranges > 64: return None  # Bound untrusted parsing work
+                for _ in range(ranges):
+                    _, offset = varint(plain, offset)  # Gap
+                    _, offset = varint(plain, offset)  # ACK Range
+                if typ == 3:
+                    for _ in range(3):
+                        _, offset = varint(plain, offset)  # ECN counts
+                continue
             if typ != 6: return None
             crypto_offset, offset = varint(plain, offset)
             length, offset = varint(plain, offset)
