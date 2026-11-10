@@ -4,7 +4,7 @@ set -Eeuo pipefail
 (( EUID==0 )) || exit 2
 [[ $# == 2 && "$1" =~ ^/tmp/mnebydns-threads-canary-[0-9]{9,13}$ ]] || exit 2
 work="$1"; deadline="$2"
-id="$(basename "$work" | cut -d- -f5)"
+id="$(basename "$work" | cut -d- -f4)"
 [[ "$id" =~ ^[0-9]{9,13}$ ]] || exit 2
 [[ "$deadline" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}[[:space:]][0-9]{2}:[0-9]{2}:[0-9]{2}[[:space:]]UTC$ ]] || exit 2
 now="$(date -u +%s)"
