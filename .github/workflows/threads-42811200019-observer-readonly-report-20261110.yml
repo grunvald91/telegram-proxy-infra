@@ -1,4 +1,4 @@
-name: Threads live TCP observer read-only aggregate report
+name: Threads live TCP observer read-only aggregate report after phone repeat
 on:
   push:
     branches: [diagnostics/threads-only-guarded-retest-20261110]
