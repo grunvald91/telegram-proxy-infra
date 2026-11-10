@@ -1,0 +1,70 @@
+name: "MNEBYDNS exact Oracle domain real-basis dry-run (read only)"
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - ".github/workflows/mnebydns-owner-oracle-dryrun-20261110.yml"
+      - "scripts/mnebydns-owner-domain-render-20261110.py"
+      - "scripts/mnebydns-owner-domain-stage-20261110.sh"
+      - "scripts/mnebydns-owner-domain-rollback-20261110.sh"
+permissions:
+  contents: read
+jobs:
+  dryrun:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Offline syntax and exact-route checks
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/mnebydns-owner-domain-render-20261110.py self-test
+          bash -n scripts/mnebydns-owner-domain-stage-20261110.sh scripts/mnebydns-owner-domain-rollback-20261110.sh
+          test -n "$DE_PASS"
+      - name: Validate pinned Oracle TLS and rendered Nginx config on live DE without applying
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          id="$GITHUB_RUN_ID"
+          [[ "$id" =~ ^[0-9]{9,13}$ ]]
+          tmp="/tmp/mnebydns-owner-dryrun-$id"
+          de() {
+            SSHPASS="$DE_PASS" sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@89.125.90.101 "$@"
+          }
+          trap 'de "rm -rf -- '$tmp'" || true' EXIT
+          de "test ! -e '$tmp' && mkdir -m 700 '$tmp'"
+          de "cat > '$tmp/renderer.py'" < scripts/mnebydns-owner-domain-render-20261110.py
+          de "bash -s '$tmp'" <<'SH'
+          set -Eeuo pipefail
+          tmp="$1"
+          echo 'owner_dns_checkpoint_entries_begin'
+          root="$(cat /opt/mnebydns-stable-checkpoints/current)"
+          (cd "$root" && sed -n 's/^[a-f0-9]\{64\}[[:space:]][ *]*//p' stable-manifest.sha256 | head -n 12)
+          echo 'owner_dns_checkpoint_entries_end'
+          for kind in dns nginx proxy; do
+            case "$kind" in
+              dns)live=/opt/mnebydns-dot/Corefile;;
+              nginx)live=/etc/nginx/nginx.conf;;
+              proxy)live=/etc/mnebydns-googlepilot/nginx.conf;;
+            esac
+            cmp -s "$root/$kind.stable" "$live"
+          done
+          echo 'owner_dns_stable_baseline_exact=true'
+          for domain in oracle.com www.oracle.com cloud.oracle.com; do
+            out="$tmp/$domain"
+            mkdir -m 700 "$out"
+            ip="$(python3 "$tmp/renderer.py" probe --domain "$domain")"
+            python3 "$tmp/renderer.py" render-add --domain "$domain" --ip "$ip" \
+              --core /opt/mnebydns-dot/Corefile --nginx /etc/nginx/nginx.conf --out "$out"
+            nginx -t -c "$out/nginx.pilot" >/dev/null 2>&1
+            echo "owner_dns_oracle_candidate=$domain"
+            echo "owner_dns_oracle_public_TLS_verified=true"
+            echo "owner_dns_oracle_nginx_candidate_valid=true"
+          done
+          echo 'owner_dns_dryrun_server_changes=false'
+          SH
