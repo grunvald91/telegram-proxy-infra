@@ -148,6 +148,8 @@ def nfqws_postrouting_audit():
             in_post=False
         if in_post and "hook postrouting" in line:
             print("telegram_post_hook_postrouting=true")
+            tm=re.search(r"\btype\s+(\w+)\s+hook\s+postrouting\b",line)
+            print("telegram_post_chain_type="+(tm.group(1) if tm else "unknown"))
             print("telegram_post_policy_accept="+str(bool(re.search(r"\bpolicy\s+accept\s*;",line))).lower())
             match=re.search(r"\bpriority\s+([^;]+)",line)
             print("telegram_post_priority="+(match.group(1).strip().split()[0] if match else "unknown"))
