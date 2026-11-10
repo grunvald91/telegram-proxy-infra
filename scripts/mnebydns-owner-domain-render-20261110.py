@@ -69,6 +69,105 @@ def _block_bounds(src: str, domain: str) -> tuple[str, str]:
     return "# BEGIN " + label + "\n", "# END " + label + "\n"
 
 
+
+def _assert_no_existing_core_route(source: str, domain: str) -> None:
+    """Reject overlap with CoreDNS templates, including regex in zone '.'.
+
+    This is deliberately conservative: an unparseable existing rule must not
+    be overridden on a shared production DNS server.
+    """
+    host = domain + "."
+    header = re.compile(
+        r"(?m)^[ \t]*template[ \t]+(IN|ANY)[ \t]+([A-Za-z]+)[ \t]+([^ \t\r\n{}]+)[ \t]*\{"
+    )
+    for item in header.finditer(source):
+        _, kind, zone = item.groups()
+        if kind.upper() not in (*KINDS, "ANY"):
+            continue
+        z = zone.rstrip(".").lower()
+        if z not in ("", domain) and not domain.endswith("." + z):
+            continue
+        # Find matching braces, including the doubled braces in Go templates.
+        depth = 1
+        pos = item.end()
+        while pos < len(source) and depth:
+            if source[pos] == "{":
+                depth += 1
+            elif source[pos] == "}":
+                depth -= 1
+            pos += 1
+        if depth:
+            raise ValueError("Unparseable existing CoreDNS template")
+        body = source[item.end():pos-1]
+        # CoreDNS template without match regex handles every name in zone.
+        matches = re.findall(r"(?m)(?:^|[ \t])match[ \t]+([^\r\n}]+)", body)
+        if not matches:
+            raise ValueError("Existing CoreDNS zone already owns hostname")
+        for raw in matches:
+            pattern = raw.strip()
+            if pattern.startswith('"') and pattern.endswith('"'):
+                pattern = pattern[1:-1]
+            elif " " in pattern or "\t" in pattern or '"' in pattern:
+                raise ValueError("Unparseable CoreDNS match regex")
+            try:
+                if re.search(pattern, host):
+                    raise ValueError("Existing CoreDNS template already covers hostname")
+            except re.error as e:
+                raise ValueError("Cannot prove existing CoreDNS regex does not overlap") from e
+    # Imports can contain hidden templates not visible in the candidate file.
+    if re.search(r"(?m)^[ \t]*import[ \t]+\S+", source):
+        raise ValueError("Unexpanded CoreDNS imports forbid owner route updates")
+
+
+def _assert_no_existing_nginx_route(source: str, domain: str) -> None:
+    """Inspect the effective SNI map, not just literal exact-host entries."""
+    if source.count(NGINX_ANCHOR) != 1:
+        raise ValueError("Unrecognized stream map")
+    start = source.index(NGINX_ANCHOR) + len(NGINX_ANCHOR)
+    closing = re.search(r"(?m)^[ \t]*}[ \t]*(?:#.*)?$", source[start:])
+    if not closing:
+        raise ValueError("Cannot locate Nginx SNI map closing brace")
+    section = source[start:start+closing.start()]
+    hostnames = bool(re.search(r"(?m)^[ \t]*hostnames[ \t]*;", section))
+    seen_default = False
+    for raw in section.splitlines():
+        stripped = raw.split("#", 1)[0].strip()
+        if not stripped:
+            continue
+        if stripped in ("hostnames;", "volatile;"):
+            continue
+        entry = re.fullmatch(r"(\S+)[ \t]+(.+);", stripped)
+        if not entry:
+            raise ValueError("Unknown Nginx SNI map entry")
+        key = entry.group(1)
+        if key == "default":
+            seen_default = True
+            continue
+        if key == "include":
+            raise ValueError("Nginx SNI map includes unknown routes")
+        if key.startswith("~*") or key.startswith("~"):
+            insensitive = key.startswith("~*")
+            pattern = key[2:] if insensitive else key[1:]
+            try:
+                if re.search(pattern, domain, re.I if insensitive else 0):
+                    raise ValueError("Existing regex SNI route covers hostname")
+            except re.error as e:
+                raise ValueError("Cannot prove Nginx regex does not overlap") from e
+        elif key.casefold() == domain.casefold():
+            raise ValueError("Existing exact SNI hostname route")
+        elif hostnames and key.startswith("*.") and domain.endswith(key[1:].lower()):
+            raise ValueError("Existing wildcard SNI route covers hostname")
+        elif hostnames and key.startswith(".") and (
+                domain == key[1:].lower() or domain.endswith(key.lower())):
+            raise ValueError("Existing wildcard SNI route covers hostname")
+        elif hostnames and key.endswith(".*") and domain.startswith(key[:-1].lower()):
+            raise ValueError("Existing wildcard SNI route covers hostname")
+        elif "*" in key:
+            raise ValueError("Unknown Nginx wildcard SNI routing")
+    if not seen_default:
+        raise ValueError("SNI map default route missing")
+
+
 def core_add(stable: str, domain: str) -> str:
     validate_domain(domain)
     begin, end = _block_bounds(stable, domain)
@@ -76,10 +175,7 @@ def core_add(stable: str, domain: str) -> str:
         raise ValueError("Already has owner domain route")
     if stable.count(CACHE_ANCHOR) != 1 or "template IN A gemini.google.com {" not in stable:
         raise ValueError("Unrecognized CoreDNS stable baseline")
-    # Fail closed if a native named template already owns this host.
-    if re.search(r"(?m)^\s*template IN (?:A|AAAA|HTTPS|SVCB|CNAME)\s+"+
-                 re.escape(domain)+r"\s*\{", stable):
-        raise ValueError("Host already exists in CoreDNS rules")
+    _assert_no_existing_core_route(stable, domain)
     hostname = re.escape(domain).replace(r"\.", "[.]")
     prefix = begin + "    # Owner-only exact domain, independent public TLS ingress\n"
     for kind in KINDS:
@@ -105,19 +201,10 @@ def nginx_add(stable: str, domain: str, ip: str) -> str:
     begin, end = _block_bounds(stable, domain)
     if begin in stable or end in stable:
         raise ValueError("Already has Nginx owner domain route")
-    if stable.count(NGINX_ANCHOR) != 1:
-        raise ValueError("Unrecognized stream map")
     if not re.search(r"\bproxy_pass\s+\$direct_mtproxy_backend\s*;", stable):
         raise ValueError("Expected SNI router is absent")
+    _assert_no_existing_nginx_route(stable, domain)
     start = stable.index(NGINX_ANCHOR)+len(NGINX_ANCHOR)
-    stop = stable.find("}", start)
-    if stop < 0:
-        raise ValueError("Missing map closing brace")
-    section = stable[start:stop]
-    if not re.search(r"(?m)^\s*default\s+\S+;", section):
-        raise ValueError("No default backend to preserve")
-    if re.search(r"(?m)^\s*"+re.escape(domain)+r"\s+\S+;", section, re.I):
-        raise ValueError("Preexisting exact SNI route")
     # PIN origin to an independently verified public IP. Never forward
     # arbitrary client SNI through DNS resolution or a wildcard open proxy.
     block = "\n        "+begin+"        "+domain+" "+ip+":443;\n        "+end
