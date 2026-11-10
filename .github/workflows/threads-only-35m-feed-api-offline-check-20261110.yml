@@ -1,4 +1,4 @@
-name: Threads full feed canary exact-host and rollback offline review
+name: Threads captured four SNI host pilot full offline review
 on:
   push:
     branches: [diagnostics/threads-only-guarded-retest-20261110]
@@ -27,14 +27,19 @@ jobs:
           raw=p.read_text()
           cfg=yaml.safe_load(raw)
           trigger=cfg.get('on',cfg.get(True))
-          assert trigger['push']['paths']==['ops/threads-only-feed-arm-20261110.txt']
+          assert trigger['push']['paths']==['ops/threads-observed-four-hosts-arm-20261110.txt']
           assert "date -u -d '+35 minutes'" in raw
           assert "mnebydns-threads-api-live-stage-20261110.sh" in raw
           assert "mnebydns-threads-api-add-20261110.py" in raw
-          assert "threads_shared_feed_API_i_instagram_com_DoT=PASS" in raw
-          assert "threads_shared_API_i_instagram_com_private_WG_TLS=PASS" in raw
+          assert "threads_shared_four_feed_hosts_DoT=PASS" in raw
+          assert "threads_shared_four_feed_hosts_private_WG_TLS=PASS" in raw
           assert "excluded=['graph.instagram.com','www.instagram.com','api.telegram.org']" in raw
-          assert "threads_other_instagram_domains_unmodified=true" in raw
+          assert "threads_other_Meta_domains_unmodified=true" in raw
+          for host in ('i.instagram.com','i-fallback.instagram.com','test-gateway.instagram.com','z-m-gateway.facebook.com'):
+              assert host in raw
+          hostsrc=Path('scripts/mnebydns-threads-api-add-20261110.py').read_text()
+          assert 'MNEBYDNS_THREADS_SHARED_API_OBSERVED_FOUR_20261110' in hostsrc
+          assert 'if host in src or host.replace' in hostsrc
           assert "threads_combined_DNS_and_QUIC_test=PASS" in raw
           assert "threads_known_www_threads_com_SNI_filtering_unresolved=" in raw
           assert raw.count("mnebydns-meta-quic-ru-$id") >= 3
