@@ -212,6 +212,66 @@ production firewall change without testing other ingress and egress
 paths. Verify after-test stable services, existing queue-210 service,
 and permanent absence of experimental rules.
 
+## Experimental persistent fix: optional per-peer SYN-ACK guard (not deployed)
+
+**Rationale:** the preserved RU generator
+`legacy-mtproxy/live-snapshot/server188/usr/local/sbin/telegram-nfqws-rules`
+executes `nft delete table inet telegram_nfqws` and then recreates the
+`post` chain and its NFQUEUE 210 rule. A manually inserted A/B rule
+would therefore disappear when `telegram-nfqws.service` reapplies the
+generator (its `ExecStartPost`).
+
+New offline renderer: `scripts/mnebydns_nfqws_synack_guard_render.py`.
+It accepts only the known generator shape and leaves all original rules
+intact. It inserts an **opt-in** rule before the existing NFQUEUE 210 rule,
+which matches all of the original critical predicates and additionally
+requires exact RU source IPv4, an explicitly enrolled destination peer
+IPv4 and `SYN|ACK` TCP flags. The exemption returns from the current
+postrouting base chain (policy ACCEPT) rather than sending the packet to
+userspace. It cannot be used to match an Instagram SNI, as SYN-ACK precedes
+ClientHello.
+
+Enrolment uses **one** root-owned regular file:
+`/etc/mnebydns/telegram-synack-canary-ipv4`. The generator validates
+that it contains one global IPv4 address, is not a symlink and is not
+group/world writable **before** it deletes/recreates any nft table.
+With no file present, its behavior is identical to the original
+generator. Rendering alone writes no server files or rules.
+
+Safe offline check from the PR branch:
+
+```sh
+python3 scripts/mnebydns_nfqws_synack_guard_render.py --check \
+    legacy-mtproxy/live-snapshot/server188/usr/local/sbin/telegram-nfqws-rules
+python3 -m unittest discover -s scripts/tests -p 'test_mnebydns*.py' -v
+sudo bash scripts/tests/integration_mnebydns_nfqws_guard_restart_netns.sh
+sudo bash scripts/tests/integration_mnebydns_nfqws_guard_real_tcp_netns.sh
+```
+
+Validated with real Linux nftables in isolated network namespaces:
+- A service-style `apply` recreates the bypass ahead of queue 210
+- Missing enrolment file recreates only the original NFQUEUE 210 rule
+- Malformed, symlink or group/world-writable enrolment files refuse
+  changes **before** the existing table is deleted
+- Genuine TCP SYN-ACK from the allowed peer matched the exemption
+  (**one packet**) and the connection succeeded
+- A second, unlisted peer also connected, without incrementing the
+  exemption counter
+
+Evidence: [GitHub Actions #42884179798](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/42884179798)
+and its later hardening runs.
+
+**Not yet done:** confirm the exact current installed
+`/usr/local/sbin/telegram-nfqws-rules` contents/sha256 against the
+preserved source, review its runtime nfqws flags (which may intentionally
+process SYN-ACK), install this opt-in generator on RU, or validate
+Telegram under real subscriber traffic after a controlled service
+restart. The attempted extension of the pinned-SSH audit workflow for
+live generator fingerprinting was blocked by tool safety checks; the
+block has not been bypassed. Do not merge this experimental PR or apply
+the generator from the repository snapshot without the live comparison,
+a verified original-file rollback and a maintenance window.
+
 ## Owner-approved A/B experiment — queue 210 SYN-ACK bypass
 
 The active RU service `telegram-nfqws.service` uses `inet telegram_nfqws`,
