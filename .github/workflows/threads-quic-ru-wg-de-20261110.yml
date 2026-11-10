@@ -1,0 +1,83 @@
+name: Threads QUIC public RU to private WG DE: guarded 18m live relay
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths: [.github/workflows/threads-quic-ru-wg-de-20261110.yml]
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-google-public-443-change
+  cancel-in-progress: false
+jobs:
+  bridge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Offline strict Threads allowlist and UDP roundtrip preflight
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-meta-quic.py
+          python3 scripts/test-mnebydns-meta-quic.py
+          bash -n scripts/mnebydns-meta-quic-stage.sh scripts/mnebydns-meta-quic-rollback.sh
+          test -n "$DE_PASS" && test -n "$RU_PASS"
+          echo 'threads_quic_allowlist_and_regression=PASS'
+      - name: Start only two QUIC services with independent watchdogs and verify real H3 via public RU
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass >/dev/null
+          id="$GITHUB_RUN_ID"
+          [[ "$id" =~ ^[0-9]{9,13}$ ]]
+          deadline="$(date -u -d '+18 minutes' +'%Y-%m-%d %H:%M:%S UTC')"
+          work="/tmp/mnebydns-meta-quic-$id"
+          base="/opt/mnebydns-meta-quic-$id"
+          de_ssh() {
+            SSHPASS="$DE_PASS" sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@89.125.90.101 "$@"
+          }
+          ru_ssh() {
+            SSHPASS="$RU_PASS" sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@188.120.254.223 "$@"
+          }
+          cleanup() {
+            code=$?
+            trap - EXIT
+            if (( code!=0 )); then
+              echo 'threads_quic_failure_rollback_requested=true'
+              ru_ssh "test ! -s '$base/rollback.sh' || bash '$base/rollback.sh' ru '$id'" || echo 'threads_quic_ru_rollback_unverified=true'
+              de_ssh "test ! -s '$base/rollback.sh' || bash '$base/rollback.sh' de '$id'" || echo 'threads_quic_de_rollback_unverified=true'
+            fi
+            exit "$code"
+          }
+          trap cleanup EXIT
+          de_ssh "test ! -e '$work' && mkdir -m 700 '$work'"
+          tar -czf - -C scripts mnebydns-meta-quic.py mnebydns-meta-quic-stage.sh mnebydns-meta-quic-rollback.sh test-mnebydns-meta-quic.py threads-h3-via-ru-20261110.py |
+            de_ssh "tar -xzf - -C '$work'"
+          ru_ssh "test ! -e '$work' && mkdir -m 700 '$work'"
+          tar -czf - -C scripts mnebydns-meta-quic.py mnebydns-meta-quic-stage.sh mnebydns-meta-quic-rollback.sh test-mnebydns-meta-quic.py |
+            ru_ssh "tar -xzf - -C '$work'"
+          # DE private first, RU public second. Start watchdogs before listeners.
+          de_ssh "bash '$work/mnebydns-meta-quic-stage.sh' de '$id' '$deadline'"
+          ru_ssh "bash '$work/mnebydns-meta-quic-stage.sh' ru '$id' '$deadline'"
+          de_ssh "systemctl is-active --quiet 'mnebydns-meta-quic-de-$id.service' && systemctl is-active --quiet 'mnebydns-meta-quic-de-$id-rollback.timer'"
+          ru_ssh "systemctl is-active --quiet 'mnebydns-meta-quic-ru-$id.service' && systemctl is-active --quiet 'mnebydns-meta-quic-ru-$id-rollback.timer'"
+          echo 'threads_quic_ru_de_guarded_listeners=PASS'
+          # On DE, no pip installed. Bootstrap pip wheel into the temporary work dir only.
+          python3 -m pip download --disable-pip-version-check --quiet --no-deps --dest "$RUNNER_TEMP" pip==24.3.1
+          wheel="$RUNNER_TEMP/pip-24.3.1-py3-none-any.whl"
+          test -s "$wheel"
+          de_ssh "cat > '$work/pip.whl'" < "$wheel"
+          de_ssh "PYTHONPATH='$work/pip.whl' python3 -m pip install --disable-pip-version-check --no-cache-dir --no-input --quiet --target '$work/deps' aioquic==1.2.0"
+          de_ssh "THREADS_H3_VIA=188.120.254.223 PYTHONPATH='$work/deps' timeout 25s python3 '$work/threads-h3-via-ru-20261110.py'" | tee "$RUNNER_TEMP/h3-via-ru.log"
+          grep -Fq 'h3_www.threads.com_HTTP3_response=true' "$RUNNER_TEMP/h3-via-ru.log"
+          grep -Fq 'h3_www.threads.com_QUIC_TLS_verified=true' "$RUNNER_TEMP/h3-via-ru.log"
+          echo 'threads_quic_public_RU_WG_DE_origin_H3_verified=true'
+          echo "threads_quic_rollback_deadline_UTC=$deadline"
+          echo 'threads_quic_no_DNS_TCP_VPN_firewall_changes=true'
+          echo 'threads_quic_DNS_remains_unmodified_app_not_yet_tested=true'
+          trap - EXIT
