@@ -92,5 +92,39 @@ class OwnerDomainConfirmContracts(TestCase):
         self.assertIn('bash "$base/confirm.sh" "$base"', command)
 
 
+class OwnerDomainInterruptedStageContracts(TestCase):
+    def test_missing_rollback_script_is_safe_only_when_live_baseline_is_unchanged(self):
+        with patch.object(owner, "rollback", side_effect=RuntimeError("missing")), \
+             patch.object(owner, "live_checkpoint_unchanged", return_value=True):
+            owner.rollback_or_unchanged("42808637895")
+
+    def test_missing_rollback_script_with_live_drift_is_not_accepted(self):
+        with patch.object(owner, "rollback", side_effect=RuntimeError("missing")), \
+             patch.object(owner, "live_checkpoint_unchanged", return_value=False):
+            with self.assertRaisesRegex(RuntimeError, "ROLLBACK_UNVERIFIED"):
+                owner.rollback_or_unchanged("42808637895")
+
+    def test_stale_probing_task_recovers_if_stage_never_changed_server(self):
+        task = confirm_row("PROBING")
+        with patch.object(owner, "get_task", return_value=task), \
+             patch.object(owner, "rollback", side_effect=RuntimeError("missing")), \
+             patch.object(owner, "live_checkpoint_unchanged", return_value=True), \
+             patch.object(owner, "update_error") as error, \
+             patch.object(owner.sys, "argv", ["controller", "run"]):
+            owner.main()
+        error.assert_called_once_with(task, "INTERRUPTED_OWNER_DEPLOY")
+
+    def test_stale_probing_with_live_drift_does_not_mark_failed(self):
+        task = confirm_row("PROBING")
+        with patch.object(owner, "get_task", return_value=task), \
+             patch.object(owner, "rollback", side_effect=RuntimeError("missing")), \
+             patch.object(owner, "live_checkpoint_unchanged", return_value=False), \
+             patch.object(owner, "update_error") as error, \
+             patch.object(owner.sys, "argv", ["controller", "run"]):
+            with self.assertRaisesRegex(RuntimeError, "ROLLBACK_UNVERIFIED"):
+                owner.main()
+        error.assert_not_called()
+
+
 if __name__ == "__main__":
     main()
