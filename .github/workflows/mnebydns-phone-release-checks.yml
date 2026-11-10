@@ -1,0 +1,59 @@
+name: MNEBYDNS Wi-Fi manual workflow release checks (offline only)
+on:
+  push:
+    branches:
+      - release/mnebydns-android-wifi-manual-20261110
+    paths:
+      - 'scripts/mnebydns_phone_tcp_flow_probe.py'
+      - 'scripts/tests/test_mnebydns_phone_tcp_flow_probe.py'
+      - 'scripts/tests/integration_mnebydns_phone_tcp_flow_netns.sh'
+      - '.github/workflows/mnebydns-android-wifi-field-test.yml'
+      - '.github/workflows/mnebydns-phone-release-checks.yml'
+  pull_request:
+    paths:
+      - 'scripts/mnebydns_phone_tcp_flow_probe.py'
+      - 'scripts/tests/test_mnebydns_phone_tcp_flow_probe.py'
+      - 'scripts/tests/integration_mnebydns_phone_tcp_flow_netns.sh'
+      - '.github/workflows/mnebydns-android-wifi-field-test.yml'
+      - '.github/workflows/mnebydns-phone-release-checks.yml'
+permissions:
+  contents: read
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile and unit-test the phone peer monitor
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns_phone_tcp_flow_probe.py
+          python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_phone_tcp_flow_probe.py' -v
+      - name: Check manual-only workflow and no auto execution
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          text=Path('.github/workflows/mnebydns-android-wifi-field-test.yml').read_text()
+          assert 'workflow_dispatch:' in text
+          assert '  push:' not in text and '  schedule:' not in text and '  pull_request:' not in text
+          assert 'phone_public_ipv4:' in text and 'PHONE_READY' in text
+          assert 'scripts/mnebydns_phone_tcp_flow_probe.py' in text
+          assert 'StrictHostKeyChecking=yes' in text
+          print('workflow_manual_only_and_host_pinned=PASS')
+          PY
+  kernel-netns:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install isolated kernel test requirements
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq iproute2 nftables
+      - name: Check one NAT TCP flow without any live VPS access
+        run: sudo bash scripts/tests/integration_mnebydns_phone_tcp_flow_netns.sh
