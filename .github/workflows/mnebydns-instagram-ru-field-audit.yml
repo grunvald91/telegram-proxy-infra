@@ -6,6 +6,7 @@ on:
       - ".github/workflows/mnebydns-instagram-ru-field-audit.yml"
       - "scripts/mnebydns_instagram_ru_readonly_preflight.py"
       - "scripts/mnebydns_instagram_ru_firewall_inventory.py"
+      - "scripts/mnebydns_instagram_queue210_synack_ab.py"
   workflow_dispatch:
 permissions:
   contents: read
@@ -36,4 +37,5 @@ jobs:
           echo "mnebydns_field_audit=RU_READ_ONLY"
           timeout 50s sshpass -e ssh "${opts[@]}" root@188.120.254.223 "python3 -" < scripts/mnebydns_instagram_ru_readonly_preflight.py
           timeout 50s sshpass -e ssh "${opts[@]}" root@188.120.254.223 "python3 -" < scripts/mnebydns_instagram_ru_firewall_inventory.py
+          timeout 50s sshpass -e ssh "${opts[@]}" root@188.120.254.223 "python3 - --validate-only" < scripts/mnebydns_instagram_queue210_synack_ab.py
           echo "mnebydns_field_audit=COMPLETE_NO_MUTATIONS"
