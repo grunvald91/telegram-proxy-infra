@@ -80,7 +80,7 @@ def self_test():
     n=render_nginx(nginx)
     assert c.count("MNEBYDNS_THREADS_ONLY_20261110")==1
     assert n.count("MNEBYDNS_THREADS_ONLY_20261110")==1
-    assert c.count("answer ")==2   # 1 existing + 1 experimental
+    assert c.count("answer ")==1   # one experimental Threads A response
     assert c.count("template IN ")==len(TYPES)+1
     assert "gemini.google.com 127.0.0.1:15443;" in n
     assert re.fullmatch(MATCH,"graph.threads.com.")
@@ -88,7 +88,6 @@ def self_test():
     assert not re.fullmatch(MATCH,"www.instagram.com.")
     assert not re.fullmatch(MATCH,"notthreads.com.")
     assert not re.fullmatch(STREAM_MATCH[2:],"anything.facebook.com",re.I)
-    assert render_corefile(core).replace(c[c.index("    # MNEBYDNS_THREADS_ONLY_20261110"):c.index("    cache 30")],"") == core if False else True
     print("threads_renderer_exact_scope_selftest=PASS",flush=True)
 
 def main():
