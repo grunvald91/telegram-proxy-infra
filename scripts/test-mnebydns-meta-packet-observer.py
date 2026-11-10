@@ -32,8 +32,8 @@ def ipv4(src,dst,proto,transport):
     return head+transport
 
 
-def tcp(src,dst,sport,dport,flags,data=b''):
-    hdr=struct.pack('!HHII',sport,dport,1,1)+bytes((0x50,flags))+b'\x00\x00\x00\x00\x00\x00'
+def tcp(src,dst,sport,dport,flags,data=b'',seq=1):
+    hdr=struct.pack('!HHII',sport,dport,seq,1)+bytes((0x50,flags))+b'\x00\x00\x00\x00\x00\x00'
     return ipv4(src,dst,6,hdr+data)
 
 
@@ -58,6 +58,19 @@ def run():
             tcp(local,client,443,55555,0x14)]
     obj=m.Observer('ru')
     for frame in frames:obj.packet(frame,101)
+    # A real TLS ClientHello may be split across multiple TCP segments.
+    fragmented=m.Observer('ru')
+    ch=hello('i-fallback.instagram.com')
+    fragment_start=10000
+    fragmented.packet(tcp(client,local,55556,443,0x18,ch[:17],seq=fragment_start),101)
+    assert fragmented.c['tcp_clienthello_meta_in']==0
+    assert fragmented.c['tcp_hello_fragment_in']==1
+    # Retransmission of the first fragment must not corrupt the assembly.
+    fragmented.packet(tcp(client,local,55556,443,0x18,ch[:17],seq=fragment_start),101)
+    fragmented.packet(tcp(client,local,55556,443,0x18,ch[17:],seq=fragment_start+17),101)
+    assert fragmented.c['tcp_clienthello_in']==1
+    assert fragmented.c['tcp_clienthello_meta_in']==1
+    print('meta_observer_fragmented_TLS_ClientHello_reassembly=PASS')
     assert obj.c['tcp_syn_in']==1
     assert obj.c['tcp_synack_out']==1
     assert obj.c['tcp_clienthello_in']==1
