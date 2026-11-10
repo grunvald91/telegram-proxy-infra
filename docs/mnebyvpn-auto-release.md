@@ -29,3 +29,7 @@
 ## 2026-11-10 · Покупка VPN через HTML Bubble
 
 Источник MNEBYVPN main: [7c47f87512f04e36cf24f618f9720647a17748ce](https://github.com/grunvald91/Mnebyvpn/commit/7c47f87512f04e36cf24f618f9720647a17748ce), PR #92. CI исходника: [42824984339](https://github.com/grunvald91/Mnebyvpn/actions/runs/42824984339) — success. Разрешена изолированная публикация существующего Telegram-бота: экран тарифов VPN теперь sendWidget HTML с Telegram Stars; платежи и выдача не менялись. Этот commit документации запускает стандартный проверяемый bot auto-release на сервер 188 с canary и rollback. Наличие успешного деплоя не означает проверку живой покупки Stars.
+
+## 2026-11-10 · Отображение ошибок ACTIVE доменов
+
+Mnebyvpn main [0cb28e4a74718cf0c08cc4c0bb5c1929c29a7553](https://github.com/grunvald91/Mnebyvpn/commit/0cb28e4a74718cf0c08cc4c0bb5c1929c29a7553), verified CI [42839511601](https://github.com/grunvald91/Mnebyvpn/actions/runs/42839511601), owner-only DNS admin UI now marks `ACTIVE_ROUTE_CHECK_FAILED` in list/card. Request existing guarded Telegram bot auto deployment; does not change CoreDNS/Nginx or pre-existing Oracle routes.
