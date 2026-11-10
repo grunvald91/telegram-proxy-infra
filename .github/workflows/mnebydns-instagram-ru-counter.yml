@@ -1,0 +1,62 @@
+name: MNEBYDNS Instagram RU netfilter counter audit (read only)
+on:
+  push:
+    branches: [experiment/instagram-synack-window-canary-20261110]
+    paths:
+      - ".github/workflows/mnebydns-instagram-ru-counter.yml"
+      - "scripts/mnebydns_instagram_ru_rule_counter_observer.py"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-instagram-ru-counter
+  cancel-in-progress: false
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Match read-only netfilter packet counter deltas to 80/443 test connections
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS"
+          python3 -m py_compile scripts/mnebydns_instagram_ru_rule_counter_observer.py
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -qq -y sshpass >/dev/null
+          export SSHPASS="$RU_PASS"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519
+                -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+                -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          LOG="$RUNNER_TEMP/ru-counter.log"
+          timeout 50s sshpass -e ssh "${opts[@]}" root@188.120.254.223 "python3 -" < scripts/mnebydns_instagram_ru_rule_counter_observer.py > "$LOG" 2>&1 &
+          MONITOR=$!
+          trap 'kill "$MONITOR" 2>/dev/null || true; wait "$MONITOR" 2>/dev/null || true' EXIT
+          READY=0
+          for i in $(seq 1 55); do
+            if grep -q "ru_rule_counter_capture=READY" "$LOG" 2>/dev/null; then READY=1; break; fi
+            if ! kill -0 "$MONITOR" 2>/dev/null; then break; fi
+            sleep 0.2
+          done
+          if [[ "$READY" != 1 ]]; then cat "$LOG"; echo "counter_not_ready" >&2; exit 1; fi
+          python3 - <<'PY'
+          import socket,time
+          for port in (80,443,18443):
+              for i in range(2):
+                  try:
+                      with socket.create_connection(("188.120.254.223",port),timeout=1.7):
+                          status="connected"
+                  except OSError as exc:
+                      status=type(exc).__name__
+                  print(f"runner_tcp_{port}_{i+1}={status}",flush=True)
+                  time.sleep(.2)
+          PY
+          wait "$MONITOR"
+          cat "$LOG"
+          grep -q "ru_rule_counter_capture=COMPLETE_READ_ONLY" "$LOG"
+          echo "ru_counter_test=COMPLETE_READ_ONLY"
