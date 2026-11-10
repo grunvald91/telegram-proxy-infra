@@ -140,7 +140,8 @@ def nfqws_postrouting_audit():
     for line in p.stdout.splitlines():
         if "tcp sport 443" not in line:
             continue
-        queue_match=re.search(r"\bqueue\s+(?:num\s+)?(\d+)",line)
+        queue_match=(re.search(r"\bqueue\s+(?:num\s+)?(\d+)",line) or
+                     re.search(r"\bqueue\b[^#]*?\bto\s+(\d+)\b",line))
         queue_num=queue_match.group(1) if queue_match else "UNKNOWN"
         print("telegram_nfqws_sport443_queue="+queue_num)
         print("telegram_nfqws_sport443_bypass="+str("bypass" in line).lower())
