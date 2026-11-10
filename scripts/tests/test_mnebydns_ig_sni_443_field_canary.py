@@ -20,7 +20,7 @@ PEER="9.9.9.9"
 RUN="42887901234"
 TAG=canary.tag_for(RUN)
 
-def wire(src,dst,sport,dport,flags,payload=b""):
+def wire(src,dst,sport,dport,flags,payload=b"",*,seq=1,ack=0,window=64240):
     ip=bytearray(20)
     ip[0]=0x45
     struct.pack_into("!H",ip,2,40+len(payload))
@@ -28,7 +28,8 @@ def wire(src,dst,sport,dport,flags,payload=b""):
     ip[12:16]=ipaddress.IPv4Address(src).packed
     ip[16:20]=ipaddress.IPv4Address(dst).packed
     tcp=bytearray(20+len(payload))
-    struct.pack_into("!HH",tcp,0,sport,dport)
+    struct.pack_into("!HHII",tcp,0,sport,dport,seq,ack)
+    struct.pack_into("!H",tcp,14,window)
     tcp[12]=0x50
     tcp[13]=flags
     tcp[20:]=payload
@@ -91,28 +92,88 @@ class ScopedAndroidCanary(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 canary.cleanup(PEER,TAG)
 
-    def test_server_metadata_observer_counts_only_selected_peer_and_port(self):
-        obs=canary.OnePeerPacketCounts(PEER)
-        RU=canary.RU
-        obs.observe(wire(PEER,RU,55011,443,0x02))
-        obs.observe(wire(RU,PEER,443,55011,0x12))
-        obs.observe(wire(RU,PEER,443,55011,0x18,b"hidden encrypted server data"))
-        obs.observe(wire(PEER,RU,55011,443,0x18,b"1234"))
-        obs.observe(wire(PEER,RU,55011,443,0x18,b"second data"))
-        obs.observe(wire(PEER,RU,55012,443,0x18,b"long ClientHello"))
-        obs.observe(wire("203.0.113.99",RU,55013,443,0x02))
-        obs.observe(wire(PEER,RU,55011,80,0x18,b"ignored HTTP"))
-        self.assertEqual((obs.inbound_syn,obs.outbound_synack,obs.inbound_payload,
-                          obs.inbound_first4,obs.inbound_first_other),
-                         (1,1,3,1,1))
-        output=io.StringIO()
-        with redirect_stdout(output):obs.output()
-        self.assertNotIn(PEER,output.getvalue())
-        self.assertNotIn("55011",output.getvalue())
-        self.assertNotIn("second data",output.getvalue())
-        self.assertIn("ig443_phone_first_data_4bytes=1",output.getvalue())
-        self.assertIn("ig443_phone_server_data_packets=1",output.getvalue())
-        self.assertNotIn("hidden encrypted server data",output.getvalue())
+    def test_correlates_tcp_handshake_window_tls_prefix_and_deduplicates(self):
+        obs = canary.OnePeerPacketCounts(PEER)
+        ru = canary.RU
+        hello4 = b"\x16\x03\x01\x02"
+        # Flow 55011: actual SYN/SYNACK(window4)/ACK, then TLS header prefix.
+        obs.observe(wire(PEER, ru, 55011, 443, 0x02, seq=100))
+        obs.observe(wire(ru, PEER, 443, 55011, 0x12, seq=1000, ack=101, window=4))
+        obs.observe(wire(PEER, ru, 55011, 443, 0x10, seq=101, ack=1001))
+        obs.observe(wire(ru, PEER, 443, 55011, 0x18,
+                         b"encrypted server response", seq=1001, ack=105))
+        obs.observe(wire(PEER, ru, 55011, 443, 0x18, hello4, seq=101, ack=1001))
+        obs.observe(wire(PEER, ru, 55011, 443, 0x18, hello4, seq=101, ack=1001))
+        obs.observe(wire(PEER, ru, 55011, 443, 0x18, b"continuation", seq=105, ack=1001))
+        # Uncorrelated data from the same public peer must be excluded.
+        obs.observe(wire(PEER, ru, 55012, 443, 0x18, hello4, seq=101))
+        obs.observe(wire("203.0.113.99", ru, 55012, 443, 0x02))
+        obs.observe(wire(PEER, ru, 55011, 80, 0x18, b"ignored HTTP"))
+        # Flow 55013 has full handshake but a NORMAL window. Never count
+        # this as proof that the experimental clamp worked.
+        obs.observe(wire(PEER, ru, 55013, 443, 0x02, seq=200))
+        obs.observe(wire(ru, PEER, 443, 55013, 0x12, seq=3000, ack=201))
+        obs.observe(wire(PEER, ru, 55013, 443, 0x10, seq=201, ack=3001))
+        obs.observe(wire(PEER, ru, 55013, 443, 0x18,
+                         b"\x16\x03\x01\x00\x40", seq=201, ack=3001))
+        self.assertEqual((obs.inbound_syn, obs.outbound_synack,
+                          obs.outbound_synack_window4, obs.inbound_payload,
+                          obs.inbound_first4, obs.inbound_first_other,
+                          obs.inbound_first_untrusted, obs.outbound_payload),
+                         (2, 2, 1, 3, 1, 0, 1, 1))
+        output = io.StringIO()
+        with redirect_stdout(output):
+            obs.output()
+        report = output.getvalue()
+        self.assertIn("ig443_phone_segment_measurement_eligible=true", report)
+        self.assertIn("ig443_phone_tls_prefix_first_4bytes=1", report)
+        self.assertIn("ig443_phone_first_data_untrusted=1", report)
+        for private in (PEER, "55011", "continuation", "encrypted server response"):
+            self.assertNotIn(private, report)
+
+    def test_no_false_success_from_missing_handshake_or_wrong_ack(self):
+        obs = canary.OnePeerPacketCounts(PEER)
+        ru = canary.RU
+        prefix = b"\x16\x03\x01\x02"
+        obs.observe(wire(PEER, ru, 52001, 443, 0x18, prefix, seq=101))
+        obs.observe(wire(PEER, ru, 52002, 443, 0x02, seq=100))
+        obs.observe(wire(ru, PEER, 443, 52002, 0x12, seq=1000, ack=999, window=4))
+        obs.observe(wire(PEER, ru, 52002, 443, 0x10, seq=101, ack=1001))
+        obs.observe(wire(PEER, ru, 52002, 443, 0x18, prefix, seq=101, ack=1001))
+        self.assertEqual(obs.inbound_first4, 0)
+        self.assertEqual(obs.inbound_payload, 0)
+        output = io.StringIO()
+        with redirect_stdout(output):
+            obs.output()
+        self.assertIn("ig443_phone_segment_measurement_eligible=false", output.getvalue())
+
+    def test_non_tls_first_segment_is_not_mislabeled_clienthello(self):
+        obs = canary.OnePeerPacketCounts(PEER)
+        ru = canary.RU
+        obs.observe(wire(PEER, ru, 52001, 443, 0x02, seq=100))
+        obs.observe(wire(ru, PEER, 443, 52001, 0x12, seq=1000, ack=101, window=4))
+        obs.observe(wire(PEER, ru, 52001, 443, 0x10, seq=101, ack=1001))
+        obs.observe(wire(PEER, ru, 52001, 443, 0x18, b"1234", seq=101, ack=1001))
+        self.assertEqual(obs.inbound_first4, 0)
+        self.assertEqual(obs.inbound_first_untrusted, 1)
+
+    def test_fragmented_ip_and_flow_cap_mark_evidence_invalid(self):
+        obs = canary.OnePeerPacketCounts(PEER)
+        obs.MAX_FLOWS = 1
+        first = wire(PEER, canary.RU, 55001, 443, 0x02, seq=100)
+        fragmented = bytearray(first)
+        struct.pack_into("!H", fragmented, 14 + 6, 0x2000)
+        obs.observe(bytes(fragmented))
+        self.assertEqual(obs.inbound_syn, 0)
+        obs.observe(first)
+        obs.observe(wire(PEER, canary.RU, 55002, 443, 0x02, seq=200))
+        self.assertTrue(obs.overflow)
+        self.assertEqual(obs.inbound_syn, 1)
+        output = io.StringIO()
+        with redirect_stdout(output):
+            obs.output()
+        self.assertIn("ig443_phone_observer_overflow=true", output.getvalue())
+        self.assertIn("ig443_phone_segment_measurement_eligible=false", output.getvalue())
 
     def test_rollback_script_stdlib_only_imports(self):
         source=(BASE/"mnebydns_ig_sni_443_field_canary.py").read_text()
