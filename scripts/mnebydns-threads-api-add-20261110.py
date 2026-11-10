@@ -71,6 +71,11 @@ def self_test():
     assert d.count("match "+MATCH)==5
     assert d.count('IN A '+A_IP)==2
     assert all(n.count(host+" $ssl_preread_server_name:443;")==1 for host in HOSTS)
+    assert all(re.fullmatch(MATCH,host+'.') for host in HOSTS)
+    assert not re.fullmatch(MATCH,'www.instagram.com.')
+    assert not re.fullmatch(MATCH,'evil.i.instagram.com.')
+    assert not re.fullmatch(MATCH,'graph.facebook.com.')
+    assert not re.fullmatch(MATCH,'badtest-gateway.instagram.com.')
     assert "www[.]threads[.]com" in d
     assert "default 127.0.0.1:443;" in n
     assert "graph.facebook.com" not in d+n
