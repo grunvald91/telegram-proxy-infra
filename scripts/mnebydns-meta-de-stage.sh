@@ -12,6 +12,9 @@ now="$(date -u +%s)"
 expires="$(date -u -d "$deadline" +%s)"
 (( expires - now >= 300 && expires - now <= 2700 )) || exit 2
 systemd-analyze calendar "$deadline" >/dev/null
+# The restricted Nginx sidecar writes aggregate numeric session events to journald.
+# Avoid /dev/stdout: opening journald's inherited stream fails under this service.
+test -S /run/systemd/journal/dev-log || { echo "DE_Meta_syslog_socket_not_available=true"; exit 3; }
 stable_root=/opt/mnebydns-stable-checkpoints
 checkpoint="$(cat "$stable_root/current")"
 [[ "$checkpoint" =~ ^/opt/mnebydns-stable-checkpoints/[0-9]+$ ]] || exit 2
