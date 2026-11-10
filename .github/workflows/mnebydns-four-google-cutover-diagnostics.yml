@@ -1,0 +1,47 @@
+name: Diagnose four-Google canary DNS cutover failure read-only
+on:
+  push:
+    branches: ['feature/mnebydns-google-four-services-preflight-20261108']
+    paths: ['.github/workflows/mnebydns-four-google-cutover-diagnostics.yml']
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      SSHPASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Read only isolated DNS service logs and snapshot consistency
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$SSHPASS"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@89.125.90.101 'python3 -' <<'PY'
+          import subprocess,pathlib,re
+          p=subprocess.run(["journalctl","-u","mnebydns-dot.service","--since",
+              "2026-11-08 20:11:30 UTC","--until","2026-11-08 20:12:05 UTC",
+              "--no-pager","--output=cat"],text=True,capture_output=True,timeout=9)
+          selected=[]
+          for line in p.stdout.splitlines():
+              if any(word in line.lower() for word in ("error","failed","fatal","plugin","template",
+                  "start request","exit-code","servfail","unknown","parse","restart","invalid")):
+                  line=re.sub(r"(?:[0-9]{1,3}\.){3}[0-9]{1,3}","[IP]",line)
+                  selected.append(line[:350])
+          print("relevant_dns_journal_count="+str(len(selected)))
+          for x in selected[-20:]:print("dns_journal="+x)
+          for unit in ("mnebydns-dot.service","mnebydns-gemini.service",
+                       "mnebydns-googlepilot.service","nginx","xray.service"):
+              state=subprocess.run(["systemctl","is-active",unit],capture_output=True,text=True,timeout=6)
+              print("current_service_"+unit+"="+str(state.stdout.strip()))
+          base=pathlib.Path("/opt/mnebydns-googlepilot-backups/42518818568")
+          nginx=pathlib.Path("/etc/nginx/nginx.conf").read_bytes()
+          core=pathlib.Path("/opt/mnebydns-dot/Corefile").read_bytes()
+          for typ,current in (("nginx",nginx),("dns",core)):
+              old=(base/(typ+".before"))
+              pilot=(base/(typ+".pilot"))
+              print(typ+"_baseline_restored="+str(old.is_file() and old.read_bytes()==current).lower())
+              print(typ+"_pilot_active="+str(pilot.is_file() and pilot.read_bytes()==current).lower())
+          print("read_only_diagnostic_no_configuration_writes=true")
+          PY

@@ -1,0 +1,44 @@
+name: Validate MNEBYDNS experimental four-service canary offline
+on:
+  push:
+    branches: ['feature/mnebydns-google-four-services-preflight-20261108']
+    paths:
+      - 'scripts/mnebydns-four-google-canary.py'
+      - 'scripts/mnebydns-four-google-deploy.sh'
+      - 'scripts/mnebydns-four-google-rollback.sh'
+      - '.github/workflows/mnebydns-four-google-canary-tests.yml'
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify four product exact-host canary renderer and safe transactional guards
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-four-google-canary.py
+          python3 scripts/mnebydns-four-google-canary.py self-test
+          bash -n scripts/mnebydns-four-google-deploy.sh
+          bash -n scripts/mnebydns-four-google-rollback.sh
+          python3 - <<'PY'
+          from pathlib import Path
+          r=Path('scripts/mnebydns-four-google-rollback.sh').read_text()
+          d=Path('scripts/mnebydns-four-google-deploy.sh').read_text()
+          assert 'cmp -s "$base/$component.pilot" "$live"' in r
+          assert 'cmp -s "$base/$component.before" "$live"' in r
+          assert 'OnCalendar=$deadline' in d
+          assert 'Persistent=true' in d
+          assert 'systemctl enable --now "$watchdog.timer"' in d
+          assert 'systemd-analyze calendar "$deadline"' in d
+          assert r.index('systemctl stop mnebydns-googlepilot.service') > r.index('systemctl restart mnebydns-dot.service')
+          assert 'nginx -t' in d
+          assert 'systemctl reload nginx' in d
+          assert 'systemctl restart mnebydns-dot.service' in d
+          assert 'xray' in d and 'stitch.withgoogle.com' in d
+          assert 'MNEBYDNS four-Google-services time-limited' in d
+          assert 'nginx -t -c "$base/nginx.pilot"' in d
+          print('transactional_auto_rollback_contract=PASS')
+          PY
