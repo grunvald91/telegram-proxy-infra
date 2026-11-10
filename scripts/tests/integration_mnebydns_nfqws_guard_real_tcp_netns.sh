@@ -21,8 +21,8 @@ ip link set "mgs$$" netns "$NS_SERVER"
 ip link set "mgc$$" netns "$NS_CLIENT"
 ip -n "$NS_SERVER" link set "mgs$$" name ens3
 ip -n "$NS_SERVER" address add 188.120.254.223/32 dev ens3
-ip -n "$NS_CLIENT" address add 8.8.4.4/32 dev "mgc$"
-ip -n "$NS_CLIENT" address add 1.1.1.1/32 dev "mgc$"
+ip -n "$NS_CLIENT" address add 8.8.4.4/32 dev "mgc$$"
+ip -n "$NS_CLIENT" address add 1.1.1.1/32 dev "mgc$$"
 ip -n "$NS_SERVER" link set lo up
 ip -n "$NS_SERVER" link set ens3 up
 ip -n "$NS_CLIENT" link set lo up
