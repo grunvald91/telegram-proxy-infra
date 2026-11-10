@@ -37,7 +37,7 @@ jobs:
           sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@188.120.254.223 'bash -s' <<'REMOTE'
           set -Eeuo pipefail
           echo "public_active_sha=$(cat /opt/mnebyvpn/public/active_sha)"
-          expected_release=ec3524d2b2482d447119cf45606cb0fe1cb04e86
+          expected_release=211bb06867a19b6995f59bd5af13c6bea2139c1f
           test "$(cat /opt/mnebyvpn/public/active_sha)" = "$expected_release"
           echo 'compact_release_sha_verified=true'
           # Pure HTTP GET checks: no payment or VPN state is mutated.
