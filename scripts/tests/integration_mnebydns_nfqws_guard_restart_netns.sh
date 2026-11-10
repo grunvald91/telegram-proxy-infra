@@ -28,6 +28,17 @@ fi
 SECOND="$(ip netns exec "$NS" nft -a list chain inet telegram_nfqws post)"
 grep -q 'MNEBYDNS_SYNACK_CANARY_PEER_V1' <<< "$SECOND"
 grep -q 'queue.*210' <<< "$SECOND"
+# A group/world writable allow-file or symlink also must abort before flushing.
+chmod 666 "$TMP/valid-peer"
+if run_apply "$TMP/valid-peer" 2>"$TMP/insecure.log"; then
+    echo "FAIL: writable peer file accepted" >&2; exit 1
+fi
+chmod 600 "$TMP/valid-peer"
+ln -s "$TMP/valid-peer" "$TMP/symlink-peer"
+if run_apply "$TMP/symlink-peer" 2>"$TMP/symlink.log"; then
+    echo "FAIL: symlink peer file accepted" >&2; exit 1
+fi
+grep -q 'MNEBYDNS_SYNACK_CANARY_PEER_V1' <<< "$(ip netns exec "$NS" nft -a list chain inet telegram_nfqws post)"
 # Reapply simulates ExecStartPost after restart.
 run_apply "$TMP/valid-peer"
 THIRD="$(ip netns exec "$NS" nft -a list chain inet telegram_nfqws post)"
