@@ -222,6 +222,24 @@ def rollback(runid:str)->None:
     print(out)
 
 
+def live_checkpoint_unchanged()->bool:
+    """Read-only guard: defer owner DNS changes during unrelated live pilots."""
+    probe=(
+      "set -Eeuo pipefail; "
+      "root=$(cat /opt/mnebydns-stable-checkpoints/current); "
+      "test -d \"$root\"; "
+      "(cd \"$root\" && sha256sum -c stable-manifest.sha256 >/dev/null); "
+      "cmp -s \"$root/dns.stable\" /opt/mnebydns-dot/Corefile; "
+      "cmp -s \"$root/nginx.stable\" /etc/nginx/nginx.conf; "
+      "cmp -s \"$root/proxy.stable\" /etc/mnebydns-googlepilot/nginx.conf; "
+      "echo BASELINE_READY"
+    )
+    try:
+        return ssh("de",probe,40).strip()=="BASELINE_READY"
+    except (RuntimeError,subprocess.TimeoutExpired):
+        return False
+
+
 def apply(item):
     if not RUNID.isdigit() or not (9<=len(RUNID)<=13):
         raise ValueError("Invalid GitHub RUN_ID")
@@ -233,6 +251,11 @@ def apply(item):
         "'ROLLBACK_REQUESTED','REMOVING')")
     if int(existing)>0:
         print("owner_domain_wait_for_previous_canary=true",flush=True)
+        return
+    if not live_checkpoint_unchanged():
+        # E.g. an active Threads canary: keep the request queued and do not
+        # modify the unrelated shared CoreDNS/Nginx files.
+        print("owner_domain_deferred_for_live_checkpoint_drift=true",flush=True)
         return
     claimed=sql("UPDATE dns_admin_domains SET status='PROBING',"
       " canary_run_id="+RUNID+",updated_at=now()"
@@ -273,8 +296,12 @@ def apply(item):
         try:
             rollback(RUNID)
         except Exception:
-            print("owner_domain_ROLLBACK_NOT_VERIFIED=true",flush=True)
-            raise
+            # Before staging a rollback script, a byte-identical stable
+            # checkpoint is independent evidence that nothing was applied.
+            if not live_checkpoint_unchanged():
+                print("owner_domain_ROLLBACK_NOT_VERIFIED=true",flush=True)
+                raise
+            print("owner_domain_no_route_was_applied=true",flush=True)
         update_error(item,"CANARY_PREFLIGHT_OR_DEPLOY_FAILED")
         raise
 
