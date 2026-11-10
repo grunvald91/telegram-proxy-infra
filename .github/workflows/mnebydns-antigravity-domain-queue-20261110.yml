@@ -1,0 +1,64 @@
+name: "MNEBYDNS: queue owner-approved Antigravity DNS hostnames"
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/mnebydns-antigravity-domain-queue-20261110.yml"
+      - "scripts/mnebydns-antigravity-domain-queue-20261110.sql"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-antigravity-owner-queue
+  cancel-in-progress: false
+
+jobs:
+  queue:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Fail closed unless the exact twelve owner-approved domains are queued
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import pathlib, re
+          sql = pathlib.Path("scripts/mnebydns-antigravity-domain-queue-20261110.sql").read_text()
+          hosts = re.findall(r"^\s*\('([^']+)'\)[,;]?$", sql, re.M)
+          expected = ["accounts.google.com","aicode.googleapis.com","aiplatform.googleapis.com","antigravity-pa.googleapis.com","antigravity.google","antigravity.googleapis.com","businessaicode.googleapis.com","cloudcode-pa.googleapis.com","daily-cloudcode-pa.googleapis.com","discoveryengine.googleapis.com","generativelanguage.googleapis.com","oauth2.googleapis.com"]
+          assert len(hosts) == 12 and sorted(hosts) == expected, (hosts, expected)
+          assert "ON CONFLICT (domain) DO NOTHING" in sql
+          assert "'PENDING'" in sql and "'Antigravity'" in sql
+          assert not re.search(r"\b(?:UPDATE|DELETE|TRUNCATE|ALTER|DROP)\s+dns_admin_domains\b", sql, re.I)
+          assert "APPLY_REQUESTED" not in sql.split("BEGIN;",1)[1]
+          print("antigravity_offline_owner_host_set=PASS")
+          PY
+          test "$(grep -c ' ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts)" -eq 2
+
+      - name: Insert only missing PENDING requests in canonical RU PostgreSQL
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass >/dev/null
+          export SSHPASS="$RU_PASS"
+          output="$(sshpass -e ssh -T -o ConnectTimeout=12 \
+            -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 \
+            -o UserKnownHostsFile="$GITHUB_WORKSPACE/ops/mnebydns-owner-ssh-known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no \
+            -o LogLevel=ERROR root@188.120.254.223 \
+            'docker exec -i mnebyvpn-stage-postgres psql -XqAt -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage -f -' \
+            < scripts/mnebydns-antigravity-domain-queue-20261110.sql)"
+          printf '%s\n' "$output"
+          grep -qx 'antigravity_queue_entries=12' <<< "$output"
+          test "$(grep -c '^antigravity_queue_status=' <<< "$output")" -eq 12
+          echo 'antigravity_requests_saved=true'
+          echo 'antigravity_routes_activated=false'
