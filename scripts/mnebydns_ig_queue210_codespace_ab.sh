@@ -95,7 +95,7 @@ RESTORED="$(probe restored)"
 printf '%s\n' "$RESTORED"
 # The counter belongs to the *temporary* per-peer SYN-ACK return rule.
 # A successful connect without a counter hit is not evidence about queue 210.
-COUNTER="$(sed -nE 's/^synack_ab_rule_counter=\\(([0-9]+),[[:space:]]*[0-9]+\\).*$/\\1/p' "$LOG" | tail -n1)"
+COUNTER="$(sed -nE 's/^synack_ab_rule_counter=\(([0-9]+),[[:space:]]*[0-9]+\).*$/\1/p' "$LOG" | tail -n1)"
 if [[ "$COUNTER" =~ ^[0-9]+$ ]]; then
     echo "synack_ab_bypass_counter_packets=$COUNTER"
 else
