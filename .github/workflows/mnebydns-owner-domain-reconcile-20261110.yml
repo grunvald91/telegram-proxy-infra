@@ -18,6 +18,7 @@ on:
       - "scripts/mnebydns-owner-domain-remove-20261110.sh"
       - "scripts/mnebydns-owner-domain-confirm-20261110.sh"
       - "scripts/mnebydns-owner-domain-rollback-20261110.sh"
+      - "scripts/tests/test_owner_domain_reconcile.py"
 permissions:
   contents: read
 concurrency:
@@ -36,6 +37,7 @@ jobs:
           python3 -m py_compile scripts/mnebydns-owner-domain-render-20261110.py scripts/mnebydns-owner-domain-controller-20261110.py
           python3 scripts/mnebydns-owner-domain-render-20261110.py self-test
           python3 scripts/mnebydns-owner-domain-controller-20261110.py self-test
+          python3 -m unittest discover -s scripts/tests -p test_owner_domain_reconcile.py -v
           bash -n scripts/mnebydns-owner-domain-stage-20261110.sh scripts/mnebydns-owner-domain-remove-20261110.sh scripts/mnebydns-owner-domain-rollback-20261110.sh scripts/mnebydns-owner-domain-confirm-20261110.sh
           echo 'owner_domain_offline_gate=PASS'
   deploy:
