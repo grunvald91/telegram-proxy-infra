@@ -32,11 +32,26 @@ docker image inspect "$IMAGE" >/dev/null
 }
 
 # Never enable the unfinished commercial functionality by deploying UI code.
-for setting in   MNEBYVPN_ENV=production   WEB_BASE_URL=https://mnebyvpn.site   WEB_TELEGRAM_OIDC_ENABLED=no   WEB_TRIAL_ENABLED=no   WEB_DNS_METERING_VERIFIED=no; do
+# The owner has approved the authenticated 24-hour VPN trial.  Both values
+# are valid here: the separate guarded trial activation checks live worker,
+# email login, published VPN offer and network proof before setting yes.
+# A code-only rollout must never silently turn existing trials off.
+for setting in   MNEBYVPN_ENV=production   WEB_BASE_URL=https://mnebyvpn.site   WEB_TELEGRAM_OIDC_ENABLED=no   WEB_DNS_METERING_VERIFIED=no; do
   grep -Fxq "$setting" "$ENV_FILE" || {
     echo 'Existing production web environment violates the read-only deployment policy'; exit 2;
   }
 done
+# A trial enabled on this host must be backed by real authenticated issuance.
+if grep -Fxq 'WEB_TRIAL_ENABLED=yes' "$ENV_FILE"; then
+  for setting in WEB_EMAIL_LOGIN_ENABLED=yes WEB_NETWORK_PROVISIONING_VERIFIED=yes; do
+    grep -Fxq "$setting" "$ENV_FILE" || {
+      echo "::error::Trial requires verified network and email login"; exit 2;
+    }
+  done
+elif ! grep -Fxq 'WEB_TRIAL_ENABLED=no' "$ENV_FILE"; then
+  echo '::error::WEB_TRIAL_ENABLED must be exactly yes or no'; exit 2
+fi
+
 # The site must accept unrestricted customer purchases once owner-approved
 # commercial verification is complete. Do not force checkout=no on each deploy.
 if grep -Fxq 'WEB_CHECKOUT_ENABLED=1' "$ENV_FILE"; then
