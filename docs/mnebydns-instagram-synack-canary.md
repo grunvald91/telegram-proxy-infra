@@ -12,6 +12,48 @@ The queue uses **libnetfilter_queue** directly, explicitly enables kernel `NFQA_
 
 The installer holds an exclusive `flock`, checks for stale tagged rules and pending watchdogs, and **schedules an independent systemd-run timer** before inserting its single `mangle OUTPUT` rule. Normal exit removes the rule; the timer issues the same idempotent deletion after 150 seconds even if the launching shell is killed. A `SIGKILL`, unexpected host shutdown, or external persistence of firewall rules remains an operational risk; verify removal before any follow-up trial. The watchdog command is self-contained and does not require a checked-out Git repository at its firing time.
 
+## Kernel network-namespace integration (10 November 2026)
+
+Implemented in `scripts/tests/integration_mnebydns_synack_netns.sh` and
+`scripts/mnebydns_synack_netns_probe.py`. The integration job uses **two
+isolated Linux network namespaces** with RFC 5737 test-only addresses,
+`192.0.2.1:18443` and `192.0.2.2`, real kernel TCP + native
+`libnetfilter_queue`. It never reaches the user's VPS, live DNS, or Meta.
+The test generates a genuine local TLS 1.3 ClientHello with SNI
+`i.instagram.com`, captures Ethernet packets with tcpdump, and verifies
+the TCP checksum on the client side. Network checksum offloads are
+explicitly disabled on the test veth interfaces (without that, even the
+reference SYN-ACK capture initially appeared to have an invalid checksum).
+
+Reference example, [GitHub Actions run #42864808167](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/42864808167):
+
+| Mode | SYN-ACK window | First client data segment | TLS ClientHello TCP segments | Checksum |
+| --- | ---: | ---: | ---: | --- |
+| Native TCP baseline | 65160 | 1448 bytes | 2 (1448 + 36) | valid |
+| NFQUEUE clamped | **4** | **4 bytes** | **20** (4, 212, then many 72-byte segments) | valid |
+| Queue handler stopped, `--queue-bypass` | 65160 | 1448 bytes | 2 | valid |
+
+The independent `systemd-run` timer also removed the tagged namespace firewall
+rule without the launcher invoking the deletion itself:
+`independent_systemd_watchdog=PASS`.
+
+**Interpretation:** a 4-byte first segment and full delivery of ClientHello
+are experimentally verified on this Linux test client. The report's assertion
+that the remaining ClientHello is transmitted at full-sized MSS without
+additional packet overhead is **not validated**: the 1484-byte ClientHello
+used 20 TCP data segments instead of 2 on this runner. This must be measured
+on actual Android/ISP routes and larger transfers before claiming negligible
+performance impact. The test does **not** identify TSPU hardware, demonstrate
+censorship evasion, establish Android behavior, or prove that official
+Instagram loads.
+
+The integrated CI now fails if kernel NFQUEUE, capture/checksums, on-wire
+window clamp, fail-bypass, scoped rule removal or independent systemd rollback
+is unavailable. Running the same tests elsewhere requires root/CAP_NET_ADMIN
+and a disposable machine with Linux systemd, iproute2, iptables, ethtool,
+tcpdump and libnetfilter-queue1. Not suitable as a privileged job on
+untrusted contributed PRs.
+
 ## Prerequisites (read-only inspection first)
 
 - Only operate the designated RU VPS when explicitly approved; **do not deploy to production** on CI success alone
