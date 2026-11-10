@@ -27,7 +27,9 @@ class GuardRendererTests(TestCase):
         self.assertIn("ct reply packets 1-20 meta mark and 0x40000000 == 0",out)
         self.assertEqual(out.count(m.QUEUE_LINE),1)
         self.assertLess(out.index("Invalid SYN-ACK canary peer:"),out.index("        remove_all"))
-        self.assertIn('python3 - "$SYNACK_CLIENT"',out)
+        self.assertIn('python3 - "$SYNACK_FILE"',out)
+        self.assertIn("stat.S_ISREG",out)
+        self.assertIn("(s.st_mode & 0o022)",out)
         self.assertEqual(subprocess.run(["sh","-n"],input=out,text=True,capture_output=True).returncode,0)
 
     def test_idempotent(self):
