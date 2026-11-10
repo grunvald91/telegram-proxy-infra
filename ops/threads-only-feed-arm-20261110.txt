@@ -1,0 +1,5 @@
+User requested to restart missed Threads mobile testing window on 2026-11-10.
+Single guarded 35-minute window: threads.com + threads.net and one shared feed API i.instagram.com.
+Three independent rollback timers; do not add other Instagram domains; keep stable services.
+Offline combined review PASS: https://github.com/grunvald91/telegram-proxy-infra/actions/runs/42811134178
+Android app feed remains unverified until user test.
