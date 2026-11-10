@@ -1,0 +1,33 @@
+name: Threads phone TLS Meta SNI ingress RU+WG 7-minute no-PCAP observer
+on:
+  push:
+    branches: [diagnostics/threads-only-guarded-retest-20261110]
+    paths: [.github/workflows/threads-42820313463-tcp-ingress-observer-20261110.yml]
+permissions:
+  contents: read
+jobs:
+  arm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify parser then spawn scoped 7min read-only in-memory ClientHello counters
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/test-mnebydns-meta-packet-observer.py
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass
+          for role in ru de; do
+            if [[ "$role" == ru ]]; then export SSHPASS="$RU_PASS"; addr=188.120.254.223; iface=ens3
+            else export SSHPASS="$DE_PASS"; addr=89.125.90.101; iface=tg-relay; fi
+            unit="threads-ingress-$role-42820313463"
+            script="/tmp/$unit.py"
+            sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@"$addr" "test ! -e '$script' && cat > '$script'" < scripts/mnebydns-meta-packet-observer.py
+            sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@"$addr" "python3 -m py_compile '$script' && systemctl is-active --quiet 'mnebydns-meta-quic-$role-42820313463.service' && systemd-run --no-block --collect --unit '$unit' -p RuntimeMaxSec=440 -p MemoryMax=72M -p CPUQuota=30% /usr/bin/python3 '$script' --role '$role' --interface '$iface' --seconds 420 && sleep 3 && systemctl is-active --quiet '$unit.service' && journalctl -u '$unit.service' -n 12 -o cat --no-pager | grep -Fq 'meta_stage_$role'_capture_ready=true && echo threads_ingress_$role_live_capture_ready=true"
+          done
+          echo 'threads_TCP_ingress_counters_started=true'
+          echo 'threads_observer_in_memory_only_ends_after_420_seconds=true'
