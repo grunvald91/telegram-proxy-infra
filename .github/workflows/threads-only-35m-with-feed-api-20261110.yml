@@ -1,8 +1,8 @@
-name: "Threads 35m full feed guarded retry with shared API"
+name: "Threads 35m exact four observed Meta SNI hosts guarded trial"
 on:
   push:
     branches: [diagnostics/threads-only-guarded-retest-20261110]
-    paths: [ops/threads-only-feed-arm-20261110.txt]
+    paths: [ops/threads-observed-four-hosts-arm-20261110.txt]
 permissions:
   contents: read
 concurrency:
@@ -114,20 +114,27 @@ jobs:
           de_ssh "cp '$work/mnebydns-threads-api-add-20261110.py' '$apiwork/mnebydns-threads-api-add-20261110.py'"
           de_ssh "bash '$work/mnebydns-threads-api-live-stage-20261110.sh' '$id' '$apiwork/mnebydns-threads-api-add-20261110.py'"
           de_ssh "systemctl is-active --quiet 'mnebydns-threads-rollback-$id.timer'"
-          # Verify actual original TLS from RU over private WireGuard for shared API.
+          # Verify original TLS for ALL four exact feed hostnames through WG.
           ru_ssh 'python3 -' <<'PY'
-          import ssl,socket
-          host='i.instagram.com'
-          try:
-              with socket.create_connection(('10.66.77.1',443),timeout=7) as sock:
-                  sock.settimeout(7)
-                  with ssl.create_default_context().wrap_socket(sock,server_hostname=host) as tls:
-                      assert tls.getpeercert()
-              print('threads_shared_API_i_instagram_com_private_WG_TLS=PASS',flush=True)
-          except Exception as e:
-              raise SystemExit('Shared Threads API TLS route invalid: '+type(e).__name__)
+          import ssl,socket,concurrent.futures
+          hosts=('i.instagram.com','i-fallback.instagram.com',
+                 'test-gateway.instagram.com','z-m-gateway.facebook.com')
+          def check(host):
+              try:
+                  with socket.create_connection(('10.66.77.1',443),timeout=8) as sock:
+                      sock.settimeout(8)
+                      with ssl.create_default_context().wrap_socket(sock,server_hostname=host) as tls:
+                          return host,bool(tls.getpeercert()),'certificate_verified'
+              except Exception as e:return host,False,type(e).__name__
+          with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+              results=list(pool.map(check,hosts))
+          for host,ok,why in results:
+              print('threads_feed_WG_TLS_'+host+'='+why,flush=True)
+          if not all(ok for host,ok,why in results):
+              raise SystemExit('Threads shared feed TLS incomplete')
+          print('threads_shared_four_feed_hosts_private_WG_TLS=PASS',flush=True)
           PY
-          # Public DoT: confirm only Threads + one exact shared API host rebind;
+          # Public DoT: confirm only Threads + four exact shared feed hosts rebind;
           # all unrelated Instagram routes remain direct.
           python3 - <<'PY'
           import socket,ssl,struct,secrets
@@ -170,12 +177,16 @@ jobs:
                    'threads.net','www.threads.net','graph.threads.net']
           stable=['gemini.google.com','claude.ai','grok.com','x.com','www.tiktok.com']
           excluded=['graph.instagram.com','www.instagram.com','api.telegram.org']
-          # The ONE shared Instagram API hostname is needed by Threads feed.
-          c,ips=query('i.instagram.com')
-          assert c==0 and ips==[ru],('shared_api',c,ips)
-          c,ips=query('i.instagram.com',28)
-          assert c==0 and not ips,('shared_api_AAAA',c,ips)
-          print('threads_shared_feed_API_i_instagram_com_DoT=PASS',flush=True)
+          # These four names were directly observed in the 15:32 PCAP.
+          feed_hosts=('i.instagram.com','i-fallback.instagram.com',
+                      'test-gateway.instagram.com','z-m-gateway.facebook.com')
+          for host in feed_hosts:
+              c,ips=query(host)
+              assert c==0 and ips==[ru],('shared_feed_A',host,c,ips)
+              c,ips=query(host,28)
+              assert c==0 and not ips,('shared_feed_AAAA',host,c,ips)
+              print('threads_observed_feed_A_'+host+'=PASS',flush=True)
+          print('threads_shared_four_feed_hosts_DoT=PASS',flush=True)
           for host in threads:
               code,ips=query(host)
               ok=code==0 and ips==[ru if host=='www.threads.com' else de]
@@ -233,7 +244,7 @@ jobs:
           echo "threads_quic_rollback_deadline_UTC=$deadline"
           echo 'threads_non_Threads_DNS_routes_VPN_and_firewall_unchanged=true'
           echo 'threads_combined_DNS_and_QUIC_pilot_active_android_app_NOT_TESTED=true'
-          echo 'threads_ONLY_i_instagram_com_shared_feed_API_included=true'
+          echo 'threads_ONLY_four_captured_exact_feed_hosts_included=true'
           echo 'threads_UNCHANGED_other_6_working_routes=true'
-          echo 'threads_other_instagram_domains_unmodified=true'
+          echo 'threads_other_Meta_domains_unmodified=true'
           trap - EXIT
