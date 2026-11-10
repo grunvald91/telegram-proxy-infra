@@ -1,0 +1,113 @@
+name: MNEBYDNS Wi-Fi one-shot phone trial 2026-11-10
+on:
+  push:
+    branches:
+      - experiment/mnebydns-wifi-oneshot-20261110
+    paths:
+      - '.github/workflows/mnebydns-wifi-oneshot-20261110.yml'
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-wifi-one-shot-20261110
+  cancel-in-progress: false
+jobs:
+  single-phone-flow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify controlled phone probe and prepare pinned SSH
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS"
+          grep -q '^CAPTURE_LIMIT = 450$' scripts/mnebydns_phone_tcp_flow_probe.py
+          python3 -m py_compile scripts/mnebydns_phone_tcp_flow_probe.py
+          python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_phone_tcp_flow_probe.py' -v
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+      - name: Test one phone TCP connection with independent nft rollback
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          nonce="$(python3 -c 'import secrets;print(secrets.token_hex(12))')"
+          log="$RUNNER_TEMP/mnebydns-phone-one-shot.log"
+          timeout 600s sshpass -e ssh "${opts[@]}" root@188.120.254.223 "python3 - AUTO '$GITHUB_RUN_ID' '$nonce'" < scripts/mnebydns_phone_tcp_flow_probe.py > "$log" 2>&1 &
+          remote=$!
+          trap 'kill "$remote" 2>/dev/null || true; wait "$remote" 2>/dev/null || true' EXIT
+          ready=0
+          for n in $(seq 1 120); do
+            if grep -q '^phone_challenge_ready=true$' "$log" 2>/dev/null; then ready=1; break; fi
+            if ! kill -0 "$remote" 2>/dev/null; then break; fi
+            sleep 0.25
+          done
+          if [[ "$ready" != 1 ]]; then cat "$log"; echo 'phone_one_shot=SERVER_NOT_READY' >&2; exit 1; fi
+          echo 'phone_one_shot=READY_FOR_PHONE'
+          echo 'PHONE STEP A: On your Wi-Fi, open this exact HTTP challenge URL, without HTTPS upgrade:'
+          echo "http://188.120.254.223/mneby-$nonce"
+          echo 'PHONE STEP B: Then immediately open https://188.120.254.223/ on the SAME Wi-Fi.'
+          echo 'A certificate warning is not a successful Instagram test. Do not bypass it or enter credentials.'
+          seen=0
+          for n in $(seq 1 465); do
+            if grep -q '^phone_challenge_seen=true$' "$log" 2>/dev/null; then seen=1; break; fi
+            if ! kill -0 "$remote" 2>/dev/null; then break; fi
+            sleep 1
+          done
+          if [[ "$seen" == 1 ]]; then
+            echo 'phone_one_shot=HTTP_CHALLENGE_SEEN_OPEN_HTTPS_NOW'
+          else
+            echo 'phone_one_shot=NO_PHONE_CHALLENGE_OBSERVED'
+          fi
+          wait "$remote"
+          trap - EXIT
+          grep '^phone_' "$log" || true
+          grep -q '^phone_test_rule_absent=true$' "$log"
+          grep -q '^phone_original_queue_preserved=true$' "$log"
+          if grep -q '^phone_test=BASELINE_SYNACK_OR_ACK_SEEN_NO_FIREWALL_CHANGE$' "$log"; then
+            echo 'phone_one_shot=BASELINE_SYNACK_SEEN_NO_RULE_NEEDED'
+            exit 0
+          fi
+          if grep -q '^phone_test=NO_CHALLENGE_NO_FIREWALL_CHANGE$' "$log"; then
+            echo 'phone_one_shot=NO_PHONE_PARTICIPATION_NO_SERVER_CHANGE' >&2
+            exit 1
+          fi
+          grep -q '^phone_single_flow_rule_active=true$' "$log" || {
+            echo 'phone_one_shot=NO_MATCHING_TCP443_FLOW' >&2
+            exit 1
+          }
+          echo 'phone_one_shot=COMPLETE_WITH_RULE_ROLLBACK'
+      - name: Independent read-only Telegram and NFQUEUE health audit
+        if: always()
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS"
+          export SSHPASS="$RU_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyAlgorithms=ssh-ed25519
+            -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -' <<'PY'
+          import subprocess,sys
+          def run(args):
+              v=subprocess.run(args,capture_output=True,text=True,timeout=12)
+              if v.returncode:raise RuntimeError(args[0]+' audit failed')
+              return v.stdout
+          nft=run(['nft','-a','list','chain','inet','telegram_nfqws','post'])
+          q210=any('tcp sport 443' in l and 'to 210' in l for l in nft.splitlines())
+          clean='MNEBY_PHONE_TCP_' not in nft
+          telegram=subprocess.run(['systemctl','is-active','--quiet','telegram-nfqws.service'],timeout=10).returncode==0
+          nginx=subprocess.run(['systemctl','is-active','--quiet','nginx.service'],timeout=10).returncode==0
+          for k,v in [('queue210',q210),('no_test_rule',clean),('telegram_active',telegram),('nginx_active',nginx)]:
+              print('phone_post_'+k+'='+('PASS' if v else 'FAIL'),flush=True)
+          if not all((q210,clean,telegram,nginx)):sys.exit(1)
+          PY
