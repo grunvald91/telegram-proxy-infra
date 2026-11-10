@@ -4,6 +4,7 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/mnebydns-antigravity-live-verify-20261110.yml"
+      - "scripts/mnebydns-antigravity-live-readonly-20261110.py"
   pull_request:
     branches: [main]
     paths:
