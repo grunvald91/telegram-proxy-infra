@@ -1,0 +1,45 @@
+name: Threads full feed canary exact-host and rollback offline review
+on:
+  push:
+    branches: [diagnostics/threads-only-guarded-retest-20261110]
+    paths: [.github/workflows/threads-only-35m-feed-api-offline-check-20261110.yml]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify full feed canary DNS safety, correct shared API, QUIC regression and independent rollback
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-meta-quic.py scripts/test-mnebydns-meta-quic.py scripts/mnebydns-threads-api-add-20261110.py scripts/mnebydns-threads-only-render-20261110.py scripts/threads-h3-via-ru-20261110.py
+          python3 scripts/test-mnebydns-meta-quic.py
+          python3 scripts/mnebydns-threads-only-render-20261110.py self-test
+          python3 scripts/mnebydns-threads-api-add-20261110.py self-test
+          for f in scripts/mnebydns-meta-quic-stage.sh scripts/mnebydns-meta-quic-rollback.sh scripts/mnebydns-threads-only-stage-20261110.sh scripts/mnebydns-threads-only-rollback-20261110.sh scripts/mnebydns-threads-api-live-stage-20261110.sh; do bash -n "$f"; done
+          python3 - <<'PY'
+          from pathlib import Path
+          import yaml
+          p=Path('.github/workflows/threads-only-35m-with-feed-api-20261110.yml')
+          raw=p.read_text()
+          cfg=yaml.safe_load(raw)
+          trigger=cfg.get('on',cfg.get(True))
+          assert trigger['push']['paths']==['ops/threads-only-feed-arm-20261110.txt']
+          assert "date -u -d '+35 minutes'" in raw
+          assert "mnebydns-threads-api-live-stage-20261110.sh" in raw
+          assert "mnebydns-threads-api-add-20261110.py" in raw
+          assert "threads_shared_feed_API_i_instagram_com_DoT=PASS" in raw
+          assert "threads_shared_API_i_instagram_com_private_WG_TLS=PASS" in raw
+          assert "excluded=['graph.instagram.com','www.instagram.com','api.telegram.org']" in raw
+          assert "threads_other_instagram_domains_unmodified=true" in raw
+          assert "threads_combined_DNS_and_QUIC_test=PASS" in raw
+          assert "threads_known_www_threads_com_SNI_filtering_unresolved=" in raw
+          assert raw.count("mnebydns-meta-quic-ru-$id") >= 3
+          assert raw.count("mnebydns-meta-quic-de-$id") >= 3
+          assert raw.count("mnebydns-threads-rollback-$id") >= 2
+          assert "trap cleanup EXIT" in raw and "code!=0" in raw
+          print("threads_full_feed_original_rollback_and_one_shared_API=PASS",flush=True)
+          PY
