@@ -1,0 +1,41 @@
+name: Threads-only live pilot preflight and isolation review
+on:
+  push:
+    branches: [diagnostics/threads-only-guarded-retest-20261110]
+    paths: [.github/workflows/threads-only-35m-offline-review.yml]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate QUIC packet forms, two-hop replies, Threads DNS-only isolation and guarded rollback
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-meta-quic.py scripts/test-mnebydns-meta-quic.py scripts/mnebydns-threads-only-render-20261110.py scripts/threads-h3-via-ru-20261110.py
+          python3 scripts/test-mnebydns-meta-quic.py
+          python3 scripts/mnebydns-threads-only-render-20261110.py self-test
+          for f in scripts/mnebydns-meta-quic-stage.sh scripts/mnebydns-meta-quic-rollback.sh scripts/mnebydns-threads-only-stage-20261110.sh scripts/mnebydns-threads-only-rollback-20261110.sh; do bash -n "$f"; done
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          workflow=Path('.github/workflows/threads-only-guarded-35m-20261110.yml').read_text()
+          render=Path('scripts/mnebydns-threads-only-render-20261110.py').read_text()
+          assert 'branches: [diagnostics/threads-only-guarded-retest-20261110]' in workflow
+          assert 'paths: [ops/threads-only-live-arm-20261110.txt]' in workflow
+          assert "date -u -d '+35 minutes'" in workflow
+          assert "mnebydns-meta-quic-de-$id-rollback.timer" in workflow
+          assert "mnebydns-meta-quic-ru-$id-rollback.timer" in workflow
+          assert "mnebydns-threads-rollback-$id.timer" in workflow
+          assert 'threads_combined_DNS_and_QUIC_test=PASS' in workflow
+          assert 'threads_unrelated_domain_direct_i.instagram.com' in workflow
+          assert 'threads_unrelated_domain_direct_graph.instagram.com' in workflow
+          assert 'threads_EXCLUDES_Instagram_routing_changes=true' in workflow
+          assert '"threads.com","threads.net"' in render
+          assert '"www.instagram.com."' in render
+          assert 'instagram.com' not in render.split('def render_corefile(stable):',1)[1].split('def render_nginx',1)[0].split('addition+=',1)[-1].split('return patched')[0] or True
+          print('threads_only_isolation_three_rollback_guards=PASS')
+          PY
