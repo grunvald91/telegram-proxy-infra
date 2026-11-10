@@ -1,0 +1,36 @@
+name: "MNEBYDNS Antigravity 12 live DNS and TLS verification"
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/mnebydns-antigravity-live-verify-20261110.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/mnebydns-antigravity-live-verify-20261110.yml"
+      - "scripts/mnebydns-antigravity-live-readonly-20261110.py"
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-google-public-443-change
+  cancel-in-progress: false
+jobs:
+  verify:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Read-only live TLS and DoT route verification for each exact hostname
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          python3 -m py_compile scripts/mnebydns-antigravity-live-readonly-20261110.py
+          python3 scripts/mnebydns-antigravity-live-readonly-20261110.py
