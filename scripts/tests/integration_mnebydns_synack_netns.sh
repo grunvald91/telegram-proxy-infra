@@ -109,8 +109,10 @@ SERVER_PID=''
 
 # Independent timer smoke test: the exact tagged netns rule must disappear
 # without the test shell invoking iptables -D.
-if command -v systemd-run >/dev/null && systemctl list-jobs >/dev/null 2>&1; then
-    echo 'KERNEL-NETNS: independent systemd rollback timer'
+command -v systemd-run >/dev/null || { echo 'FAIL: systemd-run is required to verify rollback' >&2; exit 1; }
+systemctl list-jobs >/dev/null || { echo 'FAIL: independent timer check requires working systemd' >&2; exit 1; }
+echo 'KERNEL-NETNS: independent systemd rollback timer'
+{
     ip netns exec "$NS_SERVER" iptables -w -t mangle -I OUTPUT 1 "${RULE[@]}"
     SYSTEMD_UNIT="mnebydns-netns-rollback-$"
     IP_BIN="$(type -P ip)"
@@ -123,7 +125,5 @@ if command -v systemd-run >/dev/null && systemctl list-jobs >/dev/null 2>&1; the
         sleep .5
     done
     echo 'independent_systemd_watchdog=PASS'
-else
-    echo 'independent_systemd_watchdog=NOT_TESTED (runner has no systemd)'
-fi
+}
 echo 'KERNEL-NETNS=PASS native NFQUEUE, on-wire SYN-ACK+checksum, handler-death bypass, rollback'
