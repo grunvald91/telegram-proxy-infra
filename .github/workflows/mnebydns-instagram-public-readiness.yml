@@ -4,6 +4,8 @@ on:
     branches: [experiment/instagram-synack-window-canary-20261110]
     paths:
       - 'scripts/mnebydns_instagram_public_readiness.py'
+      - 'scripts/mnebydns_ig_sni_443_field_canary.py'
+      - 'scripts/tests/test_mnebydns_ig_sni_443_field_canary.py'
       - '.github/workflows/mnebydns-instagram-public-readiness.yml'
   workflow_dispatch:
 permissions:
