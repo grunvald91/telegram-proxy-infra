@@ -16,7 +16,7 @@ spec=importlib.util.spec_from_file_location("ig443_canary",BASE/"mnebydns_ig_sni
 canary=importlib.util.module_from_spec(spec)
 spec.loader.exec_module(canary)
 
-PEER="185.137.178.123"
+PEER="9.9.9.9"
 RUN="42887901234"
 TAG=canary.tag_for(RUN)
 
@@ -46,7 +46,7 @@ class ScopedAndroidCanary(unittest.TestCase):
 
     def test_nft_and_iptables_exact_peer_synack_only(self):
         nft=canary.nft_rule(PEER,TAG)
-        self.assertIn("ip saddr 188.120.254.223 ip daddr 185.137.178.123",nft)
+        self.assertIn("ip saddr 188.120.254.223 ip daddr 9.9.9.9",nft)
         self.assertIn("tcp sport 443",nft)
         self.assertIn("flags & (syn | ack) == (syn | ack)",nft)
         self.assertIn("ct reply packets 1-20 meta mark & 0x40000000 == 0",nft)
