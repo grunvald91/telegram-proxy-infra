@@ -434,6 +434,10 @@ def remove(item):
                 "last_error_code='REMOVAL_INTERRUPTED',updated_at=now()"
                 " WHERE id="+id+" AND revision="+rev+" AND status='REMOVING'")
             return
+    # A recovered remove must be proved on the live server as well.
+    # An old 'confirmed' sentinel alone is not sufficient to mark CANCELLED.
+    verified_live_confirmed(runid)
+    oracle_canary_check(domain,False)
     updated=sql("UPDATE dns_admin_domains SET status='CANCELLED',"
                 "confirmed_at=NULL,canary_expires_at=NULL,"
                 "verified_origin_ip=NULL,updated_at=now(),last_error_code=NULL"
