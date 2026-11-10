@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Add only the Threads-shared i.instagram.com API while the existing 35m owner
+# Add only four observed Threads feed dependency hosts while the existing 35m owner
 # pilot is armed; preserve its original rollback and exact-file guards.
 set -Eeuo pipefail
 (( EUID==0 )) || exit 2
@@ -84,7 +84,7 @@ cmp -s "$base/dns.pilot" "$live_dns"
 systemctl is-active --quiet "$name.timer"
 echo 'threads_shared_api_original_existing_rollback_remains_armed=true'
 echo "threads_shared_api_original_deadline_UTC=$(date -u -d "@$deadline" +'%Y-%m-%d %H:%M:%S UTC')"
-echo 'threads_shared_api_i_instagram_com_only_staged=true'
+echo 'threads_shared_api_four_exact_captured_hosts_only_staged=true'
 echo 'threads_shared_api_stable_other_routes_unmodified=true'
 trap - EXIT
 rm -rf -- "$scratch"
