@@ -135,6 +135,10 @@ def dns_q(host:str,kind=1)->tuple[int,list[str]]:
     rcode=buf[3]&15
     qd=int.from_bytes(buf[4:6],"big")
     an=int.from_bytes(buf[6:8],"big")
+    # Alternate address/service answers bypass the pinned SmartDNS edge.
+    # Checking only the parsed IPv4 list would silently miss these records.
+    if kind in (5,28,64,65) and an:
+        raise RuntimeError("DOMAIN_ALT_RR_NOT_SUPPRESSED")
     pos=12
     def skip_name(p):
         for _ in range(128):
@@ -164,7 +168,7 @@ def oracle_canary_check(domain:str,expect_rewrite:bool)->None:
     if not expect_rewrite and EDGE in ips:
         raise RuntimeError("DOMAIN_DOT_REWRITE_STILL_EFFECTIVE")
     if expect_rewrite:
-        for qtype in (28,65):
+        for qtype in (5,28,64,65):
             rcode,ipv4=dns_q(domain,qtype)
             if rcode!=0 or ipv4:
                 raise RuntimeError("DOMAIN_DOT_ALT_RR_INCONSISTENT")
@@ -209,9 +213,13 @@ def rollback(runid:str)->None:
     if not re.fullmatch(r"[1-9][0-9]{8,12}",runid):
         raise ValueError("Bad canary ID")
     base=BASE+"/"+runid
-    command=("test ! -s "+shlex.quote(base+"/rollback.sh")+
-             " || bash "+shlex.quote(base+"/rollback.sh")+" "+shlex.quote(base))
-    print(ssh("de",command,80))
+    # A missing rollback file or a confirmed-no-op is NOT a successful revert.
+    command=("test -s "+shlex.quote(base+"/rollback.sh")+
+             " && bash "+shlex.quote(base+"/rollback.sh")+" "+shlex.quote(base))
+    out=ssh("de",command,80)
+    if "owner_domain_canary_rollback_verified=true" not in out:
+        raise RuntimeError("ROLLBACK_NOT_VERIFIED")
+    print(out)
 
 
 def apply(item):
@@ -370,7 +378,10 @@ def remove(item):
 
 def cancel_canary(item,expired=False):
     id=item["id"];rev=item["revision"];runid=item["run"]
-    if runid:rollback(runid)
+    if not runid:
+        raise RuntimeError("Missing canary identifier, cannot verify rollback")
+    rollback(runid)
+    oracle_canary_check(item["domain"],False)
     if expired:
         sql("UPDATE dns_admin_domains SET status='FAILED',"
             "last_error_code='CANARY_EXPIRED_UNCONFIRMED',"
