@@ -1,0 +1,50 @@
+name: Threads 16h01 QUIC drops exact server timeline read only
+on:
+  push:
+    branches: [diagnostics/threads-only-guarded-retest-20261110]
+    paths: [.github/workflows/threads-42820313463-1601-udp-timeline-20261110.yml]
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Retrieve only historic aggregate counters around 16h01 MSK, never IP or SNI
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass
+          for role in ru de; do
+            if [[ "$role" == ru ]]; then export SSHPASS="$RU_PASS"; host=188.120.254.223
+            else export SSHPASS="$DE_PASS"; host=89.125.90.101; fi
+            sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o LogLevel=ERROR "root@$host" "python3 - '$role'" <<'PY'
+          import subprocess,re,sys,datetime
+          role=sys.argv[1]
+          unit=f'mnebydns-meta-quic-{role}-42820313463.service'
+          p=subprocess.run(['journalctl','--utc','-u',unit,
+              '--since','2026-11-10 12:59:00 UTC','--until','2026-11-10 13:04:30 UTC',
+              '-o','short-iso','--no-pager'],capture_output=True,text=True,timeout=10)
+          prev=None;changes=0
+          for line in p.stdout.splitlines():
+              fragment='meta_quic_'+role+'_active='
+              pos=line.find(fragment)
+              if pos<0:continue
+              payload=line[pos:]
+              data={}
+              for item in payload.split():
+                  k,sep,v=item.partition('=')
+                  if sep and v.isdecimal():
+                      if k==fragment[:-1]:k='active'
+                      data[k]=int(v)
+              watch=tuple(data.get(k,0) for k in ('admitted','rejected','rx','to_upstream','upstream_rx','client_tx'))
+              if watch!=prev:
+                  print(role+'_at_'+line[:26].replace(' ','_')+'_'+'_'.join(f'{k}{data.get(k,0)}' for k in ('admitted','rejected','rx','to_upstream','upstream_rx','client_tx')),flush=True)
+                  prev=watch;changes+=1
+          print(role+'_QUIC_state_change_samples='+str(changes),flush=True)
+          PY
+          done
