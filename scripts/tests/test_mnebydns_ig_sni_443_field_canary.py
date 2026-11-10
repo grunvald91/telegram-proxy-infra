@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Offline firewall-rule boundaries and independent cleanup tests."""
 import importlib.util
+import ipaddress
+import io
+import struct
+from contextlib import redirect_stdout
 from pathlib import Path
 import sys
 import unittest
@@ -15,6 +19,20 @@ spec.loader.exec_module(canary)
 PEER="185.137.178.123"
 RUN="42887901234"
 TAG=canary.tag_for(RUN)
+
+def wire(src,dst,sport,dport,flags,payload=b""):
+    ip=bytearray(20)
+    ip[0]=0x45
+    struct.pack_into("!H",ip,2,40+len(payload))
+    ip[9]=6
+    ip[12:16]=ipaddress.IPv4Address(src).packed
+    ip[16:20]=ipaddress.IPv4Address(dst).packed
+    tcp=bytearray(20+len(payload))
+    struct.pack_into("!HH",tcp,0,sport,dport)
+    tcp[12]=0x50
+    tcp[13]=flags
+    tcp[20:]=payload
+    return b"\0"*12+b"\x08\x00"+bytes(ip+tcp)
 
 class ScopedAndroidCanary(unittest.TestCase):
     def test_peer_and_runid_strict(self):
@@ -72,6 +90,26 @@ class ScopedAndroidCanary(unittest.TestCase):
              patch.object(canary,"chain",return_value=snap):
             with self.assertRaises(RuntimeError):
                 canary.cleanup(PEER,TAG)
+
+    def test_server_metadata_observer_counts_only_selected_peer_and_port(self):
+        obs=canary.OnePeerPacketCounts(PEER)
+        RU=canary.RU
+        obs.observe(wire(PEER,RU,55011,443,0x02))
+        obs.observe(wire(RU,PEER,443,55011,0x12))
+        obs.observe(wire(PEER,RU,55011,443,0x18,b"1234"))
+        obs.observe(wire(PEER,RU,55011,443,0x18,b"second data"))
+        obs.observe(wire(PEER,RU,55012,443,0x18,b"long ClientHello"))
+        obs.observe(wire("203.0.113.99",RU,55013,443,0x02))
+        obs.observe(wire(PEER,RU,55011,80,0x18,b"ignored HTTP"))
+        self.assertEqual((obs.inbound_syn,obs.outbound_synack,obs.inbound_payload,
+                          obs.inbound_first4,obs.inbound_first_other),
+                         (1,1,3,1,1))
+        output=io.StringIO()
+        with redirect_stdout(output):obs.output()
+        self.assertNotIn(PEER,output.getvalue())
+        self.assertNotIn("55011",output.getvalue())
+        self.assertNotIn("second data",output.getvalue())
+        self.assertIn("ig443_phone_first_data_4bytes=1",output.getvalue())
 
     def test_rollback_script_stdlib_only_imports(self):
         source=(BASE/"mnebydns_ig_sni_443_field_canary.py").read_text()
