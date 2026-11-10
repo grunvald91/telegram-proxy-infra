@@ -77,6 +77,7 @@ def main():
     nft = command(["nft", "list", "ruleset"], timeout=15)
     nft_ok = nft is not None and nft.returncode == 0
     boolout("nft_ruleset_readable", nft_ok)
+    mark("nft_inspection_complete_when_needed", backend != "nf_tables" or nft_ok)
     if nft_ok:
         mark("no_nft_canary_tag", TAG not in nft.stdout)
         mark("no_nft_queue_211", not bool(re.search(r"\bqueue(?:\s+num)?\s+211\b", nft.stdout)))
@@ -104,7 +105,12 @@ def main():
     )))
     # systemctl is-active is read-only and does not activate the timer.
     timer = command(["systemctl", "is-active", TIMER])
-    mark("rollback_timer_not_active", bool(timer and timer.returncode != 0))
+    mark("rollback_timer_not_active", bool(
+        timer and timer.returncode in (3, 4)
+        and timer.stdout.strip() in ("inactive", "unknown")
+    ))
+    manager = command(["systemctl", "list-jobs", "--no-pager"])
+    mark("systemd_manager_accessible", bool(manager and manager.returncode == 0))
     print("tcp_window_scaling_enabled=" + (
         pathlib.Path("/proc/sys/net/ipv4/tcp_window_scaling").read_text().strip()
         if pathlib.Path("/proc/sys/net/ipv4/tcp_window_scaling").exists() else "unknown"
