@@ -333,7 +333,7 @@ def canary(peer,runid):
                 if not iptables_present(peer,tag):
                     raise RuntimeError("Queue211 packet rule missing")
                 print("ig443_single_ipv4_peer_443_canary=ACTIVE",flush=True)
-                print("ig443_window_bytes=4",flush=True)
+                print("ig443_window4_configured_not_proven=true",flush=True)
                 print("ig443_duration_seconds="+str(TEST_TIME),flush=True)
                 counts=OnePeerPacketCounts(peer)
                 # AF_PACKET observes one exact peer/port on ens3. Unlike
