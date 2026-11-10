@@ -401,3 +401,53 @@ experimental acceptor.
 5. Only after step 4, design an independently reversible **dedicated ingress** approach for real Android app on TCP/443. This PR does not enable Instagram in DNS.
 
 References: [TCP RFC 9293](https://www.rfc-editor.org/rfc/rfc9293.html), [window scaling RFC 7323](https://www.rfc-editor.org/rfc/rfc7323.html), [kernel checksum offloads](https://docs.kernel.org/networking/checksum-offloads.html), [prior Instagram diagnostic PR #56](https://github.com/grunvald91/telegram-proxy-infra/pull/56).
+
+
+## 11 November 2026 — actual HTTPS/443 SNI segmentation experiment (not deployed)
+
+Earlier side-by-side SNI tests in the project discussion reported Instagram
+TLS SNI 0/6 vs control SNI 6/6, and QUIC SNI 0/4 vs control 4/4.
+This is strong evidence of an SNI-dependent failure on that test path.
+These tests do not prove which specific DPI implementation or every network.
+
+The proposal based on the supplied research is a bounded experiment with
+server-controlled segmentation of the phone's *original* ClientHello.
+The approach DOES NOT encrypt, substitute, or erase SNI. If the filtering
+device correctly reassembles TCP, it may still reject the connection.
+
+Implementation in this PR:
+- scripts/mnebydns_ig_sni_443_fragment_worker.py: strict per-peer SYN|ACK
+  Window=4 transformer on RU TCP/443, TCP checksum repaired, original
+  TLS payload untouched. NFQUEUE211 handler requires fail-open support.
+- scripts/mnebydns_ig_sni_443_field_canary.py: time-limited 65s test
+  for exactly one public IPv4; first arm independent systemd 100s rollback,
+  then install exact OUTPUT NFQUEUE211 and one exception *before* existing
+  NFQUEUE210 in the live telegram_nfqws chain. Does NOT stop/recreate
+  telegram-nfqws, DNS, Nginx, or WireGuard.
+- Per-peer AF_PACKET metadata: count real TCP SYN, SYN-ACK, client first
+  4-byte payload segments, and server response packets. Never log TLS
+  payload, SNI string, NAT source port, or original IPv4 address.
+- Tests: packet checksums, scope, fail-closed packet filters, mocked
+  rollback, original 18443 regression and REAL nftables+iptables rule
+  installation/cleanup in a disposable Linux network namespace.
+  Example CI: https://github.com/grunvald91/telegram-proxy-infra/actions/runs/42914972582
+
+Mandatory live release gates, NOT yet complete:
+1. Verify test Android's current public IPv4; a prior Wi-Fi IPv4 may
+   have changed. Shared CGNAT makes per-IP testing less isolated.
+2. Arrange a SHORT, INDEPENDENTLY GUARDED DNS and DE SNI route so that
+   the unchanged Instagram Lite app actually reaches RU:443. Existing
+   PR #79 is a DE-direct PREVIEW, not a live Android/RU route. A CoreDNS
+   global rewrite would affect other subscribers and must not be
+   activated without its own rollback and blast-radius review.
+3. During an opt-in test window on Wi-Fi, verify on-wire four-byte
+   first data segments, returned server TLS data, and real loaded Lite
+   feed on the phone with only Android Private DNS configured.
+4. After the timer expires, verify all test rules removed, original
+   Telegram queue210 intact, DoT and existing Gemini/Claude routes
+   unchanged. No global production enablement on synthetic success.
+5. Treat ECH, client-side VPN, and client-side Zapret as different
+   architectures; a DNS A/AAAA rewrite cannot force an unchanged
+   application to enable ECH or locally change its ClientHello.
+
+Status: CODE AND OFFLINE CI ONLY. No live RU/DE changes.
