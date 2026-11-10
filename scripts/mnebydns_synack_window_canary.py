@@ -81,7 +81,8 @@ def main() -> None:
         parser.error("Only dedicated port 18443 is permitted; distinct peers required")
     if not 1 <= args.queue <= 65535:
         parser.error("Invalid NFQUEUE number")
-    from mnebydns_nfq_failopen import run_queue
+    from mnebydns_nfq_failopen import run_queue, arm_parent_death_signal
+    arm_parent_death_signal()
     logging.basicConfig(level=logging.INFO)
     LOG.info("Experimental queue: %s:%d -> %s window=%d",
              args.server, args.port, args.client, args.window)
