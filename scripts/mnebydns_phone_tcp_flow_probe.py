@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Coordinated Android/Wi-Fi one-connection TCP443 test; no table rebuild.
+"""One-shot coordinated Android/Wi-Fi trial; no table rebuild.
 
 Run only from a manually dispatched GitHub Actions job with a participant
 at their phone. The HTTP/80 nonce proves only a fresh request from the
@@ -32,7 +32,7 @@ LOCK = Path("/run/lock/mnebydns-nfqws-guard-install.lock")
 ROOT = Path("/run/mnebydns-phone-flow")
 TABLE = ["inet", "telegram_nfqws", "post"]
 TAG_PREFIX = "MNEBY_PHONE_TCP_"
-CAPTURE_LIMIT = 150
+CAPTURE_LIMIT = 450
 LIVE_LIMIT = 30
 WATCHDOG_SECONDS = 75
 
@@ -101,6 +101,21 @@ def match_challenge(parsed, nonce):
     return (inbound and dport == 80 and
             payload.startswith(("GET /mneby-" + nonce + " ").encode("ascii")))
 
+def infer_peer_from_challenge(frame, nonce):
+    """Identify the publicly routable source of one fresh HTTP challenge.
+
+    Only a coordination signal, NOT authentication or device identification.
+    No source IP is printed or saved in a file.
+    """
+    if len(frame)<54 or frame[12:14]!=b"\\x08\\x00" or frame[14]>>4!=4:
+        return None
+    src=ipaddress.IPv4Address(frame[26:30])
+    if not src.is_global or src==RU:
+        return None
+    parsed=packet(frame, src.packed)
+    return src if match_challenge(parsed, nonce) else None
+
+
 def pick_syn(parsed):
     if not parsed:
         return None
@@ -157,8 +172,8 @@ def remove_own(tag):
 def main():
     if os.geteuid() != 0 or len(sys.argv) != 4:
         raise SystemExit("Usage: python3 - PHONE_PUBLIC_IPV4 RUN_ID CHALLENGE_HEX")
-    peer = ipaddress.IPv4Address(sys.argv[1])
-    if not peer.is_global or peer == RU:
+    peer = None if sys.argv[1] == "AUTO" else ipaddress.IPv4Address(sys.argv[1])
+    if peer is not None and (not peer.is_global or peer == RU):
         raise ValueError("Phone peer must have public IPv4 distinct from RU")
     runid, nonce = sys.argv[2:]
     if not re.fullmatch(r"\d{8,18}", runid) or not re.fullmatch(r"[0-9a-f]{16,32}", nonce):
@@ -183,11 +198,17 @@ def main():
             deadline = time.monotonic() + CAPTURE_LIMIT
             while time.monotonic() < deadline:
                 try:
-                    parsed = packet(s.recv(2048), peer.packed)
+                    frame=s.recv(2048)
                 except socket.timeout:
                     continue
-                if match_challenge(parsed, nonce):
-                    verified = True
+                if peer is None:
+                    candidate=infer_peer_from_challenge(frame, nonce)
+                    if candidate is not None:
+                        peer=candidate
+                        verified=True
+                        break
+                elif match_challenge(packet(frame,peer.packed), nonce):
+                    verified=True
                     break
             if not verified:
                 print("phone_test=NO_CHALLENGE_NO_FIREWALL_CHANGE", flush=True)
