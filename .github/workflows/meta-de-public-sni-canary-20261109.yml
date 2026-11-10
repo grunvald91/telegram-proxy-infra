@@ -1,0 +1,227 @@
+name: MNEBYDNS DE public Meta SNI 11m guarded TLS canary
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths: [.github/workflows/meta-de-public-sni-canary-20261109.yml]
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-google-public-443-change
+  cancel-in-progress: false
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Meta-only Nginx scripts before touching any server
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          bash -n scripts/mnebydns-meta-de-stage.sh scripts/mnebydns-meta-de-rollback.sh scripts/mnebydns-meta-de-public-stage.sh scripts/mnebydns-meta-de-public-rollback.sh
+          python3 scripts/mnebydns-meta-overlay.py self-test
+          echo 'de_public_meta_canary_static_preflight_pass=true'
+      - name: Route Meta SNI only on DE, validate public TLS and restore exact baseline
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass >/dev/null
+          id="$GITHUB_RUN_ID"
+          [[ "$id" =~ ^[0-9]{9,13}$ ]]
+          dework="/tmp/mnebydns-meta-de-$id"
+          publicwork="/tmp/mnebydns-meta-de-public-$id"
+          debase="/opt/mnebydns-experiment-backups/$id"
+          pubbase="/opt/mnebydns-meta-de-public-backups/$id"
+          # Independent expiry of the public route occurs BEFORE sidecar expiry.
+          public_deadline="$(date -u -d '+11 minutes' +'%Y-%m-%d %H:%M:%S UTC')"
+          sidecar_deadline="$(date -u -d '+15 minutes' +'%Y-%m-%d %H:%M:%S UTC')"
+          de_ssh() {
+            SSHPASS="$DE_PASS" sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o ServerAliveInterval=5 -o LogLevel=ERROR root@89.125.90.101 "$@"
+          }
+          ru_ssh() {
+            SSHPASS="$RU_PASS" sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o ServerAliveInterval=5 -o LogLevel=ERROR root@188.120.254.223 "$@"
+          }
+          restore() {
+            code=$?
+            trap - EXIT
+            echo 'DE_Meta_public_rollback_requested=true'
+            if ! de_ssh "test ! -s '$pubbase/rollback.sh' || bash '$pubbase/rollback.sh' '$pubbase'"; then
+              echo 'DE_public_443_rollback_NOT_VERIFIED=true';code=1
+            fi
+            if ! de_ssh "test ! -s '$debase/rollback.sh' || bash '$debase/rollback.sh' '$debase'"; then
+              echo 'DE_private_sidecar_rollback_NOT_VERIFIED=true';code=1
+            fi
+            if ! de_ssh "systemctl is-active --quiet nginx && systemctl is-active --quiet mnebydns-dot.service && cmp -s \"\$(cat /opt/mnebydns-stable-checkpoints/current)\"/nginx.stable /etc/nginx/nginx.conf && cmp -s \"\$(cat /opt/mnebydns-stable-checkpoints/current)\"/dns.stable /opt/mnebydns-dot/Corefile"; then
+              echo 'DE_Nginx_or_DNS_baseline_NOT_VERIFIED=true';code=1
+            else
+              echo 'DE_public_443_DNS_baseline_VERIFIED=true'
+            fi
+            echo "DE_meta_canary_final_exit=$code"
+            exit "$code"
+          }
+          trap restore EXIT
+          echo "DE_meta_public_rollback_UTC=$public_deadline"
+          echo "DE_meta_private_rollback_UTC=$sidecar_deadline"
+          de_ssh "test ! -e '$dework' && mkdir -m 700 '$dework'"
+          tar -czf - -C scripts mnebydns-meta-overlay.py mnebydns-four-google-canary.py mnebydns-meta-de-stage.sh mnebydns-meta-de-rollback.sh |
+            de_ssh "tar -xzf - -C '$dework'"
+          de_ssh "bash '$dework/mnebydns-meta-de-stage.sh' '$dework' '$sidecar_deadline'"
+          de_ssh "test ! -e '$publicwork' && mkdir -m 700 '$publicwork'"
+          tar -czf - -C scripts mnebydns-meta-de-public-stage.sh mnebydns-meta-de-public-rollback.sh |
+            de_ssh "tar -xzf - -C '$publicwork'"
+          de_ssh "bash '$publicwork/mnebydns-meta-de-public-stage.sh' '$publicwork' '$public_deadline'"
+          # Diagnose DE-side public map independently of RU→DE transport.
+          de_ssh 'python3 -' <<'PY'
+          import socket,ssl,concurrent.futures
+          names=['i.instagram.com','graph.instagram.com','threads.com']
+          targets=[('local_443','127.0.0.1',443),('private_19443','10.66.77.1',19443),
+                   ('self_public_443','89.125.90.101',443)]
+          def probe(x):
+              label,host,port,name=x
+              tcp=False;verified=False;error='none'
+              try:
+                  with socket.create_connection((host,port),timeout=6) as sock:
+                      tcp=True
+                      sock.settimeout(6)
+                      try:
+                          with ssl.create_default_context().wrap_socket(sock,server_hostname=name) as tls:
+                              verified=bool(tls.getpeercert())
+                      except Exception as e:error=type(e).__name__
+              except Exception as e:error=type(e).__name__
+              return label,name,tcp,verified,error
+          cases=[(label,host,port,name) for label,host,port in targets for name in names]
+          with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+              rows=list(pool.map(probe,cases))
+          for label,name,tcp,verified,error in rows:
+              key=label+'_'+name.replace('.','_')
+              print('de_meta_diag_'+key+'_tcp='+str(tcp).lower(),flush=True)
+              print('de_meta_diag_'+key+'_tls_verified='+str(verified).lower(),flush=True)
+              print('de_meta_diag_'+key+'_error='+error,flush=True)
+          PY
+          # Passive DE network metadata for three explicitly scoped RU TLS sessions.
+          # Fixed ephemeral client ports identify the test; no TLS contents are recorded.
+          de_ssh 'bash -s' <<'SH' &
+          set -Eeuo pipefail
+          if ! command -v tcpdump >/dev/null 2>&1; then
+            echo 'DE_public_tcpdump_available=false'
+            exit 0
+          fi
+          echo 'DE_public_tcpdump_available=true'
+          timeout -s TERM 19s tcpdump -i any -n -l 'tcp and host 188.120.254.223 and port 443 and (port 43121 or port 43122 or port 43123)' 2>/dev/null | python3 -c '
+          import re,sys,collections
+          data=collections.defaultdict(lambda:{"in_packets":0,"in_bytes":0,"out_packets":0,"out_bytes":0})
+          for row in sys.stdin:
+              m=re.search(r"\bIP\s+([\d.]+)\.(\d+)\s+>\s+([\d.]+)\.(\d+):.*\blength\s+(\d+)",row)
+              if not m:continue
+              src,sport,dst,dport,size=m.groups()
+              size=int(size)
+              port=int(sport) if src=="188.120.254.223" else int(dport)
+              if port not in (43121,43122,43123):continue
+              side="in" if src=="188.120.254.223" else "out"
+              data[port][side+"_packets"]+=1
+              data[port][side+"_bytes"]+=size
+          for port in (43121,43122,43123):
+              for key in ("in_packets","in_bytes","out_packets","out_bytes"):
+                  print("de_public_meta_capture_"+str(port)+"_"+key+"="+str(data[port][key]),flush=True)
+          ' || test "$?" -eq 124
+          SH
+          capture_pid=$!
+          ru_ssh 'bash -s' <<'SH' &
+          set -Eeuo pipefail
+          if ! command -v tcpdump >/dev/null 2>&1; then
+            echo 'RU_public_tcpdump_available=false'
+            exit 0
+          fi
+          echo 'RU_public_tcpdump_available=true'
+          timeout -s TERM 19s tcpdump -i any -n -l 'tcp and host 89.125.90.101 and port 443 and (port 43121 or port 43122 or port 43123)' 2>/dev/null | python3 -c '
+          import re,sys,collections
+          data=collections.defaultdict(lambda:{"out_packets":0,"out_bytes":0,"in_packets":0,"in_bytes":0})
+          for row in sys.stdin:
+              m=re.search(r"\bIP\s+([\d.]+)\.(\d+)\s+>\s+([\d.]+)\.(\d+):.*\blength\s+(\d+)",row)
+              if not m:continue
+              src,sport,dst,dport,size=m.groups()
+              port=int(sport) if src=="188.120.254.223" else int(dport)
+              if port not in (43121,43122,43123):continue
+              direction="out" if src=="188.120.254.223" else "in"
+              data[port][direction+"_packets"]+=1
+              data[port][direction+"_bytes"]+=int(size)
+          for port in (43121,43122,43123):
+              for k in ("out_packets","out_bytes","in_packets","in_bytes"):
+                  print("ru_public_meta_capture_"+str(port)+"_"+k+"="+str(data[port][k]),flush=True)
+          ' || test "$?" -eq 124
+          SH
+          ru_capture_pid=$!
+          sleep 3
+          ru_ssh 'python3 -' <<'PY'
+          import socket,ssl,concurrent.futures
+          de='89.125.90.101'
+          cases=[('i.instagram.com',43121),('graph.instagram.com',43122),('threads.com',43123)]
+          def test(item):
+              name,port=item
+              tcp=False;tls=False;error='none'
+              try:
+                  with socket.socket(socket.AF_INET,socket.SOCK_STREAM) as sock:
+                      sock.settimeout(6)
+                      sock.bind(('0.0.0.0',port))
+                      sock.connect((de,443))
+                      tcp=True
+                      try:
+                          with ssl.create_default_context().wrap_socket(sock,server_hostname=name) as t:
+                              tls=bool(t.getpeercert())
+                      except Exception as e:error=type(e).__name__
+              except Exception as e:error=type(e).__name__
+              return name,port,tcp,tls,error
+          with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+              results=list(pool.map(test,cases))
+          for name,port,tcp,tls,error in results:
+              print('ru_de_scoped_sni_port_'+str(port)+'_tcp='+str(tcp).lower(),flush=True)
+              print('ru_de_scoped_sni_port_'+str(port)+'_tls='+str(tls).lower(),flush=True)
+              print('ru_de_scoped_sni_port_'+str(port)+'_error='+error,flush=True)
+          PY
+          wait "$capture_pid"
+          wait "$ru_capture_pid"
+          # Independent public source; sockets use public DE IP rather than WireGuard.
+          ru_ssh 'python3 -' <<'PY'
+          import socket,ssl,subprocess,concurrent.futures
+          de='89.125.90.101'
+          route=subprocess.run(['ip','-4','route','get',de],capture_output=True,text=True,timeout=6)
+          if route.returncode or 'tg-relay' in route.stdout:raise SystemExit('non-independent DE public test route')
+          print('ru_to_de_public_direct_route=true',flush=True)
+          targets=['i.instagram.com','graph.instagram.com','threads.com',
+                   'gemini.google.com','chatgpt.com']
+          def check(host):
+              tcp=False;tls=False;err='none'
+              try:
+                  with socket.create_connection((de,443),timeout=7) as sock:
+                      tcp=True
+                      sock.settimeout(7)
+                      try:
+                          with ssl.create_default_context().wrap_socket(sock,server_hostname=host) as t:
+                              tls=bool(t.getpeercert())
+                      except Exception as exc:err=type(exc).__name__
+              except Exception as exc:err=type(exc).__name__
+              return host,tcp,tls,err
+          with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
+              results=list(pool.map(check,targets))
+          for host,tcp,tls,err in results:
+              key=host.replace('.','_')
+              print('de_public_canary_'+key+'_tcp='+str(tcp).lower(),flush=True)
+              print('de_public_canary_'+key+'_tls_verified='+str(tls).lower(),flush=True)
+              print('de_public_canary_'+key+'_error='+err,flush=True)
+          meta=[ok for host,tcp,ok,err in results if host in targets[:3]]
+          stable=[ok for host,tcp,ok,err in results if host in targets[3:]]
+          print('de_public_canary_meta_tls_success='+str(sum(meta)),flush=True)
+          print('de_public_canary_stable_tls_success='+str(sum(stable)),flush=True)
+          if not all(stable):raise SystemExit('existing stable Gemini/ChatGPT TLS regression')
+          if not all(meta):raise SystemExit('Meta public DE TLS still incomplete')
+          print('DE_public_Meta_3_plus_stable_2_TLS=PASS',flush=True)
+          PY
+          de_ssh "systemctl is-active --quiet 'mnebydns-meta-de-public-watchdog-$id.timer' && echo DE_public_rollback_timer_armed=true"
+          de_ssh "systemctl is-active --quiet 'mnebydns-meta-de-watchdog-$id.timer' && echo DE_private_rollback_timer_armed=true"
+          echo 'Meta_public_DE_test_finished_cleanly=true'
