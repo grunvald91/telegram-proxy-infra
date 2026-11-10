@@ -22,7 +22,7 @@ if test -f "$base/confirmed"; then
 else
   checkpoint="$(cat /opt/mnebydns-stable-checkpoints/current 2>/dev/null || true)"
   if [[ "$checkpoint" =~ ^/opt/mnebydns-stable-checkpoints/[0-9]+$ ]] &&
-     test -f "$base/domain"; then
+     test -f "$base/domain" && test "$(cat "$base/mode" 2>/dev/null)" = add; then
     domain="$(cat "$base/domain")"
     marker="MNEBYDNS_OWNER_EXACT_$(printf '%s' "$domain" | tr . _)"
     if grep -Fq "$marker" "$checkpoint/dns.stable" &&
