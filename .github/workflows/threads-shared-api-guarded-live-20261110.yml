@@ -1,0 +1,79 @@
+name: Threads feed single shared i.instagram.com host guarded live addition
+on:
+  push:
+    branches: [diagnostics/threads-only-guarded-retest-20261110]
+    paths: [.github/workflows/threads-shared-api-guarded-live-20261110.yml]
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-google-public-443-change
+  cancel-in-progress: false
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stage one shared API host inside existing Threads 35m guarded pilot
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS" && test -n "$RU_PASS"
+          python3 scripts/mnebydns-threads-api-add-20261110.py self-test
+          bash -n scripts/mnebydns-threads-api-live-stage-20261110.sh
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          rid=42801877302
+          work="/tmp/mnebydns-threads-api-$rid"
+          de_ssh() {
+            SSHPASS="$DE_PASS" sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@89.125.90.101 "$@"
+          }
+          ru_ssh() {
+            SSHPASS="$RU_PASS" sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@188.120.254.223 "$@"
+          }
+          de_ssh "test ! -e '$work' && mkdir -m 700 '$work'"
+          tar -czf - -C scripts mnebydns-threads-api-add-20261110.py mnebydns-threads-api-live-stage-20261110.sh | de_ssh "tar -xzf - -C '$work'"
+          de_ssh "bash '$work/mnebydns-threads-api-live-stage-20261110.sh' '$rid' '$work/mnebydns-threads-api-add-20261110.py'"
+          # Certificate validation through the original private RU->DE WG stream.
+          ru_ssh 'python3 -' <<'PY'
+          import socket,ssl
+          host='i.instagram.com'
+          for ip,label in [('10.66.77.1','WG_DE'),('188.120.254.223','RU_public')]:
+              try:
+                  with socket.create_connection((ip,443),timeout=6) as plain:
+                      plain.settimeout(6)
+                      with ssl.create_default_context().wrap_socket(plain,server_hostname=host) as tls:
+                          print('threads_shared_API_'+label+'_cert_verified=true',flush=True)
+              except Exception as e:
+                  print('threads_shared_API_'+label+'_error='+type(e).__name__,flush=True)
+                  if label=='WG_DE':raise
+          PY
+          # Validate public DoT end-to-end and independently armed expiry.
+          python3 - <<'PY'
+          import socket,ssl,secrets,struct
+          host='i.instagram.com'
+          tid=secrets.randbits(16)
+          q=b''.join(bytes((len(z),))+z.encode('ascii') for z in host.split('.'))+b'\x00'
+          packet=struct.pack('!HHHHHH',tid,256,1,0,0,0)+q+struct.pack('!HH',1,1)
+          with socket.create_connection(('89.125.90.101',853),timeout=9) as plain:
+              plain.settimeout(9)
+              with ssl.create_default_context().wrap_socket(plain,server_hostname='dns.mnebyvpn.site') as tls:
+                  tls.sendall(struct.pack('!H',len(packet))+packet)
+                  n=tls.recv(2)
+                  if len(n)!=2:raise ValueError('DoT no length')
+                  size=struct.unpack('!H',n)[0]
+                  wire=b''
+                  while len(wire)<size:
+                      more=tls.recv(size-len(wire))
+                      if not more:raise ValueError('DoT short reply')
+                      wire+=more
+          assert wire[:2]==struct.pack('!H',tid) and (wire[3]&15)==0
+          assert socket.inet_aton('188.120.254.223') in wire
+          print('threads_shared_API_DoT_A_to_RU=PASS',flush=True)
+          PY
+          de_ssh "systemctl is-active --quiet 'mnebydns-threads-rollback-$rid.timer' && systemctl is-active --quiet 'mnebydns-meta-quic-de-$rid-rollback.timer' && echo threads_API_existing_DE_DNS_and_QUIC_rollback_active=true"
+          ru_ssh "systemctl is-active --quiet 'mnebydns-meta-quic-ru-$rid-rollback.timer' && echo threads_API_existing_RU_QUIC_rollback_active=true"
+          echo 'threads_shared_i_instagram_only_live_for_original_35min_window=true'
+          echo 'threads_owner_android_test_NOT_YET_DONE=true'
