@@ -1,0 +1,7 @@
+MNEBYDNS Meta owner-controlled canary
+Request: review then retry Instagram and Threads on Android.
+Date: 2026-11-10
+Guard: 28 minutes after start, independent RU and DE rollback watchdogs.
+Preflight: https://github.com/grunvald91/telegram-proxy-infra/actions/runs/42793685055
+Post-review CI: https://github.com/grunvald91/telegram-proxy-infra/actions/runs/42793549960
+No permanent promotion; stable six routes remain guarded.
