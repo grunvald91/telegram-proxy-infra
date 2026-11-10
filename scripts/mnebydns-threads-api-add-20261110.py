@@ -71,7 +71,10 @@ def self_test():
     assert all(n.count(host+" $ssl_preread_server_name:443;")==1 for host in HOSTS)
     assert "www[.]threads[.]com" in d
     assert "default 127.0.0.1:443;" in n
-    assert "facebook.com" not in d+n
+    assert "graph.facebook.com" not in d+n
+    assert "graph.instagram.com" not in d+n
+    assert "www.instagram.com" not in d+n
+    assert all(d.count(host.replace(".","[.]"))>=0 for host in HOSTS)
     try:render_dns(d)
     except ValueError:pass
     else:raise AssertionError("Double-patch allowed")
