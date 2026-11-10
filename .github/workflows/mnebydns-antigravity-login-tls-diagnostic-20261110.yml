@@ -1,0 +1,36 @@
+name: "MNEBYDNS accounts Google TLS origin-versus-edge read-only"
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/mnebydns-antigravity-login-tls-diagnostic-20261110.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/mnebydns-antigravity-login-tls-diagnostic-20261110.yml"
+      - "scripts/mnebydns-antigravity-login-tls-diagnostic-20261110.py"
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-google-public-443-change
+  cancel-in-progress: false
+jobs:
+  read-only:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compare Google accounts TLS from both servers without modifications
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          python3 -m py_compile scripts/mnebydns-antigravity-login-tls-diagnostic-20261110.py
+          python3 scripts/mnebydns-antigravity-login-tls-diagnostic-20261110.py
