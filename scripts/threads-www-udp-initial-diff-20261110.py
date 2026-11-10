@@ -43,6 +43,7 @@ def selftest():
 def send(host,port,count):
     selftest()
     seen=set()
+    open_sockets=[]
     for n in range(count):
         items=cases()
         random.Random(293+n).shuffle(items)
@@ -51,18 +52,23 @@ def send(host,port,count):
             sent=0
             error="none"
             try:
-                with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as sock:
-                    sock.settimeout(2)
-                    sent=sock.sendto(data,(host,port))
-                    localport=sock.getsockname()[1]
-                    assert localport not in seen, "local ephemeral UDP port was reused; abort"
-                    seen.add(localport)
-                    time.sleep(.08)
+                sock=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+                sock.settimeout(2)
+                sent=sock.sendto(data,(host,port))
+                localport=sock.getsockname()[1]
+                assert localport not in seen, "local ephemeral UDP port was reused; abort"
+                seen.add(localport)
+                # Keep all probe UDP sockets open to prevent ephemeral port reuse
+                # during the 36 simultaneous capture correlations.
+                open_sockets.append(sock)
+                time.sleep(.08)
             except OSError as e:
                 error=type(e).__name__+"_"+str(e.errno)
             print("udp_trial="+label+" local_port="+str(localport)+
                   " sent="+str(sent)+" error="+error,flush=True)
             time.sleep(.10)
+    for sock in open_sockets:
+        sock.close()
 
 if __name__=="__main__":
     p=argparse.ArgumentParser()
