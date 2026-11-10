@@ -1,0 +1,49 @@
+name: MNEBYDNS NFQUEUE210 SYN-ACK guard offline CI
+on:
+  push:
+    branches:
+      - fix/mnebydns-nfqws210-synack-guard-20261110
+    paths:
+      - 'scripts/mnebydns_nfqws_synack_guard_render.py'
+      - 'scripts/tests/test_mnebydns_nfqws_synack_guard_render.py'
+      - 'scripts/tests/integration_mnebydns_nfqws_guard_restart_netns.sh'
+      - 'scripts/tests/integration_mnebydns_nfqws_guard_real_tcp_netns.sh'
+      - '.github/workflows/mnebydns-nfqws210-synack-guard.yml'
+  pull_request:
+    paths:
+      - 'scripts/mnebydns_nfqws_synack_guard_render.py'
+      - 'scripts/tests/test_mnebydns_nfqws_synack_guard_render.py'
+      - 'scripts/tests/integration_mnebydns_nfqws_guard_restart_netns.sh'
+      - 'scripts/tests/integration_mnebydns_nfqws_guard_real_tcp_netns.sh'
+      - '.github/workflows/mnebydns-nfqws210-synack-guard.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  offline-unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate opt-in generator renderer
+        run: |
+          python3 -m py_compile scripts/mnebydns_nfqws_synack_guard_render.py
+          python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_nfqws_synack_guard_render.py' -v
+          python3 scripts/mnebydns_nfqws_synack_guard_render.py --check legacy-mtproxy/live-snapshot/server188/usr/local/sbin/telegram-nfqws-rules
+  isolated-kernel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install Linux nftables namespace test dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq iproute2 nftables
+      - name: Verify service-style nft generator rebuild and rollback in Linux netns
+        run: sudo bash scripts/tests/integration_mnebydns_nfqws_guard_restart_netns.sh
+      - name: Verify only enrolled peer SYN-ACK hits guard under real TCP
+        run: sudo bash scripts/tests/integration_mnebydns_nfqws_guard_real_tcp_netns.sh
