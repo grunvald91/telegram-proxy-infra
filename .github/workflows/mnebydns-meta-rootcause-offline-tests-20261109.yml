@@ -1,5 +1,5 @@
 name: MNEBYDNS Meta root-cause full offline regression and nginx syntax
-# Review 2026-11-10: RFC9000 Initial frame order and segmented TCP ClientHello regression.
+# Review 2026-11-10: after live runtime alert, syslog session logging replaces invalid /dev/stdout.
 on:
   push:
     branches: [diagnostics/mnebydns-meta-rootcause-20261109]
@@ -82,6 +82,6 @@ jobs:
           sed -i 's/listen 10.66.77.1:19443;/listen 127.0.0.1:19443;/' "$work/output/proxy.meta"
           sudo install -d -m 700 /run/mnebydns-meta-pilot
           sudo nginx -t -c "$work/output/proxy.meta"
-          grep -F 'access_log /dev/stdout meta_stage;' "$work/output/proxy.meta"
+          grep -F 'access_log syslog:server=unix:/run/systemd/journal/dev-log,tag=mnebydns-meta,nohostname meta_stage;' "$work/output/proxy.meta"
           grep -F 'worker_connections 384' "$work/output/proxy.meta"
           echo 'meta_DE_isolated_Nginx_config_syntax=PASS'
