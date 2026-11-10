@@ -12,6 +12,9 @@ concurrency:
   cancel-in-progress: false
 jobs:
   controlled-ab:
+    # DEPRECATED: historical runner-only A/B; disabled to avoid unsafe reruns.
+    # Use mnebydns-android-wifi-field-test.yml instead.
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
