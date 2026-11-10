@@ -243,6 +243,20 @@ def live_checkpoint_unchanged()->bool:
         return False
 
 
+def rollback_or_unchanged(runid:str)->None:
+    """Recover safely even if a job died before installing rollback.sh.
+
+    A missing script must not trap a queued row forever when the live
+    Nginx/CoreDNS are byte-identical to the verified stable checkpoint.
+    """
+    try:
+        rollback(runid)
+    except Exception:
+        if not live_checkpoint_unchanged():
+            raise RuntimeError("OWNER_ROUTE_ROLLBACK_UNVERIFIED")
+        print("owner_domain_unchanged_baseline_verified=true",flush=True)
+
+
 def apply(item):
     if not RUNID.isdigit() or not (9<=len(RUNID)<=13):
         raise ValueError("Invalid GitHub RUN_ID")
@@ -296,15 +310,7 @@ def apply(item):
         print("owner_domain_CANARY_expires_UTC="+deadline,flush=True)
     except Exception as exc:
         print("owner_domain_CANARY_error_class="+type(exc).__name__,flush=True)
-        try:
-            rollback(RUNID)
-        except Exception:
-            # Before staging a rollback script, a byte-identical stable
-            # checkpoint is independent evidence that nothing was applied.
-            if not live_checkpoint_unchanged():
-                print("owner_domain_ROLLBACK_NOT_VERIFIED=true",flush=True)
-                raise
-            print("owner_domain_no_route_was_applied=true",flush=True)
+        rollback_or_unchanged(RUNID)
         update_error(item,"CANARY_PREFLIGHT_OR_DEPLOY_FAILED")
         raise
 
@@ -419,7 +425,7 @@ def remove(item):
         except Exception:
             try:
                 if not is_confirmed(runid):
-                    rollback(runid)
+                    rollback_or_unchanged(runid)
             except Exception:
                 print("owner_domain_removal_rollback_UNVERIFIED=true",flush=True)
                 raise
@@ -432,7 +438,7 @@ def remove(item):
         runid=item["run"]
         if not runid:raise RuntimeError("Missing removal instance")
         if not is_confirmed(runid):
-            rollback(runid)
+            rollback_or_unchanged(runid)
             sql("UPDATE dns_admin_domains SET status='ACTIVE',"
                 "last_error_code='REMOVAL_INTERRUPTED',updated_at=now()"
                 " WHERE id="+id+" AND revision="+rev+" AND status='REMOVING'")
@@ -497,7 +503,10 @@ def main():
     elif status=="PROBING":
         # Crash recovery: never accept orphaned tests as permanent.
         if int(time.time())-int(item["updated"] or 0)>12*60:
-            if item["run"]:rollback(item["run"])
+            if item["run"]:
+                rollback_or_unchanged(item["run"])
+            elif not live_checkpoint_unchanged():
+                raise RuntimeError("INTERRUPTED_OWNER_DEPLOY_ROLLBACK_UNVERIFIED")
             update_error(item,"INTERRUPTED_OWNER_DEPLOY")
         else:
             print("owner_domain_probe_in_progress=true",flush=True)
