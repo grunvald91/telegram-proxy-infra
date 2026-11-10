@@ -73,6 +73,15 @@ class OwnerDomainConfirmContracts(TestCase):
         rollback.assert_called_once_with("42808637895")
         self.assertFalse(any("status='CANCELLED'" in q for q in statements))
 
+    def test_expired_canary_has_priority_over_queued_add(self):
+        # A pending new domain must not indefinitely hide an expired canary.
+        with patch.object(owner, "sql", return_value="") as db:
+            self.assertIsNone(owner.get_task())
+        query = db.call_args.args[0]
+        expired = query.index("WHEN status='CANARY' AND canary_expires_at<=now() THEN 0")
+        add = query.index("WHEN status='APPLY_REQUESTED' THEN 6")
+        self.assertLess(expired, add)
+
     def test_confirmation_recovery_command_checks_both_pilot_files(self):
         with patch.object(owner, "ssh", return_value="true") as remote:
             self.assertTrue(owner.is_confirmed("42808637895"))
