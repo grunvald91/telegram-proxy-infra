@@ -78,7 +78,9 @@ done
     exit 4
 }
 # The rollback command is self-contained and does not depend on the repo file.
-ROLLBACK_CMD="iptables -w -t mangle -D OUTPUT -s $SERVER -d $CLIENT -p tcp --sport $PORT --tcp-flags SYN,ACK SYN,ACK -m comment --comment $TAG -j NFQUEUE --queue-num $QUEUE --queue-bypass 2>/dev/null || true"
+IPTABLES_BIN="$(type -P iptables)"
+[[ "$IPTABLES_BIN" == /* ]] || { echo "iptables must be an absolute executable" >&2; exit 3; }
+ROLLBACK_CMD="$IPTABLES_BIN -w -t mangle -D OUTPUT -s $SERVER -d $CLIENT -p tcp --sport $PORT --tcp-flags SYN,ACK SYN,ACK -m comment --comment $TAG -j NFQUEUE --queue-num $QUEUE --queue-bypass 2>/dev/null || true"
 systemd-run --quiet --collect --unit "$UNIT" --on-active="${WATCHDOG}s" /usr/bin/bash -c "$ROLLBACK_CMD"
 # Timer is installed BEFORE any packet enters NFQUEUE.
 iptables -w -t mangle -I OUTPUT 1 "${RULE[@]}"
