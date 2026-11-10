@@ -1,0 +1,23 @@
+name: MNEBYDNS owner exact-domain renderer offline contracts
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - ".github/workflows/mnebydns-owner-domain-offline-20261110.yml"
+      - "scripts/mnebydns-owner-domain-render-20261110.py"
+permissions:
+  contents: read
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run exact-domain renderer roundtrip and destination/hostname deny checks
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-owner-domain-render-20261110.py
+          python3 scripts/mnebydns-owner-domain-render-20261110.py self-test
+          echo 'owner_domain_no_live_server_changes=true'
