@@ -21,12 +21,14 @@ ip link set "mgs$$" netns "$NS_SERVER"
 ip link set "mgc$$" netns "$NS_CLIENT"
 ip -n "$NS_SERVER" link set "mgs$$" name ens3
 ip -n "$NS_SERVER" address add 188.120.254.223/32 dev ens3
-ip -n "$NS_CLIENT" address add 8.8.4.4/32 dev "mgc$$"
+ip -n "$NS_CLIENT" address add 8.8.4.4/32 dev "mgc$"
+ip -n "$NS_CLIENT" address add 1.1.1.1/32 dev "mgc$"
 ip -n "$NS_SERVER" link set lo up
 ip -n "$NS_SERVER" link set ens3 up
 ip -n "$NS_CLIENT" link set lo up
 ip -n "$NS_CLIENT" link set "mgc$$" up
 ip -n "$NS_SERVER" route add 8.8.4.4/32 dev ens3
+ip -n "$NS_SERVER" route add 1.1.1.1/32 dev ens3
 ip -n "$NS_CLIENT" route add 188.120.254.223/32 dev "mgc$$"
 printf '8.8.4.4\n' > "$TMP/peer"
 python3 "$ROOT/scripts/mnebydns_nfqws_synack_guard_render.py" \
@@ -37,11 +39,12 @@ ip netns exec "$NS_SERVER" python3 -u - "$TMP/ready" <<'PY' &
 import socket,sys
 s=socket.socket()
 s.bind(("188.120.254.223",443))
-s.listen(1)
+s.listen(2)
 open(sys.argv[1],"w").write("READY\n")
 s.settimeout(8)
-with s.accept()[0] as conn:
-    conn.sendall(b"test\n")
+for i in range(2):
+    with s.accept()[0] as conn:
+        conn.sendall(b"test\n")
 s.close()
 PY
 SERV_PID=$!
@@ -53,15 +56,20 @@ done
 [[ -f "$TMP/ready" ]]
 ip netns exec "$NS_CLIENT" python3 - <<'PY'
 import socket
-with socket.create_connection(("188.120.254.223",443),timeout=5) as s:
-    assert s.recv(128)==b"test\n"
+for source in ("8.8.4.4","1.1.1.1"):
+    with socket.socket() as s:
+        s.bind((source,0))
+        s.settimeout(5)
+        s.connect(("188.120.254.223",443))
+        assert s.recv(128)==b"test\n"
 PY
 wait "$SERV_PID"; SERV_PID=""
 CHAIN="$(ip netns exec "$NS_SERVER" nft -a list chain inet telegram_nfqws post)"
 HIT="$(grep 'MNEBYDNS_SYNACK_CANARY_PEER_V1' <<<"$CHAIN" | sed -nE 's/.*counter packets ([0-9]+) bytes.*/\1/p')"
-[[ "$HIT" =~ ^[0-9]+$ ]] && (( HIT > 0 )) || {
+[[ "$HIT" == 1 ]] || {
     echo "FAIL guard did not match genuine kernel TCP SYN-ACK" >&2
     exit 1
 }
 echo "nfqws_real_synack_guard_match_packets=$HIT"
 echo "nfqws_real_tcp_connect=PASS"
+echo "nfqws_nonlisted_client_bypass_counter_unchanged=PASS"
