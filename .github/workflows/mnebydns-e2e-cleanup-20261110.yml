@@ -1,0 +1,46 @@
+name: "MNEBYDNS E2E exact test-row emergency cleanup (no DNS writes)"
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/mnebydns-e2e-cleanup-20261110.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-google-public-443-change
+  cancel-in-progress: false
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cancel only orphaned E2E test row if live config is unchanged
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no)
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 '
+            set -Eeuo pipefail
+            root=$(cat /opt/mnebydns-stable-checkpoints/current)
+            (cd "$root" && sha256sum -c stable-manifest.sha256 >/dev/null)
+            cmp -s "$root/dns.stable" /opt/mnebydns-dot/Corefile
+            cmp -s "$root/nginx.stable" /etc/nginx/nginx.conf
+            cmp -s "$root/proxy.stable" /etc/mnebydns-googlepilot/nginx.conf
+            ! grep -Fq MNEBYDNS_OWNER_EXACT_www_rfc-editor_org /opt/mnebydns-dot/Corefile
+            ! grep -Fq MNEBYDNS_OWNER_EXACT_www_rfc-editor_org /etc/nginx/nginx.conf
+            echo owner_e2e_test_route_absent=true
+          '
+          export SSHPASS="$RU_PASS"
+          query="UPDATE dns_admin_domains SET status='CANCELLED',canary_run_id=NULL,canary_expires_at=NULL,last_error_code='E2E_ABORT_CLEANED',updated_at=now() WHERE domain='www.rfc-editor.org' AND product='e2e-test' AND status IN ('APPLY_REQUESTED','PROBING','FAILED') RETURNING id;"
+          out="$(sshpass -e ssh "${opts[@]}" root@188.120.254.223 "docker exec mnebyvpn-stage-postgres psql -XqAt -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage -c $(printf %q "$query")")"
+          [[ "$out" =~ ^[0-9]+$ ]] || { echo "::error::Row cancellation not proven"; exit 2; }
+          echo 'owner_e2e_orphan_row_cancelled=true'
+          query="SELECT status FROM dns_admin_domains WHERE domain='www.rfc-editor.org' AND product='e2e-test';"
+          current="$(sshpass -e ssh "${opts[@]}" root@188.120.254.223 "docker exec mnebyvpn-stage-postgres psql -XqAt -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage -c $(printf %q "$query")")"
+          test "$current" = CANCELLED
+          echo 'owner_e2e_final_db_status=CANCELLED'
