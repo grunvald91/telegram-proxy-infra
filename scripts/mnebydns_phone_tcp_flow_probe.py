@@ -225,7 +225,7 @@ def main():
             print("phone_baseline_synack="+str(baseline_synack),flush=True)
             print("phone_baseline_ack="+str(baseline_ack),flush=True)
             if baseline_synack or baseline_ack:
-                print("phone_test=ALREADY_REACHABLE_NO_FIREWALL_CHANGE",flush=True)
+                print("phone_test=BASELINE_SYNACK_OR_ACK_SEEN_NO_FIREWALL_CHANGE",flush=True)
                 return
             # The first SYN might have been lost; a later retransmission
             # from the same observed NAT source port can match this rule.
