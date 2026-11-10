@@ -1,47 +1,61 @@
-# Instagram Android Private DNS — scoped server-side SYN-ACK experiment
+# MNEBYDNS Instagram SNI experiment — isolated SYN-ACK canary
 
-**Status:** offline prototype, **NOT deployed**, **NOT proven against Android ISP DPI**.
+**Status: experimental only. Not deployed on either VPS. Android Instagram E2E not verified.**
 
-## Why this is not the report's production configuration
+## What changed after PR #68 review
 
-Production MNEBYDNS routes through **CoreDNS**, not Unbound. Do not replace its active DNS configuration, Nginx Stream maps, WireGuard, or general UDP/443 firewall policy. Keep working Gemini/Claude/Grok/X/TikTok routes intact. Existing public DNS tests intentionally confirm that Instagram and Threads have *not* been enabled as production services.
+The canary **never intercepts production TCP/443**. It creates its own TCP listener on **188.120.254.223:18443**, which merely reads incoming data from one approved public test IP and does not implement TLS or forward traffic. This supports testing whether a specially modified SYN-ACK changes the TCP segmentation of a ClientHello sent with SNI `i.instagram.com`. It does **not** prove the official Android Instagram app can use this port; ordinary Android Private DNS only changes name resolution and will still use port 443.
 
-The proposed report's broad `iptables -I INPUT -p udp --dport 443 -j REJECT` can break unrelated traffic, and cannot affect packets already dropped by the ISP. Its global NFQUEUE rule would also affect every customer of the shared port 443. Replacing the SYN-ACK Window Scale TCP option with NOP without updating Linux's TCP state creates a mismatch in negotiated window scale: **we do not do it**.
+The packet processor parses only IPv4 TCP SYN-ACK packets from this dedicated port to the selected test IPv4. It rewrites only the advertised TCP receive window (4 bytes) and recalculates the TCP checksum; TCP Window Scale and other TCP/IP headers are preserved. Actual first-client-data length remains a **hypothesis** requiring packet capture.
 
-The experimental daemon changes **only** `Window` in an outbound TCP SYN-ACK belonging to one explicitly allowed test IPv4 and recomputes the TCP checksum. The IPv4 header, TCP options (including Window Scale), and TLS payload are untouched. There is no promise that the client will send 4 bytes first. Linux's next ACK may advertise a larger window, and different Android stacks handle it differently. This is precisely what the on-wire test must measure.
+The queue uses **libnetfilter_queue** directly, explicitly enables kernel `NFQA_CFG_F_FAIL_OPEN` and aborts startup if the kernel rejects the flag. The Bash launcher waits for the queue's verified ready marker and the dedicated listener before inserting any firewall rule. The `--queue-bypass` rule is an additional protection for a missing daemon, **not** a substitute for kernel FAIL_OPEN on queue overflow. See [libnetfilter_queue](https://www.netfilter.org/projects/libnetfilter_queue/doxygen/html/group__Queue.html).
 
-## Offline test
+The installer holds an exclusive `flock`, checks for stale tagged rules and pending watchdogs, and **schedules an independent systemd-run timer** before inserting its single `mangle OUTPUT` rule. Normal exit removes the rule; the timer issues the same idempotent deletion after 150 seconds even if the launching shell is killed. A `SIGKILL`, unexpected host shutdown, or external persistence of firewall rules remains an operational risk; verify removal before any follow-up trial. The watchdog command is self-contained and does not require a checked-out Git repository at its firing time.
+
+## Prerequisites (read-only inspection first)
+
+- Only operate the designated RU VPS when explicitly approved; **do not deploy to production** on CI success alone
+- Linux kernel with `NFQA_CFG_F_FAIL_OPEN`, native `libnetfilter_queue`, `iptables`, `systemd-run`, `flock`, Python 3 and elevated privilege
+- Ensure `iptables` backend matches live firewall, and there are no existing rules or listeners for test port 18443, queue 211, or marker `MNEBYDNS_SYNACK_CANARY_211`
+- Do not change CoreDNS, working Gemini/Claude/Grok/X/TikTok rules, Nginx maps, WireGuard or the global UDP/443 policy
+- Capture only necessary packet headers; monitor live app availability separately
+
+## Offline tests
 
 ```sh
-python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_synack_window_canary.py' -v
+python3 -m unittest discover -s scripts/tests -p 'test_mnebydns*.py' -v
 bash -n scripts/mnebydns-synack-window-canary.sh
+python3 -m py_compile scripts/mnebydns_synack_window_canary.py scripts/mnebydns_synack_listener.py scripts/mnebydns_nfq_failopen.py
 ```
 
-## Guarded two-minute on-wire test (NOT production rollout)
-
-1. On RU VPS, identify the **public source IPv4** of a test device from server-side observed metadata. Never put phone identifiers or packet payloads in the repo.
-2. Ensure kernel is using `iptables` rules on the actual egress path. Check current mangle OUTPUT/NFQUEUE/port 443 listeners **read-only**. Ensure the test client has a known rollback path and `python3-netfilterqueue` is installed. Do not install from within this canary.
-3. From an interactive privileged session on the RU VPS, after ensuring the client is ready to make an HTTPS connection, run:
+## Optional two-minute controlled TCP test — not a production fix
 
 ```sh
-sudo MNEBYDNS_CANARY=YES bash scripts/mnebydns-synack-window-canary.sh TEST_CLIENT_PUBLIC_IPV4
+sudo MNEBYDNS_CANARY=YES bash scripts/mnebydns-synack-window-canary.sh TEST_PUBLIC_IPV4
 ```
 
-The script installs a **single client-IP-scoped** SYN-ACK rule with `--queue-bypass`, runs for at most 120 seconds, and removes its rule on exit. No DNS rewrites, upstream changes, cron jobs, services, or Nginx reloads. `--queue-bypass` only bypasses when no queue listener is present; it does **not** replace a rollback plan for a stalled handler. Use a second privileged shell if necessary to remove the tagged rule.
+From a DIFFERENT test machine (preferably the same mobile ISP path) during the canary window:
 
-Capture just packet headers during this window, carefully scoped to test public IP, and confirm (a) SYN-ACK `win 4`, (b) the **first actual data segment length**, (c) later ACK window updates, (d) whether the complete ClientHello reaches RU, and (e) whether unrelated 443 traffic and five stable services remain unaffected. Remove packet captures after analysis if not needed.
+```sh
+curl -vk --connect-to i.instagram.com:443:188.120.254.223:18443 https://i.instagram.com/
+```
 
-## Interpretation and next gate
+The diagnostic TCP listener intentionally does not complete TLS; curl will ultimately time out or report an SSL error. **This is expected.** Capture the SYN-ACK and actual data segment sizes on the RU VPS; verify the presence of a full ClientHello rather than relying on the timing of the curl failure. The simple listener logs only accepted byte counts, never payload. Dedicated port 18443 still needs to be reachable through the provider firewall; do not open the shared 443 port.
 
-- SYN-ACK `win 4` without subsequent 4-byte ClientHello: **clamp hypothesis not confirmed**. Do not modify production DNS.
-- First tiny segment reaches RU but next does not: **consistent with** reassembly/filtering upstream; alone it does not identify TSPU hardware or prove the ISP's exact DPI implementation.
-- Both arrive at RU: the tested connection is transport-delivered, **not yet proof the app works**. Check Nginx SNI preread, the RU→DE tunnel and authentic Instagram TLS end-to-end separately.
-- Only after a controlled mobile ISP test and app feed/reels/direct tests should a time-limited, host-specific DNS canary be considered. Keep previous working routes unchanged.
+### Emergency/manual rollback
 
-## Technical references
+```sh
+sudo MNEBYDNS_ROLLBACK=YES bash scripts/mnebydns-synack-window-canary.sh TEST_PUBLIC_IPV4
+```
 
-- TCP receive-window semantics: https://www.rfc-editor.org/rfc/rfc9293.html
-- TCP Window Scale negotiation: https://www.rfc-editor.org/rfc/rfc7323.html
-- Geneva server-only evasion research: https://www.cs.umd.edu/~dml/papers/geneva_sigcomm20.pdf
-- QUIC Initial encryption visibility: https://www.rfc-editor.org/rfc/rfc9001.html
-- Project's diagnostic reference: https://github.com/grunvald91/telegram-proxy-infra/pull/56
+Inspect the tagged rules after cleanup and independently after the watchdog deadline; do not infer success from a script exit alone. The timer does not undo external rules created by other operators.
+
+## Acceptance gates
+
+1. Offline tests and CI green.
+2. Read-only server inventory: firewall backend, queue availability and test port verified.
+3. Independent rollback validated in a disposable network namespace/test host before production.
+4. Controlled on-wire SYN-ACK receive window, TCP segment lengths, checksum and subsequent window update captured and reviewed.
+5. Only after step 4, design an independently reversible **dedicated ingress** approach for real Android app on TCP/443. This PR does not enable Instagram in DNS.
+
+References: [TCP RFC 9293](https://www.rfc-editor.org/rfc/rfc9293.html), [window scaling RFC 7323](https://www.rfc-editor.org/rfc/rfc7323.html), [kernel checksum offloads](https://docs.kernel.org/networking/checksum-offloads.html), [prior Instagram diagnostic PR #56](https://github.com/grunvald91/telegram-proxy-infra/pull/56).
