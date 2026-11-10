@@ -1,0 +1,37 @@
+name: Threads passive TCP ClientHello path 9min counters
+on:
+  push:
+    branches: [diagnostics/threads-only-guarded-retest-20261110]
+    paths: [.github/workflows/threads-42811200019-passive-tcp-trace-20261110.yml]
+permissions:
+  contents: read
+jobs:
+  arm_readonly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test observer and arm temporary in-memory packet counters on public RU and private DE
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-meta-packet-observer.py
+          python3 scripts/test-mnebydns-meta-packet-observer.py
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass
+          for role in ru de; do
+            if [[ "$role" == ru ]]; then
+              export SSHPASS="$RU_PASS"; ip=188.120.254.223; iface=ens3
+            else
+              export SSHPASS="$DE_PASS"; ip=89.125.90.101; iface=tg-relay
+            fi
+            unit="threads-feed-observer-$role-42811200019"
+            work="/tmp/$unit.py"
+            sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR "root@$ip" "test ! -e '$work' && cat > '$work'" < scripts/mnebydns-meta-packet-observer.py
+            sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR "root@$ip" "python3 -m py_compile '$work'; systemctl is-active --quiet 'mnebydns-meta-quic-$role-42811200019.service' && systemd-run --no-block --collect --unit='$unit' -p RuntimeMaxSec=600 -p MemoryMax=72M -p CPUQuota=30% /usr/bin/python3 '$work' --role '$role' --interface '$iface' --seconds 560 >/dev/null; sleep 2; systemctl is-active --quiet '$unit.service' && echo '$role'_threads_feed_observer_active=true"
+          done
+          echo 'threads_in_memory_TCP_TLS_and_QUIC_observers_armed=true'
+          echo 'threads_observers_exit_independently_with_no_PCAP_persistence=true'
