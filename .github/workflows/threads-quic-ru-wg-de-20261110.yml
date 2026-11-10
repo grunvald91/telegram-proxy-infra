@@ -1,4 +1,4 @@
-name: Threads QUIC public RU to private WG DE: guarded 18m live relay
+name: "Threads QUIC public RU to private WG DE: guarded 18m live relay"
 on:
   pull_request:
     types: [opened, synchronize, reopened]
