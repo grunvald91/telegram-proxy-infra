@@ -3,6 +3,9 @@ on:
   pull_request:
     paths:
       - 'scripts/mnebydns_synack_window_canary.py'
+      - 'scripts/mnebydns_instagram_queue210_synack_ab.py'
+      - 'scripts/mnebydns_ig_queue210_codespace_ab.sh'
+      - 'scripts/tests/test_mnebydns_instagram_queue210_ab.py'
       - 'scripts/mnebydns_synack_netns_probe.py'
       - 'scripts/mnebydns_instagram_ru_readonly_preflight.py'
       - 'scripts/mnebydns_instagram_ru_ingress_reach.sh'
@@ -28,9 +31,9 @@ jobs:
       - name: Offline canary tests
         run: python3 -m unittest discover -s scripts/tests -p 'test_mnebydns*.py' -v
       - name: Bash syntax
-        run: bash -n scripts/mnebydns-synack-window-canary.sh scripts/mnebydns_instagram_ru_ingress_reach.sh
+        run: bash -n scripts/mnebydns-synack-window-canary.sh scripts/mnebydns_instagram_ru_ingress_reach.sh scripts/mnebydns_ig_queue210_codespace_ab.sh
       - name: Python syntax
-        run: python3 -m py_compile scripts/mnebydns_synack_window_canary.py scripts/mnebydns_synack_listener.py scripts/mnebydns_nfq_failopen.py scripts/mnebydns_synack_netns_probe.py scripts/mnebydns_instagram_ru_readonly_preflight.py
+        run: python3 -m py_compile scripts/mnebydns_synack_window_canary.py scripts/mnebydns_synack_listener.py scripts/mnebydns_nfq_failopen.py scripts/mnebydns_synack_netns_probe.py scripts/mnebydns_instagram_ru_readonly_preflight.py scripts/mnebydns_instagram_queue210_synack_ab.py
   kernel-netns:
     runs-on: ubuntu-latest
     timeout-minutes: 8
