@@ -1,0 +1,121 @@
+name: MNEBYDNS Android Wi-Fi single TCP flow field test (manual only)
+on:
+  workflow_dispatch:
+    inputs:
+      phone_public_ipv4:
+        description: 'Phone public IPv4 observed on Wi-Fi (NOT GitHub Runner IP)'
+        required: true
+        type: string
+      access_network:
+        description: 'Network type under test'
+        type: choice
+        required: true
+        options:
+          - wifi
+          - cellular
+      confirmation:
+        description: 'Enter PHONE_READY to authorize one 5-tuple test'
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-phone-field-test-exclusive
+  cancel-in-progress: false
+jobs:
+  field-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      PHONE_PEER: ${{ inputs.phone_public_ipv4 }}
+      ACCESS_NETWORK: ${{ inputs.access_network }}
+      CONFIRMATION: ${{ inputs.confirmation }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Fail-closed offline preflight and explicit live test approval
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS"
+          test "$CONFIRMATION" = 'PHONE_READY'
+          python3 - "$PHONE_PEER" <<'PY'
+          import ipaddress,sys
+          peer=ipaddress.IPv4Address(sys.argv[1])
+          if not peer.is_global or peer.compressed=='188.120.254.223':
+              raise SystemExit('Phone public IPv4 invalid or equals RU server')
+          print('phone_ipv4_format_valid=true')
+          PY
+          python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_phone_tcp_flow_probe.py' -v
+          python3 -m py_compile scripts/mnebydns_phone_tcp_flow_probe.py
+          echo "network_tested=$ACCESS_NETWORK"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+      - name: Coordinate phone challenge, trace one TCP flow, independently rollback
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          NONCE="$(python3 -c 'import secrets;print(secrets.token_hex(12))')"
+          echo 'phone_test=STARTING_READ_ONLY_PREFLIGHT'
+          logfile="$RUNNER_TEMP/mnebydns-phone-test.log"
+          timeout 250s sshpass -e ssh "${opts[@]}" root@188.120.254.223 "python3 - '$PHONE_PEER' '$GITHUB_RUN_ID' '$NONCE'" < scripts/mnebydns_phone_tcp_flow_probe.py > "$logfile" 2>&1 &
+          monitor=$!
+          trap 'kill "$monitor" 2>/dev/null || true; wait "$monitor" 2>/dev/null || true' EXIT
+          ready=0
+          for n in $(seq 1 100); do
+            if grep -q '^phone_challenge_ready=true' "$logfile" 2>/dev/null; then ready=1; break; fi
+            if ! kill -0 "$monitor" 2>/dev/null; then break; fi
+            sleep 0.3
+          done
+          if [[ "$ready" != 1 ]]; then cat "$logfile"; echo 'phone_test=NOT_READY' >&2; exit 1; fi
+          echo 'phone_test=READY_FOR_WIFI_OR_CELLULAR'
+          echo 'PHONE STEP A: open the HTTP challenge URL exactly as printed below (not HTTPS):'
+          echo "http://188.120.254.223/mneby-$NONCE"
+          echo 'PHONE STEP B: immediately afterward open https://188.120.254.223/ from the same Wi-Fi/mobile network.'
+          echo 'A browser certificate error is NOT proof of Instagram success. Do not enter data.'
+          echo 'Use normal browser back/retry if HTTPS fails, during the short test window.'
+          challenge=0
+          for n in $(seq 1 160); do
+            if grep -q '^phone_challenge_seen=true' "$logfile" 2>/dev/null; then challenge=1; break; fi
+            if ! kill -0 "$monitor" 2>/dev/null; then break; fi
+            sleep 1
+          done
+          if [[ "$challenge" == 1 ]]; then echo 'phone_test=CHALLENGE_OBSERVED_OPEN_HTTPS_NOW'; else echo 'phone_test=CHALLENGE_NOT_OBSERVED'; fi
+          wait "$monitor"
+          trap - EXIT
+          grep -E '^(phone_|generator_).*' "$logfile" || true
+          grep -q '^phone_test_rule_absent=true$' "$logfile"
+          grep -q '^phone_original_queue_preserved=true$' "$logfile"
+          grep -q '^phone_single_flow_rule_active=true$' "$logfile" || { echo 'phone_test=INCOMPLETE_NO_MATCHED_HTTPS_SYN'; exit 1; }
+          echo 'phone_test=COMPLETED_SCOPE_AND_CLEANUP_VERIFIED'
+      - name: Independent read-only postcheck of server and Telegram
+        if: always()
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS"
+          export SSHPASS="$RU_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -' <<'PY'
+          import pathlib,subprocess,sys
+          def read(args):
+              p=subprocess.run(args,capture_output=True,text=True,timeout=12)
+              if p.returncode:raise SystemExit('postcheck command failed')
+              return p.stdout
+          table=read(['nft','-a','list','chain','inet','telegram_nfqws','post'])
+          rule=any('tcp sport 443' in l and 'to 210' in l and 'bypass' in l for l in table.splitlines())
+          no_guard='MNEBY_PHONE_TCP_' not in table
+          worker=subprocess.run(['systemctl','is-active','--quiet','telegram-nfqws.service'],timeout=9).returncode==0
+          nginx=subprocess.run(['systemctl','is-active','--quiet','nginx.service'],timeout=9).returncode==0
+          tests={'queue210_preserved':rule,'phone_guard_absent':no_guard,'telegram_active':worker,'nginx_active':nginx}
+          for k,v in tests.items():print('phone_postcheck_'+k+'='+('PASS' if v else 'FAIL'),flush=True)
+          if not all(tests.values()):sys.exit(1)
+          PY
