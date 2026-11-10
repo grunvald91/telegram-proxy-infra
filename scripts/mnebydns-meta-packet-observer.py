@@ -27,7 +27,8 @@ META_SUFFIXES = ('instagram.com', 'cdninstagram.com', 'instagr.am', 'ig.me',
                  'fbcdn.net', 'fb.com', 'meta.com', 'meta.ai', 'igsonar.com',
                  'fbsbx.com', 'instagramstatic.com', 'igcdn.com', 'fbcdn.com')
 MAX_PCAP_FRAME = 8192
-MAX_TCP_STATE = 30000
+MAX_TCP_STATE = 1024
+MAX_TCP_HELLO_BUFFER = 16384
 
 
 def read_int(data: bytes, offset: int, fmt: str):
@@ -122,11 +123,13 @@ def decode_frame(frame: bytes, linktype: int):
             head = ((frame[cursor+12] >> 4) * 4)
             if head < 20 or len(frame) < cursor + head:return None
             flags = frame[cursor+13]
+            seq = struct.unpack_from('!I', frame, cursor+4)[0]
             payload = frame[cursor+head:]
         else:
             flags = 0
+            seq = None
             payload = frame[cursor+8:]
-        return version,src,dst,protocol,sport,dport,flags,payload
+        return version,src,dst,protocol,sport,dport,flags,payload,seq
     except (struct.error, ValueError):
         return None
 
@@ -144,7 +147,7 @@ class Observer:
         if x is None:
             self.c['unparsed']+=1
             return
-        version,src,dst,proto,sport,dport,flags,data=x
+        version,src,dst,proto,sport,dport,flags,data,seq=x
         if version == 4 and dst==self.ip and (proto,dport) in ((6,self.tcp_port),(17,self.udp_port)):
             direction='in'
         elif version == 4 and src==self.ip and (proto,sport) in ((6,self.tcp_port),(17,self.udp_port)):
@@ -170,16 +173,44 @@ class Observer:
         self.c['tcp_payload_bytes_'+direction]+=len(data)
         if direction=='in':
             key=(src,sport,dst,dport)
-            if key not in self.sessions:
+            state=self.sessions.get(key)
+            if state is None:
                 if len(self.sessions)>=MAX_TCP_STATE:self.sessions.popitem(last=False)
-                self.sessions[key]=False
-            if not self.sessions[key]:
-                hello,meta=tls_clienthello_name(data)
-                if hello:
-                    self.sessions[key]=True
-                    self.c['tcp_clienthello_'+direction]+=1
-                    if meta:self.c['tcp_clienthello_meta_'+direction]+=1
-                    else:self.c['tcp_clienthello_other_or_ech_'+direction]+=1
+                state={'next_seq':None,'buf':bytearray(),'done':False}
+                self.sessions[key]=state
+            if state['done']:return
+            buf=state['buf']
+            if not buf:
+                # Do not claim SNI absent when the first data is not TLS.
+                if not data.startswith(b'\x16\x03'):return
+                state['next_seq']=seq
+            next_seq=state['next_seq']
+            if seq==next_seq:
+                piece=data
+            elif seq is not None and next_seq is not None and 0 < next_seq-seq < len(data):
+                # Accept a retransmitted overlapping TCP segment.
+                piece=data[next_seq-seq:]
+            elif seq is not None and next_seq is not None and seq < next_seq and next_seq-seq >= len(data):
+                return  # exact retransmission
+            else:
+                self.c['tcp_hello_out_of_order_in']+=1
+                return
+            if len(buf)+len(piece)>MAX_TCP_HELLO_BUFFER:
+                self.c['tcp_hello_over_buffer_limit_in']+=1
+                state['done']=True
+                buf.clear()
+                return
+            buf.extend(piece)
+            state['next_seq']=(next_seq+len(piece))&0xffffffff
+            hello,meta=tls_clienthello_name(buf)
+            if hello:
+                state['done']=True
+                buf.clear()
+                self.c['tcp_clienthello_'+direction]+=1
+                if meta:self.c['tcp_clienthello_meta_'+direction]+=1
+                else:self.c['tcp_clienthello_other_or_ech_'+direction]+=1
+            elif len(buf)>=5 and len(buf)<5+int.from_bytes(buf[3:5],'big'):
+                self.c['tcp_hello_fragment_in']+=1
 
     def report(self, final=False):
         p='meta_stage_'+self.role+'_'+('FINAL' if final else 'WINDOW')+'_'
@@ -188,7 +219,8 @@ class Observer:
               'tcp_payload_packets_in','tcp_payload_packets_out','tcp_payload_bytes_in',
               'tcp_payload_bytes_out','tcp_reset_in','tcp_reset_out',
               'udp_in','udp_out','udp_quic_v1_initial_in',
-              'udp_other_long_header_in','unparsed')
+              'udp_other_long_header_in','tcp_hello_fragment_in',
+              'tcp_hello_out_of_order_in','tcp_hello_over_buffer_limit_in','unparsed')
         print(' '.join(f'{p}{k}={self.c[k]}' for k in keys),flush=True)
 
 
