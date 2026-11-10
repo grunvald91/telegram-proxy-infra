@@ -87,7 +87,7 @@ def render_proxy() -> str:
         "    proxy_connect_timeout 7s;\n"
         "    proxy_timeout 90s;\n"
         "    proxy_buffer_size 16k;\n"
-        "    access_log /dev/stdout meta_stage;\n"
+        "    access_log syslog:server=unix:/run/systemd/journal/dev-log,tag=mnebydns-meta,nohostname meta_stage;\n"
         "  }\n"
         "}\n"
     )
@@ -114,7 +114,7 @@ def self_test() -> None:
     assert "listen "+WG_PRIVATE+";" in proxy
     assert "listen 0.0.0.0" not in proxy and "listen 443;" not in proxy
     assert "default 127.0.0.1:1;" in proxy
-    assert "access_log /dev/stdout meta_stage;" in proxy
+    assert "access_log syslog:server=unix:/run/systemd/journal/dev-log,tag=mnebydns-meta,nohostname meta_stage;" in proxy
     assert "sent_to_origin=$upstream_bytes_sent" in proxy
     assert "$remote_addr" not in proxy and "$request" not in proxy
     for blocked in ("telegram.org","googlevideo.com","anthropic.com","tiktokv.com"):
