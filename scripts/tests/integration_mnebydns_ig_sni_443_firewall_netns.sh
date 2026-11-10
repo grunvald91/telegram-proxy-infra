@@ -30,11 +30,8 @@ PY
 ip netns exec "$NS" nft --check -f "$DIR/rule.nft"
 ip netns exec "$NS" nft -f "$DIR/rule.nft"
 ip netns exec "$NS" nft -a list chain inet telegram_nfqws post > "$DIR/nft-live"
-echo "ig443_ci_netns_nft_rules_begin"
-cat "$DIR/nft-live"
-echo "ig443_ci_netns_nft_rules_end"
 grep -F 'MNEBY_IG_FRAG443_42999999999' "$DIR/nft-live" >/dev/null
-grep -E 'queue.*210.*bypass' "$DIR/nft-live" >/dev/null
+grep -E 'queue.*(bypass.*210|210.*bypass)' "$DIR/nft-live" >/dev/null
 ip netns exec "$NS" iptables -w -t mangle -I OUTPUT 1 \
   -s 188.120.254.223 -d 9.9.9.9 -p tcp --sport 443 \
   --tcp-flags SYN,ACK SYN,ACK -m comment --comment MNEBY_IG_FRAG443_42999999999 \
@@ -54,6 +51,6 @@ HANDLE="$(grep -F 'MNEBY_IG_FRAG443_42999999999' "$DIR/before-remove" | sed -n -
 ip netns exec "$NS" nft delete rule inet telegram_nfqws post handle "$HANDLE"
 ip netns exec "$NS" nft -a list chain inet telegram_nfqws post > "$DIR/after-remove"
 ! grep -Fq 'MNEBY_IG_FRAG443_' "$DIR/after-remove"
-grep -E 'queue.*210.*bypass' "$DIR/after-remove" >/dev/null
+grep -E 'queue.*(bypass.*210|210.*bypass)' "$DIR/after-remove" >/dev/null
 ! ip netns exec "$NS" iptables -w -t mangle -S OUTPUT | grep -Fq 'MNEBY_IG_FRAG443_'
 echo 'ig443_kernel_scoped_rollback_and_original_queue210=PASS'
