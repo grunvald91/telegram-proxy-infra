@@ -21,18 +21,20 @@ BEFORE_REMOVE="""    apply)
             [ -f "$SYNACK_FILE" ] && [ -r "$SYNACK_FILE" ] || {
                 echo "Invalid SYN-ACK peer configuration" >&2; exit 2;
             }
-            [ "$(stat -c %u "$SYNACK_FILE")" = 0 ] || {
-                echo "SYN-ACK canary peer file must be root owned" >&2; exit 2;
-            }
-            SYNACK_CLIENT="$(cat "$SYNACK_FILE")"
-            SYNACK_CLIENT="$(python3 - "$SYNACK_CLIENT" <<'PY'
-import ipaddress,sys
+            SYNACK_CLIENT="$(python3 - "$SYNACK_FILE" <<'PY'
+import ipaddress,os,stat,sys
+from pathlib import Path
 try:
-    ip=ipaddress.IPv4Address(sys.argv[1])
+    p=Path(sys.argv[1])
+    s=p.lstat()
+    if not stat.S_ISREG(s.st_mode) or s.st_uid!=0 or (s.st_mode & 0o022):
+        raise ValueError("peer file must be regular, root-owned and not group/world-writable")
+    value=p.read_text().strip()
+    ip=ipaddress.IPv4Address(value)
     if not ip.is_global or str(ip)=="188.120.254.223":
         raise ValueError("not an allowed public peer")
     print(ip)
-except (ValueError,IndexError) as exc:
+except (ValueError,IndexError,OSError) as exc:
     raise SystemExit("Invalid SYN-ACK canary peer: "+str(exc))
 PY
 )" || exit 2
