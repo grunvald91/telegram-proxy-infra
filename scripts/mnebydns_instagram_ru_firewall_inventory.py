@@ -118,16 +118,17 @@ def nft_443_rule_summary():
         hm=re.search(r"\bhook\s+(input|output|prerouting|postrouting|forward)\b",line)
         if hm:
             hook=hm.group(1)
-        if re.search(r"\btcp\s+sport\s+443\b",line):
+        sport443=bool(re.search(r"\btcp\s+sport\s+443\b",line))
+        src_match=bool(re.search(r"\b(?:saddr|daddr)\b",line))
+        if sport443:
             target=next((x for x in ("drop","reject","accept","return","queue","dnat","snat","redirect","jump")
                          if re.search(r"\b"+x+r"\b",line)), "other")
             print(f"nft_sport443_rule=table:{table},chain:{chain},hook:{hook},target:{target},"
-                  f"source_match:{str(bool(re.search(r'\b(?:saddr|daddr)\b',line))).lower()},"
-                  f"ct_state:{str('ct state' in line).lower()},mark:{str('mark' in line).lower()}")
+                  f"source_match:{str(src_match).lower()},ct_state:{str('ct state' in line).lower()},"
+                  f"mark:{str('mark' in line).lower()}")
         if hook=="output" and re.search(r"\b(drop|reject)\b",line):
             print(f"nft_output_reject_rule=table:{table},chain:{chain},"
-                  f"sport443:{str(bool(re.search(r'tcp\s+sport\s+443\b',line))).lower()},"
-                  f"source_scoped:{str(bool(re.search(r'\b(?:saddr|daddr)\b',line))).lower()}")
+                  f"sport443:{str(sport443).lower()},source_scoped:{str(src_match).lower()}")
     print("nft_rule_context=READ_ONLY_COMPLETE")
 
 def host_checks():
