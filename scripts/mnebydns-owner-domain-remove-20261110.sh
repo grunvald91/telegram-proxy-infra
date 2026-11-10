@@ -90,7 +90,16 @@ cmp -s "$base/nginx.pilot" "$nginx"
 cp -p "$base/dns.pilot" "$dns.owner-remove-$id"
 mv -f "$dns.owner-remove-$id" "$dns"
 systemctl restart mnebydns-dot.service
+# systemctl active may precede bind(:853); don't test DNS/TLS during that gap.
+for attempt in $(seq 1 60); do
+  if systemctl is-active --quiet mnebydns-dot.service &&
+     ss -H -lnt 'sport = :853' | grep -Fq '89.125.90.101:853'; then
+    break
+  fi
+  sleep .2
+done
 systemctl is-active --quiet mnebydns-dot.service
+ss -H -lnt 'sport = :853' | grep -Fq '89.125.90.101:853'
 cmp -s "$base/dns.pilot" "$dns"
 systemctl is-active --quiet "$name.timer"
 echo 'owner_domain_removal_canary_active=true'

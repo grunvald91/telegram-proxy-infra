@@ -118,12 +118,28 @@ def get_task():
     return item
 
 
+def connect_dot()->socket.socket:
+    """Bounded retry only for transient TCP startup errors after CoreDNS restart.
+
+    A successful TCP connection must still complete strict TLS and DNS validation.
+    Never retry bad DNS answers as if they were startup errors.
+    """
+    for attempt in range(7):
+        try:
+            return socket.create_connection((EDGE,853),timeout=9)
+        except (ConnectionRefusedError,TimeoutError) as exc:
+            if attempt==6:
+                raise RuntimeError("DOMAIN_DOT_RESTART_NOT_READY") from exc
+            time.sleep(min(0.3*(2**attempt),2.0))
+    raise RuntimeError("DOMAIN_DOT_RESTART_NOT_READY")
+
+
 def dns_q(host:str,kind=1)->tuple[int,list[str]]:
     labels=host.split(".")
     wire=b"".join(bytes([len(x)])+x.encode("ascii") for x in labels)+b"\0"
     qid=int.from_bytes(os.urandom(2),"big")
     packet=struct.pack("!HHHHHH",qid,0x100,1,0,0,0)+wire+struct.pack("!HH",kind,1)
-    with socket.create_connection((EDGE,853),timeout=9) as tcp:
+    with connect_dot() as tcp:
         tcp.settimeout(9)
         with ssl.create_default_context().wrap_socket(tcp,server_hostname="dns.mnebyvpn.site") as tls:
             tls.sendall(len(packet).to_bytes(2,"big")+packet)
