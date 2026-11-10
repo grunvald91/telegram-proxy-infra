@@ -43,7 +43,7 @@ jobs:
           queue_rule=any('tcp sport 443' in l and 'to 210' in l and 'bypass' in l for l in chain.splitlines())
           worker= subprocess.run(['systemctl','is-active','--quiet','telegram-nfqws.service'],timeout=10).returncode==0
           listeners=read(['ss','-H','-lnt'])
-          https_listener=any(re.search(r':443\\s',l) for l in listeners.splitlines())
+          https_listener=any(re.search(r':443\s',l) for l in listeners.splitlines())
           qpath=pathlib.Path('/proc/net/netfilter/nfnetlink_queue')
           q210=bool(qpath.exists() and any(l.split() and l.split()[0]=='210' for l in qpath.read_text().splitlines()))
           for k,v in [('no_experimental_rule',no_test_rule),('original_queue210_rule',queue_rule),('telegram_nfqws_running',worker),('https_listener',https_listener),('queue210_handler_bound',q210)]:
