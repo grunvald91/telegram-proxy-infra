@@ -6,6 +6,7 @@ on:
       - 'scripts/mnebydns_instagram_queue210_synack_ab.py'
       - 'scripts/mnebydns_ig_queue210_codespace_ab.sh'
       - 'scripts/tests/test_mnebydns_instagram_queue210_ab.py'
+      - 'scripts/tests/integration_mnebydns_ig_queue210_ab_netns.sh'
       - 'scripts/mnebydns_synack_netns_probe.py'
       - 'scripts/mnebydns_instagram_ru_readonly_preflight.py'
       - 'scripts/mnebydns_instagram_ru_ingress_reach.sh'
@@ -45,3 +46,5 @@ jobs:
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq iproute2 iptables tcpdump ethtool libnetfilter-queue1
       - name: Run real TCP SYN-ACK NFQUEUE test only inside network namespaces
         run: sudo bash scripts/tests/integration_mnebydns_synack_netns.sh
+      - name: Verify nft queue210 SYN-ACK bypass grammar and exact handle removal in netns
+        run: sudo bash scripts/tests/integration_mnebydns_ig_queue210_ab_netns.sh
