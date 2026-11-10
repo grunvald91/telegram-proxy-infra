@@ -124,6 +124,55 @@ from this external probe, and no actual Android Instagram end-to-end
 connection was attempted. An additional read-only RU firewall/listener
 inventory is necessary before the next live canary.
 
+## RU server synchronized field diagnostic — 10 November 2026
+
+This is **actual RU VPS evidence**, not the earlier isolated Linux simulation.
+Authorized pinned-SSH read-only workflows were executed on
+`188.120.254.223` while an external GitHub runner connected to ports
+80, 443 and 18443. No Android client was used.
+
+- [Read-only RU inventory #42870142342](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/42870142342):
+  `nginx` owns TCP/80, TCP/443 and TCP/853; TCP/18443 is free; UFW is active
+  and INPUT default is DROP; a test-specific native libnetfilter_queue
+  library is not installed; NFQUEUE 211 is unclaimed; systemd available.
+- [Synchronized SYN path #42871212161](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/42871212161):
+  80 received 3 SYN and emitted 3 SYN-ACK; 443 received 7 SYN and emitted
+  **zero observed SYN-ACK** to the runner; 18443 received 9 SYN with no
+  SYN-ACK (no listener/no allow rule).
+  This rules out an upstream drop of the **initial TCP SYN** on this
+  specific Github→RU path; it does not prove later TLS behavior.
+- [Netfilter count audit #42871748605](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/42871748605):
+  UFW rules for destination port 443 were hit during the test window,
+  though rule counters aggregate all sources. This is not definitive
+  per-flow proof of an ACCEPT verdict.
+- [Return route #42872733656](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/42872733656):
+  return route uses `ens3` and source 188.120.254.223, not WireGuard.
+  The kernel reported one `SYN-RECV` entry for the test runner on 443.
+  `tcp_fwmark_accept=0`; no listener queue overflow was observed.
+- [Nftables postrouting #42873356523](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/42873356523) and
+  [NFQUEUE worker audit #42873643156](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/42873643156):
+  `inet telegram_nfqws` contains a `postrouting` rule for
+  `tcp sport 443` with a mark condition and NFQUEUE with bypass.
+  The active NFQUEUE is **210**, used by an active
+  `telegram-nfqws.service`; queue depth and kernel/user queue overflow
+  drop counters were zero at the snapshot. This rule **might** interfere
+  with outgoing SYN-ACK when its mark condition matches, but queue
+  presence and empty drop counters do not prove whether nfqws itself
+  drops or modifies the SYN-ACK. Do not disable or alter the existing
+  Telegram worker without a separate isolated controlled comparison.
+
+**Decision gate:** The initial connectivity issue on the GitHub→RU route
+is *before TLS ClientHello*. It must not be attributed to Instagram SNI
+or TSPU. A temporary test-only TCP/18443 listener and per-source INPUT
+allow experiment was prepared, with 70-second independent timer rollback,
+but the new GitHub Actions job that would remotely change firewall rules
+was blocked by tooling security controls. No remote modifications were
+carried out. Review that canary script separately in the repo and use an
+explicitly authorized operator session for any active trial. Do not
+change the existing working public HTTPS/443, DNS, nginx, or Telegram
+nfqws chain as part of this diagnostic PR. Android mobile testing is
+still pending.
+
 ## Stage 3: read-only inspection of actual RU VPS
 
 Added `scripts/mnebydns_instagram_ru_readonly_preflight.py`. This script
