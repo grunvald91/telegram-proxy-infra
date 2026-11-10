@@ -1,0 +1,59 @@
+name: "MNEBYDNS owner final E2E postcheck (read-only)"
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/mnebydns-owner-final-poste2e-audit-20261110.yml"
+permissions:
+  contents: read
+jobs:
+  postcheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify post-E2E clean DNS, checkpoint and CANCELLED database row
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+                -o HostKeyAlgorithms=ssh-ed25519
+                -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+                -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no)
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 '
+            set -Eeuo pipefail
+            cp=$(cat /opt/mnebydns-stable-checkpoints/current)
+            (cd "$cp" && sha256sum -c stable-manifest.sha256 >/dev/null)
+            cmp -s "$cp/dns.stable" /opt/mnebydns-dot/Corefile
+            cmp -s "$cp/nginx.stable" /etc/nginx/nginx.conf
+            cmp -s "$cp/proxy.stable" /etc/mnebydns-googlepilot/nginx.conf
+            ! grep -Fq MNEBYDNS_OWNER_EXACT_www_rfc-editor_org /opt/mnebydns-dot/Corefile
+            ! grep -Fq MNEBYDNS_OWNER_EXACT_www_rfc-editor_org /etc/nginx/nginx.conf
+            nginx -t >/dev/null 2>&1
+            systemctl is-active --quiet nginx
+            systemctl is-active --quiet mnebydns-dot.service
+            ss -H -lnt "sport = :853" | grep -Fq "89.125.90.101:853"
+            echo owner_final_server_checkpoint_and_853=PASS
+            echo owner_final_test_route_absent=PASS
+          '
+          python3 - <<'PY'
+          import importlib.util
+          src="scripts/mnebydns-owner-domain-controller-20261110.py"
+          spec=importlib.util.spec_from_file_location("owner_final",src)
+          mod=importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(mod)
+          mod.oracle_canary_check("www.rfc-editor.org",False)
+          print("owner_final_live_public_DoT_and_stable_services=PASS")
+          PY
+          export SSHPASS="$RU_PASS"
+          query="SELECT status||'|'||product||'|'||CASE WHEN canary_expires_at IS NULL THEN 'NULL' ELSE 'SET' END FROM dns_admin_domains WHERE domain='www.rfc-editor.org';"
+          value="$(sshpass -e ssh "${opts[@]}" root@188.120.254.223 "docker exec mnebyvpn-stage-postgres psql -XqAt -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage -c $(printf %q "$query")")"
+          test "$value" = "CANCELLED|e2e-test|NULL"
+          echo owner_final_db_cancelled_and_no_expiry=PASS
+          echo owner_final_independent_postcheck=PASS
