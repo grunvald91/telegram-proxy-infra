@@ -1,4 +1,4 @@
-name: MNEBYDNS Threads-only public DoT and TLS reversible 20m canary
+name: MNEBYDNS Threads-only public DoT and TLS reversible 30m canary
 on:
   pull_request:
     types: [opened, synchronize, reopened]
@@ -34,7 +34,7 @@ jobs:
           sudo apt-get install -qq -y sshpass >/dev/null
           id="$GITHUB_RUN_ID"
           [[ "$id" =~ ^[0-9]{9,13}$ ]]
-          deadline="$(date -u -d '+20 minutes' +'%Y-%m-%d %H:%M:%S UTC')"
+          deadline="$(date -u -d '+30 minutes' +'%Y-%m-%d %H:%M:%S UTC')"
           work="/tmp/mnebydns-threads-canary-$id"
           base="/opt/mnebydns-threads-canary/$id"
           de_ssh() {
@@ -152,5 +152,5 @@ jobs:
           echo "threads_guard_deadline_UTC=$deadline"
           echo 'threads_public_DNS_TLS_canary_active=true'
           echo 'threads_android_application_test_NOT_PERFORMED=true'
-          echo 'threads_caution_independent_rollback_after_20min=true'
+          echo 'threads_caution_independent_rollback_after_30min=true'
           trap - EXIT
