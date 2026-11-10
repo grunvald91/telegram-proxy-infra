@@ -1,3 +1,4 @@
+# On-demand read-only rerun: reviewed 2026-11-10 before owner mobile probe.
 name: MNEBYDNS Meta root-cause no-change preflight
 on:
   push:
