@@ -67,8 +67,8 @@ class OwnerDomainConfirmContracts(TestCase):
             self.assertTrue(owner.is_confirmed("42808637895"))
         command = remote.call_args.args[1]
         self.assertIn("sha256sum -c stable-manifest.sha256", command)
-        self.assertIn("cmp -s \\"$root/dns.stable\\" \\"$base/dns.pilot\\"", command)
-        self.assertIn("cmp -s \\"$root/nginx.stable\\" \\"$base/nginx.pilot\\"", command)
+        self.assertIn('cmp -s "$root/dns.stable" "$base/dns.pilot"', command)
+        self.assertIn('cmp -s "$root/nginx.stable" "$base/nginx.pilot"', command)
         self.assertIn('bash "$base/confirm.sh" "$base"', command)
 
 
