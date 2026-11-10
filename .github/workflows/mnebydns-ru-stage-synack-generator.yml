@@ -1,0 +1,77 @@
+name: MNEBYDNS RU stage opt-in NFQUEUE210 generator (no rule changes)
+on:
+  push:
+    branches: [experiment/instagram-synack-window-canary-20261110]
+    paths:
+      - '.github/workflows/mnebydns-ru-stage-synack-generator.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-ru-stage-synack-generator-exclusive
+  cancel-in-progress: false
+jobs:
+  safety:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate generator, original behavior and kernel network namespace guard
+        run: |
+          set -Eeuo pipefail
+          python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_nfqws_synack_guard_render.py' -v
+          python3 -m py_compile scripts/mnebydns_nfqws_guard_stage.py
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq iproute2 nftables
+          sudo bash scripts/tests/integration_mnebydns_nfqws_guard_restart_netns.sh
+          sudo bash scripts/tests/integration_mnebydns_nfqws_guard_real_tcp_netns.sh
+  stage:
+    needs: safety
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Render exact opt-in generator and verify its SHA
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p "$RUNNER_TEMP/guard"
+          original='legacy-mtproxy/live-snapshot/server188/usr/local/sbin/telegram-nfqws-rules'
+          candidate="$RUNNER_TEMP/guard/telegram-nfqws-rules.guarded"
+          python3 scripts/mnebydns_nfqws_synack_guard_render.py "$original" > "$candidate"
+          sh -n "$candidate"
+          base_sha="$(sha256sum "$original" | cut -d' ' -f1)"
+          [[ "$base_sha" == 'c95ea1ad1bc1b801fef6c7ce1d89a99c93d5c823595b605aaf595480607c0cb6' ]]
+          candidate_sha="$(sha256sum "$candidate" | cut -d' ' -f1)"
+          echo "BASE_SHA=$base_sha" >> "$GITHUB_ENV"
+          echo "CANDIDATE_SHA=$candidate_sha" >> "$GITHUB_ENV"
+          echo 'candidate_syntax=PASS'
+      - name: Stage exact candidate via pinned SSH, verify no live nft/service changes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+          export SSHPASS="$RU_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          remote_candidate="/run/mnebydns-nfqws-guard-$GITHUB_RUN_ID"
+          timeout 30s sshpass -e ssh "${opts[@]}" root@188.120.254.223 "umask 077; cat > '$remote_candidate'" < "$RUNNER_TEMP/guard/telegram-nfqws-rules.guarded"
+          timeout 40s sshpass -e ssh "${opts[@]}" root@188.120.254.223 "python3 - '$remote_candidate' '$BASE_SHA' '$CANDIDATE_SHA' '$GITHUB_RUN_ID'" < scripts/mnebydns_nfqws_guard_stage.py
+          actual="$(sshpass -e ssh "${opts[@]}" root@188.120.254.223 'sha256sum /usr/local/sbin/telegram-nfqws-rules' | cut -d' ' -f1)"
+          [[ "$actual" == "$CANDIDATE_SHA" ]]
+          echo 'nfqws_guarded_generator_confirmed=PASS'
+      - name: Verify DoT control plane still answers after file-only staging
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/mnebydns_instagram_public_readiness.py
