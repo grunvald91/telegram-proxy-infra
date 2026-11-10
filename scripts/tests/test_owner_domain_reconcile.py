@@ -216,5 +216,44 @@ class OwnerDomainPsqlResultParsing(TestCase):
         self.assertTrue(any("status='PROBING'" in q and "RETURNING id" in q for q in queries))
 
 
+class OwnerDNSRestartReadiness(TestCase):
+    def test_dot_tcp_refusal_is_retried_before_tls_query(self):
+        with patch.object(owner.socket, "create_connection",
+                          side_effect=[ConnectionRefusedError(111, "test"),
+                                       object()]) as network, \
+             patch.object(owner.time, "sleep") as wait:
+            tcp=owner.connect_dot()
+        self.assertIsNotNone(tcp)
+        self.assertEqual(network.call_count, 2)
+        wait.assert_called_once()
+        self.assertEqual(wait.call_args.args[0], 0.3)
+
+    def test_dot_tcp_refusal_is_bounded_and_never_claims_success(self):
+        with patch.object(owner.socket, "create_connection",
+                          side_effect=ConnectionRefusedError(111,"test")) as network, \
+             patch.object(owner.time, "sleep") as wait:
+            with self.assertRaisesRegex(RuntimeError,"DOMAIN_DOT_RESTART_NOT_READY"):
+                owner.connect_dot()
+        self.assertEqual(network.call_count, 7)
+        self.assertEqual(wait.call_count, 6)
+
+    def test_untrusted_tls_or_network_error_is_not_silently_ignored(self):
+        with patch.object(owner.socket, "create_connection",
+                          side_effect=OSError("untrusted network")), \
+             patch.object(owner.time,"sleep") as wait:
+            with self.assertRaisesRegex(OSError,"untrusted network"):
+                owner.connect_dot()
+        wait.assert_not_called()
+
+    def test_removal_and_rollback_require_public_dot_listener_after_restart(self):
+        removal=(ROOT/"mnebydns-owner-domain-remove-20261110.sh").read_text()
+        rollback=(ROOT/"mnebydns-owner-domain-rollback-20261110.sh").read_text()
+        for script in (removal, rollback):
+            self.assertIn("ss -H -lnt 'sport = :853'",script)
+            self.assertIn("89.125.90.101:853",script)
+            self.assertIn("systemctl is-active --quiet mnebydns-dot.service",script)
+            self.assertIn("sleep .2",script)
+
+
 if __name__ == "__main__":
     main()
