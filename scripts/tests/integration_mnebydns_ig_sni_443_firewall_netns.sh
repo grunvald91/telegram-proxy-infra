@@ -30,6 +30,9 @@ PY
 ip netns exec "$NS" nft --check -f "$DIR/rule.nft"
 ip netns exec "$NS" nft -f "$DIR/rule.nft"
 ip netns exec "$NS" nft -a list chain inet telegram_nfqws post > "$DIR/nft-live"
+echo "ig443_ci_netns_nft_rules_begin"
+cat "$DIR/nft-live"
+echo "ig443_ci_netns_nft_rules_end"
 grep -F 'MNEBY_IG_FRAG443_42999999999' "$DIR/nft-live" >/dev/null
 grep -E 'queue.*210.*bypass' "$DIR/nft-live" >/dev/null
 ip netns exec "$NS" iptables -w -t mangle -I OUTPUT 1 \
