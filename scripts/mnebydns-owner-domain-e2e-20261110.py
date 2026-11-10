@@ -154,6 +154,28 @@ def main():
                            " WHERE id="+test_id+" AND status IN ('CANARY','PROBING',"
                            "'ROLLBACK_REQUESTED','CONFIRM_REQUESTED')")
                         print("owner_e2e_cleanup_live_baseline_verified=true",flush=True)
+                elif state in ("ACTIVE","REMOVAL_PENDING","REMOVING"):
+                    # A previously confirmed add cannot use its old rollback
+                    # script. Instead run the same guarded *removal* transition.
+                    if state=="ACTIVE":
+                        changed=db("UPDATE dns_admin_domains SET status='REMOVAL_PENDING',"
+                                   "revision=revision+1,updated_at=now() WHERE id="+test_id+
+                                   " AND status='ACTIVE' RETURNING id")
+                        if changed!=test_id:raise RuntimeError("Cannot queue cleanup removal")
+                    if state=="REMOVING":
+                        owner.remove(row())  # recover old removal safely
+                        state=db("SELECT status FROM dns_admin_domains WHERE id="+test_id)
+                        if state=="ACTIVE":
+                            changed=db("UPDATE dns_admin_domains SET status='REMOVAL_PENDING',"
+                                       "revision=revision+1,updated_at=now() WHERE id="+test_id+
+                                       " AND status='ACTIVE' RETURNING id")
+                            if changed!=test_id:raise RuntimeError("Cannot retry removal")
+                    if db("SELECT status FROM dns_admin_domains WHERE id="+test_id)=="REMOVAL_PENDING":
+                        set_phase(4)
+                        owner.remove(row())
+                    if saved_hashes()!=before or not owner.live_checkpoint_unchanged():
+                        raise RuntimeError("E2E cleanup removed row but live baseline differs")
+                    print("owner_e2e_confirmed_route_cleanup_verified=true",flush=True)
                 else:
                     print("owner_e2e_manual_recovery_required_state="+state,flush=True)
             except Exception as exc:
