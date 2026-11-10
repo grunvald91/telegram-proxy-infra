@@ -39,6 +39,7 @@ jobs:
           p=run('systemctl','is-active','mnebydns-googlepilot.service')
           print('meta_stable_googlepilot_active='+str(bool(p and p.stdout.strip()=='active')).lower(),flush=True)
           print('meta_sidecar_config_still_present='+str(pathlib.Path('/etc/mnebydns-meta-pilot/nginx.conf').exists()).lower(),flush=True)
+          print('systemd_journal_syslog_socket_present='+str(pathlib.Path('/run/systemd/journal/dev-log').is_socket()).lower(),flush=True)
           stable=pathlib.Path('/opt/mnebydns-stable-checkpoints/current').read_text().strip()
           for name,live in [('dns','/opt/mnebydns-dot/Corefile'),('nginx','/etc/nginx/nginx.conf'),('proxy','/etc/mnebydns-googlepilot/nginx.conf')]:
               p=run('cmp','-s',str(pathlib.Path(stable)/(name+'.stable')),live)
