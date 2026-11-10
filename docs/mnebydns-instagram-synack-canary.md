@@ -451,3 +451,33 @@ Mandatory live release gates, NOT yet complete:
    application to enable ECH or locally change its ClientHello.
 
 Status: CODE AND OFFLINE CI ONLY. No live RU/DE changes.
+
+
+## Measurement hardening review — 11 Nov 2026
+
+**Why earlier green CI was insufficient:** the 443 observer previously counted a
+4-byte first data packet by remote source port without proving the preceding
+SYN/SYN-ACK/ACK sequence or that the matching observed SYN-ACK had window=4.
+Other same-IP flows (e.g. shared NAT) could contaminate counts. Server payload
+packets are not proof of completed TLS or a loaded Instagram feed.
+
+**Now fail-closed as transport evidence:**
+- Associate packets to an observed TCP SYN with original sequence number, a
+  matching SYN-ACK (correct acknowledgment and window=4), and a matching client
+  ACK before classifying the initial TLS-looking payload segment.
+- Require a TLS record header prefix, source TCP initial sequence, deduplicate
+  retransmissions, skip IPv4 fragments, expose untrusted/mixed flows, invalidate
+  measurements when capture state overflows. Label requested window=4 as a
+  configuration until an outgoing packet really confirms the window.
+- Do not label packet counts as full TLS, origin certificate validation or
+  successful operation of the Android app. Public IPv4 is **not** a unique
+  Android identity behind CGNAT.
+- Add counterexample unit tests (orphan data, wrong ACK, ordinary-window flow,
+  non-TLS data, duplicates, IP fragments, flow cap).
+
+**Verified GitHub Actions:**
+- [Measurement/counter and kernel-rule tests](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/42918380064) PASS.
+- [Read-only public RU/DE network baseline](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/42918742690) PASS as a **measurement**, not a working Instagram route. Runner→RU TCP 443 and 18443 timed out, runner→DE TCP 443 timed out; DE DoT 853 passed certificate verification; Instagram A records remained direct.
+- [Exact native NFQUEUE/443 on-wire kernel test](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/42919236821) PASS. In isolated 192.0.2.0/24 namespaces with checksum offloads disabled, the reference SYN-ACK window was 65160 with first data segment 1448 bytes; the active 443-specific worker produced window=4 with valid TCP checksum and first client data segment 4 bytes; handler-death bypass restored window=65160 and first segment 1448 bytes. On the clamped run, the client still sent other segments (212 and 72 bytes among them). **Segmentation does not prove a DPI bypass** if the observer reassembles TCP.
+
+**Not done:** no live production firewall/DNS change, no verified RU→DE→Meta path for the unchanged Instagram app, no field trace from the user's phone or mobile operator. This draft must not be advertised as a working Smart DNS Instagram fix.
