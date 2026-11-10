@@ -28,6 +28,8 @@ def fake_commands(argv, **kwargs):
         return SimpleNamespace(returncode=0, stdout="table ip filter { chain OUTPUT { type filter hook output priority 0; policy accept; } }")
     if argv[:2] == ["systemctl", "is-active"]:
         return SimpleNamespace(returncode=3, stdout="inactive\n")
+    if argv[:2] == ["systemctl", "list-jobs"]:
+        return SimpleNamespace(returncode=0, stdout="No jobs running.\n")
     raise AssertionError(f"Unexpected read-only call: {joined}")
 
 
