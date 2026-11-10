@@ -9,7 +9,7 @@ id="$(basename "$work" | cut -d- -f4)"
 [[ "$deadline" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}[[:space:]][0-9]{2}:[0-9]{2}:[0-9]{2}[[:space:]]UTC$ ]] || exit 2
 now="$(date -u +%s)"
 expiry="$(date -u -d "$deadline" +%s)"
-(( expiry-now>=300 && expiry-now<=3600 )) || exit 2
+(( expiry-now>=300 && expiry-now<=3660 )) || exit 2
 systemd-analyze calendar "$deadline" >/dev/null
 base="/opt/mnebydns-threads-canary/$id"
 name="mnebydns-threads-rollback-$id"
