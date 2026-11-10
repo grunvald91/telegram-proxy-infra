@@ -117,6 +117,7 @@ def pcap_packets(file: str):
             "sport": sport, "dport": dport,
             "flags": tcp[13], "window": struct.unpack_from("!H", tcp, 14)[0],
             "payload_size": len(tcp) - hlen,
+            "timestamp": _sec + _usec / 1_000_000.0,
             "valid_checksum": checksum(ipv4[12:20] +
                                        struct.pack("!BBH", 0, 6, len(tcp)) + tcp) == 0,
         }
@@ -142,9 +143,20 @@ def verify(file: str, mode: str):
                and p["dport"] == PORT and p["payload_size"] > 0]
     if not payload:
         raise AssertionError("No client payload in capture")
+    if mode == "clamped" and payload[0] != 4:
+        raise AssertionError(f"Expected first 4-byte TCP data segment; got {payload[0]}")
+    acks = [p["window"] for p in packets
+            if p["src"] == SERVER and p["dst"] == CLIENT
+            and p["sport"] == PORT and p["flags"] & 0x10
+            and not p["flags"] & 0x02 and p["payload_size"] == 0]
+    timed = [p["timestamp"] for p in packets
+             if p["src"] == CLIENT and p["dst"] == SERVER
+             and p["dport"] == PORT and p["payload_size"] > 0]
+    interval_ms = round((timed[-1] - timed[0]) * 1000, 2) if len(timed) >= 2 else 0
     print(f"mode={mode} synack_window={synack['window']} "
           f"synack_checksum_valid={synack['valid_checksum']} "
-          f"client_tcp_data_segments={payload}", flush=True)
+          f"client_tcp_data_segments={payload} "
+          f"data_span_ms={interval_ms} server_ack_windows={acks[:24]}", flush=True)
 
 
 def main():
