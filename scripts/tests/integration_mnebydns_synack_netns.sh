@@ -106,4 +106,24 @@ if ip netns exec "$NS_SERVER" iptables -w -t mangle -C OUTPUT "${RULE[@]}" 2>/de
 fi
 wait "$SERVER_PID"
 SERVER_PID=''
+
+# Independent timer smoke test: the exact tagged netns rule must disappear
+# without the test shell invoking iptables -D.
+if command -v systemd-run >/dev/null && systemctl list-jobs >/dev/null 2>&1; then
+    echo 'KERNEL-NETNS: independent systemd rollback timer'
+    ip netns exec "$NS_SERVER" iptables -w -t mangle -I OUTPUT 1 "${RULE[@]}"
+    SYSTEMD_UNIT="mnebydns-netns-rollback-$"
+    IP_BIN="$(type -P ip)"
+    IPT_BIN="$(type -P iptables)"
+    systemd-run --quiet --collect --unit "$SYSTEMD_UNIT" --on-active=3s \
+        "$IP_BIN" netns exec "$NS_SERVER" "$IPT_BIN" -w -t mangle -D OUTPUT "${RULE[@]}"
+    deadline=$((SECONDS+15))
+    while ip netns exec "$NS_SERVER" iptables -w -t mangle -C OUTPUT "${RULE[@]}" 2>/dev/null; do
+        (( SECONDS < deadline )) || { echo 'FAIL: independent watchdog did not remove canary rule' >&2; exit 1; }
+        sleep .5
+    done
+    echo 'independent_systemd_watchdog=PASS'
+else
+    echo 'independent_systemd_watchdog=NOT_TESTED (runner has no systemd)'
+fi
 echo 'KERNEL-NETNS=PASS native NFQUEUE, on-wire SYN-ACK+checksum, handler-death bypass, rollback'
