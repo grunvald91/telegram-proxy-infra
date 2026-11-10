@@ -22,6 +22,10 @@ from pathlib import Path
 RUNID=os.environ.get("GITHUB_RUN_ID","")
 REPO=Path(__file__).resolve().parent
 RENDER=REPO/"mnebydns-owner-domain-render-20261110.py"
+PINNED_SSH_HOSTS=REPO.parent/"ops/mnebydns-owner-ssh-known_hosts"
+SSH_TRUST=("-o","StrictHostKeyChecking=yes","-o","HostKeyAlgorithms=ssh-ed25519",
+           "-o","UserKnownHostsFile="+str(PINNED_SSH_HOSTS),
+           "-o","GlobalKnownHostsFile=/dev/null","-o","UpdateHostKeys=no")
 _spec=importlib.util.spec_from_file_location("dns_owner_renderer",RENDER)
 if not _spec or not _spec.loader:raise RuntimeError("Missing verified renderer")
 _render=importlib.util.module_from_spec(_spec)
@@ -54,13 +58,14 @@ def cmd(args:list[str], password:str|None=None, timeout=TIMEOUT,
 
 
 def ssh(role:str,command:str,timeout=TIMEOUT)->str:
+    if not PINNED_SSH_HOSTS.is_file():raise RuntimeError("PINNED_SSH_HOST_KEYS_MISSING")
     if role not in ("ru","de"):raise ValueError("Invalid server")
     host=RU if role=="ru" else EDGE
     key="RU_PASS" if role=="ru" else "DE_PASS"
     password=os.environ.get(key)
     if not password:raise RuntimeError("Missing SSH credential")
     return cmd(["sshpass","-e","ssh","-o","ConnectTimeout=12",
-                "-o","StrictHostKeyChecking=accept-new","-o","LogLevel=ERROR",
+                *SSH_TRUST,"-o","LogLevel=ERROR",
                 "root@"+host,command],password,timeout)
 
 
@@ -69,7 +74,7 @@ def transfer_to_de()->None:
     for file in FILES:
         pwd=os.environ["DE_PASS"]
         cmd(["sshpass","-e","scp","-q","-o","ConnectTimeout=12",
-             "-o","StrictHostKeyChecking=accept-new","-o","LogLevel=ERROR",
+             *SSH_TRUST,"-o","LogLevel=ERROR",
              str(REPO/file),"root@"+EDGE+":"+WORK+"/"+file],pwd)
     print("owner_domain_verified_scripts_transferred=true",flush=True)
 
