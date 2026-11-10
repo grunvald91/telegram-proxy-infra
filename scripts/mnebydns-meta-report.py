@@ -17,7 +17,9 @@ KEYS_OBSERVER=('tcp_syn_in','tcp_synack_out','tcp_clienthello_in',
                'tcp_payload_packets_in','tcp_payload_packets_out',
                'tcp_payload_bytes_in','tcp_payload_bytes_out',
                'tcp_reset_in','tcp_reset_out','udp_in','udp_out',
-               'udp_quic_v1_initial_in','udp_other_long_header_in','unparsed')
+               'udp_quic_v1_initial_in','udp_other_long_header_in',
+               'tcp_hello_fragment_in','tcp_hello_out_of_order_in',
+               'tcp_hello_over_buffer_limit_in','unparsed')
 KEYS_QUIC=('active','admitted','rejected','expired','resolve_error','rx',
            'to_upstream','upstream_rx','client_tx','oversize','undersize',
            'peer_drop','overflow','socket_error','emsgsize')
