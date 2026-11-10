@@ -149,65 +149,138 @@ def queue_ready(worker,marker):
     raise RuntimeError("Queue211 worker did not report ready")
 
 class OnePeerPacketCounts:
-    """Minimal AF_PACKET metadata counters: no payload, SNI, ports or IP logged."""
-    def __init__(self,peer):
-        self.peer=ipaddress.IPv4Address(peer).packed
-        self.server=ipaddress.IPv4Address(RU).packed
-        self.inbound_syn=0
-        self.outbound_synack=0
-        self.inbound_payload=0
-        self.outbound_payload=0
-        self.inbound_first4=0
-        self.inbound_first_other=0
-        self._seen_ports=set()
+    """TCP flow-correlated metadata; never infer TLS success from packet counts.
 
-    def observe(self,frame:bytes):
-        if len(frame)<54 or frame[12:14]!=b"\x08\x00":
+    Attribution is only to a public IPv4, not to a unique device behind NAT.
+    An eligible first data segment needs a matching SYN, SYN-ACK, final ACK,
+    a verified SYN-ACK advertised window=4 and a TLS record prefix.
+    """
+    MAX_FLOWS = 256
+    MAX_SEQUENCES = 256
+
+    def __init__(self, peer):
+        self.peer = ipaddress.IPv4Address(peer).packed
+        self.server = ipaddress.IPv4Address(RU).packed
+        self.flows = {}
+        self.inbound_syn = 0
+        self.outbound_synack = 0
+        self.outbound_synack_window4 = 0
+        self.inbound_payload = 0
+        self.outbound_payload = 0
+        self.inbound_first4 = 0
+        self.inbound_first_other = 0
+        self.inbound_first_untrusted = 0
+        self.overflow = False
+
+    def observe(self, frame: bytes):
+        if len(frame) < 54 or frame[12:14] != b"\x08\x00":
             return
-        ip=frame[14:]
-        if ip[0] >> 4 != 4 or ip[9]!=6:
+        ip = frame[14:]
+        if ip[0] >> 4 != 4 or ip[9] != 6:
             return
-        ihl=(ip[0]&15)*4
-        if ihl<20 or len(ip)<ihl+20:
+        ihl = (ip[0] & 15) * 4
+        if ihl < 20 or len(ip) < ihl + 20:
             return
-        iplen=struct.unpack_from("!H",ip,2)[0]
-        if iplen<ihl+20 or iplen>len(ip):
+        # IPv4 fragments cannot establish TCP payload boundaries.
+        if struct.unpack_from("!H", ip, 6)[0] & 0x3fff:
             return
-        tcp=ip[ihl:iplen]
-        header=(tcp[12]>>4)*4
-        if header<20 or len(tcp)<header:
+        iplen = struct.unpack_from("!H", ip, 2)[0]
+        if iplen < ihl + 20 or iplen > len(ip):
             return
-        sport,dport=struct.unpack_from("!HH",tcp)
-        flags=tcp[13]
-        inbound=ip[12:16]==self.peer and ip[16:20]==self.server and dport==443
-        outbound=ip[12:16]==self.server and ip[16:20]==self.peer and sport==443
-        if inbound and (flags&0x12)==0x02:
-            self.inbound_syn+=1
-        if outbound and (flags&0x12)==0x12:
-            self.outbound_synack+=1
-        if outbound and len(tcp)>header:
-            self.outbound_payload+=1
-        if inbound and len(tcp)>header:
-            self.inbound_payload+=1
-            # Ephemeral source ports are used only to dedupe first segments,
-            # never printed, persisted, or sent to another system.
-            if sport not in self._seen_ports and len(self._seen_ports)<150:
-                self._seen_ports.add(sport)
-                if len(tcp)-header==4:
-                    self.inbound_first4+=1
+        tcp = ip[ihl:iplen]
+        header = (tcp[12] >> 4) * 4
+        if header < 20 or len(tcp) < header:
+            return
+        sport, dport = struct.unpack_from("!HH", tcp)
+        seq, ack = struct.unpack_from("!II", tcp, 4)
+        flags = tcp[13]
+        inbound = (ip[12:16] == self.peer and ip[16:20] == self.server and dport == 443)
+        outbound = (ip[12:16] == self.server and ip[16:20] == self.peer and sport == 443)
+        if not inbound and not outbound:
+            return
+        port = sport if inbound else dport
+        payload = tcp[header:]
+        state = self.flows.get(port)
+
+        if inbound and (flags & 0x12) == 0x02 and not payload:
+            if state is None or state["client_isn"] != seq:
+                if state is None and len(self.flows) >= self.MAX_FLOWS:
+                    self.overflow = True
+                    return
+                self.flows[port] = {
+                    "client_isn": seq, "server_isn": None, "ack_seen": False,
+                    "window4": False, "first_seen": False, "seen_seq": set(),
+                }
+                self.inbound_syn += 1
+            return
+
+        if state is None:
+            return
+        if flags & 0x05:  # FIN or RST invalidates this flow for new evidence.
+            return
+
+        if outbound and (flags & 0x12) == 0x12 and not payload:
+            if ack != (state["client_isn"] + 1) & 0xffffffff:
+                return
+            if state["server_isn"] is None:
+                state["server_isn"] = seq
+                state["window4"] = struct.unpack_from("!H", tcp, 14)[0] == 4
+                self.outbound_synack += 1
+                if state["window4"]:
+                    self.outbound_synack_window4 += 1
+            return
+
+        if state["server_isn"] is None:
+            return
+        if inbound and flags & 0x10 and not (flags & 0x02):
+            if ack == (state["server_isn"] + 1) & 0xffffffff:
+                state["ack_seen"] = True
+        if not state["ack_seen"] or not payload:
+            return
+
+        if inbound:
+            if seq in state["seen_seq"]:
+                return
+            if len(state["seen_seq"]) >= self.MAX_SEQUENCES:
+                self.overflow = True
+                return
+            state["seen_seq"].add(seq)
+            self.inbound_payload += 1
+            if not state["first_seen"]:
+                state["first_seen"] = True
+                # First observed TLS record starts at client_isn + 1.
+                # This is not proof of a complete ClientHello or valid TLS.
+                tls_prefix = (seq == (state["client_isn"] + 1) & 0xffffffff
+                              and len(payload) >= 3 and payload[:2] == b"\x16\x03"
+                              and payload[2] in (1, 2, 3, 4))
+                if state["window4"] and tls_prefix:
+                    if len(payload) == 4:
+                        self.inbound_first4 += 1
+                    else:
+                        self.inbound_first_other += 1
                 else:
-                    self.inbound_first_other+=1
+                    self.inbound_first_untrusted += 1
+        else:
+            self.outbound_payload += 1
 
     def output(self):
-        for name,value in (
-            ("phone_ingress_syn",self.inbound_syn),
-            ("phone_egress_synack",self.outbound_synack),
-            ("phone_inbound_data_packets",self.inbound_payload),
-            ("phone_server_data_packets",self.outbound_payload),
-            ("phone_first_data_4bytes",self.inbound_first4),
-            ("phone_first_data_other_size",self.inbound_first_other),
+        evidence_ok = (not self.overflow and self.outbound_synack_window4 > 0
+                       and self.inbound_first4 + self.inbound_first_other > 0)
+        for name, value in (
+            ("phone_ingress_syn", self.inbound_syn),
+            ("phone_egress_synack", self.outbound_synack),
+            ("phone_egress_synack_window4", self.outbound_synack_window4),
+            ("phone_inbound_data_packets", self.inbound_payload),
+            ("phone_server_data_packets", self.outbound_payload),
+            ("phone_tls_prefix_first_4bytes", self.inbound_first4),
+            ("phone_tls_prefix_first_other_size", self.inbound_first_other),
+            ("phone_first_data_untrusted", self.inbound_first_untrusted),
+            ("phone_observer_overflow", str(self.overflow).lower()),
+            ("phone_segment_measurement_eligible", str(evidence_ok).lower()),
+            ("phone_transport_only_not_tls_or_app_success", "true"),
         ):
-            print("ig443_"+name+"="+str(value),flush=True)
+            print("ig443_" + name + "=" + str(value), flush=True)
+
 
 def stage_watchdog(peer,runid):
     ROOT.mkdir(mode=0o700,parents=True,exist_ok=True)
