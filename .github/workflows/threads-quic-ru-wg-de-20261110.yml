@@ -61,6 +61,17 @@ jobs:
           ru_ssh "test ! -e '$work' && mkdir -m 700 '$work'"
           tar -czf - -C scripts mnebydns-meta-quic.py mnebydns-meta-quic-stage.sh mnebydns-meta-quic-rollback.sh test-mnebydns-meta-quic.py |
             ru_ssh "tar -xzf - -C '$work'"
+          # The earlier Threads DNS canary has its own rollback timer.
+          # Wait for its exact stable checkpoint before starting ANY new service.
+          echo 'threads_quic_wait_for_previous_DNS_rollback=true'
+          for attempt in $(seq 1 35); do
+            if de_ssh 'st=$(cat /opt/mnebydns-stable-checkpoints/current) && cmp -s "$st/dns.stable" /opt/mnebydns-dot/Corefile && cmp -s "$st/nginx.stable" /etc/nginx/nginx.conf' >/dev/null 2>&1; then
+              echo 'threads_previous_DNS_pilot_rollback_verified=true'
+              break
+            fi
+            sleep 4
+          done
+          de_ssh 'st=$(cat /opt/mnebydns-stable-checkpoints/current) && cmp -s "$st/dns.stable" /opt/mnebydns-dot/Corefile && cmp -s "$st/nginx.stable" /etc/nginx/nginx.conf'
           # DE private first, RU public second. Start watchdogs before listeners.
           de_ssh "bash '$work/mnebydns-meta-quic-stage.sh' de '$id' '$deadline'"
           ru_ssh "bash '$work/mnebydns-meta-quic-stage.sh' ru '$id' '$deadline'"
