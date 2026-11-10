@@ -60,5 +60,10 @@ jobs:
           wait "$MONITOR"
           cat "$LOG"
           grep -q "ru_rule_counter_capture=COMPLETE_READ_ONLY" "$LOG"
+          SRC="$(curl -4fsS --max-time 8 https://api.ipify.org)"
+          python3 - "$SRC" <<'PY'
+          import ipaddress,sys
+          if not ipaddress.IPv4Address(sys.argv[1]).is_global: raise SystemExit("expected public runner IPv4")
+          PY
           timeout 20s sshpass -e ssh "${opts[@]}" root@188.120.254.223 "python3 - $SRC" < scripts/mnebydns_instagram_ru_return_route_observer.py
           echo "ru_counter_test=COMPLETE_READ_ONLY"
