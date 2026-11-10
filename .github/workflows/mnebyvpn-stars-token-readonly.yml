@@ -1,0 +1,44 @@
+name: Check MNEBYVPN widget invoice transport (read-only)
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/mnebyvpn-stars-token-readonly.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Inspect only token presence, bot health and Telegram connectivity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SSH_PASSWORD"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          export SSHPASS="$SSH_PASSWORD"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@188.120.254.223 'python3 -' <<'PY'
+          import pathlib,re,subprocess
+          env=pathlib.Path('/opt/mnebyvpn/bot/web.env')
+          text=env.read_text() if env.is_file() else ''
+          found=[line.partition('=')[2] for line in text.splitlines() if line.startswith('TELEGRAM_TOKEN_BOT=')]
+          configured=len(found)==1 and bool(re.fullmatch(r'[0-9]{5,20}:[A-Za-z0-9_-]{25,}',found[0]))
+          print('bot_stars_outbound_credential_present='+str(configured).lower())
+          del found,text
+          for name,url in [('bot_ready','http://127.0.0.1:8793/readyz'),
+                           ('telegram_egress','https://api.telegram.org/')]:
+            try:
+              p=subprocess.run(['curl','--noproxy','*','-s','-o','/dev/null',
+                '-w','%{http_code}','--max-time','8',url],
+                capture_output=True,text=True,timeout=11)
+              print(name+'_http='+p.stdout[:3])
+            except Exception:
+              print(name+'_http=unavailable')
+          image=subprocess.run(['docker','inspect','--format','{{.Config.Image}}','mnebyvpn-bot-info'],
+            capture_output=True,text=True,timeout=6)
+          print('bot_image_valid='+str(bool(re.fullmatch(r'mnebyvpn-stage-web:[a-f0-9]{40}',image.stdout.strip()))).lower())
+          print('read_only=true')
+          PY
