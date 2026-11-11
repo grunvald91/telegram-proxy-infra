@@ -79,12 +79,12 @@ class V10Window20Review(unittest.TestCase):
                 ("nginx.candidate",b"nginx-test"),
                 ("core.original",b"core-stable"),
                 ("core.candidate",b"core-test"),
-                ("tcp_window_scaling.original",b"1\\n"),
+                ("tcp_window_scaling.original",b"1\n"),
             ):
                 (root/name).write_bytes(data)
             live_nginx.write_bytes(b"nginx-stable")
             live_core.write_bytes(b"core-stable")
-            live_ws.write_bytes(b"1\\n")
+            live_ws.write_bytes(b"1\n")
             state={"dot":False,"restart_count":0}
             def fake_command(argv,**kwargs):
                 if argv[:4]==["nft","list","table","inet"]:
