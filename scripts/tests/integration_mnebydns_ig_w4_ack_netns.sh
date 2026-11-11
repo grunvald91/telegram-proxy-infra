@@ -98,13 +98,13 @@ ip netns exec "$SERV" sysctl -qw net.ipv4.tcp_window_scaling=0
 cat > "$TMP/no_ws.nft" <<'NFT'
 add table inet mneby_ig_win4_netns
 add chain inet mneby_ig_win4_netns output { type filter hook output priority mangle; policy accept; }
-add rule inet mneby_ig_win4_netns output ip saddr 192.0.2.1 tcp sport 443 ct original packets < 64 tcp flags & ack == ack counter tcp window set 4
+add rule inet mneby_ig_win4_netns output ip saddr 192.0.2.1 tcp sport 443 ct original packets < 16 tcp flags & ack == ack counter tcp window set 20
 NFT
 ip netns exec "$SERV" nft --check -f "$TMP/no_ws.nft"
 ip netns exec "$SERV" nft -f "$TMP/no_ws.nft"
-echo 'nft_win4_probe=ack_window4_server_wscale_disabled'
+echo 'nft_win4_probe=ack_window20_server_wscale_disabled'
 capture clamped_no_ws
-ip netns exec "$SERV" nft -a list table inet mneby_ig_win4_netns | grep -F 'ct original packets < 64'
+ip netns exec "$SERV" nft -a list table inet mneby_ig_win4_netns | grep -F 'ct original packets < 16'
 ip netns exec "$SERV" nft delete table inet mneby_ig_win4_netns
 ip netns exec "$SERV" sysctl -qw net.ipv4.tcp_window_scaling=1
 echo 'nft_win4_probe=restored'
