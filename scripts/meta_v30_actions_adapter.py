@@ -116,7 +116,11 @@ class Remote:
             env=dict(self.env,SSHPASS=secret),
         )
         if result.returncode:
-            raise RuntimeError(role+" SSH operation failed: exit "+str(result.returncode))
+            detail=(result.stderr or b"").decode("utf-8",errors="replace")[-6000:]
+            # Credentials are only supplied through the environment, never
+            # command arguments; still redact them before returning diagnostics.
+            detail=detail.replace(secret,"[REDACTED]")
+            raise RuntimeError(role+" SSH operation failed: exit "+str(result.returncode)+"\n"+detail)
         return result.stdout.decode("utf-8",errors="replace")
 
     def preflight(self,role):
