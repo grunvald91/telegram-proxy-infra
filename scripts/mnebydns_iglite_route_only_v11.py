@@ -206,7 +206,13 @@ def live():
             start=int(time.time())
             base.write_exclusive(root/"ready_epoch",str(start).encode("ascii"))
             print("iglite_v11_capture_start_epoch_s="+str(start),flush=True)
-            print("iglite_v11_15min_window=READY",flush=True)
+            print("iglite_v11_trial_duration_seconds="+str(base.TRIAL_SECONDS),flush=True)
+            if base.TRIAL_SECONDS == 900:
+                print("iglite_v11_15min_window=READY",flush=True)
+            elif base.TRIAL_SECONDS == 1800:
+                print("iglite_v11_30min_window=READY",flush=True)
+            else:
+                raise RuntimeError("Unreviewed trial duration")
             if TRIAL_WAIT is None:time.sleep(base.TRIAL_SECONDS)
             else:TRIAL_WAIT(base.TRIAL_SECONDS)
         finally:
