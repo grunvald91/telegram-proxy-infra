@@ -1,0 +1,76 @@
+name: Meta v27 isolated RU WireGuard DE Meta TLS egress probe
+on:
+  pull_request:
+    branches: [audit/mnebydns-instagram-lite-20261111]
+    paths:
+      - '.github/workflows/meta-v27-wg-tls-readonly.yml'
+      - 'scripts/meta_v27_wg_tls_probe.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mneby-meta-v27-wg-probe
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Offline syntax and isolation checks
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/meta_v27_wg_tls_probe.py scripts/meta_v13_isolated_de.py
+          python3 scripts/meta_v27_wg_tls_probe.py selftest
+          test -n "$DE_PASS" && test -n "$RU_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          if ! command -v sshpass >/dev/null; then
+            timeout 35s sudo apt-get -o Acquire::Retries=0 -o Acquire::http::Timeout=7 update -qq || true
+            timeout 55s sudo DEBIAN_FRONTEND=noninteractive apt-get install -qq -y sshpass >/dev/null
+          fi
+      - name: Temporary DE WG-only listener and RU validated TLS client
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          logfile="$RUNNER_TEMP/meta-v27-de-wg.log"
+          export SSHPASS="$DE_PASS"
+          tar -C scripts -cf - meta_v27_wg_tls_probe.py meta_v13_isolated_de.py mnebydns-owner-domain-render-20261110.py |
+            timeout 110s sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
+            'set -eu; umask 077; d=$(mktemp -d /tmp/mneby-v27-wg.XXXXXXXX); trap '\''rm -rf -- "$d"'\'' EXIT; tar -xf - -C "$d"; timeout 75s python3 -u "$d/meta_v27_wg_tls_probe.py" serve' \
+            >"$logfile" 2>&1 &
+          server_proc=$!
+          trap 'rc=$?; kill "$server_proc" 2>/dev/null || true; wait "$server_proc" 2>/dev/null || true; cat "$logfile" 2>/dev/null || true; exit "$rc"' EXIT
+          ready=0
+          for attempt in $(seq 1 150); do
+            if grep -Fq 'v27_wg_tls_proxy=READY' "$logfile" 2>/dev/null; then ready=1; break; fi
+            kill -0 "$server_proc" 2>/dev/null || break
+            sleep .2
+          done
+          if [[ "$ready" != 1 ]]; then
+            echo 'v27_de_wg_listener_ready=false'
+            exit 1
+          fi
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 \
+            'python3 -u - client' < scripts/meta_v27_wg_tls_probe.py | tee -a "$GITHUB_STEP_SUMMARY"
+          wait "$server_proc"
+          server_proc=0
+          grep -Fq 'v27_de_temporary_nginx_stopped=true' "$logfile"
+          grep -Fq 'v27_de_production_configs_untouched=true' "$logfile"
+          echo 'v27_de_temporary_nginx_stopped=true' >> "$GITHUB_STEP_SUMMARY"
+          echo 'v27_de_production_configs_untouched=true' >> "$GITHUB_STEP_SUMMARY"
+          echo 'v27_public_dns_unchanged=true' >> "$GITHUB_STEP_SUMMARY"
+          echo 'v27_public_tcp443_unchanged=true' >> "$GITHUB_STEP_SUMMARY"
+          echo 'v27_android_or_isp=NOT_TESTED' >> "$GITHUB_STEP_SUMMARY"
+          trap - EXIT
