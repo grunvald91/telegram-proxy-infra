@@ -9,6 +9,7 @@ from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import meta_v26_de_stage as de
 import meta_v26_ru_stage as ru
+import meta_v26_readonly_preflight as preflight
 
 class StagingRollbackTests(unittest.TestCase):
     def test_trial_cleanup_budget_on_both_nodes_is_independent(self):
@@ -17,6 +18,24 @@ class StagingRollbackTests(unittest.TestCase):
         self.assertGreater(ru.WORKER_SECONDS,ru.CLEANUP_SECONDS)
         self.assertEqual(ru.RU_EDGE,"188.120.254.223")
         self.assertEqual(de.EDGE,"89.125.90.101")
+
+    def test_de_preflight_refuses_to_pass_without_core_runtime_source_split(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d)
+            core=root/"Corefile";core.write_text("baseline")
+            nginx=root/"nginx.conf";nginx.write_text("baseline")
+            with patch.object(preflight.de,"ROOT",root/"absent"), \
+                 patch.object(preflight.de,"LIVE_DNS",core), \
+                 patch.object(preflight.de,"LIVE_NGINX",nginx), \
+                 patch.object(preflight.de,"guards"), \
+                 patch.object(preflight.de,"active",return_value=False), \
+                 patch.object(preflight.de,"compiled_plugins",return_value="view template tls"), \
+                 patch.object(preflight,"render") as renderer, \
+                 patch.object(preflight,"verify_core_view_runtime",side_effect=RuntimeError("real view mismatch")) as smoke:
+                with self.assertRaisesRegex(RuntimeError,"real view mismatch"):
+                    preflight.audit_de()
+                renderer.return_value.verify_rollback.assert_called_once_with()
+                smoke.assert_called_once_with()
 
     def test_ru_rejects_unsafe_peer_before_any_command(self):
         for peer in ("0.0.0.0","127.0.0.1","10.66.77.1",
