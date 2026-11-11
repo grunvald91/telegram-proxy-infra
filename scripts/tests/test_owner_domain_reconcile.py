@@ -154,7 +154,8 @@ class OwnerDomainLiveHealthAndSSH(TestCase):
         self.assertEqual(dns.call_args.args, ("www.python.org", True))
         tls.assert_called_once_with("www.python.org")
         self.assertTrue(any("last_error_code=NULL" in q and
-                            "last_error_code='ACTIVE_ROUTE_CHECK_FAILED'" in q for q in statements))
+                            "'ACTIVE_ROUTE_CHECK_FAILED'" in q and
+                            "'ACTIVE_ROUTE_METADATA_INVALID'" in q for q in statements))
         self.assertFalse(any("status='CANCELLED'" in q or "status='FAILED'" in q for q in statements))
 
     def test_active_health_missing_origin_marks_metadata_not_network(self):
