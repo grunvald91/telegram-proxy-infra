@@ -3,6 +3,9 @@
 import importlib.util
 import inspect
 from pathlib import Path
+import tempfile
+import subprocess
+from unittest.mock import patch
 import unittest
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -62,6 +65,49 @@ class V10Window20Review(unittest.TestCase):
                         src.index('command(["sysctl", "-w", "net.ipv4.tcp_window_scaling=0"]'))
         self.assertIn("remaining_watchdog < TRIAL_SECONDS + MIN_ROLLBACK_MARGIN",src)
         self.assertIn("finally:\n        rollback()",src)
+
+    def test_rollback_does_not_claim_success_while_dot_inactive(self):
+        v=self.v
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)/"state"
+            root.mkdir()
+            live_nginx=Path(td)/"nginx.conf"
+            live_core=Path(td)/"Corefile"
+            live_ws=Path(td)/"tcp_window_scaling"
+            for name,data in (
+                ("nginx.original",b"nginx-stable"),
+                ("nginx.candidate",b"nginx-test"),
+                ("core.original",b"core-stable"),
+                ("core.candidate",b"core-test"),
+                ("tcp_window_scaling.original",b"1\\n"),
+            ):
+                (root/name).write_bytes(data)
+            live_nginx.write_bytes(b"nginx-stable")
+            live_core.write_bytes(b"core-stable")
+            live_ws.write_bytes(b"1\\n")
+            state={"dot":False,"restart_count":0}
+            def fake_command(argv,**kwargs):
+                if argv[:4]==["nft","list","table","inet"]:
+                    return subprocess.CompletedProcess(argv,1)
+                if argv[:4]==["systemctl","is-active","--quiet","mnebydns-dot.service"]:
+                    return subprocess.CompletedProcess(argv,0 if state["dot"] else 1)
+                if argv[:3]==["systemctl","restart","mnebydns-dot.service"]:
+                    state["dot"]=True
+                    state["restart_count"]+=1
+                return subprocess.CompletedProcess(argv,0)
+            with (patch.object(v,"ROOT",root),
+                  patch.object(v,"NGINX",live_nginx),
+                  patch.object(v,"CORE",live_core),
+                  patch.object(v,"WSFILE",live_ws),
+                  patch.object(v,"command",side_effect=fake_command)):
+                v.rollback()
+            self.assertEqual(state["restart_count"],1)
+            self.assertTrue(state["dot"])
+
+    def test_live_workflow_is_disabled_until_reboot_safe_restore_exists(self):
+        workflow=(ROOT.parent / ".github/workflows/mnebydns-iglite-wifi-v10-onrequest.yml").read_text()
+        self.assertEqual(workflow.count("if: ${{ false }}"),2)
+        self.assertIn("REVIEW BLOCKER: no persistent reboot-safe recovery unit yet",workflow)
 
     def test_observer_reports_not_phone_attribution(self):
         src=inspect.getsource(self.v.observe_wifi_tcp_headers)
