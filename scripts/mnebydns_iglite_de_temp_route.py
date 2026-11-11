@@ -21,15 +21,15 @@ import subprocess
 import sys
 import time
 
-ROOT = Path("/run/mneby-iglite-short-de-20261111-v3")
+ROOT = Path("/run/mneby-iglite-short-de-20261111-v4")
 NGINX = Path("/etc/nginx/nginx.conf")
 CORE = Path("/opt/mnebydns-dot/Corefile")
 CHECKPOINT_CURRENT = Path("/opt/mnebydns-stable-checkpoints/current")
 RENDERER = Path(__file__).resolve().parent / "mnebydns-owner-domain-render-20261110.py"
 DE = "89.125.90.101"
 HOST = "iglite-z.instagram.com"
-TABLE = "mneby_ig_lite_w4_20261111_v3"
-UNIT = "mneby-ig-lite-short-20261111-v3"
+TABLE = "mneby_ig_lite_w4_20261111_v4"
+UNIT = "mneby-ig-lite-short-20261111-v4"
 TRIAL_SECONDS = 35
 WATCHDOG_SECONDS = 110
 
@@ -92,12 +92,13 @@ def baseline():
         raise RuntimeError("Earlier experiment still has active nft table")
     # Never terminate an older independent timer to force a new trial.
     # Wait until BOTH its timer and rollback service are no longer running.
-    v2unit = "mneby-ig-lite-short-20261111-v2"
+    prior_units = ("mneby-ig-lite-short-20261111-v2",
+                   "mneby-ig-lite-short-20261111-v3")
     for tick in range(76):
         in_flight = any(
-            command(["systemctl", "is-active", "--quiet", v2unit + suffix],
+            command(["systemctl", "is-active", "--quiet", name + suffix],
                     check=False).returncode == 0
-            for suffix in (".timer", ".service")
+            for name in prior_units for suffix in (".timer", ".service")
         )
         if not in_flight:
             break
@@ -105,12 +106,13 @@ def baseline():
             print("iglite_wait_previous_rollback=ACTIVE_WILL_WAIT", flush=True)
         time.sleep(2)
     else:
-        raise RuntimeError("V2 rollback watchdog did not finish; new test blocked")
+        raise RuntimeError("Earlier rollback watchdog did not finish; new test blocked")
     print("iglite_previous_rollback_watchdog_finished=true", flush=True)
-    if command(["nft", "list", "table", "inet",
-                "mneby_ig_lite_w4_20261111_v2"],
-               check=False).returncode == 0:
-        raise RuntimeError("V2 global Window4 table still active")
+    for old_table in ("mneby_ig_lite_w4_20261111_v2",
+                      "mneby_ig_lite_w4_20261111_v3"):
+        if command(["nft", "list", "table", "inet", old_table],
+                   check=False).returncode == 0:
+            raise RuntimeError("Earlier global Window4 table still active")
     if ROOT.exists():
         raise RuntimeError("Prior one-shot state exists; refuse duplicate")
     current = CHECKPOINT_CURRENT.read_text().strip()
@@ -287,7 +289,16 @@ def live():
         command(["systemctl", "reload", "nginx.service"], timeout=20)
         atomic_replace(CORE, core.encode())
         command(["systemctl", "restart", "mnebydns-dot.service"], timeout=30)
-        dot_query_a()
+        # A systemctl restart can complete before the public-only DoT bind
+        # is accepting connections; service-is-active alone is not readiness.
+        for retry in range(31):
+            try:
+                dot_query_a()
+                break
+            except (ConnectionRefusedError, ConnectionResetError, TimeoutError):
+                if retry == 30:
+                    raise
+                time.sleep(.5)
         print("iglite_live_dot_route_DE=PASS", flush=True)
         print("iglite_live_meta_tls=" + live_tls(), flush=True)
         command(["nft", "-f", "-"], input=rules)
