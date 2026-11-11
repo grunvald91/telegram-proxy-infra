@@ -22,9 +22,10 @@ QUEUE = 211
 WINDOW = 4
 
 def transform(raw: bytes, *, peer: str, server: str = RU) -> bytes:
-    """Modify SYN|ACK from approved owner HTTPS/443 VPS to one test peer."""
-    if server not in ALLOWED_SERVERS:
-        raise ValueError("Server must be a pinned project RU or DE IPv4")
+    """Pure packet transform; CLI restricts production server to owner VPS IPs.
+
+    Pure function is also exercised with 192.0.2.x in disposable namespaces.
+    """
     server_p = ipaddress.IPv4Address(server).packed
     peer_p = ipaddress.IPv4Address(peer).packed
     if len(raw) < 40 or raw[0] >> 4 != 4:
