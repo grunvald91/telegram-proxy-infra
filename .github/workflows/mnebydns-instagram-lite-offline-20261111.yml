@@ -5,6 +5,7 @@ on:
     paths:
       - '.github/workflows/mnebydns-instagram-lite-offline-20261111.yml'
       - 'scripts/mnebydns_iglite_route_render_20261111.py'
+      - 'scripts/mnebydns_iglite_de_temp_route.py'
       - 'scripts/tests/mnebydns_ig_de_nft_netns_probe.py'
       - 'scripts/tests/integration_mnebydns_ig_de_nft_win4_netns.sh'
       - 'scripts/tests/test_mnebydns_iglite_route_preview.py'
@@ -23,6 +24,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           python3 -m py_compile scripts/mnebydns_iglite_route_render_20261111.py
+          python3 -m py_compile scripts/mnebydns_iglite_de_temp_route.py
           python3 scripts/mnebydns-owner-domain-render-20261110.py self-test
           python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_iglite_route_preview.py' -v
           echo 'iglite_exact_host_offline_gate=PASS_NO_SERVER_CHANGES'
