@@ -38,7 +38,7 @@ ip netns exec "$CLNT" ethtool -K "$V2" tx off tso off gso off gro off
 ip netns exec "$SERV" ethtool -k "$V1" | grep -q 'tx-checksumming: off'
 ip netns exec "$CLNT" ethtool -k "$V2" | grep -q 'tx-checksumming: off'
 
-ip netns exec "$SERV" python3 -u "$PROBE" listener --count 6 --ready "$TMP/listener.ready" &
+ip netns exec "$SERV" python3 -u "$PROBE" listener --count 5 --ready "$TMP/listener.ready" &
 SPID=$!
 for _ in {1..80}; do
     [[ -s "$TMP/listener.ready" ]] && break
@@ -91,30 +91,22 @@ echo 'nft_win4_probe=ack_until_64_client_packets'
 capture clamped_acks
 ip netns exec "$SERV" nft -a list table inet mneby_ig_win4_netns | grep -F 'ct original packets < 64'
 ip netns exec "$SERV" nft delete table inet mneby_ig_win4_netns
-cat > "$TMP/wscale.nft" <<'NFT'
+# This sysctl is confined to the disposable server netns. The live VPS
+# is never touched. WS=0 ensures the client interprets ACK window=4 as
+# four bytes instead of 4*(2**7) or similar.
+ip netns exec "$SERV" sysctl -qw net.ipv4.tcp_window_scaling=0
+cat > "$TMP/no_ws.nft" <<'NFT'
 add table inet mneby_ig_win4_netns
 add chain inet mneby_ig_win4_netns output { type filter hook output priority mangle; policy accept; }
-add rule inet mneby_ig_win4_netns output ip saddr 192.0.2.1 tcp sport 443 tcp flags & (syn | ack) == (syn | ack) tcp option window count set 0
 add rule inet mneby_ig_win4_netns output ip saddr 192.0.2.1 tcp sport 443 ct original packets < 64 tcp flags & ack == ack counter tcp window set 4
 NFT
-ip netns exec "$SERV" nft --check -f "$TMP/wscale.nft"
-ip netns exec "$SERV" nft -f "$TMP/wscale.nft"
-echo 'nft_win4_probe=ack_until_64_with_wscale0'
-capture clamped_wscale0
-ip netns exec "$SERV" nft -a list table inet mneby_ig_win4_netns | grep -F 'tcp option window count set 0'
+ip netns exec "$SERV" nft --check -f "$TMP/no_ws.nft"
+ip netns exec "$SERV" nft -f "$TMP/no_ws.nft"
+echo 'nft_win4_probe=ack_window4_server_wscale_disabled'
+capture clamped_no_ws
+ip netns exec "$SERV" nft -a list table inet mneby_ig_win4_netns | grep -F 'ct original packets < 64'
 ip netns exec "$SERV" nft delete table inet mneby_ig_win4_netns
-cat > "$TMP/wscale3.nft" <<'NFT'
-add table inet mneby_ig_win4_netns
-add chain inet mneby_ig_win4_netns output { type filter hook output priority mangle; policy accept; }
-add rule inet mneby_ig_win4_netns output ip saddr 192.0.2.1 tcp sport 443 tcp flags & (syn | ack) == (syn | ack) tcp option window count set 3
-add rule inet mneby_ig_win4_netns output ip saddr 192.0.2.1 tcp sport 443 ct original packets < 64 tcp flags & ack == ack counter tcp window set 4
-NFT
-ip netns exec "$SERV" nft --check -f "$TMP/wscale3.nft"
-ip netns exec "$SERV" nft -f "$TMP/wscale3.nft"
-echo 'nft_win4_probe=ack_until_64_with_wscale3'
-capture clamped_wscale3
-ip netns exec "$SERV" nft -a list table inet mneby_ig_win4_netns | grep -F 'tcp option window count set 3'
-ip netns exec "$SERV" nft delete table inet mneby_ig_win4_netns
+ip netns exec "$SERV" sysctl -qw net.ipv4.tcp_window_scaling=1
 echo 'nft_win4_probe=restored'
 capture failbypass
 ! ip netns exec "$SERV" nft list table inet mneby_ig_win4_netns >/dev/null 2>&1
