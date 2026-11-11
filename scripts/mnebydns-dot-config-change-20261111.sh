@@ -12,7 +12,7 @@ old_pid="$(systemctl show --value -p MainPID "$service")"
 if grep -Fxq '    reload 5s 1s' "$dns"; then
   # The reload plugin picks up atomic Corefile replacements automatically.
   # Let it observe the change and require that the serving PID remains stable.
-  /opt/mnebydns-dot/coredns -plugins 2>&1 | grep -Eq '(^|[[:space:]])reload([[:space:]]|$)'
+  /opt/mnebydns-dot/coredns -plugins 2>&1 | grep -Eq '(^|[[:space:].])reload([[:space:]]|$)'
   sleep 7
   current_pid="$(systemctl show --value -p MainPID "$service")"
   [[ "$current_pid" == "$old_pid" ]] || {
