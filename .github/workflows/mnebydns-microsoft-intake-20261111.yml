@@ -74,11 +74,17 @@ jobs:
             < scripts/mnebydns-microsoft-six-owner-intake-20261111.sql
           echo microsoft_canonical_db_rows_begin
           sshpass -e ssh "${opts[@]}" root@188.120.254.223 \
-            'docker exec mnebyvpn-stage-postgres psql -XqAt -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage -c "SELECT domain||\x27|\x27||product||\x27|\x27||status FROM dns_admin_domains WHERE domain IN (\x27bing.com\x27,\x27copilot.microsoft.com\x27,\x27microsoft.com\x27,\x27software-static.download.prss.microsoft.com\x27,\x27xbox.com\x27,\x27xboxdesignlab.xbox.com\x27) ORDER BY domain"' 
+            'docker exec -i mnebyvpn-stage-postgres psql -XqAt -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage' <<'SQL'
+          SELECT domain || '|' || product || '|' || status
+          FROM dns_admin_domains
+          WHERE domain IN ('bing.com','copilot.microsoft.com','microsoft.com',
+             'software-static.download.prss.microsoft.com',
+             'xbox.com','xboxdesignlab.xbox.com')
+          ORDER BY domain;
+          SQL
           echo microsoft_canonical_db_rows_end
           export SSHPASS="$DE_PASS"
-          sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
-            "python3 - <<'PY'
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY'
           from pathlib import Path
           import re
           names=['bing.com','copilot.microsoft.com','microsoft.com',
@@ -90,5 +96,5 @@ jobs:
             nginx_seen=bool(re.search(r'(?<![A-Za-z0-9.-])'+re.escape(n)+r'(?![A-Za-z0-9.-])',nginx))
             print('microsoft_live_route='+n+' corefile_mention='+str(dns_seen).lower()+' nginx_mention='+str(nginx_seen).lower())
           print('microsoft_live_config_readonly=true')
-          PY"
+          PY
           echo microsoft_new_routes_activated=false
