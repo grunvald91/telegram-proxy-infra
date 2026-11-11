@@ -1,0 +1,177 @@
+name: MNEBYDNS Meta Wi-Fi v10 Window20 on-request canary
+on:
+  push:
+    branches: [audit/mnebydns-instagram-lite-20261111]
+    paths:
+      - 'ops/mnebydns-iglite-wifi-v10-launch.marker'
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-iglite-wifi-v10-onrequest
+  cancel-in-progress: false
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 26
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate code and expected lab tests locally
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS"
+          python3 -m py_compile scripts/mnebydns_iglite_wifi_multi_meta_v10_w20.py scripts/mnebydns_iglite_sni_observer.py scripts/mnebydns_iglite_wifi_readiness_helpers.py
+          python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_iglite_v10_guard.py' -v
+          python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_iglite_sni_observer.py' -v
+          python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_iglite_wifi_readiness_helpers.py' -v
+          python3 scripts/mnebydns-owner-domain-render-20261110.py self-test
+      - name: Prepare pinned SSH
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+      - name: Stage reviewed one-shot script on verified DE
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          tar -C scripts -cf - mnebydns_iglite_wifi_multi_meta_v10_w20.py mnebydns_iglite_sni_observer.py mnebydns_iglite_wifi_readiness_helpers.py mnebydns-owner-domain-render-20261110.py mnebydns_iglite_dns_wire_checks.py |
+            sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
+              'umask 077; mkdir -p -m 700 /run/mneby-iglite-stage-20261111-v10; tar -xf - -C /run/mneby-iglite-stage-20261111-v10'
+      - name: Run verified on-demand 15-minute Wi-Fi test, no synthetic runner TLS probe
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          logfile="$RUNNER_TEMP/iglite-v10-live.log"
+          timeout 1400s sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
+            'MNEBY_IGLITE_LIVE_APPROVED=YES python3 -u /run/mneby-iglite-stage-20261111-v10/mnebydns_iglite_wifi_multi_meta_v10_w20.py live' \
+            > "$logfile" 2>&1
+          cat "$logfile"
+          grep -Fqx 'iglite_rollback=VERIFIED_ORIGINAL_BYTES_AND_SERVICES' "$logfile"
+          grep -Fqx 'iglite_meta_full_coverage=PASS_EXACT_HOSTS_ONLY' "$logfile"
+          grep -Fqx 'iglite_wifi_15min_window=READY' "$logfile"
+          grep -Fqx 'iglite_sni_pcap_observer=READY' "$logfile"
+          grep -q '^iglite_sni_target_clienthello=' "$logfile"
+          grep -q '^iglite_sni_sni_split=' "$logfile"
+          grep -q '^iglite_live_window20_early_ack_hits=' "$logfile"
+          grep -Fqx 'iglite_sni_pcap_written_to_disk=false' "$logfile"
+      - name: Verify services, original configs, WS scale and nft removal
+        if: always()
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS"
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY'
+          from pathlib import Path
+          import subprocess,sys
+          def ok(args):
+              try:return subprocess.run(args,capture_output=True,timeout=15).returncode==0
+              except Exception:return False
+          path=Path('/opt/mnebydns-stable-checkpoints/current')
+          configs=False
+          if path.is_file():
+              root=Path(path.read_text().strip())
+              nginx=Path('/etc/nginx/nginx.conf')
+              core=Path('/opt/mnebydns-dot/Corefile')
+              configs=(root.joinpath('dns.stable').is_file() and root.joinpath('nginx.stable').is_file()
+                       and nginx.read_bytes()==root.joinpath('nginx.stable').read_bytes()
+                       and core.read_bytes()==root.joinpath('dns.stable').read_bytes())
+          tests={
+            'nft_absent':not ok(['nft','list','table','inet','mneby_ig_lite_w20_20261111_v10']),
+            'kernel_scaling_restored':Path('/proc/sys/net/ipv4/tcp_window_scaling').read_text().strip()=='1',
+            'configs_restored':configs,
+            'nginx_active':ok(['systemctl','is-active','--quiet','nginx.service']),
+            'dot_active':ok(['systemctl','is-active','--quiet','mnebydns-dot.service']),
+          }
+          for k,v in tests.items():print('wifi_v10_post_'+k+'='+str(v).lower(),flush=True)
+          if not all(tests.values()):sys.exit(1)
+          PY
+  readiness:
+    name: Independent actual capture READY check
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prepare pinned SSH
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+      - name: Verify actual READY epoch, all Meta DNS routes, scaled-off TCP and rollback
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY'
+          import pathlib, subprocess, sys, time
+          from pathlib import Path
+          sys.path.insert(0,'/run/mneby-iglite-stage-20261111-v10')
+          hosts=('iglite-z.instagram.com','i.instagram.com',
+                 'i-fallback.instagram.com','test-gateway.instagram.com',
+                 'graph.instagram.com','z-m-gateway.facebook.com',
+                 'graph.facebook.com','www.instagram.com','www.facebook.com',
+                 'static.xx.fbcdn.net','scontent.xx.fbcdn.net')
+          stamp=Path('/run/mneby-iglite-wifi-de-20261111-v10/ready_epoch')
+          def result(args):
+              try:
+                  p=subprocess.run(args,capture_output=True,text=True,timeout=8)
+                  return p.returncode,p.stdout
+              except Exception:return -1,''
+          for attempt in range(170):
+              if stamp.is_file():
+                  try:start=int(stamp.read_text().strip())
+                  except (OSError,ValueError):start=0
+                  now=int(time.time())
+                  if start and 0<=now-start<240:
+                      timer,_=result(['systemctl','is-active','--quiet','mneby-ig-lite-wifi-20261111-v10.timer'])
+                      nft_status,rules=result(['nft','list','table','inet','mneby_ig_lite_w20_20261111_v10'])
+                      try:
+                          core=Path('/opt/mnebydns-dot/Corefile').read_text()
+                          nginx=Path('/etc/nginx/nginx.conf').read_text()
+                          ws=Path('/proc/sys/net/ipv4/tcp_window_scaling').read_text().strip()
+                          from mnebydns_iglite_wifi_readiness_helpers import all_hosts_ready
+                          routes=all_hosts_ready(core,nginx,hosts)
+                      except (OSError,ImportError):routes=False;ws='unknown'
+                      if (timer==0 and nft_status==0 and ws=='0' and routes
+                          and 'tcp window set 20' in rules
+                          and 'MNEBY_IG_WIFI_PRESERVE_ACK' in rules):
+                          print('iglite_v10_actual_ready=true',flush=True)
+                          print('iglite_v10_start_epoch='+str(start),flush=True)
+                          print('iglite_v10_end_epoch='+str(start+900),flush=True)
+                          print('iglite_v10_seconds_remaining='+str(max(0,start+900-now)),flush=True)
+                          print('iglite_v10_verified_routes='+str(len(hosts)),flush=True)
+                          print('iglite_v10_source_attribution=UNVERIFIED',flush=True)
+                          sys.exit(0)
+              time.sleep(2)
+          print('iglite_v10_actual_ready=false',flush=True)
+          sys.exit(1)
+          PY
