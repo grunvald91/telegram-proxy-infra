@@ -73,11 +73,15 @@ class Flow:
         if offset>=LIMIT: return
         n=min(len(payload),LIMIT-offset)
         if n<=0:return
+        fresh=False
         for i in range(n):
             if not self.covered[offset+i]:
                 self.buf[offset+i]=payload[i]
                 self.covered[offset+i]=1
-        if wire_len>0:
+                fresh=True
+        # Exclude purely redundant retransmissions: otherwise an initially
+        # intact hostname could be falsely reported as split on retry.
+        if fresh and wire_len>0:
             self.ranges.add((offset,offset+wire_len))
     def completed(self):
         if not all(self.covered[:5]):return None
@@ -124,7 +128,8 @@ class Analyzer:
         if host not in self.hosts:
             self.stats['other_sni']+=1
             if host.endswith(('.instagram.com','.facebook.com','.fbcdn.net')):
-                self.uncovered_meta.add(host)
+                if len(self.uncovered_meta)<40:
+                    self.uncovered_meta.add(host)
             return
         split=any(begin<b<end for a,b in flow.ranges)
         self.stats['target_clienthello']+=1
