@@ -61,3 +61,18 @@ MNEBYVPN main [c86aa2e6953b56afc8bf28bbf6d2c0396e3f9553](https://github.com/grun
 ## 2026-11-11 · New Telegram home menu Bubble and direct Stars invoice links
 
 Source: MNEBYVPN main [1c66aa46de40f1e6394dee6fddb15991d99b3547](https://github.com/grunvald91/Mnebyvpn/commit/1c66aa46de40f1e6394dee6fddb15991d99b3547) via [PR #102](https://github.com/grunvald91/Mnebyvpn/pull/102), full CI [42908560508](https://github.com/grunvald91/Mnebyvpn/actions/runs/42908560508) success. Telegram primary `/start` and `nav:home` now send an actual brand-avatar HTML widget with all normal menu actions, while keeping ONE inline `nav:menu:legacy` fallback for clients without Telegram Widgets. The VPN checkout widget no longer repeats duration/Stars in its caption. It pre-generates user- and offer-bound Telegram Stars `createInvoiceLink` URLs and uses `TelegramWidget.openTelegramLink` on a single pay tap, opening native invoice confirmation without a separate chat invoice. Orders are created only on verified Telegram pre-checkout, by signed per-user link/UUID, with existing durable Stars verification and settlement. Production `TELEGRAM_TOKEN_BOT` presence and Telegram egress were confirmed read-only in [42884819784](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/42884819784). Request isolated guarded Telegram bot deployment on 188 only (canary, rollback, webhook auth). Do not touch VPN/Xray, DNS, networks, TLS, Nginx or unrelated services. No actual charge performed in deployment.
+
+## 2026-11-11 · Microsoft owner DNS panel release
+
+Source: [Mnebyvpn PR #105](https://github.com/grunvald91/Mnebyvpn/pull/105), main commit
+`024b2ae6345d7baacb626f954797658ee18cb349`, green source
+[CI run 43069649971](https://github.com/grunvald91/Mnebyvpn/actions/runs/43069649971).
+The owner-only Telegram panel now exposes a Microsoft group with six exact study
+domains, a read-only product/domain search, pending/active filters, a queue summary,
+per-domain status refresh, and direct card navigation. Each record remains under
+the existing owner-managed 60-minute canary, confirmation and rollback process;
+bulk import is PENDING-only. The canonical Russian PostgreSQL six-name inventory
+was confirmed in [infrastructure intake run 43069532717](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/43069532717).
+Trigger the existing isolated Telegram bot canary/promote action (not website, DNS,
+Nginx, VPN, Xray or payment changes); require current green main and verified webhook
+health before claiming the release is live.
