@@ -22,6 +22,22 @@ base.UNIT = "mneby-ig-lite-route-only-20261111-v11"
 base.TABLE = "mneby_ig_lite_route_only_20261111_v11"
 base.PERSISTENT_STAGE = Path("/usr/local/libexec/mneby-iglite-v11")
 
+def check_retired_v10():
+    # base.baseline uses the overridden v11 UNIT/TABLE, so it no longer
+    # checks the v10 state that could still affect every HTTPS connection.
+    for suffix in (".timer", ".service"):
+        if base.command(["systemctl","is-active","--quiet",
+                         "mneby-ig-lite-wifi-20261111-v10"+suffix],
+                        check=False).returncode==0:
+            raise RuntimeError("Earlier v10 rollback still active")
+    if base.command(["nft","list","table","inet",
+                     "mneby_ig_lite_w20_20261111_v10"],
+                    check=False).returncode==0:
+        raise RuntimeError("Earlier global v10 Window20 table still active")
+
+def interrupted(signum, frame):
+    raise SystemExit(128+signum)
+
 def rollback():
     """Restore only the exact DNS/Nginx files owned by v11.
     Never write kernel TCP sysctls or nftables, even during failure recovery.
@@ -57,12 +73,15 @@ def rollback():
             failures.append(key+"_external_drift")
             continue
         originals[key]=old
-        if now!=old:
-            try:base.atomic_replace(path,old)
-            except Exception:failures.append(key+"_restore")
     if failures:
         print("iglite_v11_rollback=FAILED_"+",".join(failures),flush=True)
         raise RuntimeError("v11 config restoration incomplete")
+    # Validate BOTH ownership checks before modifying either file. If a
+    # write fails, still reload the files successfully restored below.
+    for key,path in (("core",base.CORE),("nginx",base.NGINX)):
+        if path.read_bytes()!=originals[key]:
+            try:base.atomic_replace(path,originals[key])
+            except Exception:failures.append(key+"_restore")
     for cmd in (["nginx","-t"],
                 ["systemctl","reload","nginx.service"],
                 ["systemctl","restart","mnebydns-dot.service"]):
@@ -89,6 +108,7 @@ def rollback():
 def live():
     if os.environ.get("MNEBY_IGLITE_V11_ROUTE_ONLY_APPROVED") != "YES":
         raise RuntimeError("Owner must explicitly approve route-only v11")
+    check_retired_v10()
     original_nginx,original_core=base.baseline()
     if base.WSFILE.read_text().strip()!="1":
         raise RuntimeError("Refuse v11 if normal TCP scaling is disabled")
@@ -132,6 +152,8 @@ def live():
     print("iglite_v11_same_boot_watchdog_armed=true",flush=True)
     base.write_exclusive(root/base.MUTATION_MARKER,b"armed\n")
     base.fsync_directory(root)
+    previous_handlers={sig:signal.signal(sig,interrupted)
+                       for sig in (signal.SIGTERM,signal.SIGHUP)}
     try:
         # No sysctl or nft mutations are allowed anywhere in the v11 live path.
         base.atomic_replace(base.NGINX,ng.encode())
@@ -176,7 +198,12 @@ def live():
         if base.WSFILE.read_text().strip()!="1":
             raise RuntimeError("TCP scaling changed unexpectedly")
     finally:
-        rollback()
+        # A repeated TERM/HUP must not interrupt file/service restoration.
+        for sig in previous_handlers:signal.signal(sig,signal.SIG_IGN)
+        try:
+            rollback()
+        finally:
+            for sig,handler in previous_handlers.items():signal.signal(sig,handler)
     print("iglite_v11_end_to_end_android=NOT_PROVEN",flush=True)
 
 if __name__=="__main__":
@@ -186,3 +213,4 @@ if __name__=="__main__":
         rollback()
     else:
         live()
+

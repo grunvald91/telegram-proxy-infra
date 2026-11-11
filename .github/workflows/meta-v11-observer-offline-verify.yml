@@ -1,13 +1,7 @@
 name: Meta v11 SNI observer correctness (offline only)
 
 on:
-  push:
-    branches: [fix/meta-routing-quic-sni-validation]
-    paths:
-      - 'scripts/mnebydns_iglite_sni_observer.py'
-      - 'scripts/tests/test_mnebydns_iglite_sni_observer.py'
-      - '.github/workflows/meta-v11-observer-offline-verify.yml'
-      - 'docs/meta-v11-corrective-audit-20261111.md'
+  # Automatic regressions are consolidated in mnebydns-meta-sni-offline-safety.
   workflow_dispatch:
 
 permissions:
@@ -41,3 +35,4 @@ jobs:
           print('offline_evidence_contract=PASS')
           print('production_ssh_or_deploy=NOT_REQUESTED')
           PY
+

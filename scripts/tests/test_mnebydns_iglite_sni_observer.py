@@ -35,6 +35,50 @@ def make_pcap(records):
     return BytesIO(hdr)
 
 class ClientHelloBoundaryTests(unittest.TestCase):
+    def test_early_clean_eof_does_not_pass_capture_preflight(self):
+        from unittest.mock import Mock,patch
+        from mnebydns_iglite_sni_observer import begin
+        process=Mock();process.stdout=make_pcap([])
+        process.poll.return_value=0;process.wait.return_value=0
+        with patch('mnebydns_iglite_sni_observer.subprocess.Popen',return_value=process):
+            with self.assertRaisesRegex(RuntimeError,'preflight'):
+                begin([HOST])
+        process.wait.assert_called_once()
+        self.assertTrue(process.stdout.closed)
+
+    def test_overlapping_retransmission_does_not_prove_sni_split(self):
+        data=tls_hello()
+        inside=locate_sni(data)[1]+5
+        a=Analyzer([HOST]);peer=b'\xcb\0\x71\x02'
+        a.tcp(peer,45601,100,True,b'')
+        a.tcp(peer,45601,101,False,data[:inside])
+        # This second segment contains the entire hostname as well as fresh
+        # bytes, so first delivery boundaries cannot be inferred reliably.
+        a.tcp(peer,45601,101,False,data)
+        self.assertEqual(a.stats['target_clienthello'],1)
+        self.assertEqual(a.stats['sni_boundary_indeterminate'],1)
+        self.assertEqual(a.stats['sni_split'],0)
+
+    def test_tcpdump_failure_is_not_a_successful_capture(self):
+        from unittest.mock import Mock
+        from mnebydns_iglite_sni_observer import finish
+        process=Mock();process.poll.return_value=1;process.wait.return_value=1
+        thread=Mock();thread.is_alive.return_value=False
+        with self.assertRaisesRegex(RuntimeError,'CaptureExit1'):
+            finish(process,thread,Analyzer([HOST]),[])
+        process.wait.assert_called_once()
+
+    def test_tcpdump_normal_stop_reaped_and_stream_closed(self):
+        from unittest.mock import Mock
+        from mnebydns_iglite_sni_observer import finish
+        process=Mock();process.poll.return_value=None;process.wait.return_value=0
+        thread=Mock();thread.is_alive.return_value=False
+        analyzer=Analyzer([HOST])
+        self.assertIs(finish(process,thread,analyzer,[]),analyzer)
+        process.send_signal.assert_called_once()
+        process.wait.assert_called_once()
+        process.stdout.close.assert_called_once()
+
     def test_real_sni_offsets(self):
         data=tls_hello()
         value=locate_sni(data)
@@ -204,3 +248,4 @@ class ClientHelloBoundaryTests(unittest.TestCase):
         self.assertNotIn('print(payload',s)
 
 if __name__=='__main__': unittest.main()
+

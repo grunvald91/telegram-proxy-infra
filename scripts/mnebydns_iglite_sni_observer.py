@@ -117,14 +117,22 @@ class Flow:
         n=min(len(payload),LIMIT-offset)
         if n<=0:return
         fresh=False
+        overlap=False
         for i in range(n):
             if not self.covered[offset+i]:
                 self.buf[offset+i]=payload[i]
                 self.covered[offset+i]=1
                 fresh=True
+            else:
+                overlap=True
         # Exclude purely redundant retransmissions: otherwise an initially
         # intact hostname could be falsely reported as split on retry.
         if fresh and wire_len != len(payload):
+            self.segment_boundary_unknown=True
+        # Partly overlapping retransmissions do not establish which packet
+        # boundaries delivered the hostname. Fully redundant retries remain
+        # ignored, including short retries of an already complete SNI.
+        if fresh and overlap:
             self.segment_boundary_unknown=True
         if fresh and wire_len>0:
             # Never infer a captured segment boundary past captured bytes.
@@ -288,9 +296,13 @@ def begin(hosts):
          'ip and tcp and dst host 89.125.90.101 and dst port 443'],
         stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,bufsize=0)
     ready=threading.Event()
+    process._mneby_stop_requested=threading.Event()
     failures=[]
     def consume():
-        try:parse_pcap(process.stdout,analyzer,ready)
+        try:
+            parse_pcap(process.stdout,analyzer,ready)
+            if not process._mneby_stop_requested.is_set():
+                failures.append('UnexpectedCaptureEOF')
         except (EOFError,ValueError,OSError) as exc:
             failures.append(type(exc).__name__)
             ready.set()
@@ -298,16 +310,28 @@ def begin(hosts):
     thread.start()
     if not ready.wait(3) or failures or process.poll() is not None:
         if process.poll() is None:process.kill()
+        process.wait(timeout=3)
         thread.join(timeout=3)
+        if process.stdout:process.stdout.close()
         raise RuntimeError('SNI PCAP observer failed preflight')
     return process,thread,analyzer,failures
 
 def finish(process,thread,analyzer,failures):
+    stopping=getattr(process,'_mneby_stop_requested',None)
+    if stopping is not None:stopping.set()
     if process.poll() is None:process.send_signal(signal.SIGINT)
     thread.join(timeout=6)
     if thread.is_alive():
         process.kill()
         thread.join(timeout=4)
+    try:
+        status=process.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        status=process.wait(timeout=3)
+        failures.append('CaptureStopTimeout')
+    if status not in (0,-signal.SIGINT):
+        failures.append('CaptureExit'+str(status))
     if process.stdout:process.stdout.close()
     if thread.is_alive() or failures:
         raise RuntimeError('SNI capture failed: '+','.join(failures))
@@ -334,3 +358,4 @@ def summary(a):
         print('iglite_sni_uncovered_meta_hostname='+hostname,flush=True)
     print('iglite_sni_android_identified=false',flush=True)
     print('iglite_sni_pcap_written_to_disk=false',flush=True)
+

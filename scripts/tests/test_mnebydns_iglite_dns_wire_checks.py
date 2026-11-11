@@ -86,5 +86,38 @@ class ExactWireRoute(unittest.TestCase):
             self.assertIn(w.wire_name(w.HOST), data)
         self.assertEqual(len(w.QTYPES), 5)
 
+    def test_authority_and_additional_sections_cannot_hide_routes(self):
+        for counts in ((1, 0), (0, 1)):
+            for kind, value in ((1, socket.inet_aton("157.240.0.160")),
+                                (28, socket.inet_pton(socket.AF_INET6, "2a03:2880::1")),
+                                (5, w.wire_name("direct.instagram.com")),
+                                (65, b"\x00\x01\x00")):
+                msg = bytearray(response(28))
+                struct.pack_into("!HH", msg, 8, *counts)
+                msg.extend(answer(kind, value))
+                with self.subTest(counts=counts, kind=kind), self.assertRaisesRegex(ValueError, "bypass"):
+                    w.check_answer(bytes(msg), ID, 28)
+
+    def test_declared_but_missing_sections_and_trailing_data_rejected(self):
+        missing = bytearray(response(28))
+        struct.pack_into("!H", missing, 10, 1)
+        for msg in (bytes(missing), response(28) + b"unparsed"):
+            with self.assertRaises(ValueError):
+                w.check_answer(msg, ID, 28)
+
+    def test_valid_opt_allowed_but_extended_error_and_wrong_opcode_rejected(self):
+        for ttl in (0, 1 << 24):
+            msg = bytearray(response(28))
+            struct.pack_into("!H", msg, 10, 1)
+            msg.extend(b"\x00" + struct.pack("!HHIH", 41, 1232, ttl, 0))
+            if ttl:
+                with self.assertRaisesRegex(ValueError, "extended"):
+                    w.check_answer(bytes(msg), ID, 28)
+            else:
+                self.assertEqual(w.check_answer(bytes(msg), ID, 28), "NO_ALIAS_OR_IPV6")
+        with self.assertRaises(ValueError):
+            w.check_answer(response(28, flags=0x8980), ID, 28)
+
 if __name__ == "__main__":
     unittest.main()
+
