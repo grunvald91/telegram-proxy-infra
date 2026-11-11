@@ -108,6 +108,8 @@ class V10Window20Review(unittest.TestCase):
         workflow=(ROOT.parent / ".github/workflows/mnebydns-iglite-wifi-v10-onrequest.yml").read_text()
         self.assertEqual(workflow.count("if: ${{ false }}"),2)
         self.assertIn("REVIEW BLOCKER: no persistent reboot-safe recovery unit yet",workflow)
+        self.assertIn("timeout-minutes: 18",workflow)
+        self.assertIn("for attempt in range(500)",workflow)
 
     def test_observer_reports_not_phone_attribution(self):
         src=inspect.getsource(self.v.observe_wifi_tcp_headers)
