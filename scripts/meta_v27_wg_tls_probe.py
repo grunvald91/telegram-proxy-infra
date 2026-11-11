@@ -8,6 +8,7 @@ This is NOT a phone/ISP/TSPU test or client-SNI segmentation test.
 """
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import json
 import os
@@ -37,11 +38,26 @@ def run_server() -> None:
         raise RuntimeError("DE WireGuard bind IP not present")
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as test:
         test.bind((WG_IP, PORT))
+    tracked = (Path('/etc/nginx/nginx.conf'), Path('/opt/mnebydns-dot/Corefile'))
+    before_hash = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in tracked}
     renderer = helper.load_renderer()
     targets = {}
     for host in HOSTS:
         targets[host] = renderer.origin_ip(host)
         helper.verify_tls(targets[host], 443, host)
+    # Comparable direct-origin HTTP control: Lite may accept TLS but not reply
+    # to a generic GET /, which must not be misclassified as routing failure.
+    lite = HOSTS[1]
+    try:
+        with socket.create_connection((targets[lite], 443), timeout=5) as sock:
+            sock.settimeout(5)
+            with ssl.create_default_context().wrap_socket(sock, server_hostname=lite) as tls:
+                tls.sendall(("GET / HTTP/1.1\\r\\nHost: " + lite +
+                             "\\r\\nConnection: close\\r\\nUser-Agent: MNEBY-test\\r\\n\\r\\n").encode("ascii"))
+                direct = str(len(tls.recv(1024)))
+    except (socket.timeout, TimeoutError):
+        direct = "TIMEOUT"
+    print("v27_de_iglite_direct_http_bytes=" + direct, flush=True)
 
     with tempfile.TemporaryDirectory(prefix="mneby-v27-wg-") as directory:
         tmp = Path(directory)
@@ -88,8 +104,11 @@ def run_server() -> None:
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait(timeout=3)
+    after_hash = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in tracked}
+    if after_hash != before_hash:
+        raise RuntimeError("DE production nginx/CoreDNS config hash drift")
     print("v27_de_temporary_nginx_stopped=true", flush=True)
-    print("v27_de_production_configs_untouched=true", flush=True)
+    print("v27_de_production_configs_hash_unchanged=true", flush=True)
 
 
 def run_client() -> None:
@@ -99,6 +118,8 @@ def run_client() -> None:
     if not routes or routes[0].get("dev") != WG_DEV:
         raise RuntimeError("RU route to DE is not via private WireGuard")
     print("v27_ru_route_via_tg_relay=PASS", flush=True)
+    app_success = 0
+    tls_success = 0
     for host in HOSTS:
         raw = socket.create_connection((WG_IP, PORT), timeout=8)
         try:
@@ -109,18 +130,30 @@ def run_client() -> None:
                 if not tls.getpeercert():
                     raise RuntimeError("origin certificate absent for " + host)
                 version = tls.version()
-                tls.sendall(("GET / HTTP/1.1\r\nHost: " + host +
-                             "\r\nConnection: close\r\nUser-Agent: MNEBY-test\r\n\r\n").encode("ascii"))
-                response = tls.recv(1024)
                 tag = host.replace(".", "_").replace("-", "_")
                 print("v27_wg_" + tag + "_cert_valid=true", flush=True)
                 print("v27_wg_" + tag + "_tls=" + str(version), flush=True)
-                print("v27_wg_" + tag + "_http_bytes=" + str(len(response)), flush=True)
-                if not response:
-                    raise RuntimeError("no encrypted application response for " + host)
+                tls_success += 1
+                tls.sendall(("GET / HTTP/1.1\r\nHost: " + host +
+                             "\r\nConnection: close\r\nUser-Agent: MNEBY-test\r\n\r\n").encode("ascii"))
+                try:
+                    response = tls.recv(1024)
+                    bytes_read = len(response)
+                except (socket.timeout, TimeoutError):
+                    bytes_read = 0
+                    print("v27_wg_" + tag + "_http_status=TIMEOUT", flush=True)
+                else:
+                    print("v27_wg_" + tag + "_http_bytes=" + str(bytes_read), flush=True)
+                if bytes_read:
+                    app_success += 1
+                elif host == HOSTS[0]:
+                    raise RuntimeError("no application response for control " + host)
         finally:
             raw.close()
-    print("v27_ru_wg_de_meta_tls_application=PASS", flush=True)
+    if tls_success != len(HOSTS):
+        raise RuntimeError("not all host TLS handshakes validated")
+    print("v27_ru_wg_de_meta_tls=PASS", flush=True)
+    print("v27_ru_wg_de_meta_http_verified_hosts=" + str(app_success), flush=True)
     print("v27_android_tspu_bypass=NOT_TESTED", flush=True)
 
 
