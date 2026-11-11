@@ -53,7 +53,8 @@ def run() -> int:
                     counters[(endpoint, domain, label)][result] += 1
                     time.sleep(DELAY_S)
         print("dns_stability_round_" + str(round_num + 1) + "=finished", flush=True)
-    failures = []
+    edge_failures = []
+    comparator_failures = []
     for (endpoint, domain, label), counts in sorted(counters.items()):
         prefix = endpoint + "_" + re.sub(r"[^a-z0-9]", "_", domain) + "_" + label
         ok = counts["RCODE_0"]
@@ -67,11 +68,13 @@ def run() -> int:
                 print("dns_v14_error_" + prefix + "_" + code + "=" + str(number),
                       flush=True)
         if transient >= 2:
-            failures.append(prefix)
+            (edge_failures if endpoint == "edge" else comparator_failures).append(prefix)
     print("dns_v14_origin=GITHUB_RUNNER_NOT_RU_ANDROID", flush=True)
     print("dns_v14_live_config_mutations=none", flush=True)
-    print("dns_v14_repeated_failure_count=" + str(len(failures)), flush=True)
-    return 1 if failures else 0
+    print("dns_v14_edge_repeated_failure_count=" + str(len(edge_failures)), flush=True)
+    print("dns_v14_quad9_comparator_repeated_failure_count=" + str(len(comparator_failures)), flush=True)
+    print("dns_v14_quad9_issues_do_not_establish_edge_failure=true", flush=True)
+    return 1 if edge_failures else 0
 
 if __name__ == "__main__":
     if len(sys.argv) != 1:
