@@ -50,7 +50,7 @@ jobs:
           echo '```text' >> "$GITHUB_STEP_SUMMARY"
           tar -C scripts -cf - meta_v26_readonly_preflight.py \
             meta_v26_de_stage.py meta_v26_ru_stage.py \
-            meta_v25_source_view.py meta_v25_view_runtime_smoke.py meta_v23_ru_firsthop_preview.py \
+            meta_v25_source_view.py meta_v25_view_runtime_smoke.py meta_v28_dot_view_smoke.py meta_v23_ru_firsthop_preview.py \
             meta_v15_receive_window.py mnebydns_iglite_sni_observer.py \
             mnebydns_iglite_wifi_multi_meta_v10_w20.py \
             mnebydns-owner-domain-render-20261110.py |
