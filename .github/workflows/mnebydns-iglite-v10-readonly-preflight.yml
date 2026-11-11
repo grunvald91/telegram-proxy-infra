@@ -1,0 +1,63 @@
+name: MNEBYDNS Meta v10 DE read-only preflight
+on:
+  push:
+    branches: [audit/mnebydns-instagram-lite-20261111]
+    paths:
+      - '.github/workflows/mnebydns-iglite-v10-readonly-preflight.yml'
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prepare pinned SSH
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+      - name: Verify DE baseline and rollback prerequisites without changes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY'
+          from pathlib import Path
+          import subprocess,sys
+          def success(argv):
+              try:return subprocess.run(argv,capture_output=True,timeout=10).returncode==0
+              except Exception:return False
+          stable=Path('/opt/mnebydns-stable-checkpoints/current')
+          configs_ok=False
+          if stable.is_file():
+              original=Path(stable.read_text().strip())
+              files=(('dns.stable','/opt/mnebydns-dot/Corefile'),
+                     ('nginx.stable','/etc/nginx/nginx.conf'))
+              configs_ok=all((original / name).is_file() and
+                             (original / name).read_bytes()==Path(live).read_bytes()
+                             for name,live in files)
+          checks={
+              'original_configs':configs_ok,
+              'window_scaling_on':Path('/proc/sys/net/ipv4/tcp_window_scaling').read_text().strip()=='1',
+              'nginx_active':success(['systemctl','is-active','--quiet','nginx.service']),
+              'dot_active':success(['systemctl','is-active','--quiet','mnebydns-dot.service']),
+              'nft_test_absent':not success(['nft','list','table','inet','mneby_ig_lite_w20_20261111_v10']),
+              'v9_test_absent':not success(['nft','list','table','inet','mneby_ig_lite_w4_20261111_v9']),
+              'tcpdump_available':success(['command','-v','tcpdump']) or Path('/usr/bin/tcpdump').is_file(),
+              'nft_available':Path('/usr/sbin/nft').is_file(),
+          }
+          for name,value in checks.items():
+              print('wifi_v10_readonly_'+name+'='+str(value).lower(),flush=True)
+          print('wifi_v10_live_server_changes=NONE',flush=True)
+          if not all(checks.values()):sys.exit(1)
+          PY
