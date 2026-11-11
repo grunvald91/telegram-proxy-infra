@@ -75,6 +75,24 @@ class ClientHelloBoundaryTests(unittest.TestCase):
         a=Analyzer([HOST]);parse_pcap(make_pcap([packet(800,2),packet(801,24,h)]),a)
         self.assertEqual(a.stats['other_sni'],1)
         self.assertEqual(a.stats['target_clienthello'],0)
+    def test_sni_event_has_timestamp_and_anonymized_source_group(self):
+        data=tls_hello()
+        a=Analyzer([HOST])
+        peer=b'\xcb\0\x71\x02'
+        a.tcp(peer,45454,500,True,b'',timestamp=1794380000)
+        a.tcp(peer,45454,501,False,data,timestamp=1794380001)
+        self.assertEqual(a.events,[(1794380001,1,HOST,False)])
+        self.assertEqual(len(a.peer_index),1)
+
+    def test_extra_meta_sni_name_reported_as_uncovered(self):
+        other='gateway.instagram.com'
+        a=Analyzer([HOST])
+        peer=b'\xcb\0\x71\x02'
+        a.tcp(peer,45454,500,True,b'')
+        a.tcp(peer,45454,501,False,tls_hello(other))
+        self.assertEqual(a.uncovered_meta,{other})
+        self.assertEqual(a.stats['other_sni'],1)
+
     def test_no_raw_ips_or_payload_prints(self):
         import inspect
         from mnebydns_iglite_sni_observer import summary
