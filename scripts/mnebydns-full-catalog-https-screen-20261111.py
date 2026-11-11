@@ -48,7 +48,8 @@ def rows():
     return sorted(values, key=lambda r: r["domain"])
 
 def batches():
-    return [rows()[n:n+BATCH] for n in range(BATCHES)]
+    all_rows = rows()
+    return [all_rows[n*BATCH:(n+1)*BATCH] for n in range(BATCHES)]
 
 def run_batch(n):
     if not 0 <= n < BATCHES:
@@ -210,7 +211,8 @@ def process(input_dir):
 
 def self_test():
     records = rows()
-    if len(batches()) != 14 or len(batches()[13]) != 3:
+    parts = batches()
+    if len(parts) != 14 or len(parts[13]) != 3 or len({r['domain'] for p in parts for r in p}) != EXPECTED:
         raise AssertionError("Batched 523-record coverage failed")
     fake = lambda region, code, tls=True: dict(host="test.org",origin_ipv4="1.1.1.1",
             http_status=code,certificate_verified=tls,state="TLS_AND_HTTP" if tls else "TLS_ERROR")
