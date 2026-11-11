@@ -90,6 +90,7 @@ class LabAnalyzer(Analyzer):
         super().__init__([HOST])
         self.small=0;self.large=0;self.synack_scales=[];self.windows=[]
         self.control_windows=[]
+        self.control_synack_windows=[]
 
     def ethernet(self,frame,timestamp=None):
         if len(frame)<54 or frame[12:14]!=b"\x08\x00":return
@@ -107,7 +108,9 @@ class LabAnalyzer(Analyzer):
             super().ethernet(frame,timestamp)
         if source==EDGE and sport==443:
             window=int.from_bytes(frame[tcp+14:tcp+16],"big")
-            if dest==CONTROL:self.control_windows.append(window)
+            if dest==CONTROL:
+                self.control_windows.append(window)
+                if flags&0x12==0x12:self.control_synack_windows.append(window)
             if dest!=PEER:return
             self.windows.append(window)
             if flags&0x12==0x12:
@@ -206,7 +209,10 @@ def inner():
             assert analyzer.small>=2 and analyzer.large>=1
             assert analyzer.synack_scales and set(analyzer.synack_scales)=={0}
             assert WINDOW in analyzer.windows and max(analyzer.windows)>WINDOW
-            assert analyzer.control_windows and min(analyzer.control_windows)>WINDOW
+            # Native flow control and RST/teardown can legitimately contain
+            # window zero. Compare the initial control handshake, which is
+            # the point where the experimental tiny window is negotiated.
+            assert analyzer.control_synack_windows and min(analyzer.control_synack_windows)>WINDOW
             import json
             audit=json.loads(run(["nft","-j","list","table","inet","v15audit"]).stdout)
             counters=[e["counter"]["packets"] for item in audit["nftables"]
@@ -222,6 +228,7 @@ def inner():
             print("meta_v15_lab_post_release_large_segments="+str(analyzer.large))
             print("meta_v15_lab_receive_scale_zero=true")
             print("meta_v15_lab_nonpeer_window_unchanged=true")
+            print("meta_v15_lab_control_native_zero_packets="+str(analyzer.control_windows.count(0)))
             print("meta_v15_lab_queue210_exemption_mark_verified=true")
             print("meta_v15_lab_global_scaling_unchanged=true")
             print("meta_v15_lab_secondary_edge_ip_verified=true")

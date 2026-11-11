@@ -24,6 +24,21 @@ class FakeConnection:
 
 
 class ReceiveWindowTests(unittest.TestCase):
+    def test_lab_control_handshake_check_ignores_teardown_window(self):
+        import struct
+        from integration_meta_v15_netns import LabAnalyzer,EDGE,CONTROL
+        from test_mnebydns_iglite_sni_observer import packet
+        analyzer=LabAnalyzer()
+        for flags,window in ((0x12,32768),(0x04,0)):
+            frame=bytearray(packet(100,flags))
+            frame[26:30]=socket.inet_aton(EDGE)
+            frame[30:34]=socket.inet_aton(CONTROL)
+            struct.pack_into('!HH',frame,34,443,42424)
+            struct.pack_into('!H',frame,48,window)
+            analyzer.ethernet(bytes(frame))
+        self.assertEqual(analyzer.control_synack_windows,[32768])
+        self.assertEqual(analyzer.control_windows,[32768,0])
+
     def test_prefix_waits_for_sni_across_tls_record_fragments(self):
         hello=tls_hello("i.instagram.com")
         fragmented=fragment_records(hello,(30,))

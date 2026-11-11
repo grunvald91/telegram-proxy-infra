@@ -22,8 +22,8 @@ No live phone canary or production deployment is part of this review.
 - Eight selected new regression tests were run against the old receiver,
   observer and controller sources: **7 failures and 1 error**, reproducing the
   reviewed defects rather than merely asserting new implementation strings.
-- **66 local tests passed:** 25 observer, 13 v11 route/signal/recovery,
-  10 DNS wire, 10 receiver, 8 controller. This includes real local sockets,
+- **67 local tests passed:** 25 observer, 13 v11 route/signal/recovery,
+  10 DNS wire, 11 receiver, 8 controller. This includes real local sockets,
   relay half-close/data integrity, and cross-process cleanup locking.
 - Workflow YAML, embedded shell syntax, Python compilation and whitespace
   checks passed locally.
@@ -31,6 +31,12 @@ No live phone canary or production deployment is part of this review.
   exchange and SNI TCP segmentation for both ordinary and TLS-record-fragmented
   ClientHello, with EDGE configured as a secondary interface IP. CI results
   are linked from PR 87 after completion.
+- The first expanded lab reached the non-peer window assertion after both
+  TLS/SNI scenarios passed. That assertion incorrectly required every control
+  packet, including teardown, to advertise more than eight bytes. It now
+  checks the control SYNACK windows; a new synthetic SYNACK + zero-window RST
+  regression verifies the distinction. TLS integrity and target split checks
+  remain required.
 
 ## Sources and limits
 
