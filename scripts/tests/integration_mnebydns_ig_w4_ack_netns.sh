@@ -4,7 +4,7 @@ set -Eeuo pipefail
 (( EUID == 0 )) || { echo root_required; exit 2; }
 for bin in ip nft tcpdump ethtool python3; do command -v "$bin" >/dev/null; done
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-PROBE="$ROOT/scripts/tests/mnebydns_ig_de_nft_netns_probe.py"
+PROBE="$ROOT/scripts/tests/mnebydns_ig_w4_ack_netns_probe.py"
 TMP="$(mktemp -d)"
 SERV="ignfts_$$"
 CLNT="ignftc_$$"
@@ -72,7 +72,7 @@ capture reference
 cat > "$TMP/nft.rules" <<'NFT'
 add table inet mneby_ig_win4_netns
 add chain inet mneby_ig_win4_netns output { type filter hook output priority mangle; policy accept; }
-add rule inet mneby_ig_win4_netns output ip saddr 192.0.2.1 tcp sport 18443 tcp flags & (syn | ack) == (syn | ack) counter tcp window set 4
+add rule inet mneby_ig_win4_netns output ip saddr 192.0.2.1 tcp sport 443 tcp flags & (syn | ack) == (syn | ack) counter tcp window set 4
 NFT
 ip netns exec "$SERV" nft --check -f "$TMP/nft.rules"
 ip netns exec "$SERV" nft -f "$TMP/nft.rules"
@@ -83,7 +83,7 @@ ip netns exec "$SERV" nft delete table inet mneby_ig_win4_netns
 cat > "$TMP/ack.nft" <<'NFT'
 add table inet mneby_ig_win4_netns
 add chain inet mneby_ig_win4_netns output { type filter hook output priority mangle; policy accept; }
-add rule inet mneby_ig_win4_netns output ip saddr 192.0.2.1 tcp sport 18443 ct original packets < 64 tcp flags & ack == ack counter tcp window set 4
+add rule inet mneby_ig_win4_netns output ip saddr 192.0.2.1 tcp sport 443 ct original packets < 64 tcp flags & ack == ack counter tcp window set 4
 NFT
 ip netns exec "$SERV" nft --check -f "$TMP/ack.nft"
 ip netns exec "$SERV" nft -f "$TMP/ack.nft"
