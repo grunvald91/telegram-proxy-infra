@@ -5,6 +5,7 @@ import sys
 import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from meta_v12_routing_gate import a_de_count, classify, parse
+from meta_v12_ru_de_readonly import metric_host
 
 DIRECT_A = "RCODE0_A_DE0_A_RU0_A_OTHER1_AAAA0_CNAME1_HTTPS0_SVCB0"
 DE_A = "RCODE0_A_DE1_A_RU0_A_OTHER0_AAAA0_CNAME0_HTTPS0_SVCB0"
@@ -79,6 +80,10 @@ class EvidenceGateTests(unittest.TestCase):
         p = parse("### Summary\nexternal_dot_A_i_instagram_com=RCODE0_A_DE0\n\x1b[34mlog=foo\n")
         self.assertEqual(p["external_dot_A_i_instagram_com"], "RCODE0_A_DE0")
         self.assertNotIn("log", p)
+
+    def test_lite_metric_names_match_gate_keys(self):
+        self.assertEqual(metric_host("iglite-z.instagram.com"), "iglite_z_instagram_com")
+        self.assertEqual(metric_host("i.instagram.com"), "i_instagram_com")
 
     def test_de_count_strict(self):
         self.assertEqual(a_de_count(DE_A), 1)
