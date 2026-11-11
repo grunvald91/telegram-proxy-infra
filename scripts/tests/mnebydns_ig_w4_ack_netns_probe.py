@@ -182,6 +182,20 @@ def verify(file: str, mode: str):
           f"data_span_ms={interval_ms} server_ack_windows={acks[:24]}", flush=True)
 
 
+    # Reassemble actual isolated TCP segments and test SNI boundary.
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from mnebydns_iglite_sni_observer import Analyzer, parse_pcap
+    analyzer=Analyzer(["i.instagram.com"])
+    with open(file,"rb") as source:
+        parse_pcap(source,analyzer)
+    print("netns_actual_sni_split="+str(analyzer.stats["sni_split"]),flush=True)
+    print("netns_actual_sni_unsplit="+str(analyzer.stats["sni_unsplit"]),flush=True)
+    print("netns_actual_target_hello="+str(analyzer.stats["target_clienthello"]),flush=True)
+    if analyzer.stats["target_clienthello"]!=1:
+        raise AssertionError("Expected one complete TLS ClientHello for i.instagram.com")
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("mode", choices=("listener", "client", "capture", "verify"))
