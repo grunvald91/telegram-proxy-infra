@@ -168,6 +168,83 @@ jobs:
           audit_remote RU 188.120.254.223 "$RU_PASS"
           audit_remote DE 89.125.90.101 "$DE_PASS"
           echo 'JOINT_DIAG_FINISHED=true'
+      - name: Inspect DNS checkpoint drift, local TLS paths, and proxy health without changing state
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get install -y -qq sshpass >/dev/null
+          remote_script='python3 -'
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no root@89.125.90.101 "$remote_script" <<'PY'
+          import pathlib,hashlib,difflib,re,subprocess,ssl,socket,time
+          base=pathlib.Path(pathlib.Path('/opt/mnebydns-stable-checkpoints/current').read_text().strip())
+          def out(k,v): print('DE_DEEP_'+k+'='+str(v),flush=True)
+          for key,stable,live in (
+              ('DNS',base/'dns.stable',pathlib.Path('/opt/mnebydns-dot/Corefile')),
+              ('NGINX',base/'nginx.stable',pathlib.Path('/etc/nginx/nginx.conf')),
+              ('PILOT',base/'proxy.stable',pathlib.Path('/etc/mnebydns-googlepilot/nginx.conf'))
+          ):
+              if not stable.exists() or not live.exists():
+                  out(key+'_FILES_EXIST',False);continue
+              before=stable.read_text(errors='replace').splitlines()
+              after=live.read_text(errors='replace').splitlines()
+              sm=difflib.SequenceMatcher(None,before,after,autojunk=False)
+              removed=[];added=[]
+              for tag,a,b,c,d in sm.get_opcodes():
+                  if tag in ('replace','delete'):removed.extend(before[a:b])
+                  if tag in ('replace','insert'):added.extend(after[c:d])
+              out(key+'_REMOVED_LINES',len(removed))
+              out(key+'_ADDED_LINES',len(added))
+              domains=('instagram','threads','facebook','antigravity','googleapis','google','tiktok','youtube','oracle','cloudflare','telegram')
+              for domain in domains:
+                  old=sum(domain in x.lower() for x in removed)
+                  new=sum(domain in x.lower() for x in added)
+                  if old or new:out(key+'_DELTA_'+domain, 'removed:'+str(old)+',added:'+str(new))
+              out(key+'_CURRENT_SHA12',hashlib.sha256(live.read_bytes()).hexdigest()[:12])
+              out(key+'_CHECKPOINT_SHA12',hashlib.sha256(stable.read_bytes()).hexdigest()[:12])
+              out(key+'_LINE_COUNT',str(len(before))+'->'+str(len(after)))
+          pilot=pathlib.Path('/opt/mnebydns-owner-domain')
+          if pilot.exists():
+              ages=[]
+              for path in pilot.iterdir():
+                  if path.is_dir():
+                      ages.append(round((time.time()-path.stat().st_mtime)/3600,1))
+              out('OWNER_WORKDIRS',len(ages))
+              out('OWNER_NEWEST_WORKDIR_AGE_H',min(ages) if ages else 'none')
+          try:
+              p=subprocess.run(['systemctl','list-timers','--all','--no-legend','--no-pager'],
+                  capture_output=True,text=True,timeout=7)
+              for name in ('relay89-clock-guard','mnebydns-owner-rollback','mnebydns-ig-lite'):
+                  out('TIMER_'+name+'_COUNT',sum(name in x for x in p.stdout.splitlines()))
+          except Exception:pass
+          for unit in ('mnebydns-dot','mnebydns-googlepilot','mtproxy','mtproxy-ru','nginx','xray'):
+              try:
+                  p=subprocess.run(['journalctl','-u',unit,'--since','-2 hours','-n','200','-o','cat','--no-pager'],
+                      capture_output=True,text=True,timeout=8)
+                  s=p.stdout.lower()
+                  for kind,expr in [('timeout',r'timeout|timed out'),('refused',r'refused'),('failed',r'fail|error|panic'),
+                                    ('restart',r'restart|shutting down')]:
+                      out('JOURNAL_'+unit+'_'+kind,len(re.findall(expr,s)))
+              except Exception:pass
+          for server,port,sni in [('127.0.0.1',443,'claude.ai'),('127.0.0.1',443,'antigravity.google'),('127.0.0.1',853,'dns.mnebyvpn.site')]:
+              try:
+                  with socket.create_connection((server,port),timeout=6) as sock:
+                      sock.settimeout(6)
+                      with ssl.create_default_context().wrap_socket(sock,server_hostname=sni) as t:
+                          out('TLS_LOCAL_'+sni,'PASS_'+str(t.version()))
+              except Exception as ex:out('TLS_LOCAL_'+sni,'FAIL_'+type(ex).__name__)
+          PY
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no root@188.120.254.223 "bash -s" <<'SH'
+          set -Eeuo pipefail
+          for url in "https://mnebyvpn.site/" "https://claude.ai/"; do
+            code="$(curl -sS -L -o /dev/null -w '%{http_code}' --connect-timeout 4 --max-time 8 --resolve "$(echo "$url" | sed 's#https://##;s#/.*##'):443:127.0.0.1" "$url" 2>/dev/null || echo failed)"
+            echo "RU_DEEP_LOCAL_HTTPS_${url}=${code}"
+          done
+          if docker ps --format '{{.Names}}' | grep -qx 'mnebyvpn-stage-postgres'; then
+            docker exec mnebyvpn-stage-postgres psql -XqAt -U mnebyvpn_stage -d mnebyvpn_stage -c "SELECT 'DNS_STATUS_'||status||'='||count(*) FROM dns_admin_domains GROUP BY status ORDER BY status" 2>/dev/null || true
+          fi
+          SH
       - name: Publish diagnostic run pointer as a GitHub commit status
         if: always()
         shell: bash
