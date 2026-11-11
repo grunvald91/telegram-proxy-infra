@@ -60,6 +60,28 @@ class ClientHelloBoundaryTests(unittest.TestCase):
         a.tcp(ip,p,101,False,h[:10])
         a.tcp(ip,p,111,False,h[10:])
         self.assertEqual(a.stats['sni_unsplit'],1)
+    def test_short_retransmission_does_not_invent_sni_split(self):
+        data=tls_hello()
+        inside=locate_sni(data)[1]+5
+        a=Analyzer([HOST])
+        peer=b'\xcb\0\x71\x02'
+        a.tcp(peer,45601,600,True,b'')
+        # Original first transmission carried all SNI bytes in one segment.
+        a.tcp(peer,45601,601,False,data)
+        # Later retransmission stops within the hostname. Must not count it.
+        a.tcp(peer,45601,601,False,data[:inside])
+        self.assertEqual(a.stats['sni_unsplit'],1)
+        self.assertEqual(a.stats['sni_split'],0)
+
+    def test_flow_ignores_redundant_partial_segments(self):
+        data=tls_hello()
+        inside=locate_sni(data)[1]+5
+        from mnebydns_iglite_sni_observer import Flow
+        flow=Flow(100)
+        flow.feed(100,data,len(data))
+        flow.feed(100,data[:inside],inside)
+        self.assertEqual(flow.ranges,{(0,len(data))})
+
     def test_binary_pcap_split(self):
         h=tls_hello();i=locate_sni(h)[1]+5
         raw=make_pcap([packet(800,2),packet(801+i,24,h[i:]),packet(801,24,h[:i])])
