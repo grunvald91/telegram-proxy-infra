@@ -1,5 +1,8 @@
 name: Meta v30 manually gated RU/DE phone canary
 on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/meta-v30-manual-two-server-canary.yml']
   workflow_dispatch:
     inputs:
       mode:
@@ -30,11 +33,14 @@ concurrency:
 jobs:
   operator:
     if: >-
-      github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' ||
+       github.event_name == 'workflow_dispatch') &&
+      (github.event_name == 'push' ||
       (inputs.mode == 'preflight' ||
        (inputs.mode == 'activate' &&
         inputs.phone_ip != '' &&
-        inputs.approval == 'CONFIRM_CURRENT_PHONE_IP_AND_15_MINUTE_TEST'))
+        inputs.approval == 'CONFIRM_CURRENT_PHONE_IP_AND_15_MINUTE_TEST')))
     runs-on: ubuntu-latest
     timeout-minutes: 28
     env:
@@ -62,7 +68,7 @@ jobs:
       - name: Pinned two-host operation, bounded time
         shell: bash
         env:
-          SELECTED_MODE: ${{ inputs.mode }}
+          SELECTED_MODE: ${{ github.event_name == 'push' && 'preflight' || inputs.mode }}
           SELECTED_IP: ${{ inputs.phone_ip }}
           SELECTED_MINUTES: ${{ inputs.duration_minutes }}
         run: |
