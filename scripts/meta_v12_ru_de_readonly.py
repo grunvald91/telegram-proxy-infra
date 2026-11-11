@@ -141,14 +141,14 @@ def nginx_meta_route_inventory(role: str) -> None:
     if code != 0:
         emit(role + "_nginx_sni_map_status", "unavailable")
         return
-    maps = re.findall(r"map\\s+\\$ssl_preread_server_name\\s+\\$[a-zA-Z0-9_]+\\s*\\{([^{}]*)\\}",
+    maps = re.findall(r"map\s+\$ssl_preread_server_name\s+\$[a-zA-Z0-9_]+\s*\{([^{}]*)\}",
                       config, re.S)
     emit(role + "_nginx_sni_map_count", len(maps))
     for hostname in ("i.instagram.com", "iglite-z.instagram.com", "claude.ai"):
         found = []
         for body in maps:
-            found.extend(re.findall(r"(?m)^\\s*" + re.escape(hostname)
-                                    + r"\\s+([^\\s;]+)\\s*;", body))
+            found.extend(re.findall(r"(?m)^\s*" + re.escape(hostname)
+                                    + r"\s+([^\s;]+)\s*;", body))
         label = role + "_nginx_route_" + hostname.replace(".", "_")
         emit(label + "_count", len(found))
         if len(found) != 1:
