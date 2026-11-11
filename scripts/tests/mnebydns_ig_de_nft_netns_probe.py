@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline/namespace-only TCP443 capture probe for nftables SYN-ACK Window=4.
+"""Offline/namespace-only TCP 18443 synthetic-port capture probe for nftables SYN-ACK Window=4.
 
 Modes: listener, client, verify. All addresses are documentation-only
 RFC 5737 addresses, usable only inside test namespaces; no DNS or Internet.
@@ -22,7 +22,7 @@ def checksum(data: bytes) -> int:
 
 SERVER = "192.0.2.1"
 CLIENT = "192.0.2.2"
-PORT = 443
+PORT = 18443
 QUEUE = 211
 
 
