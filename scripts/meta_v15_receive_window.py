@@ -149,9 +149,16 @@ def relay(left, right, stop, *, idle=60):
 
 
 class WindowProxy:
-    def __init__(self, edge, peer, *, port=18443, backend=("127.0.0.1",443)):
+    def __init__(self, edge, peer, *, port=18443, backend=("127.0.0.1",443),
+                 non_meta_backend=None):
         self.edge, self.peer = ipv4(edge), ipv4(peer)
         self.port, self.backend = port, backend
+        self.non_meta_backend = non_meta_backend
+        if non_meta_backend is not None and (
+                self.edge != "188.120.254.223" or
+                backend != ("10.66.77.1", 443) or
+                non_meta_backend != ("188.120.254.223", 443)):
+            raise ValueError("RU non-Meta fallback must use existing public RU443 service")
         self.stop = threading.Event()
         self.stats = Counter()
         self.lock = threading.Lock()
@@ -226,7 +233,16 @@ class WindowProxy:
             conn.setsockopt(socket.SOL_SOCKET,socket.SO_MARK,BYPASS|RELEASED)
             conn.setsockopt(socket.IPPROTO_TCP,socket.TCP_QUICKACK,1)
             self.count("window_released")
-            backend = socket.create_connection(self.backend,timeout=5)
+            # The RU shared :443 ingress also handles non-Meta connections.
+            # These must stay on RU's existing HTTPS service, not leak into
+            # the fixed private Meta WireGuard origin router.
+            destination = (
+                self.non_meta_backend if host not in HOSTS and
+                self.non_meta_backend is not None else self.backend
+            )
+            if self.non_meta_backend is not None:
+                self.count("meta_via_wg" if host in HOSTS else "non_meta_via_ru")
+            backend = socket.create_connection(destination,timeout=5)
             with self.lock:
                 if self.stop.is_set():raise ConnectionError("proxy stopping")
                 self.sockets.add(backend)
@@ -263,12 +279,17 @@ def main():
     parser.add_argument("--port",type=int,default=18443)
     parser.add_argument("--max-lifetime",type=int,choices=(1500,2700),default=1500)
     parser.add_argument("--backend-address",choices=("127.0.0.1","10.66.77.1"),default="127.0.0.1")
+    parser.add_argument("--non-meta-backend-address",choices=("188.120.254.223",))
     args=parser.parse_args()
     if not ipaddress.IPv4Address(args.peer).is_global or args.peer==args.edge:
         raise SystemExit("distinct public test-phone IPv4 required")
     # Only local Nginx or the fixed private WireGuard peer may receive raw TLS.
     # Never derive a backend from untrusted SNI or arbitrary client input.
-    proxy=WindowProxy(args.edge,args.peer,port=args.port,backend=(args.backend_address,443))
+    fallback = ((args.non_meta_backend_address,443)
+                if args.non_meta_backend_address else None)
+    proxy=WindowProxy(args.edge,args.peer,port=args.port,
+                      backend=(args.backend_address,443),
+                      non_meta_backend=fallback)
     def stop(signum, frame):proxy.stop.set()
     for sig in (signal.SIGTERM,signal.SIGINT,signal.SIGHUP):signal.signal(sig,stop)
     proxy.start()
