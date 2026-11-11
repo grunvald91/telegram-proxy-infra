@@ -178,17 +178,17 @@ class V10Window20Review(unittest.TestCase):
         self.assertLess(source.index(marker),
                         source.index('command(["sysctl", "-w", "net.ipv4.tcp_window_scaling=0"]'))
 
-    def test_live_workflow_explicit_owner_temporary_mode(self):
+    def test_old_global_window20_workflow_is_disarmed_for_v11(self):
         workflow=(ROOT.parent / ".github/workflows/mnebydns-iglite-wifi-v10-onrequest.yml").read_text()
-        # Both running jobs can only start after a deliberately changed launch marker.
-        self.assertEqual(workflow.count("if: ${{ true }}"),2)
-        self.assertIn("MNEBY_IGLITE_TEMPORARY_ONLY_APPROVED=YES",workflow)
-        self.assertIn("ops/mnebydns-iglite-wifi-v10-launch.marker",workflow)
+        self.assertEqual(workflow.count("if: ${{ false }}"),2)
+        self.assertNotIn("if: ${{ true }}",workflow)
+        self.assertIn("MNEBY_IGLITE_V11_ROUTE_ONLY_APPROVED=YES",workflow)
+        self.assertIn("ops/mnebydns-iglite-v11-launch.marker",workflow)
+        self.assertNotIn("'ops/mnebydns-iglite-wifi-v10-launch.marker'",workflow)
         self.assertIn("timeout-minutes: 18",workflow)
         self.assertIn("for attempt in range(500)",workflow)
-        self.assertIn("/var/lib/mneby-iglite-wifi-de-20261111-v10/ready_epoch",workflow)
-        self.assertNotIn("/run/mneby-iglite-wifi-de-20261111-v10/ready_epoch",workflow)
-        self.assertIn("/usr/local/libexec/mneby-iglite-v10/",workflow)
+        self.assertIn("/var/lib/mneby-iglite-wifi-de-20261111-v11/ready_epoch",workflow)
+        self.assertIn("/usr/local/libexec/mneby-iglite-v11/",workflow)
 
     def test_owner_temporary_mode_never_skips_independent_timed_recovery(self):
         src=inspect.getsource(self.v.baseline)
