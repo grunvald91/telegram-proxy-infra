@@ -7,6 +7,7 @@ workflow_dispatch, manual approval and a current public phone IPv4.
 from __future__ import annotations
 import argparse
 import io
+import json
 import os
 import signal
 from pathlib import Path
@@ -15,6 +16,7 @@ import subprocess
 import tarfile
 import time
 from meta_v29_two_server_sequence import Trial, checked_phone_ip, RU, DE
+from meta_v31_sni_evidence import validate_report,write_report
 
 ROOT=Path(__file__).resolve().parents[1]
 STAGE="/usr/local/libexec/mneby-meta-v26"
@@ -24,6 +26,7 @@ FILES=(
     "meta_v25_view_runtime_smoke.py", "meta_v28_dot_view_smoke.py",
     "meta_v23_ru_firsthop_preview.py", "meta_v15_receive_window.py",
     "mnebydns_iglite_sni_observer.py",
+    "mnebydns_iglite_dns_wire_checks.py", "meta_v31_sni_evidence.py",
     "mnebydns_iglite_wifi_multi_meta_v10_w20.py",
     "mnebydns-owner-domain-render-20261110.py",
 )
@@ -32,19 +35,24 @@ SECRETS={"de":"RELAY89_SSH_PASSWORD","ru":"SERVER188_SSH_PASSWORD"}
 SCRIPTS={"de":"meta_v26_de_stage.py","ru":"meta_v26_ru_stage.py"}
 COMMANDS={
     "de":frozenset(("stage","enable-dns","disable-dns","status","rollback","reset")),
-    "ru":frozenset(("start","status","rollback","reset")),
+    "ru":frozenset(("start","status","rollback","reset","evidence")),
 }
-APPROVAL="CONFIRM_CURRENT_PHONE_IP_AND_15_MINUTE_TEST"
+APPROVAL="CONFIRM_CURRENT_PHONE_IP_AND_SNI_TEST"
 HEALTH={
     "de":(
         "meta_v26_de_nginx_state=EXPERIMENT",
         "meta_v26_de_dns_state=EXPERIMENT",
         "meta_v26_de_timer_active=true",
+        "meta_v26_de_nginx_active=true",
+        "meta_v26_de_dns_active=true",
+        "meta_v26_de_dot_wire=PASS",
     ),
     "ru":(
         "meta_v26_ru_table_present=true",
         "meta_v26_ru_worker_ready=true",
         "meta_v26_ru_timer_active=true",
+        "meta_v26_ru_evidence_ready=true",
+        "meta_v26_ru_wg_tls=PASS",
     ),
 }
 
@@ -163,13 +171,31 @@ class Remote:
                 if line not in lines:
                     raise RuntimeError(role+" health check failed: "+line)
 
+    def collect_evidence(self,*,final=False,require_success=False):
+        report=json.loads(self.run("ru","evidence"))
+        # Persist before checking success and before remote reset deletes state.
+        # Failed/no-traffic experiments must retain their actual evidence too.
+        directory=Path(self.env.get("RUNNER_TEMP","/tmp"))/"meta-v31-evidence"
+        directory.mkdir(mode=0o700,parents=True,exist_ok=True)
+        write_report(directory/"phone-sni.json",report)
+        print("meta_v31_sni_verdict="+str(report.get("verdict","NO_EVIDENCE")),flush=True)
+        counts=report.get("stats",{})
+        for key in ("target_clienthello","sni_split","sni_unsplit","sni_boundary_indeterminate"):
+            print("meta_v31_"+key+"="+str(counts.get(key,0)),flush=True)
+        if require_success:validate_report(report,final=final)
+        return report
+
     def active_window(self,seconds):
+        self.verify_health()
+        self.collect_evidence(require_success=True)
+        print("meta_v30_phone_test_ready=true",flush=True)
         print("meta_v30_test_window_started=true",flush=True)
         print("meta_v30_test_window_seconds="+str(seconds),flush=True)
         until=time.monotonic()+seconds
         checks=0
         while True:
             self.verify_health()
+            self.collect_evidence(require_success=True)
             checks+=1
             print("meta_v30_health_check_count="+str(checks),flush=True)
             remaining=until-time.monotonic()
@@ -192,7 +218,7 @@ def main(argv=None):
     p=argparse.ArgumentParser()
     p.add_argument("--mode",choices=("validate","preflight","activate"),required=True)
     p.add_argument("--phone-ip")
-    p.add_argument("--minutes",type=int,default=15)
+    p.add_argument("--minutes",type=int,default=30)
     args=p.parse_args(argv)
     if args.mode=="validate":
         validate_manifest()
@@ -216,14 +242,20 @@ def main(argv=None):
         print("meta_v30_production_changes=false",flush=True)
         return
     installed=[]
+    attempted=False
     failure=None
     try:
         for role in ("de","ru"):
             adapter.stage_files(role)
             installed.append(role)
+        attempted=True
         Trial(adapter.run,adapter.active_window).run(peer,seconds=args.minutes*60)
     except BaseException as exc:
         failure=exc
+    if attempted:
+        try:adapter.collect_evidence(final=True,require_success=failure is None)
+        except BaseException as exc:
+            if failure is None:failure=exc
     cleanup_errors=[]
     for role in reversed(installed):
         try:adapter.reset(role)
@@ -234,6 +266,7 @@ def main(argv=None):
     if failure:
         raise RuntimeError("v30 trial failed; cleanup verified") from failure
     print("meta_v30_trial_finished_cleanup_verified=true",flush=True)
+    print("meta_v31_phone_sni_segmentation=OBSERVED",flush=True)
     print("meta_v30_instagram_android_works=NOT_PROVEN",flush=True)
 
 if __name__=="__main__":

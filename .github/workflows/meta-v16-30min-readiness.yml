@@ -1,15 +1,8 @@
 name: Meta v16 30-minute canary read-only readiness (NO DEPLOY)
 
 on:
-  push:
-    branches: [fix/meta-routing-quic-sni-validation]
-    paths:
-      - '.github/workflows/meta-v16-30min-readiness.yml'
-      - 'scripts/meta_v16_readonly_preflight.py'
-      - 'scripts/tests/test_meta_v16_30min_budget.py'
-      - 'scripts/meta_v15_phone_trial.py'
-      - 'scripts/meta_v15_receive_window.py'
-      - 'scripts/mnebydns_iglite_route_only_v11.py'
+  # Legacy DE diagnostics are explicit only. Budget/receiver regressions are
+  # automatic in mnebydns-meta-sni-offline-safety, without SSH credentials.
   workflow_dispatch:
 
 permissions:

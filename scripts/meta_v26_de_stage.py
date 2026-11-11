@@ -46,7 +46,31 @@ def write(name,content):
     base.write_exclusive(file(name),content)
     base.fsync_directory(ROOT)
 
-def replace(path,data):base.atomic_replace(path,data)
+def replace(path,data):
+    base.atomic_replace(path,data)
+    base.fsync_directory(path.parent)
+
+def require_restore(key):
+    # Persist BEFORE the first live write. Equal files do not prove that a
+    # running daemon loaded them after a failed/timed-out restart or reload.
+    if not file(key+".restore-pending").exists():
+        write(key+".restore-pending",b"runtime restoration required\n")
+
+def restore_runtime(key,live,original):
+    pending=file(key+".restore-pending")
+    if live.read_bytes()!=original:
+        require_restore(key)
+        replace(live,original)
+    if pending.exists():
+        if key=="dns":
+            cmd(["systemctl","restart","mnebydns-dot.service"],timeout=30)
+        else:
+            cmd(["nginx","-t"],timeout=20)
+            cmd(["systemctl","reload","nginx.service"],timeout=25)
+        if not active("mnebydns-dot.service" if key=="dns" else "nginx.service"):
+            raise RuntimeError(key+" restored service is inactive")
+        pending.unlink()
+        base.fsync_directory(ROOT)
 
 def lock():
     import contextlib
@@ -132,6 +156,7 @@ def stage(peer):
             raise RuntimeError("independent DE rollback was not armed")
         write("armed",b"armed\n")
         try:
+            require_restore("nginx")
             replace(LIVE_NGINX,next_ng.encode())
             cmd(["nginx","-t"],timeout=20)
             cmd(["systemctl","reload","nginx.service"],timeout=25)
@@ -148,14 +173,18 @@ def enable_dns():
     if not file("armed").is_file():raise RuntimeError("DE stage not prepared")
     with lock():
         files=snapshot()
+        if file("cleanup-started").exists():
+            raise RuntimeError("DE cleanup has already started")
         if not active(UNIT+".timer"):
             raise RuntimeError("DE independent timer expired before activation")
         if LIVE_NGINX.read_bytes()!=files["nginx"][2]:
             raise RuntimeError("DE SNI route missing or changed")
         if LIVE_DNS.read_bytes()!=files["dns"][1]:
             raise RuntimeError("DNS baseline changed before activation")
-        replace(LIVE_DNS,files["dns"][2])
-        try:cmd(["systemctl","restart","mnebydns-dot.service"],timeout=30)
+        try:
+            require_restore("dns")
+            replace(LIVE_DNS,files["dns"][2])
+            cmd(["systemctl","restart","mnebydns-dot.service"],timeout=30)
         except BaseException:
             _rollback_locked()
             raise
@@ -180,12 +209,7 @@ def disable_dns():
         now=live.read_bytes()
         if now not in (original,candidate):
             raise RuntimeError("DE scoped DNS drift; cannot selectively disable")
-        if now==candidate:
-            replace(live,original)
-            try:
-                cmd(["systemctl","restart","mnebydns-dot.service"],timeout=30)
-            except (OSError,subprocess.TimeoutExpired,RuntimeError):
-                raise RuntimeError("DE scoped DNS restart failed during disable")
+        restore_runtime("dns",live,original)
         if live.read_bytes()!=original or not active("mnebydns-dot.service"):
             raise RuntimeError("DE scoped DNS disable unverified")
         if LIVE_NGINX.read_bytes() not in (files["nginx"][1],files["nginx"][2]):
@@ -202,25 +226,17 @@ def _rollback_locked():
     for key,(live,original,candidate) in files.items():
         if live.read_bytes() not in (original,candidate):
             raise RuntimeError("external DE "+key+" configuration drift")
-    changed=[]
+    if not file("cleanup-started").exists():
+        write("cleanup-started",b"aborted\n")
+    errors=[]
+    # A file-write failure must not skip the other service. Pending markers
+    # survive failures and force a real runtime retry even with equal files.
     for key in ("dns","nginx"):
         live,original,_=files[key]
-        if live.read_bytes()!=original:
-            replace(live,original)
-            changed.append(key)
-    errors=[]
-    # Restore both independently even if the first service fails. Stopping at
-    # a failed DNS restart would leave Nginx running its experimental SNI map.
-    if "dns" in changed:
-        try:cmd(["systemctl","restart","mnebydns-dot.service"],timeout=30)
-        except (OSError,subprocess.TimeoutExpired,RuntimeError):
-            errors.append("dns_restart")
-    if "nginx" in changed:
         try:
-            cmd(["nginx","-t"],timeout=20)
-            cmd(["systemctl","reload","nginx.service"],timeout=25)
+            restore_runtime(key,live,original)
         except (OSError,subprocess.TimeoutExpired,RuntimeError):
-            errors.append("nginx_restore")
+            errors.append("dns_restart" if key=="dns" else "nginx_restore")
     try:
         if not active("nginx.service") or not active("mnebydns-dot.service"):
             errors.append("baseline_service_inactive")
@@ -279,6 +295,12 @@ def status():
             state="BASELINE" if now==original else ("EXPERIMENT" if now==candidate else "DRIFT")
             print("meta_v26_de_"+key+"_state="+state,flush=True)
         print("meta_v26_de_timer_active="+str(active(UNIT+".timer")).lower(),flush=True)
+        for key,service in (("nginx","nginx.service"),("dns","mnebydns-dot.service")):
+            print("meta_v26_de_"+key+"_active="+str(active(service)).lower(),flush=True)
+        # A running PID is not proof that the live TLS DNS listener answers.
+        from mnebydns_iglite_dns_wire_checks import read_exact_dot_type,QTYPES
+        read_exact_dot_type(QTYPES["A"],host="www.youtube.com",timeout=4)
+        print("meta_v26_de_dot_wire=PASS",flush=True)
 
 if __name__=="__main__":
     p=argparse.ArgumentParser()

@@ -21,6 +21,7 @@ import time
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from meta_v15_receive_window import WindowProxy,nft_rules,WINDOW
 from mnebydns_iglite_sni_observer import Analyzer,parse_pcap
+from meta_v31_sni_evidence import CaptureEvidence,validate_report
 
 EDGE="198.18.0.1";PEER="198.18.0.2";CONTROL="198.18.0.3"
 HOST="i.instagram.com"
@@ -130,7 +131,7 @@ class LabAnalyzer(Analyzer):
 def inner():
     if os.geteuid()!=0:raise RuntimeError("isolated root lab required")
     namespace="mnebycli"+str(os.getpid())
-    capture=None;proxy=None;listener=None;thread=None;capture_thread=None
+    capture=None;proxy=None;listener=None;thread=None;capture_thread=None;evidence=None
     capture_errors=[];server_errors=[]
     run(["ip","link","set","lo","up"])
     run(["ip","netns","add",namespace])
@@ -192,6 +193,15 @@ def inner():
             capture_thread=threading.Thread(target=consume,daemon=True);capture_thread.start()
             if not ready.wait(5) or capture.poll() is not None:
                 raise AssertionError("capture not ready")
+            # Exercise the SAME final collector/gate as the live RU worker.
+            # Only the capture interface/filter is substituted for this lab;
+            # tcpdump, parser, drop checks and finalization are all real.
+            from unittest.mock import patch
+            argv=["tcpdump","-i","v15srv","-n","-U","-s","1500","-w","-",
+                  "ip and src host "+PEER+" and dst host "+EDGE+" and tcp dst port 443"]
+            with patch("meta_v31_sni_evidence.capture_command",return_value=argv):
+                evidence=CaptureEvidence("8.8.8.8",Path(td)/"evidence.json")
+            evidence.start()
             for source in (CONTROL,PEER):
                 run(["ip","netns","exec",namespace,sys.executable,str(Path(__file__).resolve()),
                      "client",cert,source])
@@ -222,6 +232,12 @@ def inner():
             assert proxy.stats["window_released"]==2,dict(proxy.stats)
             assert proxy.stats["target_sni"]==2,dict(proxy.stats)
             assert Path("/proc/sys/net/ipv4/tcp_window_scaling").read_bytes()==global_scaling
+            evidence.stop()
+            report=evidence.publish(proxy.stats)
+            validate_report(report,final=True)
+            assert report["stats"]["sni_split"]==2,report
+            assert report["kernel_drops"]==0,report
+            print("meta_v31_lab_final_packet_evidence="+report["verdict"])
             print("meta_v15_lab_real_tls_verified=true")
             print("meta_v15_lab_sni_split="+str(analyzer.stats["sni_split"]))
             print("meta_v15_lab_small_segments="+str(analyzer.small))
@@ -235,6 +251,7 @@ def inner():
             print("meta_v15_lab_tls_record_fragmentation_verified=true")
             print("meta_v15_lab_android_tspu=NOT_TESTED")
     finally:
+        if evidence is not None:evidence.stop()
         if capture is not None:
             if capture.poll() is None:capture.kill()
             capture.wait(timeout=3)

@@ -57,6 +57,7 @@ class AdapterTests(unittest.TestCase):
     def test_approved_thirty_minute_test(self):
         calls=[]
         class Fake:
+            def collect_evidence(self,**kwargs):pass
             def preflight(self,role):pass
             def stage_files(self,role):pass
             def run(self,role,action,peer=None):pass
@@ -86,13 +87,14 @@ class AdapterTests(unittest.TestCase):
         remote=object.__new__(m.Remote)
         remote.run=lambda role,action: "\n".join(m.HEALTH[role])+"\n"
         remote.verify_health()
-        remote.run=lambda role,action: "\n".join(m.HEALTH[role][:-1])
+        remote.run=lambda role,action: "\n".join(x for x in m.HEALTH[role] if "timer_active" not in x)
         with self.assertRaisesRegex(RuntimeError,"timer_active"):
             remote.verify_health()
 
     def test_activate_both_then_cleanup_in_correct_order(self):
         calls=[]
         class Fake:
+            def collect_evidence(self,**kwargs):pass
             def preflight(self,role):calls.append(("preflight",role))
             def stage_files(self,role):calls.append(("stagefiles",role))
             def run(self,role,action,peer=None):

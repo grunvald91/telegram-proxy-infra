@@ -19,6 +19,8 @@ on:
       - scripts/tests/test_meta_v15_phone_trial.py
       - scripts/tests/test_meta_v17_isolation_quarantine.py
       - scripts/tests/integration_meta_v15_netns.py
+      - scripts/meta_v31_sni_evidence.py
+      - scripts/tests/test_meta_v16_30min_budget.py
   workflow_dispatch:
 permissions:
   contents: read
@@ -58,6 +60,7 @@ jobs:
           python3 -m unittest discover -s scripts/tests -p 'test_meta_v15_receive_window.py' -v
           python3 -m unittest discover -s scripts/tests -p 'test_meta_v15_phone_trial.py' -v
           python3 -m unittest discover -s scripts/tests -p 'test_meta_v17_isolation_quarantine.py' -v
+          python3 -m unittest discover -s scripts/tests -p 'test_meta_v16_30min_budget.py' -v
       - name: Verify actual client SNI segmentation in an isolated network namespace
         run: |
           set -Eeuo pipefail
@@ -70,4 +73,3 @@ jobs:
             sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${missing[@]}"
           fi
           sudo timeout 100s python3 scripts/tests/integration_meta_v15_netns.py
-

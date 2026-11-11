@@ -1,15 +1,6 @@
 name: Meta v23 Russian first-hop exact DNS and WG path offline tests
 on:
-  push:
-    branches: [fix/meta-routing-quic-sni-validation]
-    paths:
-      - '.github/workflows/meta-v23-ru-firsthop-offline.yml'
-      - 'scripts/meta_v23_ru_firsthop_preview.py'
-      - 'scripts/meta_v15_receive_window.py'
-      - 'scripts/mnebydns-owner-domain-render-20261110.py'
-      - 'scripts/tests/test_meta_v23_ru_firsthop_preview.py'
-      - 'scripts/meta_v25_source_view.py'
-      - 'scripts/tests/test_meta_v25_source_view.py'
+  # These contracts already run automatically in meta-v26-two-server-offline.
   workflow_dispatch:
 permissions:
   contents: read

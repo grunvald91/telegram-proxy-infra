@@ -283,6 +283,7 @@ def main():
     parser.add_argument("--max-lifetime",type=int,choices=(1500,2700),default=1500)
     parser.add_argument("--backend-address",choices=("127.0.0.1","10.66.77.1"),default="127.0.0.1")
     parser.add_argument("--non-meta-backend-address",choices=("188.120.254.223",))
+    parser.add_argument("--evidence-file")
     args=parser.parse_args()
     if not ipaddress.IPv4Address(args.peer).is_global or args.peer==args.edge:
         raise SystemExit("distinct public test-phone IPv4 required")
@@ -295,15 +296,31 @@ def main():
                       non_meta_backend=fallback)
     def stop(signum, frame):proxy.stop.set()
     for sig in (signal.SIGTERM,signal.SIGINT,signal.SIGHUP):signal.signal(sig,stop)
-    proxy.start()
-    print("meta_v15_listener_ready=true",flush=True)
+    evidence=None
     try:
-        # Controller supplies an independent 900s lifetime and nft teardown.
-        proxy.stop.wait(args.max_lifetime)
+        if args.evidence_file:
+            if (args.edge!="188.120.254.223" or
+                    args.evidence_file!="/var/lib/mneby-meta-v26-ru/evidence.json"):
+                raise ValueError("packet evidence must use the owned RU state")
+            from meta_v31_sni_evidence import CaptureEvidence
+            evidence=CaptureEvidence(args.peer,args.evidence_file)
+            evidence.start()
+        proxy.start()
+        print("meta_v15_listener_ready=true",flush=True)
+        until=time.monotonic()+args.max_lifetime
+        while not proxy.stop.wait(min(2,max(0,until-time.monotonic()))):
+            if evidence is not None:
+                if not evidence.healthy():raise RuntimeError("RU ingress capture failed")
+                with proxy.lock:stats=dict(proxy.stats)
+                evidence.publish(stats)
+            if time.monotonic()>=until:break
         if proxy.stats["accept_failed"]:
             raise RuntimeError("proxy accept loop failed")
     finally:
         proxy.close()
+        if evidence is not None:
+            evidence.stop()
+            evidence.publish(proxy.stats)
         for key,value in sorted(proxy.stats.items()):
             print("meta_v15_proxy_"+key+"="+str(value),flush=True)
 
