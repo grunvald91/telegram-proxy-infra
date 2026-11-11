@@ -262,10 +262,13 @@ def main():
     parser.add_argument("--peer",required=True)
     parser.add_argument("--port",type=int,default=18443)
     parser.add_argument("--max-lifetime",type=int,choices=(1500,2700),default=1500)
+    parser.add_argument("--backend-address",choices=("127.0.0.1","10.66.77.1"),default="127.0.0.1")
     args=parser.parse_args()
     if not ipaddress.IPv4Address(args.peer).is_global or args.peer==args.edge:
         raise SystemExit("distinct public test-phone IPv4 required")
-    proxy=WindowProxy(args.edge,args.peer,port=args.port)
+    # Only local Nginx or the fixed private WireGuard peer may receive raw TLS.
+    # Never derive a backend from untrusted SNI or arbitrary client input.
+    proxy=WindowProxy(args.edge,args.peer,port=args.port,backend=(args.backend_address,443))
     def stop(signum, frame):proxy.stop.set()
     for sig in (signal.SIGTERM,signal.SIGINT,signal.SIGHUP):signal.signal(sig,stop)
     proxy.start()
