@@ -1,0 +1,60 @@
+name: Meta v26 both live servers read-only release preflight
+on:
+  push:
+    branches: [fix/meta-routing-quic-sni-validation]
+    paths: ['.github/workflows/meta-v26-two-server-readonly-preflight.yml']
+permissions:
+  contents: read
+concurrency:
+  group: meta-v26-dual-preflight
+  cancel-in-progress: false
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - node: de
+            host: '89.125.90.101'
+          - node: ru
+            host: '188.120.254.223'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      REMOTE_PASS: ${{ matrix.node == 'de' && secrets.RELAY89_SSH_PASSWORD || secrets.SERVER188_SSH_PASSWORD }}
+      TARGET: ${{ matrix.host }}
+      ROLE: ${{ matrix.node }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Preflight verified SSH identity and tool availability
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$REMOTE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          if ! command -v sshpass >/dev/null; then
+            timeout 35s sudo apt-get -o Acquire::Retries=0 -o Acquire::http::Timeout=7 update -qq || true
+            timeout 55s sudo DEBIAN_FRONTEND=noninteractive apt-get install -qq -y sshpass >/dev/null
+          fi
+      - name: Real configuration dry-run on selected node, no writes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$REMOTE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          echo "### Meta v26 ${ROLE} production no-change preflight" >> "$GITHUB_STEP_SUMMARY"
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          tar -C scripts -cf - meta_v26_readonly_preflight.py \
+            meta_v26_de_stage.py meta_v26_ru_stage.py \
+            meta_v25_source_view.py meta_v23_ru_firsthop_preview.py \
+            meta_v15_receive_window.py mnebydns_iglite_sni_observer.py \
+            mnebydns_iglite_wifi_multi_meta_v10_w20.py \
+            mnebydns-owner-domain-render-20261110.py |
+          sshpass -e ssh "${opts[@]}" root@"$TARGET" \
+            "ROLE=$ROLE bash -c 'set -eu; umask 077; d=\$(mktemp -d /tmp/mneby-v26-readonly.XXXXXXXX); trap \"rm -rf -- \$d\" EXIT; tar -xf - -C \"\$d\"; python3 \"\$d/meta_v26_readonly_preflight.py\" \"\$ROLE\"'" |
+          tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
