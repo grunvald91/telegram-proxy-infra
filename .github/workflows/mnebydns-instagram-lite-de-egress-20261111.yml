@@ -125,10 +125,9 @@ jobs:
           code,ng=cmd(["nginx","-V"])
           print("de_nginx_available="+str(code==0).lower())
           print("de_coredns_running="+str(cmd(["systemctl","is-active","--quiet","mnebydns-dot.service"])[0]==0).lower())
-          syntax='''add table inet mneby_ig_dryrun_443
-add chain inet mneby_ig_dryrun_443 output { type filter hook output priority mangle; policy accept; }
-add rule inet mneby_ig_dryrun_443 output ip saddr 89.125.90.101 tcp sport 443 tcp flags & (syn | ack) == (syn | ack) counter tcp window set 4
-'''
+          syntax=("add table inet mneby_ig_dryrun_443\n"
+                  "add chain inet mneby_ig_dryrun_443 output { type filter hook output priority mangle; policy accept; }\n"
+                  "add rule inet mneby_ig_dryrun_443 output ip saddr 89.125.90.101 tcp sport 443 tcp flags & (syn | ack) == (syn | ack) counter tcp window set 4\n")
           try:
               p=subprocess.run(["nft","--check","-f","-"],input=syntax,text=True,capture_output=True,timeout=12)
               print("de_nft_window4_parse_check="+str(p.returncode==0).lower())
