@@ -21,15 +21,15 @@ import subprocess
 import sys
 import time
 
-ROOT = Path("/run/mneby-iglite-short-de-20261111-v2")
+ROOT = Path("/run/mneby-iglite-short-de-20261111-v3")
 NGINX = Path("/etc/nginx/nginx.conf")
 CORE = Path("/opt/mnebydns-dot/Corefile")
 CHECKPOINT_CURRENT = Path("/opt/mnebydns-stable-checkpoints/current")
 RENDERER = Path(__file__).resolve().parent / "mnebydns-owner-domain-render-20261110.py"
 DE = "89.125.90.101"
 HOST = "iglite-z.instagram.com"
-TABLE = "mneby_ig_lite_w4_20261111_v2"
-UNIT = "mneby-ig-lite-short-20261111-v2"
+TABLE = "mneby_ig_lite_w4_20261111_v3"
+UNIT = "mneby-ig-lite-short-20261111-v3"
 TRIAL_SECONDS = 35
 WATCHDOG_SECONDS = 110
 
@@ -90,6 +90,14 @@ def baseline():
                 "mneby_ig_lite_w4_20261111"],
                check=False).returncode == 0:
         raise RuntimeError("Earlier experiment still has active nft table")
+    if command(["systemctl", "is-active", "--quiet",
+                "mneby-ig-lite-short-20261111-v2.timer"],
+               check=False).returncode == 0:
+        raise RuntimeError("V2 rollback watchdog still active; refuse overlapping test")
+    if command(["nft", "list", "table", "inet",
+                "mneby_ig_lite_w4_20261111_v2"],
+               check=False).returncode == 0:
+        raise RuntimeError("V2 global Window4 table still active")
     if ROOT.exists():
         raise RuntimeError("Prior one-shot state exists; refuse duplicate")
     current = CHECKPOINT_CURRENT.read_text().strip()
@@ -175,7 +183,7 @@ def dot_query_a():
     qname = b"".join(bytes((len(part),))+part.encode("ascii")
                      for part in HOST.split(".")) + b"\x00"
     question = struct.pack("!HHHHHH", 0x7171, 0x0100, 1, 0, 0, 0) + qname + struct.pack("!HH", 1, 1)
-    with socket.create_connection(("127.0.0.1", 853), timeout=5) as tcp:
+    with socket.create_connection((DE, 853), timeout=5) as tcp:
         tcp.settimeout(5)
         with ssl.create_default_context().wrap_socket(tcp, server_hostname="dns.mnebyvpn.site") as tls:
             tls.sendall(struct.pack("!H", len(question)) + question)
@@ -226,7 +234,7 @@ def dot_query_a():
 
 def live_tls():
     ctx = ssl.create_default_context()
-    with socket.create_connection(("127.0.0.1", 443), timeout=7) as tcp:
+    with socket.create_connection((DE, 443), timeout=7) as tcp:
         tcp.settimeout(7)
         with ctx.wrap_socket(tcp, server_hostname=HOST) as tls:
             if not tls.getpeercert():
