@@ -38,6 +38,7 @@ jobs:
               env_file.write('TEST_PEER='+str(peer)+'\n')
           PY
           python3 -m unittest discover -s scripts/tests -p 'test_meta_v15_receive_window.py' -v
+          python3 -m unittest discover -s scripts/tests -p 'test_meta_v15_phone_trial.py' -v
           python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_iglite_v11_scope.py' -v
       - name: Prepare pinned SSH
         run: |

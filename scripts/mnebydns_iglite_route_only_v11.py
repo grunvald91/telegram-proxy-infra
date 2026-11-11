@@ -9,6 +9,7 @@ TLS SNI capture is in memory and prints aggregate counters only.
 This is a diagnostic, NOT a proven DPI bypass or a proof of phone identity.
 """
 from __future__ import annotations
+from contextlib import nullcontext
 import os
 from pathlib import Path
 import signal
@@ -25,6 +26,9 @@ ROLLBACK_SCRIPT = Path(__file__).resolve()
 CAPTURE_PEER = None
 EXTERNAL_DEADLINE = None
 TRANSPORT_LABEL = "ROUTE_ONLY_NO_SYSCTL_NO_NFT"
+MUTATION_GUARD = nullcontext
+LIVE_CHECK = None
+TRIAL_WAIT = None
 
 def check_retired_v10():
     # base.baseline uses the overridden v11 UNIT/TABLE, so it no longer
@@ -160,11 +164,12 @@ def live():
                        for sig in (signal.SIGTERM,signal.SIGHUP)}
     try:
         # No sysctl or nft mutations are allowed anywhere in the v11 live path.
-        base.atomic_replace(base.NGINX,ng.encode())
-        base.command(["nginx","-t"],timeout=20)
-        base.command(["systemctl","reload","nginx.service"],timeout=20)
-        base.atomic_replace(base.CORE,core.encode())
-        base.command(["systemctl","restart","mnebydns-dot.service"],timeout=30)
+        with MUTATION_GUARD():
+            base.atomic_replace(base.NGINX,ng.encode())
+            base.command(["nginx","-t"],timeout=20)
+            base.command(["systemctl","reload","nginx.service"],timeout=20)
+            base.atomic_replace(base.CORE,core.encode())
+            base.command(["systemctl","restart","mnebydns-dot.service"],timeout=30)
         from mnebydns_iglite_dns_wire_checks import check_exact_types
         for hostname in accepted:
             for attempt in range(21):
@@ -183,25 +188,27 @@ def live():
         if base.command(["nft","list","table","inet",base.TABLE],check=False).returncode==0:
             raise RuntimeError("Unexpected v11 nft table during diagnostic")
         from mnebydns_iglite_sni_observer import begin,finish,summary
+        if LIVE_CHECK is not None:LIVE_CHECK()
         if CAPTURE_PEER is None:
             pcap,thread,analyzer,errors=begin(base.HOSTS)
         else:
             pcap,thread,analyzer,errors=begin(base.HOSTS,peer=CAPTURE_PEER)
-        if pcap.poll() is not None:
-            raise RuntimeError("SNI observer unexpectedly stopped")
-        remaining=base.WATCHDOG_SECONDS-(time.monotonic()-watchdog_start)
-        if EXTERNAL_DEADLINE is not None:
-            remaining=min(remaining,EXTERNAL_DEADLINE-time.monotonic())
-        if remaining<base.TRIAL_SECONDS+base.MIN_ROLLBACK_MARGIN:
-            finish(pcap,thread,analyzer,errors)
-            raise RuntimeError("Insufficient rollback margin before the 900s capture")
-        print("iglite_v11_transport="+TRANSPORT_LABEL,flush=True)
-        start=int(time.time())
-        base.write_exclusive(root/"ready_epoch",str(start).encode("ascii"))
-        print("iglite_v11_capture_start_epoch_s="+str(start),flush=True)
-        print("iglite_v11_15min_window=READY",flush=True)
         try:
-            time.sleep(base.TRIAL_SECONDS)
+            if pcap.poll() is not None:
+                raise RuntimeError("SNI observer unexpectedly stopped")
+            remaining=base.WATCHDOG_SECONDS-(time.monotonic()-watchdog_start)
+            if EXTERNAL_DEADLINE is not None:
+                remaining=min(remaining,EXTERNAL_DEADLINE-time.monotonic())
+            if remaining<base.TRIAL_SECONDS+base.MIN_ROLLBACK_MARGIN:
+                raise RuntimeError("Insufficient rollback margin before the 900s capture")
+            if LIVE_CHECK is not None:LIVE_CHECK()
+            print("iglite_v11_transport="+TRANSPORT_LABEL,flush=True)
+            start=int(time.time())
+            base.write_exclusive(root/"ready_epoch",str(start).encode("ascii"))
+            print("iglite_v11_capture_start_epoch_s="+str(start),flush=True)
+            print("iglite_v11_15min_window=READY",flush=True)
+            if TRIAL_WAIT is None:time.sleep(base.TRIAL_SECONDS)
+            else:TRIAL_WAIT(base.TRIAL_SECONDS)
         finally:
             summary(finish(pcap,thread,analyzer,errors))
         if base.WSFILE.read_text().strip()!="1":

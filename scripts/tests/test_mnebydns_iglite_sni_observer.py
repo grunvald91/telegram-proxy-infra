@@ -21,6 +21,12 @@ def tls_hello(host=HOST):
     handshake=b'\x01'+len(body).to_bytes(3,'big')+body
     return b'\x16\x03\x03'+struct.pack('!H',len(handshake))+handshake
 
+def fragment_records(data,cuts):
+    handshake=data[5:]
+    points=(0,*cuts,len(handshake))
+    return b''.join(data[:3]+struct.pack('!H',end-start)+handshake[start:end]
+                    for start,end in zip(points,points[1:]))
+
 def packet(seq,flags,contents=b'',sport=42424):
     tcp=struct.pack('!HHIIHHHH',sport,443,seq,0,(5<<12)|flags,4096,0,0)
     ip=(b'\x45\0'+struct.pack('!H',20+len(tcp)+len(contents))
@@ -35,6 +41,32 @@ def make_pcap(records):
     return BytesIO(hdr)
 
 class ClientHelloBoundaryTests(unittest.TestCase):
+    def test_clienthello_across_tls_records_and_tcp_segments(self):
+        hello=tls_hello();inside=locate_sni(hello)[1]+5
+        fragmented=fragment_records(hello,(2,30,inside-5))
+        info=locate_sni(fragmented)
+        self.assertEqual(info[0],HOST)
+        self.assertEqual(locate_partial_sni(fragmented[:-1]),None)
+        a=Analyzer([HOST]);peer=b'\xcb\0\x71\x02'
+        a.tcp(peer,45601,100,True,b'')
+        for offset in range(0,len(fragmented),8):
+            a.tcp(peer,45601,101+offset,False,fragmented[offset:offset+8])
+        self.assertEqual(a.stats['target_clienthello'],1)
+        self.assertEqual(a.stats['sni_split'],1)
+
+    def test_first_complete_tls_fragment_is_not_complete_clienthello(self):
+        hello=tls_hello();fragmented=fragment_records(hello,(30,))
+        first=fragmented[:35]
+        self.assertIsNone(locate_sni(first))
+        self.assertIsNone(locate_partial_sni(first))
+        a=Analyzer([HOST]);peer=b'\xcb\0\x71\x02'
+        a.tcp(peer,45601,100,True,b'')
+        a.tcp(peer,45601,101,False,first)
+        self.assertFalse(a.flows[(peer,45601)].finished)
+        a.tcp(peer,45601,136,False,fragmented[35:])
+        self.assertEqual(a.stats['target_clienthello'],1)
+        self.assertEqual(a.stats['sni_unsplit'],1)
+
     def test_early_clean_eof_does_not_pass_capture_preflight(self):
         from unittest.mock import Mock,patch
         from mnebydns_iglite_sni_observer import begin

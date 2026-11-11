@@ -19,7 +19,7 @@ import struct
 import threading
 import time
 
-from mnebydns_iglite_sni_observer import LIMIT, locate_partial_sni
+from mnebydns_iglite_sni_observer import LIMIT, locate_partial_sni, clienthello_view
 
 BYPASS = 0x40000000
 RELEASED = 0x20000000
@@ -50,10 +50,10 @@ def nft_rules(edge, peer, *, port=18443, interface="eth0", table="mneby_meta_v15
     return (f"add table inet {table}\n"
         f"add chain inet {table} pre {{ type nat hook prerouting priority -101; policy accept; }}\n"
         f'add rule inet {table} pre iifname "{interface}" ip saddr {peer} ip daddr {edge} '
-        f'tcp dport 443 counter redirect to :{port}\n'
+        f'tcp dport 443 counter dnat ip to {edge}:{port}\n'
         f"add chain inet {table} out {{ type filter hook output priority -149; policy accept; }}\n"
         f"add rule inet {table} out ip saddr {edge} ip daddr {peer} tcp sport {port} "
-        f"meta mark & {RELEASED:#x} == 0 tcp flags & ack == ack "
+        f"meta mark & {RELEASED:#x} == 0 tcp flags & ack == ack tcp window > {WINDOW} "
         f"counter tcp window set {WINDOW}\n")
 
 
@@ -67,7 +67,9 @@ def verify_queue_exemption(ruleset):
     if len(targets) != 1:
         raise ValueError("unique queue210 rule required")
     match = {"op": "==", "left": {"&": [{"meta": {"key": "mark"}}, BYPASS]}, "right": 0}
-    if not any(e.get("match") == match for e in targets[0]["expr"]):
+    expressions=targets[0]["expr"]
+    queue_index=next(i for i,e in enumerate(expressions) if e.get("queue",{}).get("num")==210)
+    if not any(e.get("match") == match for e in expressions[:queue_index]):
         raise ValueError("queue210 bypass-bit equality not verified")
     return True
 
@@ -104,13 +106,11 @@ def read_prefix(conn, *, timeout=12):
             continue
         if data[0] != 22 or data[1] != 3:
             return bytes(data), None
-        size = 5 + int.from_bytes(data[3:5], "big")
-        if size < 9 or size > LIMIT:
-            raise ValueError("unsupported TLS record size")
+        _,complete,_=clienthello_view(data)
         host = locate_partial_sni(data)
         if host is not None:
             return bytes(data), host
-        if len(data) >= size:
+        if complete:
             # Non-target/unsupported TLS is passed through with normal window.
             return bytes(data), None
     raise ValueError("ClientHello prefix limit")
@@ -189,13 +189,26 @@ class WindowProxy:
             except socket.timeout:
                 continue
             except OSError:
+                if not self.stop.is_set():
+                    self.count("accept_failed")
+                    self.stop.set()
                 break
             if address[0] != self.peer or not self.slots.acquire(blocking=False):
                 conn.close()
                 continue
             with self.lock:
+                if self.stop.is_set():
+                    conn.close()
+                    self.slots.release()
+                    continue
                 self.sockets.add(conn)
-            threading.Thread(target=self.handle,args=(conn,),daemon=True).start()
+            try:threading.Thread(target=self.handle,args=(conn,),daemon=True).start()
+            except RuntimeError:
+                conn.close()
+                with self.lock:self.sockets.discard(conn)
+                self.slots.release()
+                self.count("accept_failed")
+                self.stop.set()
 
     def handle(self, conn):
         backend = None
@@ -215,6 +228,7 @@ class WindowProxy:
             self.count("window_released")
             backend = socket.create_connection(self.backend,timeout=5)
             with self.lock:
+                if self.stop.is_set():raise ConnectionError("proxy stopping")
                 self.sockets.add(backend)
             backend.sendall(prefix)
             relay(conn,backend,self.stop)
@@ -232,14 +246,14 @@ class WindowProxy:
         self.stop.set()
         if self.listener is not None:
             self.listener.close()
+        if self.thread is not None:
+            self.thread.join(timeout=2)
         with self.lock:
             sockets = list(self.sockets)
         for conn in sockets:
             try:conn.shutdown(socket.SHUT_RDWR)
             except OSError:pass
             conn.close()
-        if self.thread is not None:
-            self.thread.join(timeout=2)
 
 
 def main():
@@ -258,6 +272,8 @@ def main():
     try:
         # Controller supplies an independent 900s lifetime and nft teardown.
         proxy.stop.wait(MAX_LIFETIME)
+        if proxy.stats["accept_failed"]:
+            raise RuntimeError("proxy accept loop failed")
     finally:
         proxy.close()
         for key,value in sorted(proxy.stats.items()):

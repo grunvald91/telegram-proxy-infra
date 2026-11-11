@@ -31,9 +31,49 @@ def run(args,**kw):
     return subprocess.run(args,check=True,timeout=30,capture_output=True,**kw)
 
 
-def client(cert,source):
+def client(cert,source,fragmented=False):
     context=ssl.create_default_context(cafile=cert)
     with socket.create_connection((EDGE,443),timeout=20,source_address=(source,0)) as plain:
+        if fragmented:
+            # Keep OpenSSL's exact handshake bytes/transcript, but frame the
+            # initial ClientHello over two valid TLS records. TCP writes are
+            # ordinary sendall; only the server forces tiny TCP segments.
+            incoming=ssl.MemoryBIO();outgoing=ssl.MemoryBIO()
+            tls=context.wrap_bio(incoming,outgoing,server_side=False,server_hostname=HOST)
+            first=True
+            def flush():
+                nonlocal first
+                data=outgoing.read()
+                if not data:return
+                if first:
+                    first=False
+                    size=int.from_bytes(data[3:5],"big")
+                    payload=data[5:5+size];cut=30
+                    data=(data[:3]+cut.to_bytes(2,"big")+payload[:cut]+
+                          data[:3]+(size-cut).to_bytes(2,"big")+payload[cut:]+data[5+size:])
+                plain.sendall(data)
+            while True:
+                try:tls.do_handshake()
+                except ssl.SSLWantReadError:
+                    flush()
+                    data=plain.recv(65536)
+                    if not data:raise AssertionError("fragmented TLS handshake EOF")
+                    incoming.write(data)
+                else:
+                    flush();break
+            assert tls.getpeercert()
+            tls.write(PAYLOAD);flush();result=b""
+            while len(result)<32:
+                try:
+                    piece=tls.read(32-len(result))
+                    if not piece:raise AssertionError("fragmented TLS clean EOF")
+                    result+=piece
+                except ssl.SSLWantReadError:
+                    flush();data=plain.recv(65536)
+                    if not data:raise AssertionError("fragmented TLS response EOF")
+                    incoming.write(data)
+            assert result==hashlib.sha256(PAYLOAD).digest()
+            return
         with context.wrap_socket(plain,server_hostname=HOST) as tls:
             if not tls.getpeercert():raise AssertionError("certificate verification missing")
             tls.sendall(PAYLOAD)
@@ -93,6 +133,9 @@ def inner():
     run(["ip","netns","add",namespace])
     try:
         run(["ip","link","add","v15srv","type","veth","peer","name","v15cli"])
+        # EDGE is deliberately secondary. A plain REDIRECT would choose the
+        # primary interface address and miss the EDGE-bound proxy listener.
+        run(["ip","addr","add","198.18.0.4/29","dev","v15srv"])
         run(["ip","addr","add",EDGE+"/29","dev","v15srv"])
         run(["ip","link","set","v15srv","up"])
         run(["ip","link","set","v15cli","netns",namespace])
@@ -114,7 +157,7 @@ def inner():
             listener.bind(("0.0.0.0",443));listener.listen(4);listener.settimeout(30)
             def server():
                 try:
-                    for _ in range(2):
+                    for _ in range(3):
                         plain,_=listener.accept();plain.settimeout(20)
                         with context.wrap_socket(plain,server_side=True) as tls:
                             digest=hashlib.sha256();count=0
@@ -149,14 +192,16 @@ def inner():
             for source in (CONTROL,PEER):
                 run(["ip","netns","exec",namespace,sys.executable,str(Path(__file__).resolve()),
                      "client",cert,source])
+            run(["ip","netns","exec",namespace,sys.executable,str(Path(__file__).resolve()),
+                 "client",cert,PEER,"fragmented"])
             thread.join(timeout=5)
             if thread.is_alive() or server_errors:raise AssertionError(server_errors)
             time.sleep(.2)
             capture.send_signal(signal.SIGINT);capture_thread.join(timeout=5)
             assert capture.wait(timeout=3)==0
             assert not capture_errors and not capture_thread.is_alive(),capture_errors
-            assert analyzer.stats["target_clienthello"]==1,dict(analyzer.stats)
-            assert analyzer.stats["sni_split"]==1,dict(analyzer.stats)
+            assert analyzer.stats["target_clienthello"]==2,dict(analyzer.stats)
+            assert analyzer.stats["sni_split"]==2,dict(analyzer.stats)
             assert analyzer.stats["sni_boundary_indeterminate"]==0,dict(analyzer.stats)
             assert analyzer.small>=2 and analyzer.large>=1
             assert analyzer.synack_scales and set(analyzer.synack_scales)=={0}
@@ -168,7 +213,8 @@ def inner():
                       for e in item.get("rule",{}).get("expr",[]) if "counter" in e]
             assert counters==[0],counters
             assert proxy.stats["failed"]==0,dict(proxy.stats)
-            assert proxy.stats["window_released"]==1,dict(proxy.stats)
+            assert proxy.stats["window_released"]==2,dict(proxy.stats)
+            assert proxy.stats["target_sni"]==2,dict(proxy.stats)
             assert Path("/proc/sys/net/ipv4/tcp_window_scaling").read_bytes()==global_scaling
             print("meta_v15_lab_real_tls_verified=true")
             print("meta_v15_lab_sni_split="+str(analyzer.stats["sni_split"]))
@@ -178,6 +224,8 @@ def inner():
             print("meta_v15_lab_nonpeer_window_unchanged=true")
             print("meta_v15_lab_queue210_exemption_mark_verified=true")
             print("meta_v15_lab_global_scaling_unchanged=true")
+            print("meta_v15_lab_secondary_edge_ip_verified=true")
+            print("meta_v15_lab_tls_record_fragmentation_verified=true")
             print("meta_v15_lab_android_tspu=NOT_TESTED")
     finally:
         if capture is not None:
@@ -191,7 +239,7 @@ def inner():
 
 
 if __name__=="__main__":
-    if sys.argv[1:2]==["client"]:client(sys.argv[2],sys.argv[3])
+    if sys.argv[1:2]==["client"]:client(sys.argv[2],sys.argv[3],len(sys.argv)>4)
     elif sys.argv[1:]==["--inner"]:inner()
     else:
         # A fresh server network namespace prevents all host firewall changes.

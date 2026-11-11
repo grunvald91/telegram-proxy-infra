@@ -16,6 +16,7 @@ on:
       - scripts/meta_v15_phone_trial.py
       - .github/workflows/meta-v15-phone-canary.yml
       - scripts/tests/test_meta_v15_receive_window.py
+      - scripts/tests/test_meta_v15_phone_trial.py
       - scripts/tests/integration_meta_v15_netns.py
   workflow_dispatch:
 permissions:
@@ -52,8 +53,9 @@ jobs:
       - name: Receiver window unit and real socket checks
         run: |
           set -Eeuo pipefail
-          python3 -m py_compile scripts/meta_v15_receive_window.py scripts/tests/integration_meta_v15_netns.py
+          python3 -m py_compile scripts/meta_v15_receive_window.py scripts/meta_v15_phone_trial.py scripts/tests/integration_meta_v15_netns.py
           python3 -m unittest discover -s scripts/tests -p 'test_meta_v15_receive_window.py' -v
+          python3 -m unittest discover -s scripts/tests -p 'test_meta_v15_phone_trial.py' -v
       - name: Verify actual client SNI segmentation in an isolated network namespace
         run: |
           set -Eeuo pipefail

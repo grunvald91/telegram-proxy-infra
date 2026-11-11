@@ -8,7 +8,7 @@ from unittest.mock import Mock
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import meta_v15_receive_window as m
-from test_mnebydns_iglite_sni_observer import tls_hello
+from test_mnebydns_iglite_sni_observer import tls_hello,fragment_records
 
 
 class FakeConnection:
@@ -24,6 +24,22 @@ class FakeConnection:
 
 
 class ReceiveWindowTests(unittest.TestCase):
+    def test_prefix_waits_for_sni_across_tls_record_fragments(self):
+        hello=tls_hello("i.instagram.com")
+        fragmented=fragment_records(hello,(30,))
+        first=fragmented[:35]
+        conn=FakeConnection([first,fragmented[35:]])
+        data,host=m.read_prefix(conn)
+        self.assertEqual(host,"i.instagram.com")
+        self.assertEqual(data,fragmented)
+
+    def test_accept_failure_stops_worker_instead_of_silent_blackhole(self):
+        proxy=m.WindowProxy("89.125.90.101","8.8.8.8")
+        proxy.listener=Mock();proxy.listener.accept.side_effect=OSError("synthetic accept failure")
+        proxy.accept()
+        self.assertTrue(proxy.stop.is_set())
+        self.assertEqual(proxy.stats["accept_failed"],1)
+
     def test_complete_sni_from_real_small_reads(self):
         hello=tls_hello("i.instagram.com")
         conn=FakeConnection([hello[i:i+8] for i in range(0,len(hello),8)])
@@ -47,6 +63,8 @@ class ReceiveWindowTests(unittest.TestCase):
         self.assertIn("ip saddr 89.125.90.101 ip daddr 8.8.8.8 tcp sport 18443",rules)
         self.assertIn("meta mark & 0x20000000 == 0",rules)
         self.assertIn("tcp window set 8",rules)
+        self.assertIn("tcp window > 8",rules)
+        self.assertIn("dnat ip to 89.125.90.101:18443",rules)
         self.assertNotIn("sysctl",rules)
         self.assertNotIn("tcp option",rules)
 
@@ -64,6 +82,8 @@ class ReceiveWindowTests(unittest.TestCase):
                       {"left":"mentions 1073741824","op":"==","right":0}):
             with self.assertRaises(ValueError):
                 m.verify_queue_exemption(rules([{"match":wrong},{"queue":{"num":210}}]))
+        with self.assertRaises(ValueError):
+            m.verify_queue_exemption(rules([{"queue":{"num":210}},{"match":match}]))
 
     def test_per_listener_clamp_negotiates_zero_without_sysctl_change(self):
         original=Path("/proc/sys/net/ipv4/tcp_window_scaling").read_bytes()
@@ -114,7 +134,8 @@ class ReceiveWindowTests(unittest.TestCase):
         import mnebydns_iglite_route_only_v11 as route
         names=("ROOT","UNIT","TABLE","PERSISTENT_STAGE")
         before={key:getattr(route.base,key) for key in names}
-        old_rollback=route.ROLLBACK_SCRIPT
+        route_keys=("ROLLBACK_SCRIPT","TRANSPORT_LABEL","MUTATION_GUARD","LIVE_CHECK","TRIAL_WAIT","rollback")
+        route_before={key:getattr(route,key) for key in route_keys}
         try:
             trial=importlib.import_module("meta_v15_phone_trial")
             with tempfile.TemporaryDirectory() as td:
@@ -132,7 +153,7 @@ class ReceiveWindowTests(unittest.TestCase):
                     self.assertFalse(any(c[0]=="sysctl" for c in calls))
         finally:
             for key,value in before.items():setattr(route.base,key,value)
-            route.ROLLBACK_SCRIPT=old_rollback
+            for key,value in route_before.items():setattr(route,key,value)
 
 
 if __name__=="__main__":unittest.main()

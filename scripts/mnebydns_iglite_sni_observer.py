@@ -20,7 +20,7 @@ def u16(buf,i):
     if i+2>len(buf): raise ValueError('truncated')
     return int.from_bytes(buf[i:i+2],'big')
 
-def locate_sni(record):
+def _single_record_sni(record):
     data=bytes(record)
     if len(data)<9 or data[0]!=22 or data[1]!=3 or data[2]>4:
         return None
@@ -61,7 +61,7 @@ def locate_sni(record):
         return None
     return None
 
-def locate_partial_sni(prefix):
+def _single_record_partial_sni(prefix):
     """Recognize a *complete visible* SNI extension before the full TLS record.
     Diagnostic only. Do not label a partial record as a complete ClientHello or
     infer the origin device from the tuple observed at the server.
@@ -100,6 +100,59 @@ def locate_partial_sni(prefix):
     except (IndexError,ValueError,UnicodeDecodeError):
         return None
     return None
+
+def clienthello_view(prefix):
+    """Reassemble TLS record fragments without changing their wire offsets.
+
+    Returns a synthetic single-record parsing view, completion flag and
+    (handshake offset, TCP-stream offset, size) spans. The original TCP bytes
+    remain untouched for forwarding and actual packet-boundary measurements.
+    """
+    data=bytes(prefix)
+    handshake=bytearray();spans=[];at=0;expected=None;complete=False
+    while at<len(data):
+        if len(data)-at<5:break
+        if data[at]!=22 or data[at+1]!=3 or data[at+2]>4:
+            raise ValueError('not a ClientHello record sequence')
+        size=u16(data,at+3)
+        if size==0 or size+5>LIMIT:
+            raise ValueError('unsupported TLS fragment size')
+        end=at+5+size
+        shown=data[at+5:min(end,len(data))]
+        spans.append((len(handshake),at+5,len(shown)))
+        handshake.extend(shown)
+        if handshake and handshake[0]!=1:
+            raise ValueError('first handshake is not ClientHello')
+        if len(handshake)>=4:
+            expected=4+int.from_bytes(handshake[1:4],'big')
+            if expected<42 or expected+5>LIMIT:
+                raise ValueError('unsupported ClientHello length')
+            if len(handshake)>=expected:
+                complete=len(data)>=end
+                break
+        if len(data)<end:break
+        at=end
+    if expected is None:return b'',False,spans
+    virtual=b'\x16\x03\x03'+expected.to_bytes(2,'big')+bytes(handshake[:expected])
+    return virtual,complete,spans
+
+def locate_sni(record):
+    try:virtual,complete,spans=clienthello_view(record)
+    except ValueError:return None
+    if not complete:return None
+    info=_single_record_sni(virtual)
+    if info is None:return None
+    host,begin,end=info
+    def wire(index):
+        for offset,start,size in spans:
+            if offset<=index<offset+size:return start+index-offset
+        raise ValueError('uncaptured SNI byte')
+    return host,wire(begin-5),wire(end-6)+1
+
+def locate_partial_sni(prefix):
+    try:virtual,_,_=clienthello_view(prefix)
+    except ValueError:return None
+    return _single_record_partial_sni(virtual)
 
 class Flow:
     def __init__(self,seq):
@@ -144,16 +197,14 @@ class Flow:
 
     def completed(self):
         if not all(self.covered[:5]):return None
-        if self.buf[0]!=22 or self.buf[1]!=3:
+        prefix=self.contiguous_prefix()
+        try:_,complete,_=clienthello_view(prefix)
+        except ValueError:
             self.finished=True
             return None
-        size=5+int.from_bytes(self.buf[3:5],'big')
-        if size<50 or size>LIMIT:
-            self.finished=True
-            return None
-        if not all(self.covered[:size]):return None
+        if not complete:return None
         self.finished=True
-        return bytes(self.buf[:size])
+        return prefix
 
 class Analyzer:
     def __init__(self,hosts):

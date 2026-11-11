@@ -3,6 +3,7 @@
 Implementation: [receiver](../scripts/meta_v15_receive_window.py),
 [15-minute controller](../scripts/meta_v15_phone_trial.py),
 [isolated network test](../scripts/tests/integration_meta_v15_netns.py).
+Post-implementation corrections: [v15 review](meta-v15-review-20261111.md).
 
 This is a new experimental mechanism, not the route-only v11 observer.
 It aims to make the **client** transmit the initial TLS bytes in small TCP
@@ -14,11 +15,13 @@ It cannot split a ClientHello retroactively after a middlebox has dropped it.
 1. A separate Linux TCP listener sets `TCP_WINDOW_CLAMP=65535` **before listen**.
    The kernel negotiates receive window scale zero on that listener. Existing
    Nginx sockets and the global `tcp_window_scaling` setting are unchanged.
-2. nftables redirects TCP/443 for exactly one explicit public client IPv4 to
-   that listener. Its SYNACK and early ACK packets advertise a window of eight
+2. nftables applies explicit IPv4 DNAT for TCP/443 from exactly one public
+   client IPv4 to that listener's edge IP/port, including a secondary edge IP.
+   Its SYNACK and early ACK packets advertise a window of at most eight
    bytes. Socket `SO_MARK` bypasses the existing queue210 transformation for
    this listener's replies only, after verifying the live queue exclusion.
-3. The receiver reads a bounded TLS prefix and requests QUICKACK. Once it has
+3. The receiver reassembles TLS record fragments in a bounded parsing view and
+   requests QUICKACK while retaining the original wire bytes. Once it has
    read a complete SNI, it sets a separate socket mark that disables the
    eight-byte rule. The original bytes are relayed to loopback Nginx:443.
    Kernel-generated window updates now pass unchanged, with negotiated scale

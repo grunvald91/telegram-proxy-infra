@@ -202,6 +202,12 @@ class V11RuntimeFailures(unittest.TestCase):
                 self.assertEqual(path.read_bytes(),(key+"-original").encode())
 
     def test_live_term_stops_capture_and_restores_before_exit(self):
+        self._live_failure(before_ready=False)
+
+    def test_readiness_failure_stops_capture_and_restores(self):
+        self._live_failure(before_ready=True)
+
+    def _live_failure(self,*,before_ready):
         from contextlib import ExitStack
         import os
         import shutil
@@ -220,10 +226,12 @@ class V11RuntimeFailures(unittest.TestCase):
             core_remove=lambda text,*args:text.removesuffix("-new"))
         proc=Mock();proc.poll.return_value=None
         finish=Mock(return_value=object())
+        live_check=Mock(side_effect=[None,RuntimeError("synthetic readiness failure")]) if before_ready else None
         previous=signal.getsignal(signal.SIGTERM)
         with ExitStack() as stack:
             for target,name,value in (
                 (self.v,"check_retired_v10",Mock()),
+                (self.v,"LIVE_CHECK",live_check),
                 (self.v.base,"baseline",lambda:(originals["nginx"],originals["core"])),
                 (self.v.base,"owner",lambda:renderer),
                 (self.v.base,"HOSTS",("i.instagram.com",)),
@@ -235,8 +243,9 @@ class V11RuntimeFailures(unittest.TestCase):
             ):
                 stack.enter_context(patch.object(target,name,value))
             stack.enter_context(patch.dict(os.environ,{"MNEBY_IGLITE_V11_ROUTE_ONLY_APPROVED":"YES"}))
-            with self.assertRaises(SystemExit) as result:self.v.live()
-        self.assertEqual(result.exception.code,128+signal.SIGTERM)
+            with self.assertRaises(RuntimeError if before_ready else SystemExit) as result:self.v.live()
+        if before_ready:self.assertIn("synthetic readiness",str(result.exception))
+        else:self.assertEqual(result.exception.code,128+signal.SIGTERM)
         finish.assert_called_once()
         self.assertEqual(signal.getsignal(signal.SIGTERM),previous)
         for key,path in self.paths.items():self.assertEqual(path.read_bytes(),originals[key])
