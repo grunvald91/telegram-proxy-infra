@@ -16,6 +16,11 @@ concurrency:
 
 jobs:
   canary:
+    # Disabled: shared public TCP443 and global CoreDNS rewrites caused
+    # cross-service capture and cross-client route leakage in the v16 trial.
+    # Do not remove this until a separately routed Meta IP and isolated
+    # client-scoped DNS path have been validated end to end.
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 29
     env:
