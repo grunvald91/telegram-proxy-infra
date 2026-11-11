@@ -179,6 +179,19 @@ def start(peer):
     print("meta_v26_ru_other_https_fallback_fixed=true",flush=True)
     print("meta_v26_ru_same_boot_cleanup_armed=true",flush=True)
 
+def reset():
+    """Remove saved state only after nft removal and worker termination."""
+    import shutil
+    if not ROOT.is_dir():return
+    with locked():
+        _rollback_locked()
+        if active(UNIT+".timer"):
+            cmd(["systemctl","stop",UNIT+".timer"],timeout=12)
+        if active(UNIT+".timer") or table_exists() or ready_worker():
+            raise RuntimeError("RU reset rejected: experimental route still active")
+    shutil.rmtree(ROOT)
+    print("meta_v26_ru_state_reset=VERIFIED",flush=True)
+
 def status():
     if not ROOT.exists():
         print("meta_v26_ru_status=NO_STATE",flush=True);return
@@ -189,11 +202,12 @@ def status():
 
 if __name__=="__main__":
     p=argparse.ArgumentParser()
-    p.add_argument("mode",choices=("start","rollback","status"))
+    p.add_argument("mode",choices=("start","rollback","status","reset"))
     p.add_argument("--peer")
     args=p.parse_args()
     if args.mode=="start":
         if not args.peer:p.error("RU start requires --peer")
         start(args.peer)
     elif args.mode=="rollback":rollback()
+    elif args.mode=="reset":reset()
     else:status()
