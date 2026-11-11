@@ -1,0 +1,81 @@
+"""Offline reproducible contract for Russian 188 -> private WG -> German 89."""
+from pathlib import Path
+import sys
+import unittest
+
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+import meta_v23_ru_firsthop_preview as p
+
+CORE=("tls://.:853 {\n"
+      "    template IN A gemini.google.com { match ^gemini[.]google[.]com[.]$ }\n"
+      "    cache 30\n"
+      "}\n")
+NGINX=("stream {\n"
+       "map $ssl_preread_server_name $direct_mtproxy_backend {\n"
+       "  default 127.0.0.1:9443;\n"
+       "  gemini.google.com 127.0.0.1:15443;\n"
+       "}\n"
+       "  server { proxy_pass $direct_mtproxy_backend; }\n"
+       "}\n")
+ORIGINS={host:"93.184.215.14" for host in p.HOSTS}
+
+class RussianIngressTests(unittest.TestCase):
+    def test_round_trip_all_meta_names_and_preserve_unrelated_services(self):
+        core,nginx=p.render_existing_servers(original_core=CORE,original_de_nginx=NGINX,origins=ORIGINS)
+        self.assertEqual(len(p.HOSTS),11)
+        self.assertEqual(core.count('answer "{{ .Name }} 20 IN A '+p.RU_EDGE+'"'),11)
+        self.assertEqual(core.count('rcode NOERROR'),44)
+        self.assertEqual(nginx.count(" 93.184.215.14:443;"),11)
+        self.assertIn("  gemini.google.com 127.0.0.1:15443;",nginx)
+        self.assertIn("    template IN A gemini.google.com",core)
+        self.assertEqual(core.count("    cache 30\n"),1)
+        renderer=p.load_renderer()
+        for hostname in reversed(p.HOSTS):
+            core=renderer.core_remove(core,hostname)
+            nginx=renderer.nginx_remove(nginx,hostname)
+        self.assertEqual(core,CORE)
+        self.assertEqual(nginx,NGINX)
+
+    def test_ru_not_de_default_and_explicit_ingress_required(self):
+        renderer=p.load_renderer()
+        default=renderer.core_add(CORE,"i.instagram.com")
+        firsthop=renderer.core_add(CORE,"i.instagram.com",route_edge=p.RU_EDGE)
+        self.assertIn("IN A "+p.DE_EDGE,default)
+        self.assertIn("IN A "+p.RU_EDGE,firsthop)
+        self.assertNotIn("IN A "+p.DE_EDGE,firsthop)
+        for bad in ("0.0.0.0","127.0.0.1","10.66.77.1","8.8.8.8"):
+            with self.subTest(route=bad),self.assertRaises(ValueError):
+                renderer.core_add(CORE,"i.instagram.com",route_edge=bad)
+
+    def test_no_partial_or_unverified_domain_mapping(self):
+        with self.assertRaises(ValueError):
+            p.render_existing_servers(original_core=CORE,original_de_nginx=NGINX,
+                                      origins=dict(list(ORIGINS.items())[:-1]))
+        with self.assertRaises(ValueError):
+            p.render_existing_servers(original_core=CORE,original_de_nginx=NGINX,
+                                      origins=dict(ORIGINS,**{"other.example.com":"93.184.215.14"}))
+        wrong=dict(ORIGINS);wrong["i.instagram.com"]="127.0.0.1"
+        with self.assertRaises(ValueError):
+            p.render_existing_servers(original_core=CORE,original_de_nginx=NGINX,origins=wrong)
+
+    def test_only_test_peer_natted_on_ru_ens3_and_only_443(self):
+        rules=p.ru_peer_rules("8.8.8.8")
+        self.assertIn('iifname "ens3" ip saddr 8.8.8.8 ip daddr '+p.RU_EDGE+' tcp dport 443',rules)
+        self.assertIn('dnat ip to '+p.RU_EDGE+':18443',rules)
+        self.assertIn('ip saddr '+p.RU_EDGE+' ip daddr 8.8.8.8 tcp sport 18443',rules)
+        self.assertNotIn('ip daddr '+p.DE_EDGE+' tcp dport 443',rules)
+        for invalid in ("8.8.8.8/0","0.0.0.0/0","evil;flush ruleset"):
+            with self.assertRaises(ValueError):
+                p.ru_peer_rules(invalid)
+
+    def test_worker_only_routes_to_owner_private_wg(self):
+        argv=p.worker_arguments("8.8.8.8")
+        self.assertEqual(argv[-2:],("--backend-address",p.WG_BACKEND))
+        self.assertIn("--edge",argv)
+        self.assertIn(p.RU_EDGE,argv)
+        from meta_v15_receive_window import WindowProxy
+        proxy=WindowProxy(p.RU_EDGE,"8.8.8.8",backend=(p.WG_BACKEND,443))
+        self.assertEqual(proxy.backend,(p.WG_BACKEND,443))
+        self.assertNotEqual(proxy.backend[0],p.DE_EDGE)
+
+if __name__=="__main__": unittest.main()
