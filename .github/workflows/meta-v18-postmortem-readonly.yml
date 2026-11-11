@@ -1,0 +1,73 @@
+name: Meta v18 30-minute TCP SYN postmortem read-only
+on:
+  push:
+    branches: [fix/meta-routing-quic-sni-validation]
+    paths: ['.github/workflows/meta-v18-postmortem-readonly.yml']
+permissions:
+  contents: read
+concurrency:
+  group: meta-v18-postmortem
+  cancel-in-progress: false
+jobs:
+  server:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prepare authenticated pinned SSH
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS" && test -s ops/mnebydns-owner-ssh-known_hosts
+          if ! command -v sshpass >/dev/null; then
+            timeout 35s sudo apt-get -o Acquire::Retries=0 -o Acquire::http::Timeout=7 update -qq || true
+            timeout 55s sudo DEBIAN_FRONTEND=noninteractive apt-get install -qq -y sshpass >/dev/null
+          fi
+          command -v sshpass >/dev/null
+      - name: Retrospective worker failure counts, safe cleanup, live health
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          echo '### Experimental receiver: why 7813 inbound SYN did not yield ClientHello' >> "$GITHUB_STEP_SUMMARY"
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import pathlib,subprocess,re
+          def cmd(a,timeout=9):
+              return subprocess.run(a,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,timeout=timeout,check=False)
+          def emit(k,v):
+              print("meta_v18_"+k+"="+str(v),flush=True)
+          since="2026-11-11 15:23:59 UTC"
+          until="2026-11-11 15:55:00 UTC"
+          for unit in ("mneby-meta-v15-proxy.service","mneby-meta-v15-cleanup.service"):
+              log=cmd(["journalctl","-u",unit,"--since",since,"--until",until,"--no-pager","-o","cat"],timeout=15).stdout
+              id=unit.split(".")[0].replace("-","_")
+              lines=[s.strip() for s in log.splitlines()]
+              diagnostic=[s for s in lines if re.fullmatch(r"meta_v15_proxy_[a-z_]+=[0-9]+",s)]
+              emit(id+"_diagnostic_lines",len(diagnostic))
+              for line in diagnostic[:30]:emit("counter",line)
+              emit(id+"_listener_ready",any("meta_v15_listener_ready=true" in s for s in lines))
+              emit(id+"_logs_available",bool(lines))
+          for service in ("nginx.service","mnebydns-dot.service"):
+              emit(service.split(".")[0].replace("-","_")+"_active",cmd(["systemctl","is-active","--quiet",service]).returncode==0)
+          table=cmd(["nft","-j","list","tables"])
+          emit("nft_list_available",table.returncode==0)
+          if table.returncode==0:
+              import json
+              data=json.loads(table.stdout)
+              emit("experimental_nft_removed",not any(x.get("table",{}).get("name")=="mneby_meta_v15" for x in data.get("nftables",[])))
+          route=pathlib.Path("/var/lib/mneby-meta-v15-routes")
+          if (route/"core.original").is_file() and (route/"nginx.original").is_file():
+              emit("original_core_restored",pathlib.Path("/opt/mnebydns-dot/Corefile").read_bytes()==(route/"core.original").read_bytes())
+              emit("original_nginx_restored",pathlib.Path("/etc/nginx/nginx.conf").read_bytes()==(route/"nginx.original").read_bytes())
+          emit("no_remote_mutations",True)
+          PY
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
