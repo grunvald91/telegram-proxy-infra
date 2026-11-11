@@ -179,14 +179,28 @@ def _rollback_locked():
         if live.read_bytes()!=original:
             replace(live,original)
             changed.append(key)
-    if "dns" in changed:cmd(["systemctl","restart","mnebydns-dot.service"],timeout=30)
+    errors=[]
+    # Restore both independently even if the first service fails. Stopping at
+    # a failed DNS restart would leave Nginx running its experimental SNI map.
+    if "dns" in changed:
+        try:cmd(["systemctl","restart","mnebydns-dot.service"],timeout=30)
+        except (OSError,subprocess.TimeoutExpired,RuntimeError):
+            errors.append("dns_restart")
     if "nginx" in changed:
-        cmd(["nginx","-t"],timeout=20)
-        cmd(["systemctl","reload","nginx.service"],timeout=25)
-    if not active("nginx.service") or not active("mnebydns-dot.service"):
-        raise RuntimeError("DE rollback left baseline service inactive")
+        try:
+            cmd(["nginx","-t"],timeout=20)
+            cmd(["systemctl","reload","nginx.service"],timeout=25)
+        except (OSError,subprocess.TimeoutExpired,RuntimeError):
+            errors.append("nginx_restore")
+    try:
+        if not active("nginx.service") or not active("mnebydns-dot.service"):
+            errors.append("baseline_service_inactive")
+    except (OSError,subprocess.TimeoutExpired,RuntimeError):
+        errors.append("baseline_status_unavailable")
     if any(live.read_bytes()!=original for live,original,_ in files.values()):
-        raise RuntimeError("DE configs not fully restored")
+        errors.append("config_restoration_mismatch")
+    if errors:
+        raise RuntimeError("DE rollback incomplete: "+",".join(errors))
     print("meta_v26_de_cleanup=VERIFIED",flush=True)
 
 def rollback():
