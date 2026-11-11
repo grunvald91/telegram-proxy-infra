@@ -7,6 +7,7 @@ NO SSH, DNS/network access, server or host nftables changes.
 import importlib.util
 import inspect
 import pathlib
+import re
 import unittest
 
 SCRIPTS = pathlib.Path(__file__).resolve().parents[1]
@@ -67,7 +68,7 @@ class MultiMetaReview(unittest.TestCase):
         for hostname in self.tested.HOSTS:
             self.assertEqual(core.count(self.renderer.mark(hostname)), 2)
             self.assertEqual(nginx.count(self.renderer.mark(hostname)), 2)
-            self.assertEqual(core.count(f"match ^{hostname.replace('.', '[.]')}[.]$"), 5)
+            self.assertEqual(core.count(f"match ^{re.escape(hostname).replace(chr(92) + '.', '[.]')}[.]$"), 5)
         for hostname in reversed(self.tested.HOSTS):
             core = self.renderer.core_remove(core, hostname)
             nginx = self.renderer.nginx_remove(nginx, hostname)
