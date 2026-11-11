@@ -8,6 +8,7 @@ DE="89.125.90.101"
 [[ "$EUID" == 0 ]] || { echo 'de_global_abort=NOT_ROOT'; exit 2; }
 [[ "$MNEBY_IG_GLOBAL_APPROVED" == YES ]] || { echo 'de_global_abort=NOT_APPROVED'; exit 2; }
 for cmd in nft systemctl systemd-run ip ss; do command -v "$cmd" >/dev/null; done
+[[ -x /usr/sbin/nft ]] || { echo "de_global_abort=NFT_BINARY_PATH_NOT_VERIFIED"; exit 1; }
 for svc in nginx.service mnebydns-dot.service; do
     systemctl is-active --quiet "$svc" || { echo "de_global_abort=SERVICE_NOT_READY"; exit 1; }
 done
@@ -37,14 +38,12 @@ systemd-run --quiet --collect --unit "$UNIT" --on-active=90s \
 systemctl is-active --quiet "$UNIT.timer" || { echo 'de_global_abort=NO_ROLLBACK_TIMER'; exit 1; }
 echo 'de_global_independent_rollback_armed=true'
 cleanup(){
-    set +e
+    local failed=0
     if nft list table inet "$TABLE" >/dev/null 2>&1; then
-        nft delete table inet "$TABLE"
+        nft delete table inet "$TABLE" || failed=1
     fi
-    if nft list table inet "$TABLE" >/dev/null 2>&1; then
-        echo 'de_global_cleanup=FAIL'
-        return 1
-    fi
+    if nft list table inet "$TABLE" >/dev/null 2>&1; then failed=1; fi
+    if ((failed)); then echo 'de_global_cleanup=FAIL'; return 1; fi
     echo 'de_global_cleanup=PASS'
 }
 trap cleanup EXIT
@@ -57,7 +56,7 @@ COUNT="$(printf '%s\n' "$SNAPSHOT" | sed -nE 's/.*counter packets ([0-9]+) bytes
 if [[ -z "$COUNT" ]]; then COUNT=UNKNOWN; fi
 echo "de_global_matched_synack_packets=$COUNT"
 echo 'de_global_transport_only_no_android_e2e=true'
-cleanup
+cleanup || exit 1
 trap - EXIT
 systemctl is-active --quiet nginx.service
 systemctl is-active --quiet mnebydns-dot.service
