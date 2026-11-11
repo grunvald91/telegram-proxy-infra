@@ -1,0 +1,6 @@
+MNEBYDNS Instagram Lite v10 owner-authorized launch
+Date: 2026-11-11
+Trial: 900 seconds, 11 exact Meta hostnames, transient TCP Window20 with window scaling temporarily off.
+Temporary same-boot independent rollback: 1200 seconds.
+Persistent reboot recovery intentionally not installed per owner request; encrypted backup already confirmed by owner.
+No automatic rerun. Capture first ClientHello metadata in memory, no private keys or raw packet files.
