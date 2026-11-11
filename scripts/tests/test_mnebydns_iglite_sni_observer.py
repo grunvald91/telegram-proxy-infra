@@ -94,7 +94,7 @@ class ClientHelloBoundaryTests(unittest.TestCase):
             with self.subTest(trailing=trailing):
                 a=Analyzer([HOST])
                 with self.assertRaises(EOFError):
-                    parse_pcap(BytesIO(complete+b'\\x00'*trailing),a)
+                    parse_pcap(BytesIO(complete+b'\x00'*trailing),a)
 
     def test_partial_pcap_record_body_fails_closed(self):
         complete=make_pcap([packet(900,2)]).getvalue()
@@ -105,7 +105,7 @@ class ClientHelloBoundaryTests(unittest.TestCase):
         h=tls_hello()
         inside=locate_sni(h)[1]+5
         a=Analyzer([HOST])
-        peer=b'\\xcb\\0\\x71\\x02'
+        peer=b'\xcb\0\x71\x02'
         a.tcp(peer,45001,700,True,b'')
         # tcpdump captured a prefix, but the wire segment contained more.
         a.tcp(peer,45001,701,False,h[:inside],wire_len=len(h))
