@@ -104,19 +104,17 @@ def stage(peer):
     org_ng=LIVE_NGINX.read_bytes()
     org_dns=LIVE_DNS.read_bytes()
     owner=load_renderer()
+    # Verify every pinned origin once. Re-resolving between preflight and
+    # rendering could silently change the route after the TLS check.
+    verified={host:owner.origin_ip(host) for host in HOSTS}
     next_ng=org_ng.decode()
     for host in HOSTS:
-        # Current origin's public IP is not trusted until TLS cert validates.
-        ip=owner.origin_ip(host)
-        next_ng=owner.nginx_add(next_ng,host,ip)
+        next_ng=owner.nginx_add(next_ng,host,verified[host])
+    reversed_ng=next_ng
     for host in reversed(HOSTS):
-        next_ng=owner.nginx_remove(next_ng,host)
-    if next_ng!=org_ng.decode():
+        reversed_ng=owner.nginx_remove(reversed_ng,host)
+    if reversed_ng!=org_ng.decode():
         raise AssertionError("Nginx routes are not reversible")
-    # Render fresh after verifying pure route round-trip.
-    next_ng=org_ng.decode()
-    for host in HOSTS:
-        next_ng=owner.nginx_add(next_ng,host,owner.origin_ip(host))
     plan=render(corefile=org_dns.decode(),phone_ip=peer,
                 compiled_plugins=compiled_plugins())
     plan.verify_rollback()
