@@ -53,6 +53,8 @@ jobs:
                   plugin_output=p.stdout+"\\n"+p.stderr
                   show("plugin_help_stdout_bytes",len(p.stdout))
                   show("plugin_help_stderr_bytes",len(p.stderr))
+                  # -plugins prints public plugin names only; no config or credentials.
+                  show("plugin_public_listing",re.sub(r"\\s+"," ",plugin_output).strip()[:650])
                   plugin_tokens=set(re.findall(r"\\bdns\\.([a-z][a-z0-9_-]+)\\b",plugin_output))
                   show("coredns_plugin_tokens_count",len(plugin_tokens))
                   show("view_plugin_available","view" in plugin_tokens)
