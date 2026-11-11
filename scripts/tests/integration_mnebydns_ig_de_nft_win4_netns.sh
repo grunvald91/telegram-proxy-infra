@@ -49,15 +49,21 @@ done
 
 capture() {
   local variant="$1"
-  ip netns exec "$CLNT" tcpdump -i "$V2" -s0 -U -w "$TMP/$variant.pcap" 'tcp and port 443' >/dev/null 2>&1 &
+  ip netns exec "$CLNT" tcpdump -i "$V2" -s 0 -U -w "$TMP/$variant.pcap" 'tcp and port 443' > "$TMP/$variant.capturelog" 2>&1 &
   CPID=$!
-  sleep .45
-  kill -0 "$CPID"
+  ready=0
+  for i in {1..60}; do
+    if grep -q 'listening on' "$TMP/$variant.capturelog"; then ready=1; break; fi
+    kill -0 "$CPID" 2>/dev/null || break
+    sleep .1
+  done
+  [[ "$ready" == 1 ]] || { cat "$TMP/$variant.capturelog"; exit 1; }
   ip netns exec "$CLNT" python3 -u "$PROBE" client
-  sleep .45
-  kill "$CPID" 2>/dev/null || true
+  sleep .8
+  kill -INT "$CPID" 2>/dev/null || true
   wait "$CPID" 2>/dev/null || true
   CPID=''
+  cat "$TMP/$variant.capturelog"
   python3 "$PROBE" verify --pcap "$TMP/$variant.pcap" --variant "$variant"
 }
 echo 'nft_win4_probe=reference'
