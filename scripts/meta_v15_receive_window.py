@@ -171,6 +171,12 @@ class WindowProxy:
         with self.lock:
             self.stats[key] += 1
 
+    def destination_for(self, host):
+        """Only allowlisted Meta hostnames leave RU over the private tunnel."""
+        if self.non_meta_backend is not None and host not in HOSTS:
+            return self.non_meta_backend
+        return self.backend
+
     def start(self):
         listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
@@ -236,10 +242,7 @@ class WindowProxy:
             # The RU shared :443 ingress also handles non-Meta connections.
             # These must stay on RU's existing HTTPS service, not leak into
             # the fixed private Meta WireGuard origin router.
-            destination = (
-                self.non_meta_backend if host not in HOSTS and
-                self.non_meta_backend is not None else self.backend
-            )
+            destination = self.destination_for(host)
             if self.non_meta_backend is not None:
                 self.count("meta_via_wg" if host in HOSTS else "non_meta_via_ru")
             backend = socket.create_connection(destination,timeout=5)
