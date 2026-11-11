@@ -23,6 +23,10 @@ RU_PUBLIC = "188.120.254.223"
 DOT_HOST = "dns.mnebyvpn.site"
 NAMES = ("i.instagram.com", "iglite-z.instagram.com", "www.youtube.com", "claude.ai")
 
+def metric_host(host: str) -> str:
+    """Stable ASCII metric name for exact hostnames, including hyphens."""
+    return re.sub(r"[^a-z0-9]", "_", host.lower())
+
 def emit(key: str, value: object) -> None:
     print(str(key) + "=" + str(value), flush=True)
 
@@ -149,7 +153,7 @@ def nginx_meta_route_inventory(role: str) -> None:
         for body in maps:
             found.extend(re.findall(r"(?m)^\s*" + re.escape(hostname)
                                     + r"\s+([^\s;]+)\s*;", body))
-        label = role + "_nginx_route_" + hostname.replace(".", "_")
+        label = role + "_nginx_route_" + metric_host(hostname)
         emit(label + "_count", len(found))
         if len(found) != 1:
             continue
@@ -205,17 +209,17 @@ def run(role: str) -> None:
                     result = dot_query(host, qtype)
                 except Exception as exc:
                     result = type(exc).__name__
-                emit("external_dot_" + label + "_" + host.replace(".", "_"), result)
+                emit("external_dot_" + label + "_" + metric_host(host), result)
         return
     host_inventory(role)
     if role == "ru":
         for host in ("i.instagram.com", "iglite-z.instagram.com", "claude.ai"):
-            emit("ru_to_de_public_" + host.replace(".", "_"), cert_tls(DE_PUBLIC, host))
-            emit("ru_to_de_wg_" + host.replace(".", "_"), cert_tls(DE_WG, host))
+            emit("ru_to_de_public_" + metric_host(host), cert_tls(DE_PUBLIC, host))
+            emit("ru_to_de_wg_" + metric_host(host), cert_tls(DE_WG, host))
     elif role == "de":
         for host in ("i.instagram.com", "iglite-z.instagram.com", "claude.ai"):
-            emit("de_local_ingress_" + host.replace(".", "_"), cert_tls("127.0.0.1", host))
-            emit("de_to_origin_" + host.replace(".", "_"), cert_tls(host, host))
+            emit("de_local_ingress_" + metric_host(host), cert_tls("127.0.0.1", host))
+            emit("de_to_origin_" + metric_host(host), cert_tls(host, host))
 
 if __name__ == "__main__":
     if len(sys.argv) != 2 or sys.argv[1] not in ("external", "ru", "de"):
