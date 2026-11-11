@@ -109,8 +109,25 @@ class RussianIngressTests(unittest.TestCase):
         self.assertEqual(proxy.backend,(p.WG_BACKEND,443))
         self.assertNotEqual(proxy.backend[0],p.DE_EDGE)
 
+    def test_ru_observer_reads_actual_client_443_on_ens3(self):
+        from mnebydns_iglite_sni_observer import capture_command
+        ru=capture_command(edge=p.RU_EDGE,peer="8.8.8.8")
+        self.assertEqual(ru[1:3],["-i","ens3"])
+        self.assertIn("dst host "+p.RU_EDGE+" and dst port 443",ru[-1])
+        self.assertIn("src host 8.8.8.8",ru[-1])
+        de=capture_command(edge=p.DE_EDGE,peer="8.8.8.8")
+        self.assertEqual(de[1:3],["-i","eth0"])
+        self.assertIn("dst host "+p.DE_EDGE+" and dst port 443",de[-1])
+        with self.assertRaises(ValueError):
+            capture_command(edge=p.RU_EDGE,interface="eth0",peer="8.8.8.8")
+        with self.assertRaises(ValueError):
+            capture_command(edge=p.RU_EDGE,peer="127.0.0.1")
+        with self.assertRaises(ValueError):
+            capture_command(edge="1.2.3.4",peer="8.8.8.8")
+
     def test_ru_receiver_routes_only_target_sni_over_wireguard(self):
         from meta_v15_receive_window import WindowProxy,HOSTS
+        self.assertEqual(set(HOSTS),set(p.HOSTS), "proxy and DNS host lists must match")
         ru=(p.RU_EDGE,443)
         de=(p.WG_BACKEND,443)
         proxy=WindowProxy(p.RU_EDGE,"8.8.8.8",backend=de,non_meta_backend=ru)
