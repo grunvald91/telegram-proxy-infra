@@ -147,7 +147,7 @@ jobs:
                  'graph.instagram.com','z-m-gateway.facebook.com',
                  'graph.facebook.com','www.instagram.com','www.facebook.com',
                  'static.xx.fbcdn.net','scontent.xx.fbcdn.net')
-          stamp=Path('/run/mneby-iglite-wifi-de-20261111-v10/ready_epoch')
+          stamp=Path('/var/lib/mneby-iglite-wifi-de-20261111-v10/ready_epoch')
           def result(args):
               try:
                   p=subprocess.run(args,capture_output=True,text=True,timeout=8)
