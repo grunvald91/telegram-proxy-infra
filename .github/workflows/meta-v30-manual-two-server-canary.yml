@@ -51,12 +51,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-          ref: fa1c14a4d9febe309cc57d3f4559161c3e447e99
+          ref: 32768c49a0412d4d974e00d66fdb0be7cf17e1df
       - name: Validate code and manual controls
         shell: bash
         run: |
           set -Eeuo pipefail
-          test "$(git rev-parse HEAD)" = 'fa1c14a4d9febe309cc57d3f4559161c3e447e99'
+          test "$(git rev-parse HEAD)" = '32768c49a0412d4d974e00d66fdb0be7cf17e1df'
           python3 -m py_compile scripts/meta_v30_actions_adapter.py scripts/meta_v29_two_server_sequence.py
           python3 scripts/meta_v30_actions_adapter.py --mode validate
           python3 -m unittest discover -s scripts/tests -p 'test_meta_v30_actions_adapter.py' -v
