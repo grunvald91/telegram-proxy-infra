@@ -163,7 +163,7 @@ def verify(file: str, mode: str):
     synack = synacks[0]
     if not synack["valid_checksum"]:
         raise AssertionError("Bad on-wire TCP checksum on SYN-ACK")
-    if mode in ("clamped","clamped_acks","clamped_wscale0","clamped_wscale3"):
+    if mode in ("clamped","clamped_acks","clamped_no_ws"):
         if synack["window"] != 4:
             raise AssertionError(f"Expected win 4, got {synack['window']}")
     elif synack["window"] == 4:
@@ -210,7 +210,7 @@ def main():
     p.add_argument("--count", type=int, default=3)
     p.add_argument("--interface")
     p.add_argument("--pcap")
-    p.add_argument("--variant", choices=("reference", "clamped", "clamped_acks", "clamped_wscale0", "clamped_wscale3", "failbypass"))
+    p.add_argument("--variant", choices=("reference", "clamped", "clamped_acks", "clamped_no_ws", "failbypass"))
     args = p.parse_args()
     if args.mode == "listener":
         if not args.ready:
