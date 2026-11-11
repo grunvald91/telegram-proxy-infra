@@ -71,6 +71,7 @@ class V10Window20Review(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td)/"state"
             root.mkdir()
+            (root/"mutation-ready").write_text("armed\\n")
             live_nginx=Path(td)/"nginx.conf"
             live_core=Path(td)/"Corefile"
             live_ws=Path(td)/"tcp_window_scaling"
@@ -103,6 +104,78 @@ class V10Window20Review(unittest.TestCase):
                 v.rollback()
             self.assertEqual(state["restart_count"],1)
             self.assertTrue(state["dot"])
+
+    def test_boot_recovery_fixes_persistent_files_and_sysctl_without_service_reload(self):
+        v=self.v
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)/"durable-state"
+            root.mkdir()
+            (root/"mutation-ready").write_text("armed\n")
+            nginx=Path(td)/"nginx"
+            core=Path(td)/"Corefile"
+            ws=Path(td)/"sysctl"
+            for name,data in (
+                ("nginx.original",b"nginx-original"),
+                ("nginx.candidate",b"nginx-temporary"),
+                ("core.original",b"core-original"),
+                ("core.candidate",b"core-temporary"),
+                ("tcp_window_scaling.original",b"1\n"),
+            ):
+                (root/name).write_bytes(data)
+            nginx.write_bytes(b"nginx-temporary")
+            core.write_bytes(b"core-temporary")
+            ws.write_bytes(b"0\n")
+            calls=[]
+            def fake_cmd(argv,**kwargs):
+                calls.append(argv)
+                if argv[:4]==["nft","list","table","inet"]:
+                    return subprocess.CompletedProcess(argv,1)
+                if argv[:3]==["sysctl","-w","net.ipv4.tcp_window_scaling=1"]:
+                    ws.write_text("1\n")
+                if argv[0]=="systemctl":
+                    raise AssertionError("Boot recovery must not start/reload services")
+                return subprocess.CompletedProcess(argv,0)
+            with (patch.object(v,"ROOT",root),
+                  patch.object(v,"NGINX",nginx),
+                  patch.object(v,"CORE",core),
+                  patch.object(v,"WSFILE",ws),
+                  patch.object(v,"command",side_effect=fake_cmd)):
+                v.rollback(boot=True)
+            self.assertEqual(nginx.read_bytes(),b"nginx-original")
+            self.assertEqual(core.read_bytes(),b"core-original")
+            self.assertEqual(ws.read_text().strip(),"1")
+            self.assertTrue(any(cmd[0]=="sysctl" for cmd in calls))
+            self.assertFalse(any(cmd[0]=="systemctl" for cmd in calls))
+
+    def test_boot_recovery_no_marker_does_not_touch_server(self):
+        v=self.v
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)/"incomplete-backup"
+            root.mkdir()
+            with patch.object(v,"ROOT",root), patch.object(v,"command") as actions:
+                v.rollback(boot=True)
+                actions.assert_not_called()
+
+    def test_persistent_service_is_boot_ordered_and_present(self):
+        unit=(ROOT.parent / "ops/mneby-ig-lite-v10-recover.service").read_text()
+        self.assertIn("DefaultDependencies=no",unit)
+        self.assertIn("After=local-fs.target",unit)
+        self.assertIn("Before=nginx.service mnebydns-dot.service",unit)
+        self.assertIn("ConditionPathExists=/var/lib/mneby-iglite-wifi-de-20261111-v10/mutation-ready",unit)
+        self.assertIn("boot-rollback",unit)
+        self.assertIn("WantedBy=multi-user.target",unit)
+
+    def test_durable_backup_fsync_and_marker_precede_global_sysctl_change(self):
+        source=inspect.getsource(self.v.live)
+        marker='write_exclusive(ROOT / MUTATION_MARKER'
+        self.assertIn("fsync_directory(ROOT)",source)
+        self.assertIn("fsync_directory(ROOT.parent)",source)
+        self.assertLess(source.index("write_exclusive(ROOT / \"tcp_window_scaling.original\""),
+                        source.index(marker))
+        self.assertLess(source.index("command([\"systemd-run\""),
+                        source.index(marker))
+        self.assertLess(source.index(marker),
+                        source.index('command(["sysctl", "-w", "net.ipv4.tcp_window_scaling=0"]'))
 
     def test_live_workflow_is_disabled_until_reboot_safe_restore_exists(self):
         workflow=(ROOT.parent / ".github/workflows/mnebydns-iglite-wifi-v10-onrequest.yml").read_text()
