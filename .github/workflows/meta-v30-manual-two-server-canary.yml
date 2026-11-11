@@ -38,9 +38,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 28
     env:
-      RELAY89_SSH_PASSWORD: \${{ secrets.RELAY89_SSH_PASSWORD }}
-      SERVER188_SSH_PASSWORD: \${{ secrets.SERVER188_SSH_PASSWORD }}
-      MNEBY_META_V30_APPROVED: \${{ inputs.approval }}
+      RELAY89_SSH_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      SERVER188_SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      MNEBY_META_V30_APPROVED: ${{ inputs.approval }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -60,9 +60,9 @@ jobs:
       - name: Pinned two-host operation, bounded time
         shell: bash
         env:
-          SELECTED_MODE: \${{ inputs.mode }}
-          SELECTED_IP: \${{ inputs.phone_ip }}
-          SELECTED_MINUTES: \${{ inputs.duration_minutes }}
+          SELECTED_MODE: ${{ inputs.mode }}
+          SELECTED_IP: ${{ inputs.phone_ip }}
+          SELECTED_MINUTES: ${{ inputs.duration_minutes }}
         run: |
           set -Eeuo pipefail
           if [[ "$SELECTED_MODE" == "preflight" ]]; then
