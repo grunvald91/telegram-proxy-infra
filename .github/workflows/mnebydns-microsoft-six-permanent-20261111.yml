@@ -1,0 +1,66 @@
+name: MNEBYDNS Microsoft all six exact hosts permanent via existing Gemini Claude route
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebydns-microsoft-six-permanent-20261111.yml'
+      - 'scripts/mnebydns-microsoft-six-permanent-20261111.py'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebydns-microsoft-six-permanent-20261111.yml'
+      - 'scripts/mnebydns-microsoft-six-permanent-20261111.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-google-public-443-change
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify six-name permanent controller uses existing reversible owner route renderer
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-microsoft-six-permanent-20261111.py
+          python3 scripts/mnebydns-microsoft-six-permanent-20261111.py self-test
+          python3 scripts/mnebydns-owner-domain-controller-20261110.py self-test
+          python3 scripts/mnebydns-owner-domain-render-20261110.py self-test
+          python3 -m unittest discover -s scripts/tests -p 'test_owner_domain_*.py' -v
+          bash -n scripts/mnebydns-owner-domain-stage-20261110.sh \
+            scripts/mnebydns-owner-domain-confirm-20261110.sh \
+            scripts/mnebydns-owner-domain-rollback-20261110.sh
+          test "$(grep -c ' ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts)" -eq 2
+          ! grep -Eq 'StrictHostKeyChecking=no|accept-new|verify=False|ssl\._create_unverified_context' \
+            scripts/mnebydns-microsoft-six-permanent-20261111.py
+          echo microsoft_six_offline_preflight=PASS
+  release:
+    if: github.event_name != 'pull_request'
+    needs: offline
+    runs-on: ubuntu-latest
+    timeout-minutes: 29
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Permanently promote all six exact-host routes one-by-one with independent rollback timers
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -qq -y sshpass >/dev/null
+          python3 scripts/mnebydns-microsoft-six-permanent-20261111.py run
+          echo 'microsoft_all_six_final_status=ACTIVE_or_existing_COVERED' >> "$GITHUB_STEP_SUMMARY"
+          echo 'microsoft_manual_phone_approval_required=false' >> "$GITHUB_STEP_SUMMARY"
+          echo 'microsoft_wildcard_or_arbitrary_host_routes=false' >> "$GITHUB_STEP_SUMMARY"
