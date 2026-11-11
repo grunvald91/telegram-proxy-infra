@@ -1,4 +1,4 @@
-name: MNEBYDNS Instagram Lite NFQUEUE210 kernel health (read only)
+name: MNEBYDNS Instagram Lite live NFQUEUE210 SYNACK strategy audit (read only)
 on:
   push:
     branches: [audit/mnebydns-instagram-lite-20261111]
@@ -10,7 +10,7 @@ concurrency:
   group: mnebydns-iglite-tcp443-correlated-readonly
   cancel-in-progress: false
 jobs:
-  tcp443-readonly:
+  nfq210-live-config:
     runs-on: ubuntu-latest
     timeout-minutes: 4
     env:
@@ -19,18 +19,20 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Isolated parser tests and syntax
+      - name: Offline syntax and parser tests
+        shell: bash
         run: |
           set -Eeuo pipefail
           test -n "$DE_PASS"
-          python3 -m py_compile scripts/mnebydns_iglite_q210_readonly_health.py
-          python3 scripts/mnebydns_iglite_q210_readonly_health.py self-test
-      - name: Prepare host-key-pinned SSH
+          python3 -m py_compile scripts/mnebydns_iglite_q210_service_readonly.py
+          python3 scripts/mnebydns_iglite_q210_service_readonly.py self-test
+      - name: Prepare pinned SSH
+        shell: bash
         run: |
           set -Eeuo pipefail
           sudo apt-get update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
-      - name: Observe DE ingress and run concurrent Runner TCP probes
+      - name: Inspect current NFQUEUE210 service, strategy and kernel queue without changes
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -39,43 +41,11 @@ jobs:
             -o HostKeyAlgorithms=ssh-ed25519
             -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
             -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
-          logfile="$RUNNER_TEMP/iglite-correlated-readonly.log"
-          timeout 38s sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
-            'python3 -u -' < scripts/mnebydns_iglite_q210_readonly_health.py \
-            > "$logfile" 2>&1 &
-          observer=$!
-          trap 'kill "$observer" 2>/dev/null || true; wait "$observer" 2>/dev/null || true' EXIT
-          ready=0
-          for attempt in $(seq 1 120); do
-            if grep -Fqx 'q210_readonly_observer=READY' "$logfile" 2>/dev/null;then ready=1;break;fi
-            kill -0 "$observer" 2>/dev/null || break
-            sleep 0.1
-          done
-          if [[ "$ready" != 1 ]];then cat "$logfile";exit 1;fi
-          python3 - <<'PY'
-          import socket,time
-          ip='89.125.90.101'
-          for port in (443,443,443,853):
-              start=time.monotonic()
-              try:
-                  with socket.create_connection((ip,port),timeout=3):
-                      verdict='CONNECTED'
-              except Exception as e:
-                  verdict=type(e).__name__
-              print(f'readonly_runner_tcp_{port}={verdict} elapsed_s={time.monotonic()-start:.3f}',flush=True)
-              time.sleep(.3)
-          PY
-          set +e
-          wait "$observer"
-          rc=$?
-          set -e
-          trap - EXIT
+          logfile="$RUNNER_TEMP/mnebydns-nfq-live-readonly.log"
+          timeout 30s sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
+            'python3 -u -' < scripts/mnebydns_iglite_q210_service_readonly.py \
+            > "$logfile" 2>&1
           cat "$logfile"
-          test "$rc" -eq 0
-          grep -Fqx 'q210_packet_payload_logged=false' "$logfile"
-          grep -Fqx 'q210_server_changes=NONE' "$logfile"
-          grep -q '^q210_runtime_dropped_delta=' "$logfile"
-          grep -q '^q210_runtime_user_dropped_delta=' "$logfile"
-          grep -q '^q210_tcp_peer_syn=' "$logfile"
-          grep -q '^q210_tcp_peer_synack=' "$logfile"
-          echo 'readonly_no_server_mutation=true'
+          grep -Fqx 'nfq_live_readonly=true' "$logfile"
+          grep -Fqx 'nfq_live_instagram_unblock=NOT_TESTED' "$logfile"
+          echo 'nfq_readonly_completed=true'
