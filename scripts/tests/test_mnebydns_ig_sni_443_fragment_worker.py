@@ -69,6 +69,35 @@ class PhoneSniFragmentBytes(TestCase):
     def test_wrong_peer_never_clamps(self):
         self.assertEqual(worker.transform(packet(),peer="185.137.178.124"),packet())
 
+
+    def test_foreign_edge_443_only_one_peer_and_valid_checksum(self):
+        foreign="89.125.90.101"
+        original=packet(src=foreign,dst=PEER,window=64240)
+        changed=worker.transform(original,peer=PEER,server=foreign)
+        self.assertNotEqual(original,changed)
+        self.assertEqual(struct.unpack_from("!H",changed,34)[0],4)
+        self.assertEqual(changed[:34],original[:34])
+        self.assertEqual(changed[38:],original[38:])
+        pseudo=changed[12:20]+struct.pack("!BBH",0,6,len(changed)-20)
+        self.assertEqual(worker.checksum(pseudo+changed[20:]),0)
+        self.assertEqual(worker.checksum(changed[:20]),0)
+        # RU-to-peer packets, other ports, other clients and non-SYNACK
+        # packets must never be altered when DE is the selected server.
+        for candidate in (
+            packet(src=RU,dst=PEER),
+            packet(src=foreign,dst=OTHER),
+            packet(src=foreign,dst=PEER,sport=18443),
+            packet(src=foreign,dst=PEER,flags=0x18,payload=b"hello"),
+            packet(src=foreign,dst=PEER,frag=0x2000),
+        ):
+            with self.subTest(case=candidate[:25]):
+                self.assertEqual(worker.transform(candidate,peer=PEER,server=foreign),candidate)
+
+    def test_rejects_unapproved_server_ip(self):
+        with self.assertRaises(ValueError):
+            worker.transform(packet(),peer=PEER,server="8.8.8.8")
+        self.assertEqual(worker.ALLOWED_SERVERS, (RU, "89.125.90.101"))
+
     def test_client_sni_payload_never_clamped(self):
         src=packet(src=PEER,dst=RU,sport=59127,flags=0x18,payload=b"\x16\x03\x01Instagram")
         self.assertEqual(worker.transform(src,peer=PEER),src)
