@@ -22,7 +22,7 @@ class StabilityContracts(unittest.TestCase):
              redirect_stdout(StringIO()) as output:
             code = m.run()
         self.assertEqual(code, 0)
-        self.assertIn("dns_v14_repeated_failure_count=0", output.getvalue())
+        self.assertIn("dns_v14_edge_repeated_failure_count=0", output.getvalue())
 
     def test_repeated_servfail_is_not_reported_as_stable(self):
         def synthetic(domain, typ, target, tls_host):
@@ -35,7 +35,18 @@ class StabilityContracts(unittest.TestCase):
             code = m.run()
         self.assertEqual(code, 1)
         self.assertIn("dns_v14_error_edge_i_instagram_com_A_RCODE_2=2", output.getvalue())
-        self.assertIn("dns_v14_repeated_failure_count=1", output.getvalue())
+        self.assertIn("dns_v14_edge_repeated_failure_count=1", output.getvalue())
+
+    def test_quad9_comparator_error_never_mislabels_edge(self):
+        def synthetic(domain, typ, target, tls_host):
+            return "EOFError" if target == "9.9.9.9" else "RCODE_0"
+        with patch.object(m, "ROUNDS", 2), patch.object(m, "DELAY_S", 0), \
+             patch.object(m, "sample", side_effect=synthetic), \
+             redirect_stdout(StringIO()) as output:
+            code = m.run()
+        self.assertEqual(code, 0)
+        self.assertIn("dns_v14_edge_repeated_failure_count=0", output.getvalue())
+        self.assertIn("dns_v14_quad9_comparator_repeated_failure_count=9", output.getvalue())
 
     def test_one_transient_failure_is_reported(self):
         n = [0]
