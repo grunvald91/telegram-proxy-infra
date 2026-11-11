@@ -178,11 +178,10 @@ def require_experiment_isolation():
 
 
 def live(peer, *, duration=DEFAULT_TRIAL_SECONDS):
-    # No new live runs may modify shared DNS or capture non-Meta HTTPS.
-    # This guard precedes server preflight, state creation and nft changes.
-    require_experiment_isolation()
-    # Validate before any mutating command; do not extend legacy defaults.
+    # Validate bounds first, then fail closed before any VPS mutation.
     watchdog,lifetime=time_budget(duration)
+    # V15 shared-ingress/global-DNS design must never activate again.
+    require_experiment_isolation()
     route.base.TRIAL_SECONDS=duration
     route.base.WATCHDOG_SECONDS=watchdog
     peer=str(ipaddress.IPv4Address(peer))
