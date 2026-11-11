@@ -157,6 +157,21 @@ class OwnerDomainLiveHealthAndSSH(TestCase):
                             "last_error_code='ACTIVE_ROUTE_CHECK_FAILED'" in q for q in statements))
         self.assertFalse(any("status='CANCELLED'" in q or "status='FAILED'" in q for q in statements))
 
+    def test_active_health_missing_origin_marks_metadata_not_network(self):
+        statements=[]
+        def query(statement):
+            statements.append(statement)
+            if statement.startswith("SELECT"):
+                return "18|xbox.com||5"
+            return ""
+        with patch.object(owner, "sql", side_effect=query), \
+             patch.object(owner, "live_checkpoint_unchanged", return_value=True), \
+             patch.object(owner, "ssh", side_effect=AssertionError("must not probe unknown origin")):
+            owner.active_health()
+        self.assertTrue(any("last_error_code='ACTIVE_ROUTE_METADATA_INVALID'" in s for s in statements))
+        self.assertFalse(any("ACTIVE_ROUTE_CHECK_FAILED" in s for s in statements))
+        self.assertFalse(any("status='FAILED'" in s for s in statements))
+
     def test_active_health_failure_is_reported_without_dns_mutation(self):
         statements=[]
         def query(q):
