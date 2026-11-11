@@ -24,7 +24,10 @@ import subprocess
 import sys
 import time
 
-ROOT = Path("/run/mneby-iglite-wifi-de-20261111-v10")
+ROOT = Path("/var/lib/mneby-iglite-wifi-de-20261111-v10")
+RECOVERY_UNIT = "mneby-ig-lite-v10-recover.service"
+PERSISTENT_STAGE = Path("/usr/local/libexec/mneby-iglite-v10")
+MUTATION_MARKER = "mutation-ready"
 NGINX = Path("/etc/nginx/nginx.conf")
 CORE = Path("/opt/mnebydns-dot/Corefile")
 CHECKPOINT_CURRENT = Path("/opt/mnebydns-stable-checkpoints/current")
@@ -63,6 +66,11 @@ def write_exclusive(path, data):
         f.write(data)
         f.flush()
         os.fsync(f.fileno())
+
+def fsync_directory(directory):
+    fd=os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try: os.fsync(fd)
+    finally: os.close(fd)
 
 def atomic_replace(path, data):
     target = path.with_name(path.name + ".mneby-iglite-temp")
@@ -142,6 +150,16 @@ def baseline():
             raise RuntimeError("Earlier global Window4 table still active")
     if ROOT.exists():
         raise RuntimeError("Prior one-shot state exists; refuse duplicate")
+    # A reboot-persistent, boot-ordered recovery unit and script must be in
+    # place BEFORE the live task backs up or changes any configuration.
+    if Path(__file__).resolve().parent != PERSISTENT_STAGE:
+        raise RuntimeError("Live script must run from persistent rescue directory")
+    if command(["systemctl", "is-enabled", "--quiet", RECOVERY_UNIT],
+               check=False).returncode != 0:
+        raise RuntimeError("Reboot-persistent recovery service is not enabled")
+    if command(["systemctl", "is-active", "--quiet", RECOVERY_UNIT],
+               check=False).returncode == 0:
+        raise RuntimeError("Recovery service already running")
     if WSFILE.read_text().strip() != "1":
         raise RuntimeError("TCP scaling baseline must be on")
     current = CHECKPOINT_CURRENT.read_text().strip()
@@ -183,10 +201,15 @@ def nft_rules():
     )
 
 
-def rollback():
-    """Standalone rollback; never depend on the renderer or any GitHub runner."""
+def rollback(*, boot=False):
+    """Independent restore; boot mode runs before the normal DNS/nginx start."""
     if not ROOT.is_dir():
         print("iglite_rollback=NO_STATE", flush=True)
+        return
+    if not (ROOT / MUTATION_MARKER).is_file():
+        # Backups might have been written before the first mutation; reboot
+        # cannot need restoration in that phase.
+        print("iglite_rollback=NO_MUTATION", flush=True)
         return
     nft_absent = command(["nft", "list", "table", "inet", TABLE], check=False).returncode != 0
     wsbackup = ROOT / "tcp_window_scaling.original"
@@ -196,9 +219,9 @@ def rollback():
         and WSFILE.read_text().strip() == original_ws
         and NGINX.read_bytes() == (ROOT / "nginx.original").read_bytes()
         and CORE.read_bytes() == (ROOT / "core.original").read_bytes()
-        and all(command(["systemctl", "is-active", "--quiet", svc],
-                        check=False).returncode == 0
-                for svc in ("nginx.service", "mnebydns-dot.service"))):
+        and (boot or all(command(["systemctl", "is-active", "--quiet", svc],
+                                 check=False).returncode == 0
+                         for svc in ("nginx.service", "mnebydns-dot.service")))):
         print("iglite_rollback=ALREADY_RESTORED", flush=True)
         return
     failures = []
@@ -227,25 +250,29 @@ def rollback():
             continue
         try: atomic_replace(path, good)
         except Exception: failures.append(key + "_restore")
-    # Restart only if actual candidate was active. Using reload preserves Nginx sessions.
-    try:
-        command(["nginx", "-t"], timeout=20)
-        command(["systemctl", "reload", "nginx.service"], timeout=20)
-    except Exception: failures.append("nginx_health")
-    try:
-        command(["systemctl", "restart", "mnebydns-dot.service"], timeout=30)
-    except Exception: failures.append("dns_health")
+    # During boot we are ordered before nginx/DoT startup. Never start or
+    # reload those services from a Before= one-shot, avoiding a dependency
+    # ordering cycle. On a live rollback verify both services are operational.
+    if not boot:
+        try:
+            command(["nginx", "-t"], timeout=20)
+            command(["systemctl", "reload", "nginx.service"], timeout=20)
+        except Exception: failures.append("nginx_health")
+        try:
+            command(["systemctl", "restart", "mnebydns-dot.service"], timeout=30)
+        except Exception: failures.append("dns_health")
     good = (command(["nft", "list", "table", "inet", TABLE], check=False).returncode != 0
             and original_ws is not None and WSFILE.read_text().strip() == original_ws
             and NGINX.read_bytes() == (ROOT / "nginx.original").read_bytes()
             and CORE.read_bytes() == (ROOT / "core.original").read_bytes()
-            and all(command(["systemctl", "is-active", "--quiet", svc],
-                            check=False).returncode == 0
-                    for svc in ("nginx.service", "mnebydns-dot.service")))
+            and (boot or all(command(["systemctl", "is-active", "--quiet", svc],
+                                     check=False).returncode == 0
+                             for svc in ("nginx.service", "mnebydns-dot.service"))))
     if not good or failures:
         print("iglite_rollback=FAILED_" + ",".join(failures), flush=True)
         raise RuntimeError("Rollback not verified")
-    print("iglite_rollback=VERIFIED_ORIGINAL_BYTES_AND_SERVICES", flush=True)
+    print("iglite_rollback=" + ("BOOT_FILES_AND_SYSCTL_RESTORED"
+          if boot else "VERIFIED_ORIGINAL_BYTES_AND_SERVICES"), flush=True)
 
 def dot_query_a():
     qname = b"".join(bytes((len(part),))+part.encode("ascii")
@@ -441,6 +468,8 @@ def live():
     write_exclusive(ROOT / "core.original", originals[1])
     write_exclusive(ROOT / "nginx.candidate", ng.encode())
     write_exclusive(ROOT / "core.candidate", core.encode())
+    fsync_directory(ROOT)
+    fsync_directory(ROOT.parent)
     # nginx syntax parser BEFORE changing any live file.
     command(["nginx", "-t", "-c", str(ROOT / "nginx.candidate")], timeout=25)
     print("iglite_nginx_candidate_syntax_verified=true", flush=True)
@@ -453,6 +482,11 @@ def live():
                check=False).returncode:
         raise RuntimeError("Rollback timer not armed")
     print("iglite_independent_rollback_armed=true", flush=True)
+    # This durable marker is the last state write before the first mutation.
+    # The boot service checks it, so an interrupted backup does not cause
+    # a false recovery attempt.
+    write_exclusive(ROOT / MUTATION_MARKER, b"armed\n")
+    fsync_directory(ROOT)
     try:
         command(["sysctl", "-w", "net.ipv4.tcp_window_scaling=0"])
         print("iglite_live_temporary_kernel_tcp_window_scaling=0", flush=True)
@@ -510,9 +544,11 @@ def live():
     print("iglite_end_to_end_android=NOT_TESTED", flush=True)
 
 if __name__ == "__main__":
-    if len(sys.argv)!=2 or sys.argv[1] not in ("live", "rollback"):
-        raise SystemExit("Usage: canary.py live|rollback")
+    if len(sys.argv)!=2 or sys.argv[1] not in ("live", "rollback", "boot-rollback"):
+        raise SystemExit("Usage: canary.py live|rollback|boot-rollback")
     if sys.argv[1]=="rollback":
         rollback()
+    elif sys.argv[1]=="boot-rollback":
+        rollback(boot=True)
     else:
         live()
