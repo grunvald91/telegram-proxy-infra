@@ -88,7 +88,7 @@ NFT
 ip netns exec "$SERV" nft --check -f "$TMP/ack.nft"
 ip netns exec "$SERV" nft -f "$TMP/ack.nft"
 echo 'nft_win4_probe=ack_until_64_client_packets'
-capture clamped
+capture clamped_acks
 ip netns exec "$SERV" nft -a list table inet mneby_ig_win4_netns | grep -F 'ct original packets < 64'
 ip netns exec "$SERV" nft delete table inet mneby_ig_win4_netns
 echo 'nft_win4_probe=restored'
