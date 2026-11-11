@@ -1,0 +1,66 @@
+name: MNEBYDNS stage 2 research read-only RU and DE differential
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebydns-geoblock-stage2-20261111.yml'
+      - 'scripts/mnebydns-geoblock-stage2-probe-20261111.py'
+      - 'data/mnebydns-geoblock-stage2-priority-20261111.txt'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebydns-geoblock-stage2-20261111.yml'
+      - 'scripts/mnebydns-geoblock-stage2-probe-20261111.py'
+      - 'data/mnebydns-geoblock-stage2-priority-20261111.txt'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-stage2-research-readonly
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate 39 study-derived exact names and strict no-private-IP screening
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-geoblock-stage2-probe-20261111.py
+          python3 scripts/mnebydns-geoblock-stage2-probe-20261111.py --self-test
+          test "$(grep -c ' ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts)" -eq 2
+          ! grep -Eq 'StrictHostKeyChecking=no|accept-new|curl.*-k|verify=False|ssl\._create_unverified_context' scripts/mnebydns-geoblock-stage2-probe-20261111.py
+          echo stage2_offline_security=PASS
+  first-screen:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    needs: offline
+    timeout-minutes: 9
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Test same public origin IPv4 from DE and RU without any live config mutation
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+          python3 scripts/mnebydns-geoblock-stage2-probe-20261111.py --run
+      - name: Preserve machine-readable results and report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mnebydns-stage2-ru-de-https-research
+          path: stage2-results/
+          if-no-files-found: warn
+          retention-days: 14
