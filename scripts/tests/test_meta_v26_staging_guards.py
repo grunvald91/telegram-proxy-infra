@@ -37,6 +37,15 @@ class StagingRollbackTests(unittest.TestCase):
                 renderer.return_value.verify_rollback.assert_called_once_with()
                 smoke.assert_called_once_with()
 
+    def test_ru_non_meta_fallback_checks_real_tcp_connection(self):
+        from unittest.mock import MagicMock
+        with patch.object(ru.socket,"create_connection",return_value=MagicMock()) as dial:
+            ru.verify_non_meta_fallback()
+            dial.assert_called_once_with((ru.RU_EDGE,443),timeout=4)
+        with patch.object(ru.socket,"create_connection",side_effect=OSError("refused")):
+            with self.assertRaisesRegex(RuntimeError,"fallback is unreachable"):
+                ru.verify_non_meta_fallback()
+
     def test_ru_rejects_unsafe_peer_before_any_command(self):
         for peer in ("0.0.0.0","127.0.0.1","10.66.77.1",
                      "192.168.1.1","188.120.254.223",
