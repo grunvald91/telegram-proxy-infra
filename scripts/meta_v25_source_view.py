@@ -13,7 +13,7 @@ from meta_v23_ru_firsthop_preview import RU_EDGE, HOSTS, load_renderer
 
 VIEW_NAME="mneby_meta_phone"
 VIEW_LINE="    view "+VIEW_NAME+" {\n        expr client_ip() == '{peer}'\n    }\n"
-DOT_HEADER=re.compile(r"(?m)^[ \t]*(?:tls://)?(?:\\.|[0-9.]+)?:853[ \t]*\\{[ \t]*(?:#[^\n]*)?$")
+DOT_HEADER=re.compile(r"(?m)^[ \t]*(?:tls://)?(?:\.|[0-9.]+)?:853[ \t]*\{[ \t]*(?:#[^\n]*)?$")
 
 @dataclass(frozen=True)
 class ViewPlan:
@@ -90,7 +90,7 @@ def render(*, corefile: str, phone_ip: str, compiled_plugins: str)->ViewPlan:
         duplicate=renderer.core_add(duplicate,host,route_edge=RU_EDGE)
     # Place the restricted block first; do not rewrite the existing fallback.
     header_end=duplicate.index("{")+1
-    gated=duplicate[:header_end]+"\n"+VIEW_LINE.format(peer=peer)+duplicate[header_end:]
+    gated=duplicate[:header_end]+"\n"+VIEW_LINE.replace("{peer}",peer)+duplicate[header_end:]
     candidate=gated+"\n"+corefile
     result=ViewPlan(corefile,candidate,peer,len(HOSTS))
     result.verify_rollback()
