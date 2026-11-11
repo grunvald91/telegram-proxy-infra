@@ -38,6 +38,17 @@ class OwnerDomainRouteSafety(TestCase):
         self.assertEqual(render.core_remove(a, TARGET), DNS)
         self.assertEqual(render.nginx_remove(b, TARGET), NGINX)
 
+    def test_redundant_dot_cache_block_keeps_owner_exact_roundtrip(self):
+        upgraded = DNS.replace(
+            "    cache 30\n",
+            "    cache 30 {\n        servfail 0\n    }\n"
+            "    reload 5s 1s\n"
+        )
+        result = render.core_add(upgraded, TARGET)
+        self.assertEqual(render.core_remove(result, TARGET), upgraded)
+        self.assertIn("servfail 0", result)
+        self.assertIn("reload 5s 1s", result)
+
     def test_native_core_anchored_regex_is_not_overridden(self):
         core = DNS.replace("cache 30", """template IN A . {
         match ^www[.]python[.]org[.]$
