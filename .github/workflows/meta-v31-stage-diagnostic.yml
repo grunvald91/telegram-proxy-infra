@@ -32,6 +32,9 @@ jobs:
             -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
           sshpass -e ssh "${opts[@]}" root@188.120.254.223 'bash -s' <<'REMOTE' | tee -a "$GITHUB_STEP_SUMMARY"
           set -eu
+          if test -d /usr/local/libexec; then echo libexec_parent_exists=true; else echo libexec_parent_exists=false; fi
+          if test -w /usr/local/libexec; then echo libexec_parent_writable=true; else echo libexec_parent_writable=false; fi
+          if command -v tar >/dev/null; then echo tar_present=true; fi
           p=/usr/local/libexec/mneby-meta-v26
           test -d "$p" && echo stage_dir_exists=true || echo stage_dir_exists=false
           if test -d "$p"; then
