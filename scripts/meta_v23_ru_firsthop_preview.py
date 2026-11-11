@@ -83,7 +83,9 @@ def worker_arguments(peer: str, *, trial_seconds: int = 1800)->tuple[str,...]:
     if lifetime is None:
         raise ValueError("unreviewed duration")
     return ("--peer",peer,"--edge",RU_EDGE,"--port",str(TEST_PORT),
-            "--backend-address",WG_BACKEND,"--max-lifetime",str(lifetime))
+            "--backend-address",WG_BACKEND,
+            "--non-meta-backend-address",RU_EDGE,
+            "--max-lifetime",str(lifetime))
 
 if __name__=="__main__":
     print("meta_v23_ru_firsthop_preview=OFFLINE_ONLY")
