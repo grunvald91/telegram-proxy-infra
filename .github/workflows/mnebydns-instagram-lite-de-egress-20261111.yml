@@ -164,3 +164,33 @@ jobs:
           print('nginx_active='+str(rc(['systemctl','is-active','--quiet','nginx.service'])==0).lower(),flush=True)
           print('dns_active='+str(rc(['systemctl','is-active','--quiet','mnebydns-dot.service'])==0).lower(),flush=True)
           PY
+
+      - name: Read-only DE DoT listener bind and certificate readiness
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY'
+          import socket,ssl,subprocess,time
+          print('dot_check_scope=READ_ONLY',flush=True)
+          for host in ('127.0.0.1','89.125.90.101'):
+              started=time.monotonic()
+              try:
+                  with socket.create_connection((host,853),timeout=3) as raw:
+                      raw.settimeout(4)
+                      with ssl.create_default_context().wrap_socket(raw,server_hostname='dns.mnebyvpn.site') as tls:
+                          print('dot_addr_'+host+'_tls=VERIFIED_'+str(tls.version()),flush=True)
+              except Exception as exc:
+                  print('dot_addr_'+host+'_tls=FAIL_'+type(exc).__name__,flush=True)
+              print('dot_addr_'+host+'_elapsed='+str(round(time.monotonic()-started,2)),flush=True)
+          p=subprocess.run(['ss','-lnt'],capture_output=True,text=True,timeout=8)
+          targets=[x.strip().split()[3] for x in p.stdout.splitlines()[1:] if ':853' in x or ':443' in x]
+          print('dot_443_853_listen_addresses='+repr(targets),flush=True)
+          for svc in ('mnebydns-dot.service','nginx.service'):
+              q=subprocess.run(['systemctl','is-active','--quiet',svc],timeout=8)
+              print('dot_'+svc.replace('.service','')+'_service_active='+str(q.returncode==0).lower(),flush=True)
+          PY
