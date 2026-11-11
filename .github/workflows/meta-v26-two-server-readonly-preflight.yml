@@ -58,3 +58,4 @@ jobs:
             "ROLE=$ROLE bash -c 'set -eu; umask 077; d=\$(mktemp -d /tmp/mneby-v26-readonly.XXXXXXXX); trap \"rm -rf -- \$d\" EXIT; tar -xf - -C \"\$d\"; python3 \"\$d/meta_v26_readonly_preflight.py\" \"\$ROLE\"'" |
           tee -a "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
+# Requested v26 checkpoint: re-run reviewed checks only; no live routing activation.
