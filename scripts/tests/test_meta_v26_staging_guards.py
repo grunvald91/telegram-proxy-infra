@@ -76,6 +76,34 @@ class StagingRollbackTests(unittest.TestCase):
             self.assertEqual(ng.read_bytes(),b"external changes")
             self.assertEqual(dns.read_bytes(),b"trial")
 
+    def test_de_reset_only_after_restoration_and_watchdog_disarm(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d)/"state";root.mkdir()
+            ng=Path(d)/"nginx";dns=Path(d)/"dns"
+            ng.write_bytes(b"original");dns.write_bytes(b"original")
+            (root/"armed").write_bytes(b"armed")
+            for key in ("nginx","dns"):
+                (root/(key+".original")).write_bytes(b"original")
+                (root/(key+".candidate")).write_bytes(b"candidate")
+            def service(name):return name in ("nginx.service","mnebydns-dot.service")
+            with patch.object(de,"ROOT",root),patch.object(de,"LIVE_NGINX",ng),\
+                 patch.object(de,"LIVE_DNS",dns),patch.object(de,"active",side_effect=service),\
+                 patch.object(de,"cmd",side_effect=AssertionError("no service mutation")):
+                de.reset()
+            self.assertFalse(root.exists())
+
+    def test_ru_reset_requires_worker_and_rules_absent(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d)/"state";root.mkdir()
+            (root/"armed").write_bytes(b"armed")
+            fake=SimpleNamespace(returncode=0,stdout="MainPID=0\nActiveState=inactive\n")
+            with patch.object(ru,"ROOT",root),patch.object(ru,"table_exists",return_value=False),\
+                 patch.object(ru,"ready_worker",return_value=False),\
+                 patch.object(ru,"active",return_value=False),\
+                 patch.object(ru,"cmd",return_value=fake):
+                ru.reset()
+            self.assertFalse(root.exists())
+
     def test_ru_rollback_removes_redirect_before_stopping_worker(self):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d);(root/"armed").write_text("armed\n")
