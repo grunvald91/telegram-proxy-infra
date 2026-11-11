@@ -1,7 +1,7 @@
 name: Meta v26 independent DE/RU stage and rollback offline regression
 on:
-  push:
-    branches: [fix/meta-routing-quic-sni-validation]
+  pull_request:
+    branches: [audit/mnebydns-instagram-lite-20261111]
     paths:
       - '.github/workflows/meta-v26-two-server-offline.yml'
       - 'scripts/meta_v26_de_stage.py'
