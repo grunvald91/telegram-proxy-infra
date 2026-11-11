@@ -178,10 +178,10 @@ class V10Window20Review(unittest.TestCase):
         self.assertLess(source.index(marker),
                         source.index('command(["sysctl", "-w", "net.ipv4.tcp_window_scaling=0"]'))
 
-    def test_old_global_window20_workflow_is_disarmed_for_v11(self):
+    def test_v11_marker_triggers_only_route_only_workflow(self):
         workflow=(ROOT.parent / ".github/workflows/mnebydns-iglite-wifi-v10-onrequest.yml").read_text()
-        self.assertEqual(workflow.count("if: ${{ false }}"),2)
-        self.assertNotIn("if: ${{ true }}",workflow)
+        self.assertEqual(workflow.count("if: ${{ true }}"),2)
+        self.assertNotIn("if: ${{ false }}",workflow)
         self.assertIn("MNEBY_IGLITE_V11_ROUTE_ONLY_APPROVED=YES",workflow)
         self.assertIn("ops/mnebydns-iglite-v11-launch.marker",workflow)
         self.assertNotIn("'ops/mnebydns-iglite-wifi-v10-launch.marker'",workflow)
