@@ -1,0 +1,92 @@
+name: Meta v31 single approved 5-minute phone canary (one-shot)
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/meta-v31-one-shot-phone-20261111.yml']
+permissions:
+  contents: read
+concurrency:
+  group: mneby-meta-v30-single-phone-owner-experiment
+  cancel-in-progress: false
+jobs:
+  canary:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      RELAY89_SSH_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      SERVER188_SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 32768c49a0412d4d974e00d66fdb0be7cf17e1df
+          persist-credentials: false
+      - name: Verify immutable reviewed controller and explicit owner phone IP
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(git rev-parse HEAD)" = 32768c49a0412d4d974e00d66fdb0be7cf17e1df
+          test -n "$RELAY89_SSH_PASSWORD" && test -n "$SERVER188_SSH_PASSWORD"
+          python3 -m py_compile scripts/meta_v30_actions_adapter.py scripts/meta_v29_two_server_sequence.py
+          python3 -m unittest discover -s scripts/tests -p 'test_meta_v30_actions_adapter.py' -q
+          python3 scripts/meta_v30_actions_adapter.py --mode validate
+          if ! command -v sshpass >/dev/null; then
+            timeout 35s sudo apt-get -o Acquire::Retries=0 -o Acquire::http::Timeout=7 update -qq || true
+            timeout 55s sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+          fi
+      - name: Owner-confirmed 185.137.178.123 canary with unconditional recovery
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -u - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import signal
+          import sys
+          sys.path.insert(0,"scripts")
+          from meta_v30_actions_adapter import Remote
+          from meta_v29_two_server_sequence import Trial,checked_phone_ip
+
+          PHONE=checked_phone_ip("185.137.178.123")
+          SECONDS=300
+          def interrupt(signum,frame):
+              raise InterruptedError("owner canary canceled")
+          signal.signal(signal.SIGTERM,interrupt)
+          signal.signal(signal.SIGINT,interrupt)
+          adapter=Remote()
+          installed=[]
+          failure=None
+          try:
+              print("meta_v31_confirmed_peer="+PHONE,flush=True)
+              print("meta_v31_duration_seconds="+str(SECONDS),flush=True)
+              for role in ("de","ru"):
+                  adapter.preflight(role)
+                  print("meta_v31_"+role+"_readonly_preflight=PASS",flush=True)
+              for role in ("de","ru"):
+                  adapter.stage_files(role)
+                  installed.append(role)
+                  print("meta_v31_"+role+"_staged=true",flush=True)
+              Trial(adapter.run,adapter.active_window).run(PHONE,seconds=SECONDS)
+              print("meta_v31_ordered_teardown=PASS",flush=True)
+          except BaseException as exc:
+              failure=exc
+              print("meta_v31_trial_aborted_reason="+type(exc).__name__,flush=True)
+          try:
+              output=adapter.call("ru","journalctl -u mneby-meta-v26-ru-window.service --since '-10 minutes' --no-pager -o cat | grep '^meta_v15_proxy_' | tail -n 35 || true",timeout=25)
+              for line in output.splitlines():
+                  if line.startswith("meta_v15_proxy_"):print(line,flush=True)
+          except Exception:
+              print("meta_v31_ru_aggregate_stats=UNAVAILABLE",flush=True)
+          cleanup_errors=[]
+          for role in reversed(installed):
+              try:
+                  adapter.reset(role)
+                  print("meta_v31_"+role+"_reset=PASS",flush=True)
+              except BaseException as exc:
+                  cleanup_errors.append(role+":"+type(exc).__name__)
+                  print("meta_v31_"+role+"_reset=FAILED",flush=True)
+          if cleanup_errors:
+              raise RuntimeError("v31 cleanup requires intervention: "+",".join(cleanup_errors)) from failure
+          if failure:
+              raise RuntimeError("v31 trial failed, staged systems recovered") from failure
+          print("meta_v31_finished_and_both_servers_restored=true",flush=True)
+          print("meta_v31_android_login_feed=NOT_TESTED_BY_RUNNER",flush=True)
+          PY
