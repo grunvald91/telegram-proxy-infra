@@ -20,7 +20,7 @@ if not CONTROLLER.joinpath("peer").exists():
     show("state","NO_ACTIVE_PEER")
     raise SystemExit(0)
 peer=CONTROLLER.joinpath("peer").read_text().strip()
-if not re.fullmatch(r"(?:[0-9]{1,3}\\.){3}[0-9]{1,3}",peer):
+if not re.fullmatch(r"(?:[0-9]{1,3}\.){3}[0-9]{1,3}",peer):
     raise SystemExit("invalid peer state")
 
 # ss state enumeration is local only, no output addresses.
@@ -55,7 +55,7 @@ try:
         elif "Flags [S]" in line:counts["syn"]+=1
         elif "Flags [R" in line:counts["rst"]+=1
         else:counts["other"]+=1
-        m=re.search(r"length (\\d+)",line)
+        m=re.search(r"length (\d+)",line)
         if m and int(m.group(1))>0:
             counts["payload_packets"]+=1
             if int(m.group(1))<=8:counts["payload_up_to_8"]+=1
