@@ -1,0 +1,36 @@
+name: Meta v26 independent DE/RU stage and rollback offline regression
+on:
+  push:
+    branches: [fix/meta-routing-quic-sni-validation]
+    paths:
+      - '.github/workflows/meta-v26-two-server-offline.yml'
+      - 'scripts/meta_v26_de_stage.py'
+      - 'scripts/meta_v26_ru_stage.py'
+      - 'scripts/tests/test_meta_v26_staging_guards.py'
+      - 'scripts/meta_v25_source_view.py'
+      - 'scripts/meta_v23_ru_firsthop_preview.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: meta-v26-two-server-offline
+  cancel-in-progress: true
+jobs:
+  tested-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile both real staged controllers; test rollback fault cases
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/meta_v26_de_stage.py scripts/meta_v26_ru_stage.py
+          python3 -m unittest discover -s scripts/tests -p 'test_meta_v26_staging_guards.py' -v
+          python3 -m unittest discover -s scripts/tests -p 'test_meta_v25_source_view.py' -v
+          python3 -m unittest discover -s scripts/tests -p 'test_meta_v23_ru_firsthop_preview.py' -v
+          echo 'meta_v26_de_ru_rollback_regressions=PASS' >> "$GITHUB_STEP_SUMMARY"
+          echo 'meta_v26_live_servers_changed=false' >> "$GITHUB_STEP_SUMMARY"
+          echo 'meta_v26_android_working=NOT_PROVEN' >> "$GITHUB_STEP_SUMMARY"
