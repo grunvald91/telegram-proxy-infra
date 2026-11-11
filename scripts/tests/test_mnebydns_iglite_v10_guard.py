@@ -183,6 +183,9 @@ class V10Window20Review(unittest.TestCase):
         self.assertIn("REVIEW BLOCKER: no persistent reboot-safe recovery unit yet",workflow)
         self.assertIn("timeout-minutes: 18",workflow)
         self.assertIn("for attempt in range(500)",workflow)
+        self.assertIn("/var/lib/mneby-iglite-wifi-de-20261111-v10/ready_epoch",workflow)
+        self.assertNotIn("/run/mneby-iglite-wifi-de-20261111-v10/ready_epoch",workflow)
+        self.assertIn("/usr/local/libexec/mneby-iglite-v10/",workflow)
 
     def test_observer_reports_not_phone_attribution(self):
         src=inspect.getsource(self.v.observe_wifi_tcp_headers)
