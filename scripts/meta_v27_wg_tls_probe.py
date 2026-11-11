@@ -52,8 +52,8 @@ def run_server() -> None:
         with socket.create_connection((targets[lite], 443), timeout=5) as sock:
             sock.settimeout(5)
             with ssl.create_default_context().wrap_socket(sock, server_hostname=lite) as tls:
-                tls.sendall(("GET / HTTP/1.1\\r\\nHost: " + lite +
-                             "\\r\\nConnection: close\\r\\nUser-Agent: MNEBY-test\\r\\n\\r\\n").encode("ascii"))
+                tls.sendall(("GET / HTTP/1.1\r\nHost: " + lite +
+                             "\r\nConnection: close\r\nUser-Agent: MNEBY-test\r\n\r\n").encode("ascii"))
                 direct = str(len(tls.recv(1024)))
     except (socket.timeout, TimeoutError):
         direct = "TIMEOUT"
