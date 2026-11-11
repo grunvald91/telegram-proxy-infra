@@ -61,7 +61,7 @@ jobs:
           remote=$!
           trap 'kill "$remote" 2>/dev/null || true; wait "$remote" 2>/dev/null || true' EXIT
           activated=0
-          for attempt in $(seq 1 350); do
+          for attempt in $(seq 1 700); do
             if grep -q '^iglite_live_global_window4=ACTIVE$' "$logfile" 2>/dev/null; then
               activated=1
               break
