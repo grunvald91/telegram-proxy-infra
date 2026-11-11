@@ -22,6 +22,57 @@ base.UNIT = "mneby-ig-lite-route-only-20261111-v11"
 base.TABLE = "mneby_ig_lite_route_only_20261111_v11"
 base.PERSISTENT_STAGE = Path("/usr/local/libexec/mneby-iglite-v11")
 
+def rollback():
+    """Restore only the exact DNS/Nginx files owned by v11.
+    Never write kernel TCP sysctls or nftables, even during failure recovery.
+    """
+    root=base.ROOT
+    if not root.is_dir() or not (root/base.MUTATION_MARKER).is_file():
+        print("iglite_v11_rollback=NO_MUTATION",flush=True)
+        return
+    failures=[]
+    originals={}
+    for key,path in (("core",base.CORE),("nginx",base.NGINX)):
+        original=root/(key+".original")
+        candidate=root/(key+".candidate")
+        if not original.is_file() or not candidate.is_file():
+            failures.append(key+"_backup_missing")
+            continue
+        old=original.read_bytes()
+        now=path.read_bytes()
+        if now not in (old,candidate.read_bytes()):
+            failures.append(key+"_external_drift")
+            continue
+        originals[key]=old
+        if now!=old:
+            try:base.atomic_replace(path,old)
+            except Exception:failures.append(key+"_restore")
+    if failures:
+        print("iglite_v11_rollback=FAILED_"+",".join(failures),flush=True)
+        raise RuntimeError("v11 config restoration incomplete")
+    for cmd in (["nginx","-t"],
+                ["systemctl","reload","nginx.service"],
+                ["systemctl","restart","mnebydns-dot.service"]):
+        try:base.command(cmd,timeout=30)
+        except Exception:failures.append(cmd[0]+"_health")
+    restored=(base.NGINX.read_bytes()==originals["nginx"]
+              and base.CORE.read_bytes()==originals["core"])
+    for service in ("nginx.service","mnebydns-dot.service"):
+        if base.command(["systemctl","is-active","--quiet",service],
+                        check=False).returncode!=0:
+            failures.append(service+"_inactive")
+    # Explicitly audit network state but never change any kernel setting.
+    if base.WSFILE.read_text().strip()!="1":
+        failures.append("tcp_scaling_drift_external")
+    if base.command(["nft","list","table","inet",base.TABLE],
+                    check=False).returncode==0:
+        failures.append("unexpected_v11_nft_table")
+    if failures or not restored:
+        print("iglite_v11_rollback=FAILED_"+",".join(failures),flush=True)
+        raise RuntimeError("v11 recovery verification failed")
+    print("iglite_v11_rollback=VERIFIED_CONFIGS_AND_SERVICES_NO_TCP_WRITES",flush=True)
+
+
 def live():
     if os.environ.get("MNEBY_IGLITE_V11_ROUTE_ONLY_APPROVED") != "YES":
         raise RuntimeError("Owner must explicitly approve route-only v11")
@@ -112,13 +163,13 @@ def live():
         if base.WSFILE.read_text().strip()!="1":
             raise RuntimeError("TCP scaling changed unexpectedly")
     finally:
-        base.rollback()
+        rollback()
     print("iglite_v11_end_to_end_android=NOT_PROVEN",flush=True)
 
 if __name__=="__main__":
     if len(sys.argv)!=2 or sys.argv[1] not in ("live","rollback"):
         raise SystemExit("Usage: route_only_v11.py live|rollback")
     if sys.argv[1]=="rollback":
-        base.rollback()
+        rollback()
     else:
         live()
