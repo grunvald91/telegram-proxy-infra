@@ -90,10 +90,23 @@ def baseline():
                 "mneby_ig_lite_w4_20261111"],
                check=False).returncode == 0:
         raise RuntimeError("Earlier experiment still has active nft table")
-    if command(["systemctl", "is-active", "--quiet",
-                "mneby-ig-lite-short-20261111-v2.timer"],
-               check=False).returncode == 0:
-        raise RuntimeError("V2 rollback watchdog still active; refuse overlapping test")
+    # Never terminate an older independent timer to force a new trial.
+    # Wait until BOTH its timer and rollback service are no longer running.
+    v2unit = "mneby-ig-lite-short-20261111-v2"
+    for tick in range(76):
+        in_flight = any(
+            command(["systemctl", "is-active", "--quiet", v2unit + suffix],
+                    check=False).returncode == 0
+            for suffix in (".timer", ".service")
+        )
+        if not in_flight:
+            break
+        if tick == 0:
+            print("iglite_wait_previous_rollback=ACTIVE_WILL_WAIT", flush=True)
+        time.sleep(2)
+    else:
+        raise RuntimeError("V2 rollback watchdog did not finish; new test blocked")
+    print("iglite_previous_rollback_watchdog_finished=true", flush=True)
     if command(["nft", "list", "table", "inet",
                 "mneby_ig_lite_w4_20261111_v2"],
                check=False).returncode == 0:
