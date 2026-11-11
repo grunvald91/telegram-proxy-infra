@@ -44,7 +44,7 @@ jobs:
             -o HostKeyAlgorithms=ssh-ed25519
             -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
             -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
-          tar -C scripts -cf - mnebydns_iglite_wifi_de_temp_route_v6.py mnebydns-owner-domain-render-20261110.py mnebydns_iglite_dns_wire_checks.py |
+          tar -C scripts -cf - mnebydns_iglite_wifi_multi_meta_v7.py mnebydns-owner-domain-render-20261110.py mnebydns_iglite_dns_wire_checks.py |
             sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
               'umask 077; mkdir -p -m 700 /run/mneby-iglite-stage-20261111-v7; tar -xf - -C /run/mneby-iglite-stage-20261111-v7'
       - name: Test 15-min Wi-Fi multi-Meta TCP Window4 and record header sizes with rollback
@@ -58,7 +58,7 @@ jobs:
             -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
           logfile="$RUNNER_TEMP/iglite-de-live.log"
           timeout 1430s sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
-             'MNEBY_IGLITE_LIVE_APPROVED=YES python3 /run/mneby-iglite-stage-20261111-v7/mnebydns_iglite_wifi_de_temp_route_v6.py live' \
+             'MNEBY_IGLITE_LIVE_APPROVED=YES python3 /run/mneby-iglite-stage-20261111-v7/mnebydns_iglite_wifi_multi_meta_v7.py live' \
              > "$logfile" 2>&1 &
           remote=$!
           trap 'kill "$remote" 2>/dev/null || true; wait "$remote" 2>/dev/null || true' EXIT
