@@ -8,6 +8,7 @@ from pathlib import Path
 import meta_v26_de_stage as de
 import meta_v26_ru_stage as ru
 from meta_v25_source_view import render
+from meta_v25_view_runtime_smoke import run as verify_core_view_runtime
 from meta_v23_ru_firsthop_preview import HOSTS,load_renderer
 
 def audit_de():
@@ -19,6 +20,9 @@ def audit_de():
     plan=render(corefile=live_dns,phone_ip="8.8.8.8",
                 compiled_plugins=de.compiled_plugins())
     plan.verify_rollback()
+    # Real running CoreDNS binary, isolated loopback clients; no service writes.
+    # This is not a real DoT phone-source test and must not be reported as such.
+    verify_core_view_runtime()
     owner=load_renderer()
     mapping={}
     nginx=live_ng
@@ -38,7 +42,9 @@ def audit_de():
         de.cmd(["nginx","-t","-c",str(path)],timeout=25)
     print("meta_v26_de_live_preflight=PASS",flush=True)
     print("meta_v26_de_exact_tls_verified_origin_count="+str(len(mapping)),flush=True)
-    print("meta_v26_de_client_view_ready=true",flush=True)
+    print("meta_v26_de_source_view_rendered=true",flush=True)
+    print("meta_v26_de_loopback_source_split=PASS",flush=True)
+    print("meta_v26_de_android_dot_source_split=NOT_TESTED",flush=True)
     print("meta_v26_de_nginx_candidate_syntax=PASS",flush=True)
     print("meta_v26_de_no_prod_writes=true",flush=True)
 
