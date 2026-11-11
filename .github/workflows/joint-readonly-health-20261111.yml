@@ -1,0 +1,169 @@
+name: Joint read-only DNS VPN Telegram proxy health 2026-11-11
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/joint-readonly-health-20261111.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: joint-readonly-health-20261111
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: External DoT, HTTPS, and TCP probe (no server changes)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import socket, ssl, struct, time, urllib.request
+          print('DIAG_UTC='+time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),flush=True)
+          for host,port in [('89.125.90.101',853),('188.120.254.223',443),('89.125.90.101',443),('188.120.254.223',8443)]:
+              try:
+                  with socket.create_connection((host,port),timeout=5) as s: pass
+                  print('TCP_REACH='+host+':'+str(port)+':PASS',flush=True)
+              except Exception as ex:
+                  print('TCP_REACH='+host+':'+str(port)+':FAIL:'+type(ex).__name__,flush=True)
+          def recv_exact(s,n):
+              buf=b''
+              while len(buf)<n:
+                  part=s.recv(n-len(buf))
+                  if not part:raise EOFError()
+                  buf+=part
+              return buf
+          def query(host):
+              question=b''.join(bytes([len(x)])+x.encode('ascii') for x in host.split('.'))+b'\x00'+struct.pack('!HH',1,1)
+              packet=struct.pack('!HHHHHH',0x7231,0x0100,1,0,0,0)+question
+              with socket.create_connection(('89.125.90.101',853),timeout=6) as sock:
+                  sock.settimeout(6)
+                  with ssl.create_default_context().wrap_socket(sock,server_hostname='dns.mnebyvpn.site') as tls:
+                      tls.sendall(struct.pack('!H',len(packet))+packet)
+                      length=struct.unpack('!H',recv_exact(tls,2))[0]
+                      response=recv_exact(tls,length)
+              transaction,flags,qd,an,ns,ar=struct.unpack('!HHHHHH',response[:12])
+              if transaction!=0x7231:raise ValueError('txid_mismatch')
+              offset=12
+              def skip_name(k):
+                  for _ in range(128):
+                      length=response[k]
+                      if length&0xc0==0xc0:return k+2
+                      if length==0:return k+1
+                      k+=length+1
+                  raise ValueError('bad_name')
+              for i in range(qd): offset=skip_name(offset)+4
+              ips=[]
+              for i in range(an):
+                  offset=skip_name(offset)
+                  typ,cls,ttl,rdlen=struct.unpack('!HHIH',response[offset:offset+10]);offset+=10
+                  if typ==1 and cls==1 and rdlen==4:ips.append(socket.inet_ntoa(response[offset:offset+4]))
+                  offset+=rdlen
+              return flags&15,ips
+          for host in ('claude.ai','antigravity.google','instagram.com','www.tiktok.com','example.org'):
+              try:
+                  rcode,ips=query(host)
+                  print('DOT_QUERY='+host+' rcode='+str(rcode)+' A='+','.join(ips[:6]),flush=True)
+              except Exception as ex:
+                  print('DOT_QUERY='+host+' ERROR='+type(ex).__name__,flush=True)
+          for url in ('https://mnebyvpn.site/','https://dns.mnebyvpn.site/'):
+              try:
+                  with urllib.request.urlopen(urllib.request.Request(url,headers={'User-Agent':'MNEBYVPN-read-only-health'}),timeout=8) as r:
+                      print('HTTPS='+url+' status='+str(r.status),flush=True)
+              except Exception as ex:
+                  print('HTTPS='+url+' ERROR='+type(ex).__name__,flush=True)
+          PY
+      - name: Read-only SSH service and config inventory of both nodes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass >/dev/null
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          audit_remote() {
+            local role="$1" host="$2"
+            export SSHPASS="$3"
+            sshpass -e ssh -o ConnectTimeout=12 -o ServerAliveInterval=9 -o ServerAliveCountMax=1 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no "root@$host" "python3 - '$role'" <<'PY'
+          import sys,os,re,time,subprocess,socket,pathlib
+          role=sys.argv[1]
+          def call(cmd,timeout=7):
+              try:
+                  p=subprocess.run(cmd,text=True,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=timeout)
+                  return p.returncode,p.stdout.strip()
+              except Exception:return 255,''
+          def out(k,v):print(role+'_'+k+'='+str(v),flush=True)
+          out('CLOCK_EPOCH',int(time.time()))
+          out('UPTIME_SECONDS',round(float(pathlib.Path('/proc/uptime').read_text().split()[0])))
+          out('LOAD_1',pathlib.Path('/proc/loadavg').read_text().split()[0])
+          mem=pathlib.Path('/proc/meminfo').read_text()
+          vals={k:int(v) for k,v in re.findall(r'^(MemTotal|MemAvailable|SwapFree):\s+(\d+)',mem,re.M)}
+          out('MEM_AVAILABLE_PCT',round(100*vals.get('MemAvailable',0)/max(1,vals.get('MemTotal',1)),1))
+          rc,s=call(['df','-P','/']);line=s.splitlines()
+          if len(line)>1:out('ROOT_DISK_USE',line[-1].split()[4])
+          rc,units=call(['systemctl','list-units','--type=service','--all','--no-legend','--no-pager','--plain'],12)
+          allow=('nginx','xray','remnawave','mtproxy','telemt','mtg','mnebydns','wg-quick','relay89','telegram','mnebyvpn')
+          names=[]
+          for line in units.splitlines():
+              unit=line.split()[0] if line.split() else ''
+              if unit.endswith('.service') and unit.lower().startswith(allow) and unit not in names:names.append(unit)
+          for name in sorted(names)[:45]:
+              rc,props=call(['systemctl','show',name,'-p','ActiveState','-p','SubState','-p','NRestarts','-p','Result','--no-pager'])
+              d=dict(line.split('=',1) for line in props.splitlines() if '=' in line)
+              out('UNIT_'+name,','.join(d.get(k,'?') for k in ('ActiveState','SubState','NRestarts','Result')))
+          for name in ('nginx','mnebydns-dot.service','mnebydns-googlepilot.service','xray.service','mtproxy.service','mtproxy-ru.service'):
+              rc,logs=call(['journalctl','-u',name,'--since','-30 minutes','-n','100','--no-pager','-o','cat'],8)
+              if rc==0:
+                  out('LOG_'+name+'_lines',len(logs.splitlines()))
+                  out('LOG_'+name+'_errors',len(re.findall(r'fail|error|refused|timeout|panic|killed|restart',logs,re.I)))
+          rc,lint=call(['nginx','-t'],9);out('NGINX_CONFIG_OK',rc==0)
+          for path in ('/opt/mnebydns-dot/Corefile','/etc/nginx/nginx.conf','/etc/mnebydns-googlepilot/nginx.conf'):
+              p=pathlib.Path(path)
+              if p.exists():
+                  out('CONFIG_'+p.name+'_AGE_SEC',int(time.time()-p.stat().st_mtime))
+          if role=='DE':
+              current=pathlib.Path('/opt/mnebydns-stable-checkpoints/current')
+              if current.exists():
+                  base=pathlib.Path(current.read_text().strip())
+                  for label,a,b in (('DNS',base/'dns.stable',pathlib.Path('/opt/mnebydns-dot/Corefile')),
+                                    ('NGINX',base/'nginx.stable',pathlib.Path('/etc/nginx/nginx.conf')),
+                                    ('PILOT',base/'proxy.stable',pathlib.Path('/etc/mnebydns-googlepilot/nginx.conf'))):
+                      out('STABLE_'+label+'_MATCH',a.exists() and b.exists() and a.read_bytes()==b.read_bytes())
+                  rc,ck=call(['sha256sum','-c','stable-manifest.sha256'],8) if False else (0,'')
+              out('OWNER_ROLLBACK_TIMER_FILES',len(list(pathlib.Path('/etc/systemd/system').glob('mnebydns-owner-rollback-*.timer'))))
+              out('OWNER_PILOT_DIRS',len(list(pathlib.Path('/opt/mnebydns-owner-domain').glob('[0-9]*'))) if pathlib.Path('/opt/mnebydns-owner-domain').exists() else 0)
+          for name in ('nf_conntrack_count','nf_conntrack_max'):
+              p=pathlib.Path('/proc/sys/net/netfilter')/name
+              if p.exists():out(name,p.read_text().strip())
+          rc,ss=call(['ss','-lntH'],8)
+          for port in (443,853,8443,2052,2086,8089,9443,9470,2053):
+              out('TCP_LISTEN_'+str(port),bool(re.search(r':'+str(port)+r'\s',ss)))
+          rc,wg=call(['wg','show','all','latest-handshakes'],7)
+          if rc==0:
+              stamps=[]
+              for line in wg.splitlines():
+                  try:
+                      v=int(line.split()[-1])
+                      if v>0:stamps.append(int(time.time())-v)
+                  except Exception:pass
+              out('WG_PEERS_WITH_HANDSHAKE',len(stamps))
+              out('WG_NEWEST_HANDSHAKE_AGE_SEC',min(stamps) if stamps else 'none')
+          rc,sync=call(['timedatectl','show','-p','NTPSynchronized','--value'],6);out('NTP_SYNCED',sync if rc==0 else 'unknown')
+          for url in ('https://api.telegram.org/','https://www.google.com/generate_204'):
+              rc,status=call(['curl','-4','-LsS','--connect-timeout','3','--max-time','7','-o','/dev/null','-w','%{http_code}',url],9)
+              out('OUTBOUND_'+('TELEGRAM' if 'telegram' in url else 'GOOGLE'),status if rc==0 else 'CONNECT_FAIL')
+          if role=='RU':
+              rc,ping=call(['ping','-c','2','-W','2','10.66.77.1'],7)
+              out('RU_TO_WG_PEER_ICMP',rc==0)
+          out('READ_ONLY_COMPLETE',True)
+          PY
+          }
+          audit_remote RU 188.120.254.223 "$RU_PASS"
+          audit_remote DE 89.125.90.101 "$DE_PASS"
+          echo 'JOINT_DIAG_FINISHED=true'
