@@ -359,6 +359,12 @@ def observe_wifi_tcp_headers(seconds):
     print("iglite_wifi_android_peer_identified=false", flush=True)
     print("iglite_wifi_sni_byte_split=NOT_PROVEN_BY_HEADER_CAPTURE", flush=True)
     print("iglite_wifi_header_metric_cannot_identify_phone=true", flush=True)
+    sufficient = (counters["outbound_synack_window4"] > 0
+                  and counters["inbound_syn"] > 0
+                  and counters["inbound_data_segments"] > 0)
+    print("iglite_wifi_transport_observation_valid=" + str(sufficient).lower(), flush=True)
+    if not sufficient:
+        raise RuntimeError("Missing real Window4 SYNACK/client data: trial inconclusive")
 
 def live():
     originals = baseline()
@@ -447,8 +453,13 @@ def live():
         print("iglite_live_global_window4=ACTIVE", flush=True)
         observe_wifi_tcp_headers(TRIAL_SECONDS)
         snapshot=command(["nft", "-a", "list", "table", "inet", TABLE]).stdout
-        match=re.search(r"counter packets (\d+)", snapshot)
-        print("iglite_live_window4_synacks=" + (match.group(1) if match else "UNKNOWN"), flush=True)
+        matches = re.findall(r"counter packets (\d+)", snapshot)
+        if len(matches) != 2:
+            raise RuntimeError("Expected exactly two test-owned nft counters")
+        print("iglite_live_window4_synacks=" + matches[0], flush=True)
+        print("iglite_live_synack_preserve_mark_hits=" + matches[1], flush=True)
+        if int(matches[0]) == 0 or int(matches[1]) == 0:
+            raise RuntimeError("Window4 and NFQUEUE bypass were not both observed")
     finally:
         rollback()
     print("iglite_end_to_end_android=NOT_TESTED", flush=True)
