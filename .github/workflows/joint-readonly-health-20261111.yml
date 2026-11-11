@@ -1,3 +1,4 @@
+# 2026-11-11 22:07 MSK: owner-requested read-only refresh after Microsoft DNS route changes; no server state edits.
 name: Joint read-only DNS VPN Telegram proxy health 2026-11-11
 on:
   push:
