@@ -107,6 +107,9 @@ class Flow:
         self.buf=bytearray(LIMIT)
         self.covered=bytearray(LIMIT)
         self.ranges=set()
+        # A truncated capture does not reveal the actual TCP segment boundary.
+        # Such a flow cannot be classified as SNI-split or unsplit reliably.
+        self.segment_boundary_unknown=False
         self.finished=False
     def feed(self,seq,payload,wire_len):
         offset=(seq-self.start)&0xffffffff
@@ -121,8 +124,11 @@ class Flow:
                 fresh=True
         # Exclude purely redundant retransmissions: otherwise an initially
         # intact hostname could be falsely reported as split on retry.
+        if fresh and wire_len != len(payload):
+            self.segment_boundary_unknown=True
         if fresh and wire_len>0:
-            self.ranges.add((offset,offset+wire_len))
+            # Never infer a captured segment boundary past captured bytes.
+            self.ranges.add((offset,offset+min(wire_len,len(payload))))
     def contiguous_prefix(self):
         n=0
         while n<LIMIT and self.covered[n]:n+=1
@@ -179,10 +185,15 @@ class Analyzer:
                 if len(self.uncovered_meta)<40:
                     self.uncovered_meta.add(host)
             return
-        split=any(begin<b<end for a,b in flow.ranges)
         self.stats['target_clienthello']+=1
-        self.stats['sni_split' if split else 'sni_unsplit']+=1
         self.host_counts[host]+=1
+        if flow.segment_boundary_unknown:
+            # The bytes may be reconstructed using retransmissions, but the
+            # actual segment boundary was not fully observed. Fail closed.
+            self.stats['sni_boundary_indeterminate']+=1
+            return
+        split=any(begin<b<end for a,b in flow.ranges)
+        self.stats['sni_split' if split else 'sni_unsplit']+=1
         if ip not in self.peer_index:
             self.peer_index[ip]=len(self.peer_index)+1
         if len(self.events)<512:
@@ -262,8 +273,10 @@ def parse_pcap(stream,analyzer,ready=None):
         raise ValueError('expected classic Ethernet PCAP')
     if ready:ready.set()
     while True:
-        try: rec=read_exact(stream,16)
-        except EOFError:break
+        # EOF at a record boundary is valid; 1..15 trailing bytes are not.
+        first=stream.read(1)
+        if not first:break
+        rec=first+read_exact(stream,15)
         sec,_fraction,cap,wire=struct.unpack(end+'IIII',rec)
         if cap>PACKET_LIMIT or cap>wire:raise ValueError('unexpected PCAP record')
         analyzer.ethernet(read_exact(stream,cap),timestamp=sec)
@@ -301,7 +314,7 @@ def finish(process,thread,analyzer,failures):
     return analyzer
 
 def summary(a):
-    for name in ('syn','target_clienthello','sni_split','sni_unsplit','no_sni','other_sni','evictions','payload_without_syn'):
+    for name in ('syn','target_clienthello','sni_split','sni_unsplit','sni_boundary_indeterminate','no_sni','other_sni','evictions','payload_without_syn'):
         print('iglite_sni_'+name+'='+str(a.stats[name]),flush=True)
     pending=a.incomplete_diagnostics()
     for kind in ('syn_without_payload','prefix_gap_after_syn','tls_header_incomplete',
