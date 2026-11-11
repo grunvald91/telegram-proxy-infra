@@ -14,7 +14,7 @@ import ipaddress
 RU="188.120.254.223"
 DE="89.125.90.101"
 SECONDS=900
-MAX_SECONDS=900
+MAX_SECONDS=1800
 SETUP=(("de","stage"),("ru","start"),("de","enable-dns"))
 CLEANUP=(("de","disable-dns"),("ru","rollback"),("de","rollback"))
 
@@ -43,7 +43,7 @@ class Trial:
     def run(self, peer: str, *, seconds: int = SECONDS) -> None:
         peer=checked_phone_ip(peer)
         if type(seconds) is not int or not 1<=seconds<=MAX_SECONDS:
-            raise ValueError("test must end within 900 seconds")
+            raise ValueError("test must end within 1800 seconds")
         primary=None
         cleanup_failures=[]
         try:
