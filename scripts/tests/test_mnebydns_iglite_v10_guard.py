@@ -198,7 +198,7 @@ class V10Window20Review(unittest.TestCase):
         self.assertIn('command(["systemd-run"',run)
         self.assertIn('if command(["systemctl", "is-active", "--quiet", UNIT + ".timer"]',run)
         self.assertIn("remaining_watchdog < TRIAL_SECONDS + MIN_ROLLBACK_MARGIN",run)
-        self.assertIn("finally:\\n        rollback()",run)
+        self.assertIn("finally:\n        rollback()",run)
 
     def test_observer_reports_not_phone_attribution(self):
         src=inspect.getsource(self.v.observe_wifi_tcp_headers)
