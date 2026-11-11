@@ -1,0 +1,75 @@
+#!/usr/bin/env python3
+"""Offline guards for v10 test. No production network, sysctl, or nft writes."""
+import importlib.util
+import inspect
+from pathlib import Path
+import unittest
+
+ROOT=Path(__file__).resolve().parents[1]
+
+def candidate():
+    p=ROOT/"mnebydns_iglite_wifi_multi_meta_v10_w20.py"
+    spec=importlib.util.spec_from_file_location("v10_readonly",p)
+    module=importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+class V10Window20Review(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.v=candidate()
+
+    def test_exact_hosts_and_boundaries(self):
+        v=self.v
+        self.assertEqual(len(v.HOSTS),11)
+        self.assertEqual(len(set(v.HOSTS)),11)
+        self.assertIn("iglite-z.instagram.com",v.HOSTS)
+        self.assertIn("i.instagram.com",v.HOSTS)
+        self.assertEqual(v.TEST_WINDOW,20)
+        self.assertEqual(v.FIRST_CLIENT_PACKETS,16)
+        self.assertEqual(v.TRIAL_SECONDS,900)
+        self.assertEqual(v.WATCHDOG_SECONDS,1200)
+
+    def test_nft_ack_window_and_mark_have_same_per_flow_cutoff(self):
+        rules=self.v.nft_rules()
+        self.assertEqual(rules.count("ct original packets < 16"),2)
+        self.assertEqual(rules.count("tcp sport 443"),2)
+        self.assertIn("tcp flags & ack == ack counter tcp window set 20",rules)
+        self.assertIn("tcp flags & ack == ack meta mark set meta mark | 0x40000000",rules)
+        self.assertNotIn("flush ruleset",rules)
+        self.assertNotIn("delete table",rules)
+        self.assertIn('oifname "eth0"',rules)
+
+    def test_baseline_requires_ws_on_prior_to_any_change(self):
+        src=inspect.getsource(self.v.baseline)
+        self.assertIn('WSFILE.read_text().strip() != "1"',src)
+        self.assertIn("Prior rollback timer active",src)
+        self.assertIn("Live baseline diverged from stable checkpoint",src)
+
+    def test_restore_kernel_and_original_live_files(self):
+        src=inspect.getsource(self.v.rollback)
+        self.assertIn("tcp_window_scaling.original",src)
+        self.assertIn("net.ipv4.tcp_window_scaling=",src)
+        self.assertIn("WSFILE.read_text().strip() == original_ws",src)
+        self.assertIn("NGINX.read_bytes()",src)
+        self.assertIn("CORE.read_bytes()",src)
+
+    def test_guarded_watchdog_before_temporary_ws_change(self):
+        src=inspect.getsource(self.v.live)
+        self.assertLess(src.index('write_exclusive(ROOT / "tcp_window_scaling.original"'),
+                        src.index('command(["systemd-run"'))
+        self.assertLess(src.index('command(["systemd-run"'),
+                        src.index('command(["sysctl", "-w", "net.ipv4.tcp_window_scaling=0"]'))
+        self.assertIn("remaining_watchdog < TRIAL_SECONDS + MIN_ROLLBACK_MARGIN",src)
+        self.assertIn("finally:\n        rollback()",src)
+
+    def test_observer_reports_not_phone_attribution(self):
+        src=inspect.getsource(self.v.observe_wifi_tcp_headers)
+        self.assertIn("iglite_wifi_android_peer_identified=false",src)
+        self.assertIn("iglite_wifi_sni_byte_split=NOT_PROVEN_BY_HEADER_CAPTURE",src)
+        self.assertIn("iglite_wifi_15min_window=READY",src)
+        self.assertIn("outbound_synack_window20",src)
+        self.assertIn("iglite_wifi_pcap_persisted=false",src)
+
+if __name__=="__main__":
+    unittest.main()
