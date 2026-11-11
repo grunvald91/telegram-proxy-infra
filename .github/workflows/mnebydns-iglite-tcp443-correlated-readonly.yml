@@ -1,4 +1,4 @@
-name: MNEBYDNS Instagram Lite TCP443 passive egress correlation (read only)
+name: MNEBYDNS Instagram Lite NFQUEUE210 kernel health (read only)
 on:
   push:
     branches: [audit/mnebydns-instagram-lite-20261111]
@@ -23,8 +23,8 @@ jobs:
         run: |
           set -Eeuo pipefail
           test -n "$DE_PASS"
-          python3 -m py_compile scripts/mnebydns_ig_tcp443_passive_correlate.py
-          python3 scripts/mnebydns_ig_tcp443_passive_correlate.py self-test
+          python3 -m py_compile scripts/mnebydns_iglite_q210_readonly_health.py
+          python3 scripts/mnebydns_iglite_q210_readonly_health.py self-test
       - name: Prepare host-key-pinned SSH
         run: |
           set -Eeuo pipefail
@@ -41,13 +41,13 @@ jobs:
             -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
           logfile="$RUNNER_TEMP/iglite-correlated-readonly.log"
           timeout 38s sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
-            'python3 -u -' < scripts/mnebydns_ig_tcp443_passive_correlate.py \
+            'python3 -u -' < scripts/mnebydns_iglite_q210_readonly_health.py \
             > "$logfile" 2>&1 &
           observer=$!
           trap 'kill "$observer" 2>/dev/null || true; wait "$observer" 2>/dev/null || true' EXIT
           ready=0
           for attempt in $(seq 1 120); do
-            if grep -Fqx 'passive_observer=READY' "$logfile" 2>/dev/null;then ready=1;break;fi
+            if grep -Fqx 'q210_readonly_observer=READY' "$logfile" 2>/dev/null;then ready=1;break;fi
             kill -0 "$observer" 2>/dev/null || break
             sleep 0.1
           done
@@ -72,8 +72,10 @@ jobs:
           trap - EXIT
           cat "$logfile"
           test "$rc" -eq 0
-          grep -Fqx 'passive_packet_payload_recorded=false' "$logfile"
-          grep -Fqx 'passive_changes_to_server=NONE' "$logfile"
-          grep -q '^passive_q210_total_delta=' "$logfile"
-          grep -q '^passive_distinct_sources=' "$logfile"
+          grep -Fqx 'q210_packet_payload_logged=false' "$logfile"
+          grep -Fqx 'q210_server_changes=NONE' "$logfile"
+          grep -q '^q210_runtime_dropped_delta=' "$logfile"
+          grep -q '^q210_runtime_user_dropped_delta=' "$logfile"
+          grep -q '^q210_tcp_peer_syn=' "$logfile"
+          grep -q '^q210_tcp_peer_synack=' "$logfile"
           echo 'readonly_no_server_mutation=true'
