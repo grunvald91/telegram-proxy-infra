@@ -15,6 +15,7 @@ import json
 import os
 from pathlib import Path
 import re
+import socket
 import subprocess
 import time
 
@@ -79,6 +80,20 @@ def ready_worker():
                re.search(r"\bpid="+str(pid)+r"[,)]",x)
                for x in ss.splitlines())
 
+def verify_non_meta_fallback():
+    """RU must reach its original public :443 from the receiver itself.
+
+    An ss listener alone is insufficient: a daemon can bind only loopback
+    while non-Meta traffic is forwarded to RU_EDGE:443 by the test proxy.
+    This TCP-only probe does not assert any hostname-specific TLS service.
+    """
+    try:
+        with socket.create_connection((RU_EDGE, 443), timeout=4):
+            pass
+    except OSError as exc:
+        raise RuntimeError("RU own public HTTPS fallback is unreachable") from exc
+
+
 def baseline(peer):
     if not active("wg-quick@tg-relay.service"):
         raise RuntimeError("RU private WireGuard service inactive")
@@ -93,6 +108,7 @@ def baseline(peer):
         raise RuntimeError("normal TCP window scaling unavailable")
     if not cmd(["ss","-H","-lnt","sport","=",":443"]).stdout.strip():
         raise RuntimeError("RU original HTTPS backend is not listening")
+    verify_non_meta_fallback()
     if cmd(["ss","-H","-lnt","sport","=",":"+str(TEST_PORT)]).stdout.strip():
         raise RuntimeError("RU dedicated test listener occupied")
     if ROOT.exists() or table_exists():
