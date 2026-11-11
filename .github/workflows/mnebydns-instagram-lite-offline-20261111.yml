@@ -12,6 +12,9 @@ on:
       - 'scripts/tests/integration_mnebydns_ig_de_nft_win4_netns.sh'
       - 'scripts/tests/test_mnebydns_iglite_route_preview.py'
       - 'scripts/mnebydns_iglite_wifi_multi_meta_v8_review.py'
+      - 'scripts/mnebydns_iglite_wifi_multi_meta_v9_sni.py'
+      - 'scripts/mnebydns_iglite_sni_observer.py'
+      - 'scripts/tests/test_mnebydns_iglite_sni_observer.py'
       - 'scripts/tests/test_mnebydns_iglite_wifi_multi_meta_review.py'
       - 'scripts/tests/integration_mnebydns_iglite_nginx_core_regex.sh'
 permissions:
@@ -30,6 +33,8 @@ jobs:
           python3 -m py_compile scripts/mnebydns_iglite_route_render_20261111.py
           python3 -m py_compile scripts/mnebydns_iglite_de_temp_route.py
           python3 -m py_compile scripts/mnebydns_iglite_wifi_multi_meta_v8_review.py
+          python3 -m py_compile scripts/mnebydns_iglite_wifi_multi_meta_v9_sni.py scripts/mnebydns_iglite_sni_observer.py
+          python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_iglite_sni_observer.py' -v
           python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_iglite_wifi_multi_meta_review.py' -v
           python3 scripts/mnebydns-owner-domain-render-20261110.py self-test
           python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_iglite_route_preview.py' -v
