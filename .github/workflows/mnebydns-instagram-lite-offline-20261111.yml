@@ -11,6 +11,8 @@ on:
       - 'scripts/tests/mnebydns_ig_de_nft_netns_probe.py'
       - 'scripts/tests/integration_mnebydns_ig_de_nft_win4_netns.sh'
       - 'scripts/tests/test_mnebydns_iglite_route_preview.py'
+      - 'scripts/mnebydns_iglite_wifi_multi_meta_v8_review.py'
+      - 'scripts/tests/test_mnebydns_iglite_wifi_multi_meta_review.py'
       - 'scripts/tests/integration_mnebydns_iglite_nginx_core_regex.sh'
 permissions:
   contents: read
@@ -27,6 +29,8 @@ jobs:
           set -Eeuo pipefail
           python3 -m py_compile scripts/mnebydns_iglite_route_render_20261111.py
           python3 -m py_compile scripts/mnebydns_iglite_de_temp_route.py
+          python3 -m py_compile scripts/mnebydns_iglite_wifi_multi_meta_v8_review.py
+          python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_iglite_wifi_multi_meta_review.py' -v
           python3 scripts/mnebydns-owner-domain-render-20261110.py self-test
           python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_iglite_route_preview.py' -v
           python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_iglite_dns_wire_checks.py' -v
