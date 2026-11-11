@@ -37,11 +37,11 @@ jobs:
             -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
           echo '### Real DE CoreDNS scoped view read-only preflight' >> "$GITHUB_STEP_SUMMARY"
           echo '```text' >> "$GITHUB_STEP_SUMMARY"
-          tar -C scripts -cf - meta_v25_source_view.py meta_v25_readonly_verify.py \
+          tar -C scripts -cf - meta_v25_source_view.py meta_v25_readonly_verify.py meta_v25_view_runtime_smoke.py \
             meta_v23_ru_firsthop_preview.py meta_v15_receive_window.py \
             mnebydns_iglite_sni_observer.py mnebydns_iglite_wifi_multi_meta_v10_w20.py \
             mnebydns-owner-domain-render-20261110.py |
           sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
-            'set -eu; umask 077; d=$(mktemp -d /tmp/mneby-v25-check.XXXXXXXX); trap '\''rm -rf -- "$d"'\'' EXIT; tar -xf - -C "$d"; python3 "$d/meta_v25_readonly_verify.py"' |
+            'set -eu; umask 077; d=$(mktemp -d /tmp/mneby-v25-check.XXXXXXXX); trap '\''rm -rf -- "$d"'\'' EXIT; tar -xf - -C "$d"; python3 "$d/meta_v25_readonly_verify.py"; python3 "$d/meta_v25_view_runtime_smoke.py"' |
           tee -a "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
