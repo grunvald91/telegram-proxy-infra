@@ -26,6 +26,7 @@ RELEASED = 0x20000000
 WINDOW = 8
 CLAMP = 65535
 MAX_CLIENTS = 64
+MAX_LIFETIME = 1500
 SO_ORIGINAL_DST = 80
 HOSTS = frozenset(("iglite-z.instagram.com", "i.instagram.com",
     "i-fallback.instagram.com", "test-gateway.instagram.com",
@@ -256,7 +257,7 @@ def main():
     print("meta_v15_listener_ready=true",flush=True)
     try:
         # Controller supplies an independent 900s lifetime and nft teardown.
-        proxy.stop.wait(1200)
+        proxy.stop.wait(MAX_LIFETIME)
     finally:
         proxy.close()
         for key,value in sorted(proxy.stats.items()):

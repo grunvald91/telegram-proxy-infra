@@ -50,6 +50,14 @@ unchanged non-peer windows, and the queue-exemption mark after reverse NAT.
 The test must fail if any of those conditions is absent. Local unit/socket
 checks do not substitute for this network test.
 
+Verified lab run at implementation commit `696ac367`:
+[Actions 43037228535](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/43037228535).
+All 53 unit/socket tests passed. The real TLS lab recorded one complete SNI
+split, 23 tiny initial segments and 209 larger segments after release; TLS
+certificate verification and application payload integrity passed. Non-peer
+windows, the exemption mark after reverse NAT, and unchanged global scaling
+were also checked. These are lab measurements, not phone measurements.
+
 ## Scope and limits
 
 - Source-IP scoping cannot select a hostname before the ClientHello arrives.

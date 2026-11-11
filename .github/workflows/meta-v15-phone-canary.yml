@@ -20,7 +20,6 @@ jobs:
     timeout-minutes: 29
     env:
       DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
-      TEST_PEER: ${{ inputs.peer }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -30,10 +29,13 @@ jobs:
           set -Eeuo pipefail
           test -n "$DE_PASS"
           python3 - <<'PY'
-          import ipaddress,os
-          peer=ipaddress.IPv4Address(os.environ['TEST_PEER'])
+          import ipaddress,json,os
+          with open(os.environ['GITHUB_EVENT_PATH']) as event_file:
+              peer=ipaddress.IPv4Address(json.load(event_file)['inputs']['peer'])
           assert peer.is_global and str(peer)!='89.125.90.101'
           print('::add-mask::'+str(peer))
+          with open(os.environ['GITHUB_ENV'],'a') as env_file:
+              env_file.write('TEST_PEER='+str(peer)+'\n')
           PY
           python3 -m unittest discover -s scripts/tests -p 'test_meta_v15_receive_window.py' -v
           python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_iglite_v11_scope.py' -v
