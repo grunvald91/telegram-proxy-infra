@@ -143,6 +143,63 @@ jobs:
                   print('FRESH_QUERY='+q+' connect_ms='+str(connect_ms)+' query_ms='+str(query_ms)+' rcode='+str(code),flush=True)
               except Exception as e:print('FRESH_QUERY='+q+' error='+type(e).__name__,flush=True)
           PY
+      - name: Read-only upstream DoT comparison from the foreign server and exact forward stanza
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 \
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no root@89.125.90.101 'python3 -' <<'PY'
+          import pathlib,subprocess,ssl,socket,struct,time,collections,statistics
+          raw=pathlib.Path('/opt/mnebydns-dot/Corefile').read_text().splitlines()
+          print('CURRENT_FORWARD_BLOCK_BEGIN',flush=True)
+          for s in raw[-12:]:print('CURRENT_FORWARD_LINE='+s.strip()[:220],flush=True)
+          print('CURRENT_FORWARD_BLOCK_END',flush=True)
+          p=subprocess.run(['sh','-c','/usr/local/bin/coredns -version 2>&1 || /usr/bin/coredns -version 2>&1 || true'],stdout=subprocess.PIPE,text=True,timeout=5)
+          print('COREDNS_VERSION='+p.stdout[:350].replace('\n',' '),flush=True)
+          names=('example.org','api.telegram.org','cloudflare.com','microsoft.com','www.youtube.com','example.com')
+          def exact(s,n):
+              b=b''
+              while len(b)<n:
+                  p=s.recv(n-len(b))
+                  if not p:raise EOFError()
+                  b+=p
+              return b
+          def qwire(host,qtype=1):
+              q=b''.join(bytes([len(l)])+l.encode('ascii') for l in host.split('.'))+b'\x00'+struct.pack('!HH',qtype,1)
+              return struct.pack('!HHHHHH',0xa751,0x0100,1,0,0,0)+q
+          def check(ip,sni):
+              tally=collections.Counter();ms=[];s=None
+              try:
+                  rawsock=socket.create_connection((ip,853),timeout=6)
+                  rawsock.settimeout(6)
+                  s=ssl.create_default_context().wrap_socket(rawsock,server_hostname=sni)
+                  print('UPSTREAM_TLS='+ip+' name='+sni+' version='+str(s.version()),flush=True)
+                  for round in range(8):
+                      for name in names:
+                          t=time.monotonic()
+                          try:
+                              request=qwire(name)
+                              s.sendall(struct.pack('!H',len(request))+request)
+                              response=exact(s,struct.unpack('!H',exact(s,2))[0])
+                              rcode=response[3]&15
+                              tally['rcode_'+str(rcode)]+=1
+                              ms.append((time.monotonic()-t)*1000)
+                              if rcode!=0:print('UPSTREAM_NONZERO='+ip+' qname='+name+' rcode='+str(rcode),flush=True)
+                          except Exception as ex:
+                              tally[type(ex).__name__]+=1
+                              print('UPSTREAM_QUERY_ERROR='+ip+' qname='+name+' error='+type(ex).__name__,flush=True)
+                              raise
+              except Exception as ex:print('UPSTREAM_CONNECT_ERROR='+ip+' type='+type(ex).__name__,flush=True)
+              finally:
+                  if s:s.close()
+              print('UPSTREAM_SUMMARY='+ip+' responses='+str(dict(tally))+
+                ' median_ms='+str(round(statistics.median(ms),1) if ms else 'none')+
+                ' max_ms='+str(round(max(ms),1) if ms else 'none'),flush=True)
+          for ip,sni in (('9.9.9.9','dns.quad9.net'),('149.112.112.112','dns.quad9.net'),('1.1.1.1','cloudflare-dns.com')):
+              check(ip,sni)
+          PY
       - name: Record diagnostic run id
         if: always()
         shell: bash
