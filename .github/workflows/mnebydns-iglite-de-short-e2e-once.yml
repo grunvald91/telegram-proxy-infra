@@ -1,4 +1,4 @@
-name: MNEBYDNS Meta Wi-Fi Window4 15-minute live canary
+name: MNEBYDNS Meta Wi-Fi v9 actual SNI boundary 15-minute trial
 on:
   push:
     branches: [audit/mnebydns-instagram-lite-20261111]
@@ -23,13 +23,15 @@ jobs:
         run: |
           set -Eeuo pipefail
           test -n "$DE_PASS"
-          python3 -m py_compile scripts/mnebydns_iglite_wifi_multi_meta_v7.py
+          python3 -m py_compile scripts/mnebydns_iglite_wifi_multi_meta_v9_sni.py
+          python3 -m py_compile scripts/mnebydns_iglite_sni_observer.py
+          python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_iglite_sni_observer.py' -v
           python3 scripts/mnebydns-owner-domain-render-20261110.py self-test
           python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_iglite_route_preview.py' -v
-          grep -Fq 'WATCHDOG_SECONDS = 1200' scripts/mnebydns_iglite_wifi_multi_meta_v7.py
-          grep -Fq 'TRIAL_SECONDS = 900' scripts/mnebydns_iglite_wifi_multi_meta_v7.py
+          grep -Fq 'WATCHDOG_SECONDS = 1200' scripts/mnebydns_iglite_wifi_multi_meta_v9_sni.py
+          grep -Fq 'TRIAL_SECONDS = 900' scripts/mnebydns_iglite_wifi_multi_meta_v9_sni.py
           python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_iglite_dns_wire_checks.py' -v
-          grep -Fq 'iglite_rollback=VERIFIED_ORIGINAL_BYTES_AND_SERVICES' scripts/mnebydns_iglite_wifi_multi_meta_v7.py
+          grep -Fq 'iglite_rollback=VERIFIED_ORIGINAL_BYTES_AND_SERVICES' scripts/mnebydns_iglite_wifi_multi_meta_v9_sni.py
       - name: Prepare pinned SSH
         run: |
           set -Eeuo pipefail
@@ -44,10 +46,10 @@ jobs:
             -o HostKeyAlgorithms=ssh-ed25519
             -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
             -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
-          tar -C scripts -cf - mnebydns_iglite_wifi_multi_meta_v7.py mnebydns-owner-domain-render-20261110.py mnebydns_iglite_dns_wire_checks.py |
+          tar -C scripts -cf - mnebydns_iglite_wifi_multi_meta_v9_sni.py mnebydns_iglite_sni_observer.py mnebydns-owner-domain-render-20261110.py mnebydns_iglite_dns_wire_checks.py |
             sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
-              'umask 077; mkdir -p -m 700 /run/mneby-iglite-stage-20261111-v7; tar -xf - -C /run/mneby-iglite-stage-20261111-v7'
-      - name: Test 15-min Wi-Fi multi-Meta TCP Window4 and record header sizes with rollback
+              'umask 077; mkdir -p -m 700 /run/mneby-iglite-stage-20261111-v9; tar -xf - -C /run/mneby-iglite-stage-20261111-v9'
+      - name: Run 15-min Wi-Fi window and verify observed SNI TCP segment boundaries with rollback
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -58,7 +60,7 @@ jobs:
             -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
           logfile="$RUNNER_TEMP/iglite-de-live.log"
           timeout 1430s sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
-             'MNEBY_IGLITE_LIVE_APPROVED=YES python3 /run/mneby-iglite-stage-20261111-v7/mnebydns_iglite_wifi_multi_meta_v7.py live' \
+             'MNEBY_IGLITE_LIVE_APPROVED=YES python3 /run/mneby-iglite-stage-20261111-v9/mnebydns_iglite_wifi_multi_meta_v9_sni.py live' \
              > "$logfile" 2>&1 &
           remote=$!
           trap 'kill "$remote" 2>/dev/null || true; wait "$remote" 2>/dev/null || true' EXIT
@@ -103,6 +105,11 @@ jobs:
           grep -q '^iglite_meta_routed_count=' "$logfile"
           grep -q '^iglite_wifi_pcap_persisted=false$' "$logfile"
           grep -q '^iglite_wifi_sni_byte_split=NOT_PROVEN_BY_HEADER_CAPTURE$' "$logfile"
+          grep -q '^iglite_sni_pcap_observer=READY$' "$logfile"
+          grep -q '^iglite_sni_target_clienthello=' "$logfile"
+          grep -q '^iglite_sni_sni_split=' "$logfile"
+          grep -q '^iglite_sni_pcap_written_to_disk=false$' "$logfile"
+          grep -q '^iglite_live_synack_preserve_mark_hits=' "$logfile"
       - name: Independent postcheck of nft, nginx and exact DNS checkpoint
         if: always()
         shell: bash
@@ -127,10 +134,79 @@ jobs:
               good_ckpt=(root.joinpath('dns.stable').is_file() and root.joinpath('nginx.stable').is_file()
                          and core.read_bytes()==root.joinpath('dns.stable').read_bytes()
                          and nginx.read_bytes()==root.joinpath('nginx.stable').read_bytes())
-          nft_absent=cmd(['nft','list','table','inet','mneby_ig_lite_w4_20261111_v7'])!=0
+          nft_absent=cmd(['nft','list','table','inet','mneby_ig_lite_w4_20261111_v9'])!=0
           nginx_ok=cmd(['systemctl','is-active','--quiet','nginx.service'])==0
           dns_ok=cmd(['systemctl','is-active','--quiet','mnebydns-dot.service'])==0
           for k,v in [('nft_absent',nft_absent),('configs_original',good_ckpt),('nginx_active',nginx_ok),('dns_active',dns_ok)]:
               print('iglite_post_'+k+'='+str(v).lower(),flush=True)
           if not all((nft_absent,good_ckpt,nginx_ok,dns_ok)):sys.exit(1)
+          PY
+
+  readiness:
+    name: Actual Wi-Fi v9 READY signal
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Pinned SSH for read-only readiness
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+      - name: Confirm 11 exact routes, capture marker, Window4 and rollback timer
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY'
+          import pathlib, subprocess, sys, time
+          hosts=('iglite-z.instagram.com','i.instagram.com',
+                 'i-fallback.instagram.com','test-gateway.instagram.com',
+                 'graph.instagram.com','z-m-gateway.facebook.com',
+                 'graph.facebook.com','www.instagram.com','www.facebook.com',
+                 'static.xx.fbcdn.net','scontent.xx.fbcdn.net')
+          stamp=pathlib.Path('/run/mneby-iglite-wifi-de-20261111-v9/ready_epoch')
+          def result(args):
+              try:
+                  p=subprocess.run(args,capture_output=True,text=True,timeout=8)
+                  return p.returncode,p.stdout
+              except Exception:
+                  return -1,''
+          for attempt in range(160):
+              if stamp.is_file():
+                  try: start=int(stamp.read_text().strip())
+                  except (ValueError,OSError): start=0
+                  now=int(time.time())
+                  if start and 0<=now-start<180:
+                      timer,_=result(['systemctl','is-active','--quiet','mneby-ig-lite-wifi-20261111-v9.timer'])
+                      active,rules=result(['nft','list','table','inet','mneby_ig_lite_w4_20261111_v9'])
+                      try:
+                          core=pathlib.Path('/opt/mnebydns-dot/Corefile').read_text()
+                          nginx=pathlib.Path('/etc/nginx/nginx.conf').read_text()
+                      except OSError:
+                          core=nginx=''
+                      hosts_ok=all(h in core and h in nginx for h in hosts)
+                      if (timer==0 and active==0 and hosts_ok
+                          and 'tcp window set 4' in rules
+                          and 'MNEBY_IG_WIFI_PRESERVE_SYNACK' in rules):
+                          print('iglite_wifi_v9_ready=true',flush=True)
+                          print('iglite_wifi_v9_start_epoch='+str(start),flush=True)
+                          print('iglite_wifi_v9_end_epoch='+str(start+900),flush=True)
+                          print('iglite_wifi_v9_seconds_remaining='+str(max(0,start+900-now)),flush=True)
+                          print('iglite_wifi_v9_verified_exact_hosts='+str(len(hosts)),flush=True)
+                          print('iglite_wifi_v9_android_source_identified=false',flush=True)
+                          sys.exit(0)
+              time.sleep(2)
+          print('iglite_wifi_v9_ready=false',flush=True)
+          sys.exit(1)
           PY
