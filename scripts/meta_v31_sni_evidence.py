@@ -68,7 +68,7 @@ def write_report(path,report):
 class CaptureEvidence:
     def __init__(self,peer,path):
         self.path=Path(path)
-        self.command=capture_command(edge="188.120.254.223",peer=peer)
+        self.command=capture_command(edge="188.120.254.223",peer=None if peer=="all" else peer)
         self.analyzer=Analyzer(HOSTS)
         self.ready=threading.Event()
         self.stopping=threading.Event()

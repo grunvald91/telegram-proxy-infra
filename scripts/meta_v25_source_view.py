@@ -21,8 +21,15 @@ class ViewPlan:
     candidate: str
     selected_source: str
     selected_hosts: int
+    shared: bool = False
 
     def verify_rollback(self) -> None:
+        if self.shared:
+            restored=self.candidate
+            renderer=load_renderer()
+            for host in reversed(HOSTS):restored=renderer.core_remove(restored,host)
+            if restored!=self.original:raise RuntimeError("shared DNS route rollback mismatch")
+            return
         prefix=self.candidate[:len(self.candidate)-len(self.original)]
         if not prefix or self.candidate!=prefix+self.original:
             raise RuntimeError("original Corefile was not preserved byte-for-byte")
@@ -36,6 +43,7 @@ def check_plugins(output: str)->None:
             raise RuntimeError("CoreDNS binary lacks "+name+" plugin")
 
 def source_peer(peer: str)->str:
+    if peer=="all":return peer
     parsed=ipaddress.IPv4Address(peer)
     if not parsed.is_global or str(parsed) in (RU_EDGE,"89.125.90.101"):
         raise ValueError("distinct global test client IPv4 required")
@@ -70,6 +78,13 @@ def render(*, corefile: str, phone_ip: str, compiled_plugins: str)->ViewPlan:
     check_plugins(compiled_plugins)
     if VIEW_NAME in corefile:
         raise ValueError("an experimental source view is already present")
+    if peer=="all":
+        candidate=corefile
+        renderer=load_renderer()
+        for host in HOSTS:candidate=renderer.core_add(candidate,host,route_edge=RU_EDGE)
+        result=ViewPlan(corefile,candidate,peer,len(HOSTS),shared=True)
+        result.verify_rollback()
+        return result
     matches=list(DOT_HEADER.finditer(corefile))
     if len(matches)!=1:
         raise ValueError("exactly one reviewed DoT :853 block required")

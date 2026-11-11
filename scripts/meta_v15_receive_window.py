@@ -40,7 +40,13 @@ def ipv4(value):
 
 
 def nft_rules(edge, peer, *, port=18443, interface="eth0", table="mneby_meta_v15"):
-    edge, peer = ipv4(edge), ipv4(peer)
+    edge=ipv4(edge)
+    shared=peer=="all"
+    if shared and (edge!="188.120.254.223" or interface!="ens3"):
+        raise ValueError("shared ingress is supported only on reviewed RU ens3")
+    peer=None if shared else ipv4(peer)
+    source="" if shared else f"ip saddr {peer} "
+    destination="" if shared else f"ip daddr {peer} "
     if edge == peer or not 1024 < port < 65536 or port == 443:
         raise ValueError("invalid canary endpoint")
     if not re.fullmatch(r"[a-zA-Z0-9_]{1,40}", table):
@@ -49,10 +55,10 @@ def nft_rules(edge, peer, *, port=18443, interface="eth0", table="mneby_meta_v15
         raise ValueError("invalid interface")
     return (f"add table inet {table}\n"
         f"add chain inet {table} pre {{ type nat hook prerouting priority -101; policy accept; }}\n"
-        f'add rule inet {table} pre iifname "{interface}" ip saddr {peer} ip daddr {edge} '
+        f'add rule inet {table} pre iifname "{interface}" {source}ip daddr {edge} '
         f'tcp dport 443 counter dnat ip to {edge}:{port}\n'
         f"add chain inet {table} out {{ type filter hook output priority -149; policy accept; }}\n"
-        f"add rule inet {table} out ip saddr {edge} ip daddr {peer} tcp sport {port} "
+        f"add rule inet {table} out ip saddr {edge} {destination}tcp sport {port} "
         f"meta mark & {RELEASED:#x} == 0 tcp flags & ack == ack tcp window > {WINDOW} "
         f"counter tcp window set {WINDOW}\n")
 
@@ -151,7 +157,10 @@ def relay(left, right, stop, *, idle=60):
 class WindowProxy:
     def __init__(self, edge, peer, *, port=18443, backend=("127.0.0.1",443),
                  non_meta_backend=None):
-        self.edge, self.peer = ipv4(edge), ipv4(peer)
+        self.edge=ipv4(edge)
+        self.peer=None if peer=="all" else ipv4(peer)
+        if self.peer is None and non_meta_backend is None:
+            raise ValueError("shared receiver requires the reviewed RU fallback")
         self.port, self.backend = port, backend
         self.non_meta_backend = non_meta_backend
         if non_meta_backend is not None and (
@@ -206,7 +215,7 @@ class WindowProxy:
                     self.count("accept_failed")
                     self.stop.set()
                 break
-            if address[0] != self.peer or not self.slots.acquire(blocking=False):
+            if (self.peer is not None and address[0]!=self.peer) or not self.slots.acquire(blocking=False):
                 conn.close()
                 continue
             with self.lock:
@@ -285,7 +294,7 @@ def main():
     parser.add_argument("--non-meta-backend-address",choices=("188.120.254.223",))
     parser.add_argument("--evidence-file")
     args=parser.parse_args()
-    if not ipaddress.IPv4Address(args.peer).is_global or args.peer==args.edge:
+    if args.peer!="all" and (not ipaddress.IPv4Address(args.peer).is_global or args.peer==args.edge):
         raise SystemExit("distinct public test-phone IPv4 required")
     # Only local Nginx or the fixed private WireGuard peer may receive raw TLS.
     # Never derive a backend from untrusted SNI or arbitrary client input.

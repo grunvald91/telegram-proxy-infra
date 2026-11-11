@@ -22,7 +22,8 @@ class SharedIngressQuarantine(unittest.TestCase):
     def test_document_current_shared_ip_failure_scope(self):
         """Fail if someone re-enables v15 via only a source-peer check."""
         src=Path(worker.__file__).read_text()
-        self.assertIn('ip saddr {peer} ip daddr {edge}',src)
+        from meta_v15_receive_window import nft_rules
+        self.assertIn('ip saddr 8.8.8.8 ip daddr 89.125.90.101',nft_rules('89.125.90.101','8.8.8.8'))
         self.assertIn('tcp dport 443 counter dnat ip to {edge}:{port}',src)
         self.assertEqual(controller.EDGE,"89.125.90.101")
         self.assertRaises(RuntimeError,controller.require_experiment_isolation)

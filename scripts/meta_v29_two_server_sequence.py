@@ -20,6 +20,7 @@ CLEANUP=(("de","disable-dns"),("ru","rollback"),("de","rollback"))
 
 
 def checked_phone_ip(value: str) -> str:
+    if value=="all":return value
     ip=ipaddress.IPv4Address(value)
     if not ip.is_global or str(ip) in (RU,DE):
         raise ValueError("distinct public test-device IPv4 required")

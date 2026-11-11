@@ -16,6 +16,7 @@ on:
       - 'scripts/tests/test_meta_v30_actions_adapter.py'
       - 'scripts/meta_v31_sni_evidence.py'
       - 'scripts/tests/test_meta_v31_runtime_evidence.py'
+      - 'scripts/tests/test_meta_v32_shared_trial.py'
       - 'scripts/meta_v15_receive_window.py'
       - '.github/workflows/meta-v30-manual-two-server-canary.yml'
   workflow_dispatch:
@@ -41,6 +42,7 @@ jobs:
           python3 -m unittest discover -s scripts/tests -p 'test_meta_v29_two_server_sequence.py' -v
           python3 -m unittest discover -s scripts/tests -p 'test_meta_v30_actions_adapter.py' -v
           python3 -m unittest discover -s scripts/tests -p 'test_meta_v31_runtime_evidence.py' -v
+          python3 -m unittest discover -s scripts/tests -p 'test_meta_v32_shared_trial.py' -v
           python3 scripts/meta_v30_actions_adapter.py --mode validate
           python3 -m unittest discover -s scripts/tests -p 'test_meta_v25_source_view.py' -v
           python3 -m unittest discover -s scripts/tests -p 'test_meta_v23_ru_firsthop_preview.py' -v

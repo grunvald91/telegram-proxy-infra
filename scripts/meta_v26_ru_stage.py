@@ -42,6 +42,7 @@ def active(name):
     return cmd(["systemctl","is-active","--quiet",name],check=False).returncode==0
 
 def checked_peer(value):
+    if value=="all":return value
     parsed=ipaddress.IPv4Address(value)
     if not parsed.is_global or str(parsed) in (RU_EDGE,"89.125.90.101"):
         raise ValueError("one distinct public client IPv4 required")
