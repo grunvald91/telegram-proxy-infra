@@ -86,14 +86,14 @@ def skip_name(data: bytes, offset: int) -> int:
         offset += byte
     raise ValueError("too many labels")
 
-def dot_query(name: str, qtype: int) -> str:
+def dot_query(name: str, qtype: int, *, target: str = DE_PUBLIC, tls_hostname: str = DOT_HOST) -> str:
     qid = secrets.randbelow(65536)
     question = (b"".join(bytes([len(label)]) + label.encode("ascii")
                         for label in name.split(".")) + b"\0" + struct.pack("!HH", qtype, 1))
     msg = struct.pack("!HHHHHH", qid, 0x0100, 1, 0, 0, 0) + question
-    with socket.create_connection((DE_PUBLIC, 853), timeout=6) as raw:
+    with socket.create_connection((target, 853), timeout=6) as raw:
         raw.settimeout(6)
-        with ssl.create_default_context().wrap_socket(raw, server_hostname=DOT_HOST) as tls:
+        with ssl.create_default_context().wrap_socket(raw, server_hostname=tls_hostname) as tls:
             tls.sendall(struct.pack("!H", len(msg)) + msg)
             length = struct.unpack("!H", recv_exact(tls, 2))[0]
             response = recv_exact(tls, length)
