@@ -29,6 +29,18 @@ PORT=18443
 DEFAULT_TRIAL_SECONDS=900
 LONG_TRIAL_SECONDS=1800
 
+def time_budget(duration):
+    """Bounded runtime and independent same-boot cleanup, seconds."""
+    if duration not in (DEFAULT_TRIAL_SECONDS, LONG_TRIAL_SECONDS):
+        raise ValueError("trial duration must be 900 or 1800 seconds")
+    watchdog = 1200 if duration == 900 else 2400
+    lifetime = 1500 if duration == 900 else 2700
+    if watchdog <= duration + route.base.MIN_ROLLBACK_MARGIN + 120:
+        raise RuntimeError("insufficient independent rollback margin")
+    if lifetime < watchdog + 120:
+        raise RuntimeError("insufficient independent full-cleanup margin")
+    return watchdog, lifetime
+
 route.base.ROOT=Path("/var/lib/mneby-meta-v15-routes")
 route.base.UNIT="mneby-meta-v15-route-watchdog"
 route.base.TABLE="mneby_meta_v15_unexpected_global"
@@ -149,12 +161,8 @@ def _cleanup_locked():
 
 
 def live(peer, *, duration=DEFAULT_TRIAL_SECONDS):
-    if duration not in (DEFAULT_TRIAL_SECONDS, LONG_TRIAL_SECONDS):
-        raise ValueError("trial duration must be 900 or 1800 seconds")
-    # Set both the controller and imported v11 engine time budgets before
-    # creating any state or modifying active production configuration.
-    watchdog=1200 if duration==900 else 2400
-    lifetime=1500 if duration==900 else 2700
+    # Validate before any mutating command; do not extend legacy defaults.
+    watchdog,lifetime=time_budget(duration)
     route.base.TRIAL_SECONDS=duration
     route.base.WATCHDOG_SECONDS=watchdog
     peer=str(ipaddress.IPv4Address(peer))
