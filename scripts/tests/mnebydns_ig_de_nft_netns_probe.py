@@ -11,6 +11,7 @@ import os
 import socket
 import ssl
 import struct
+import time
 from pathlib import Path
 
 def checksum(data: bytes) -> int:
@@ -70,6 +71,29 @@ def client():
         sock.sendall(hello)
     print(f"client_sent_tls_clienthello_bytes={len(hello)}", flush=True)
 
+
+
+def capture(interface: str, dest: str, ready: str):
+    """Unbuffered raw Ethernet PCAP, independent of libpcap/tcpdump filters."""
+    with socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x0003)) as sock:
+        sock.bind((interface, 0))
+        sock.settimeout(.2)
+        with open(dest, "wb", buffering=0) as out:
+            out.write(struct.pack("<IHHIIII", 0xa1b2c3d4, 2, 4, 0, 0, 65535, 1))
+            Path(ready).write_text("ready\n")
+            deadline=time.monotonic()+7.0
+            seen=0
+            while time.monotonic()<deadline:
+                try: frame=sock.recv(65535)
+                except socket.timeout: continue
+                if len(frame)<14 or frame[12:14]!=b"\x08\x00": continue
+                timestamp=time.time()
+                seconds=int(timestamp)
+                microseconds=int((timestamp-seconds)*1000000)
+                out.write(struct.pack("<IIII",seconds,microseconds,len(frame),len(frame)))
+                out.write(frame)
+                seen+=1
+            print("netns_raw_capture_ipv4_packets="+str(seen),flush=True)
 
 
 def pcap_packets(file: str):
@@ -160,9 +184,10 @@ def verify(file: str, mode: str):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("mode", choices=("listener", "client", "verify"))
+    p.add_argument("mode", choices=("listener", "client", "capture", "verify"))
     p.add_argument("--ready")
     p.add_argument("--count", type=int, default=3)
+    p.add_argument("--interface")
     p.add_argument("--pcap")
     p.add_argument("--variant", choices=("reference", "clamped", "failbypass"))
     args = p.parse_args()
@@ -172,6 +197,10 @@ def main():
         listener(args.ready, args.count)
     elif args.mode == "client":
         client()
+    elif args.mode == "capture":
+        if not args.interface or not args.pcap or not args.ready:
+            p.error("--interface --pcap --ready required")
+        capture(args.interface,args.pcap,args.ready)
     else:
         if not args.pcap or not args.variant:
             p.error("--pcap and --variant required")
