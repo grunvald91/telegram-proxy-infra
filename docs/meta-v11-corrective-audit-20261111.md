@@ -46,3 +46,20 @@ Primary evidence:
 - [Offline route-state classifier](../scripts/meta_v12_routing_gate.py) now fails closed for missing/incomplete probe evidence, a DNS override pointing to a missing ingress SNI map, or an unverified ingress TLS certificate. For a direct/no-route state it reports `DIRECT_NOT_PROXY_ROUTED` and never claims bypass success. See [synthetic tests](../scripts/tests/test_meta_v12_routing_gate.py).
 - The mismatch occurred after the temporary Meta experiment rolled back, and is therefore **not independently evidence of Nginx corruption**. Current SmartDNS policy sends these tested Meta domains directly; merely fixing PCAP/SNI observer parsing does not make Instagram work.
 - **Next safe engineering gate:** compare a separately staged exact-host Meta route against live CNAME/AAAA/HTTPS behavior, then capture synchronized packet and return counters from a real Android client on the target ISP. No global TCP window, nftables or public DNS cutover is authorized by this report.
+
+## v13–v14 isolated-route and DNS stability results (11 Nov 2026, 13:35–13:42 UTC)
+
+### v13: actual TLS passthrough without changing production
+- [Successful run #43030466038](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/43030466038): the existing exact-host renderer staged candidate CoreDNS and Nginx route fragments in memory; both reversibility checks passed.
+- On DE, a separately launched Nginx stream on **127.0.0.1 only** successfully completed certificate-verified TLS 1.3 to both `i.instagram.com` and `iglite-z.instagram.com`, using independently TLS-verified pinned destination IPv4 addresses. Unknown SNI was rejected.
+- The test reported `production_configs_unchanged=true`, `public_dns_unchanged=true`, `android_e2e=NOT_TESTED`, and `client_sni_split=NOT_IMPLEMENTED`.
+- An earlier [failed staging run #43030106632](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/43030106632) exposed an incorrect module detection method. It was corrected by reading the actual validated nginx stream-module load directive before the green run. No live listener was replaced.
+
+### v14: separate edge and direct upstream connection evidence
+- A one-off `SERVFAIL` appeared for `i.instagram.com` during the [post-v13 public DNS check](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/43030466038). That single response did not establish a persistent outage.
+- [First five-round comparison #43031037309](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/43031037309): **45/45** edge DNS-over-TLS queries across three exact domains and A/AAAA/HTTPS answered with `RCODE0`. Direct Quad9 queries from the GitHub runner returned several premature EOFs; that runner-to-Quad9 connection behavior is *not* proof of an edge resolver fault.
+- [Green, corrected independent-source comparison #43031339156](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/43031339156): the edge again returned **45/45 RCODE0**. Direct Quad9 from the GitHub runner showed repeated `EOFError` on some Instagram Lite queries. The CI now fails on repeated **edge** errors but records direct-Quad9 anomalies separately; synthetic tests verify that distinction.
+- **Limitations:** an RCODE0 DNS response does not mean Instagram was proxied. The public policy was unchanged; the earlier verified `DIRECT_NOT_PROXY_ROUTED` classification remains the last evidence for those specific Meta names. These external probes do not test the Russian mobile network, real Android application or end-to-end SNI fragmentation.
+
+### Next activation gate
+Prepare only an owner-triggered, time-limited, exact-host public route canary after the user is ready to test the phone **during the same window**. Before any activation, verify baseline hashes, live ingress certificates, independent rollback, stable YouTube DNS answer, TCP/UDP scopes, and repeat the same checks after rollback. Do not reuse the v10 global TCP window-scaling experiment. Do not claim Smart DNS alone can split ClientHello before an upstream TSPU checkpoint.
