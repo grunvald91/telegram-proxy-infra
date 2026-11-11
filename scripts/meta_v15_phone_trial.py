@@ -160,7 +160,27 @@ def _cleanup_locked():
     print("meta_v15_cleanup=VERIFIED",flush=True)
 
 
+def require_experiment_isolation():
+    """Reject v15 shared ingress plus globally-rewritten DNS configuration.
+
+    The active live route engine rewrites CoreDNS for every DoT client. The
+    dedicated receiver's nft DNAT matches only a source IPv4 and the shared
+    public :443 destination, so it also captures YouTube and other services.
+    No safe hostname-level isolation is possible before ClientHello on this
+    shared destination. Leave disabled until a *new*, separately reviewed
+    dedicated Meta IP + per-client DNS view implementation is deployed.
+    """
+    raise RuntimeError(
+        "V15_QUARANTINED: shared public TCP443 and global Meta DNS updates "
+        "are not isolated; deployment disabled pending dedicated Meta IP "
+        "and genuinely client-scoped DNS"
+    )
+
+
 def live(peer, *, duration=DEFAULT_TRIAL_SECONDS):
+    # No new live runs may modify shared DNS or capture non-Meta HTTPS.
+    # This guard precedes server preflight, state creation and nft changes.
+    require_experiment_isolation()
     # Validate before any mutating command; do not extend legacy defaults.
     watchdog,lifetime=time_budget(duration)
     route.base.TRIAL_SECONDS=duration
