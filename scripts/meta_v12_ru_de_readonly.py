@@ -7,6 +7,7 @@ All TLS probes originate from the selected runner/server, NOT an Android phone.
 """
 from __future__ import annotations
 import datetime
+import ipaddress
 import re
 import secrets
 import socket
@@ -38,6 +39,9 @@ def cert_tls(target: str, hostname: str) -> str:
             conn.settimeout(6)
             with ssl.create_default_context().wrap_socket(conn, server_hostname=hostname) as tls:
                 return "verified_" + str(tls.version()).replace(".", "_")
+    except ssl.SSLCertVerificationError as exc:
+        reason = re.sub(r"[^a-z0-9_]+", "_", str(exc.verify_message).lower())[:75]
+        return "CertVerify" + str(exc.verify_code) + "_" + reason
     except (OSError, ssl.SSLError) as exc:
         return type(exc).__name__
 
@@ -131,6 +135,47 @@ def ports(role: str) -> None:
             found = bool(re.search(r":" + str(port) + r"(?:\s|$)", out))
             emit(role + "_listener_" + family + "_" + str(port), "yes" if code == 0 and found else "no_or_unknown")
 
+def nginx_meta_route_inventory(role: str) -> None:
+    """Only classify exact SNI map destinations; never print raw nginx -T."""
+    code, config = invoke(["nginx", "-T"])
+    if code != 0:
+        emit(role + "_nginx_sni_map_status", "unavailable")
+        return
+    maps = re.findall(r"map\\s+\\$ssl_preread_server_name\\s+\\$[a-zA-Z0-9_]+\\s*\\{([^{}]*)\\}",
+                      config, re.S)
+    emit(role + "_nginx_sni_map_count", len(maps))
+    for hostname in ("i.instagram.com", "iglite-z.instagram.com", "claude.ai"):
+        found = []
+        for body in maps:
+            found.extend(re.findall(r"(?m)^\\s*" + re.escape(hostname)
+                                    + r"\\s+([^\\s;]+)\\s*;", body))
+        label = role + "_nginx_route_" + hostname.replace(".", "_")
+        emit(label + "_count", len(found))
+        if len(found) != 1:
+            continue
+        endpoint = found[0]
+        # Only a vetted, concrete IPv4:443 endpoint is probed.
+        match = re.fullmatch(r"([0-9.]+):443", endpoint)
+        if not match:
+            emit(label + "_kind", "not_ipv4_literal_443")
+            continue
+        ip = match.group(1)
+        try:
+            if ipaddress.ip_address(ip).version != 4:
+                raise ValueError("not IPv4")
+        except ValueError:
+            emit(label + "_kind", "invalid_ipv4")
+            continue
+        emit(label + "_kind", "static_ipv4_443")
+        if role == "de":
+            try:
+                fresh = {addr[4][0] for addr in socket.getaddrinfo(
+                    hostname, 443, family=socket.AF_INET, type=socket.SOCK_STREAM)}
+                emit(label + "_in_fresh_dns", "yes" if ip in fresh else "no")
+            except OSError as exc:
+                emit(label + "_in_fresh_dns", type(exc).__name__)
+            emit(label + "_target_tls", cert_tls(ip, hostname))
+
 def host_inventory(role: str) -> None:
     code, line = invoke(["ip", "-o", "link", "show", "dev", "tg-relay"])
     match = re.search(r"\bmtu\s+(\d+)", line)
@@ -148,6 +193,7 @@ def host_inventory(role: str) -> None:
         code, _ = invoke(["systemctl", "is-active", "--quiet", unit + ".service"])
         emit(role + "_active_" + unit.replace("@", "_").replace("-", "_"), "yes" if code == 0 else "no")
     ports(role)
+    nginx_meta_route_inventory(role)
 
 def run(role: str) -> None:
     emit("observation_utc", datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
