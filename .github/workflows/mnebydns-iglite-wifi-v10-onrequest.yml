@@ -11,6 +11,9 @@ concurrency:
   cancel-in-progress: false
 jobs:
   canary:
+    # REVIEW BLOCKER: no persistent reboot-safe recovery unit yet.
+    # Do not start the owner experiment until this guard is explicitly removed.
+    if: ${{ false }}
     runs-on: ubuntu-latest
     timeout-minutes: 26
     env:
@@ -106,6 +109,8 @@ jobs:
           if not all(tests.values()):sys.exit(1)
           PY
   readiness:
+    # Disabled together with the live canary; must not emit false READY.
+    if: ${{ false }}
     name: Independent actual capture READY check
     runs-on: ubuntu-latest
     timeout-minutes: 8
