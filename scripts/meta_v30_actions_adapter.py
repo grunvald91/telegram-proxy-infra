@@ -131,6 +131,9 @@ class Remote:
     def stage_files(self,role):
         command=(
             "set -eu; umask 077; "
+            "test ! -L /usr/local/libexec; "
+            "if test ! -d /usr/local/libexec; then "
+            "install -d -m 0755 -o root -g root /usr/local/libexec; fi; "
             f"test ! -e {STAGE}; "
             "d=$(mktemp -d /usr/local/libexec/.mneby-meta-v26.XXXXXXXX); "
             "trap 'rm -rf -- \"$d\"' EXIT; "
@@ -200,8 +203,8 @@ def main(argv=None):
         if not args.phone_ip:raise ValueError("current phone IPv4 required")
         peer=check_approval(args.phone_ip,os.environ.get("MNEBY_META_V30_APPROVED"),
                             os.environ.get("GITHUB_EVENT_NAME"))
-        if args.minutes not in (5,15):
-            raise ValueError("approved window must be 5 or 15 minutes")
+        if args.minutes not in (5,15,30):
+            raise ValueError("approved window must be 5, 15 or 30 minutes")
     if args.mode=="activate":
         signal.signal(signal.SIGTERM,cancel_trial)
         signal.signal(signal.SIGINT,cancel_trial)
