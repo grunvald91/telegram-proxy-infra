@@ -91,7 +91,7 @@ def module_declaration() -> str:
     if p.returncode:
         raise RuntimeError("live_nginx_config_unavailable")
     directives = re.findall(
-        r"(?m)^\\s*load_module\\s+([^;\\s]*ngx_stream_module\\.so)\\s*;",
+        r"(?m)^\s*load_module\s+([^;\s]*ngx_stream_module\.so)\s*;",
         p.stdout,
     )
     if len(directives) > 1:
