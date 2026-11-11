@@ -70,6 +70,49 @@ class V11RouteOnlySafety(unittest.TestCase):
         self.assertNotIn("tcp window set 20",wf)
         self.assertNotIn("net.ipv4.tcp_window_scaling=0",wf)
 
+    def test_mocked_rollback_restores_only_configs_and_second_run_is_noop(self):
+        import importlib.util
+        import sys
+        import tempfile
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        sys.path.insert(0,str(ROOT))
+        spec=importlib.util.spec_from_file_location("route_only_rollback_test",SCRIPT)
+        v=importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(v)
+        with tempfile.TemporaryDirectory() as td:
+            home=Path(td)
+            root=home/"durable";root.mkdir()
+            (root/"mutation-ready").write_bytes(b"armed\n")
+            original={"core":b"original-core\n","nginx":b"original-nginx\n"}
+            modified={"core":b"modified-core\n","nginx":b"modified-nginx\n"}
+            for kind in ("core","nginx"):
+                (root/(kind+".original")).write_bytes(original[kind])
+                (root/(kind+".candidate")).write_bytes(modified[kind])
+            core=home/"Corefile";core.write_bytes(modified["core"])
+            nginx=home/"nginx.conf";nginx.write_bytes(modified["nginx"])
+            ws=home/"tcp_window_scaling";ws.write_text("1\n")
+            calls=[]
+            def fake_command(args,**kwargs):
+                calls.append(tuple(args))
+                status=1 if args[:3]==["nft","list","table"] else 0
+                return SimpleNamespace(returncode=status)
+            with (patch.object(v.base,"ROOT",root),
+                  patch.object(v.base,"CORE",core),
+                  patch.object(v.base,"NGINX",nginx),
+                  patch.object(v.base,"WSFILE",ws),
+                  patch.object(v.base,"command",side_effect=fake_command)):
+                v.rollback()
+                self.assertEqual(core.read_bytes(),original["core"])
+                self.assertEqual(nginx.read_bytes(),original["nginx"])
+                restarts=sum(c[0]=="systemctl" and c[1] in ("restart","reload") for c in calls)
+                self.assertEqual(restarts,2)
+                v.rollback()
+                self.assertEqual(sum(c[0]=="systemctl" and c[1] in ("restart","reload")
+                                     for c in calls),2)
+                self.assertFalse(any(c[0] in ("sysctl","iptables","tc") for c in calls))
+                self.assertFalse(any(c[0]=="nft" and c[1]!="list" for c in calls))
+
     def test_in_memory_only_no_pcap_files(self):
         self.assertIn("mnebydns_iglite_sni_observer import begin,finish,summary",self.src)
         self.assertNotIn("PCAP.write(",self.src)
