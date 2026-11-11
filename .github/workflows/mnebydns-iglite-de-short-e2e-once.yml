@@ -1,0 +1,125 @@
+name: MNEBYDNS Instagram Lite DE route and Window4 short live E2E canary
+on:
+  push:
+    branches: [audit/mnebydns-instagram-lite-20261111]
+    paths:
+      - '.github/workflows/mnebydns-iglite-de-short-e2e-once.yml'
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-de-iglite-one-shot-candidate
+  cancel-in-progress: false
+jobs:
+  verified-short-canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Confirm offline candidate and owner authorization scope
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS"
+          python3 -m py_compile scripts/mnebydns_iglite_de_temp_route.py
+          python3 scripts/mnebydns-owner-domain-render-20261110.py self-test
+          python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_iglite_route_preview.py' -v
+          grep -Fq 'WATCHDOG_SECONDS = 110' scripts/mnebydns_iglite_de_temp_route.py
+          grep -Fq 'iglite_rollback=VERIFIED_ORIGINAL_BYTES_AND_SERVICES' scripts/mnebydns_iglite_de_temp_route.py
+      - name: Prepare pinned SSH
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+      - name: Stage only tested candidate in temporary DE runtime
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          tar -C scripts -cf - mnebydns_iglite_de_temp_route.py mnebydns-owner-domain-render-20261110.py |
+            sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
+              'umask 077; mkdir -p -m 700 /run/mneby-iglite-stage-20261111; tar -xf - -C /run/mneby-iglite-stage-20261111'
+      - name: Test exact Lite DoT+TLS and global SYNACK window with guaranteed rollback
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          logfile="$RUNNER_TEMP/iglite-de-live.log"
+          timeout 230s sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
+             'MNEBY_IGLITE_LIVE_APPROVED=YES python3 /run/mneby-iglite-stage-20261111/mnebydns_iglite_de_temp_route.py live' \
+             > "$logfile" 2>&1 &
+          remote=$!
+          trap 'kill "$remote" 2>/dev/null || true; wait "$remote" 2>/dev/null || true' EXIT
+          activated=0
+          for attempt in $(seq 1 350); do
+            if grep -q '^iglite_live_global_window4=ACTIVE$' "$logfile" 2>/dev/null; then
+              activated=1
+              break
+            fi
+            if ! kill -0 "$remote" 2>/dev/null; then break; fi
+            sleep 0.3
+          done
+          if [[ "$activated" == 1 ]]; then
+            echo 'iglite_canary_runtime=ACTIVE_FOR_CONTROLLED_EXTERNAL_PROBE'
+            python3 - <<'PY'
+          import socket,ssl
+          host='iglite-z.instagram.com'
+          ip='89.125.90.101'
+          try:
+              tcp=socket.create_connection((ip,443),timeout=5)
+              tcp.settimeout(5)
+              with ssl.create_default_context().wrap_socket(tcp,server_hostname=host) as tls:
+                  print('runner_iglite_tls=VERIFIED_'+str(tls.version()),flush=True)
+          except Exception as exc:
+              print('runner_iglite_tls=NOT_VERIFIED_'+type(exc).__name__,flush=True)
+          print('runner_test_is_not_android_or_mobile_isp=true',flush=True)
+          PY
+          else
+            echo 'iglite_canary_runtime=FAILED_BEFORE_ACTIVE'
+          fi
+          wait "$remote"
+          trap - EXIT
+          cat "$logfile"
+          grep -q '^iglite_rollback=VERIFIED_ORIGINAL_BYTES_AND_SERVICES$' "$logfile"
+          grep -q '^iglite_end_to_end_android=NOT_TESTED$' "$logfile"
+      - name: Independent postcheck of nft, nginx and exact DNS checkpoint
+        if: always()
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS"
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY'
+          import pathlib,subprocess,sys
+          def cmd(args):
+              return subprocess.run(args,capture_output=True,text=True,timeout=15).returncode
+          current=pathlib.Path('/opt/mnebydns-stable-checkpoints/current')
+          good_ckpt=False
+          if current.is_file():
+              root=pathlib.Path(current.read_text().strip())
+              core=pathlib.Path('/opt/mnebydns-dot/Corefile')
+              nginx=pathlib.Path('/etc/nginx/nginx.conf')
+              good_ckpt=(root.joinpath('dns.stable').is_file() and root.joinpath('nginx.stable').is_file()
+                         and core.read_bytes()==root.joinpath('dns.stable').read_bytes()
+                         and nginx.read_bytes()==root.joinpath('nginx.stable').read_bytes())
+          nft_absent=cmd(['nft','list','table','inet','mneby_ig_lite_w4_20261111'])!=0
+          nginx_ok=cmd(['systemctl','is-active','--quiet','nginx.service'])==0
+          dns_ok=cmd(['systemctl','is-active','--quiet','mnebydns-dot.service'])==0
+          for k,v in [('nft_absent',nft_absent),('configs_original',good_ckpt),('nginx_active',nginx_ok),('dns_active',dns_ok)]:
+              print('iglite_post_'+k+'='+str(v).lower(),flush=True)
+          if not all((nft_absent,good_ckpt,nginx_ok,dns_ok)):sys.exit(1)
+          PY
