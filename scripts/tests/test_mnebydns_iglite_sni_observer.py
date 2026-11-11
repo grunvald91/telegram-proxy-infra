@@ -82,6 +82,40 @@ class ClientHelloBoundaryTests(unittest.TestCase):
         flow.feed(101,data[:inside],inside)
         self.assertEqual(flow.ranges,{(0,len(data))})
 
+    def test_clean_pcap_eof_is_valid(self):
+        a=Analyzer([HOST])
+        parse_pcap(make_pcap([packet(900,2),packet(901,24,tls_hello())]),a)
+        self.assertEqual(a.stats['syn'],1)
+        self.assertEqual(a.stats['sni_unsplit'],1)
+
+    def test_partial_pcap_record_header_fails_closed(self):
+        complete=make_pcap([]).getvalue()
+        for trailing in (1,5,15):
+            with self.subTest(trailing=trailing):
+                a=Analyzer([HOST])
+                with self.assertRaises(EOFError):
+                    parse_pcap(BytesIO(complete+b'\\x00'*trailing),a)
+
+    def test_partial_pcap_record_body_fails_closed(self):
+        complete=make_pcap([packet(900,2)]).getvalue()
+        with self.assertRaises(EOFError):
+            parse_pcap(BytesIO(complete[:-1]),Analyzer([HOST]))
+
+    def test_uncaptured_tcp_segment_boundary_not_misclassified(self):
+        h=tls_hello()
+        inside=locate_sni(h)[1]+5
+        a=Analyzer([HOST])
+        peer=b'\\xcb\\0\\x71\\x02'
+        a.tcp(peer,45001,700,True,b'')
+        # tcpdump captured a prefix, but the wire segment contained more.
+        a.tcp(peer,45001,701,False,h[:inside],wire_len=len(h))
+        # Missing bytes are later recovered from a retransmission.
+        a.tcp(peer,45001,701+inside,False,h[inside:])
+        self.assertEqual(a.stats['target_clienthello'],1)
+        self.assertEqual(a.stats['sni_boundary_indeterminate'],1)
+        self.assertEqual(a.stats['sni_split'],0)
+        self.assertEqual(a.stats['sni_unsplit'],0)
+
     def test_binary_pcap_split(self):
         h=tls_hello();i=locate_sni(h)[1]+5
         raw=make_pcap([packet(800,2),packet(801+i,24,h[i:]),packet(801,24,h[:i])])
