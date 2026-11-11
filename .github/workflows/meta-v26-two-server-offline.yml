@@ -34,3 +34,4 @@ jobs:
           echo 'meta_v26_de_ru_rollback_regressions=PASS' >> "$GITHUB_STEP_SUMMARY"
           echo 'meta_v26_live_servers_changed=false' >> "$GITHUB_STEP_SUMMARY"
           echo 'meta_v26_android_working=NOT_PROVEN' >> "$GITHUB_STEP_SUMMARY"
+# Requested v26 checkpoint: re-run reviewed checks only; no live routing activation.
