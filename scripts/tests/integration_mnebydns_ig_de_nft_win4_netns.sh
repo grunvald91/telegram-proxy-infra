@@ -49,7 +49,7 @@ done
 
 capture() {
   local variant="$1"
-  ip netns exec "$CLNT" tcpdump -i "$V2" -s 0 -U -w "$TMP/$variant.pcap" 'tcp and port 443' > "$TMP/$variant.capturelog" 2>&1 &
+  ip netns exec "$SERV" tcpdump -i "$V1" -s 0 -U -w "$TMP/$variant.pcap" 'tcp and port 443' > "$TMP/$variant.capturelog" 2>&1 &
   CPID=$!
   ready=0
   for i in {1..60}; do
