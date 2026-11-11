@@ -87,9 +87,13 @@ jobs:
           else
             echo 'iglite_canary_runtime=FAILED_BEFORE_ACTIVE'
           fi
+          set +e
           wait "$remote"
+          result=$?
+          set -e
           trap - EXIT
           cat "$logfile"
+          if [[ "$result" != 0 ]]; then echo "iglite_live_remote_failed_exit=$result"; exit "$result"; fi
           grep -q '^iglite_rollback=VERIFIED_ORIGINAL_BYTES_AND_SERVICES$' "$logfile"
           grep -q '^iglite_end_to_end_android=NOT_TESTED$' "$logfile"
       - name: Independent postcheck of nft, nginx and exact DNS checkpoint
