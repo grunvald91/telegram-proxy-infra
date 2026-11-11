@@ -113,7 +113,7 @@ jobs:
     if: ${{ false }}
     name: Independent actual capture READY check
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 18
     env:
       DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
     steps:
@@ -151,7 +151,7 @@ jobs:
                   p=subprocess.run(args,capture_output=True,text=True,timeout=8)
                   return p.returncode,p.stdout
               except Exception:return -1,''
-          for attempt in range(170):
+          for attempt in range(500):
               if stamp.is_file():
                   try:start=int(stamp.read_text().strip())
                   except (OSError,ValueError):start=0
