@@ -60,12 +60,12 @@ def read_name(msg: bytes, start: int) -> tuple[str, int]:
     raise ValueError("DNS name too deep")
 
 
-def make_question(qtype: int, transaction_id: int) -> bytes:
+def make_question(qtype: int, transaction_id: int, host: str = HOST) -> bytes:
     return (struct.pack("!HHHHHH", transaction_id, 0x0100, 1, 0, 0, 0)
-            + wire_name(HOST) + struct.pack("!HH", qtype, 1))
+            + wire_name(host) + struct.pack("!HH", qtype, 1))
 
 
-def check_answer(packet: bytes, transaction_id: int, qtype: int) -> str:
+def check_answer(packet: bytes, transaction_id: int, qtype: int, host: str = HOST) -> str:
     """Require exact question and no alternate usable addresses or aliases."""
     if len(packet) < 12:
         raise ValueError("truncated DNS header")
@@ -82,7 +82,7 @@ def check_answer(packet: bytes, transaction_id: int, qtype: int) -> str:
         raise ValueError("missing DNS question type")
     qt, cls = struct.unpack_from("!HH", packet, pos)
     pos += 4
-    if name != HOST + "." or qt != qtype or cls != 1:
+    if name != host + "." or qt != qtype or cls != 1:
         raise ValueError("DNS question mismatch")
     answers = []
     for _ in range(an):
@@ -102,7 +102,7 @@ def check_answer(packet: bytes, transaction_id: int, qtype: int) -> str:
         if len(answers) != 1:
             raise ValueError("A response must contain one exact edge RR")
         owner, kind, klass, value = answers[0]
-        if owner != HOST + "." or kind != 1 or klass != 1 or len(value) != 4:
+        if owner != host + "." or kind != 1 or klass != 1 or len(value) != 4:
             raise ValueError("unexpected A alias / answer record")
         if socket.inet_ntoa(value) != EDGE:
             raise ValueError("A did not resolve to DE edge")
@@ -112,9 +112,9 @@ def check_answer(packet: bytes, transaction_id: int, qtype: int) -> str:
     return "NO_ALIAS_OR_IPV6"
 
 
-def read_exact_dot_type(qtype: int, *, timeout: float = 5) -> str:
+def read_exact_dot_type(qtype: int, *, timeout: float = 5, host: str = HOST) -> str:
     tid = secrets.randbelow(65536)
-    question = make_question(qtype, tid)
+    question = make_question(qtype, tid, host)
 
     def recvall(tls, length):
         data = bytearray()
@@ -133,11 +133,11 @@ def read_exact_dot_type(qtype: int, *, timeout: float = 5) -> str:
             size = struct.unpack("!H", header)[0]
             if size > 4096:
                 raise ValueError("unexpectedly large DoT response")
-            return check_answer(recvall(tls, size), tid, qtype)
+            return check_answer(recvall(tls, size), tid, qtype, host)
 
 
-def check_exact_types() -> dict[str, str]:
+def check_exact_types(host: str = HOST) -> dict[str, str]:
     checks = {}
     for name, kind in QTYPES.items():
-        checks[name] = read_exact_dot_type(kind)
+        checks[name] = read_exact_dot_type(kind, host=host)
     return checks
