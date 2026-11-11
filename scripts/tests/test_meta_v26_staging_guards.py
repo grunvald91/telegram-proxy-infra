@@ -111,6 +111,52 @@ class StagingRollbackTests(unittest.TestCase):
                 de.reset()
             self.assertFalse(root.exists())
 
+    def test_de_reset_incomplete_prearm_staging_without_snapshots(self):
+        # A failure before 'armed' cannot modify live Nginx/CoreDNS, but
+        # previously made reset() demand nonexistent candidate checkpoints.
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d)/"state";root.mkdir()
+            ng=Path(d)/"nginx.conf";dns=Path(d)/"Corefile"
+            ng.write_bytes(b"baseline nginx");dns.write_bytes(b"baseline dns")
+            (root/"nginx.original").write_bytes(ng.read_bytes())
+            (root/"lock").touch()
+            with patch.object(de,"ROOT",root),patch.object(de,"LIVE_NGINX",ng),\
+                 patch.object(de,"LIVE_DNS",dns),\
+                 patch.object(de,"active",side_effect=lambda name: name in
+                     ("nginx.service","mnebydns-dot.service",de.UNIT+".timer")),\
+                 patch.object(de,"cmd") as command:
+                # This fake indicates an active watchdog throughout; a real
+                # systemctl stop would make it inactive, so model that state.
+                timer_running={"value":True}
+                def act(service):
+                    return (timer_running["value"] if service==de.UNIT+".timer"
+                            else service in ("nginx.service","mnebydns-dot.service"))
+                def stop(args,**kwargs):
+                    if args[:2]==["systemctl","stop"]:timer_running["value"]=False
+                    return SimpleNamespace(returncode=0,stdout="")
+                with patch.object(de,"active",side_effect=act):
+                    command.side_effect=stop
+                    de.reset()
+                command.assert_called_once()
+            self.assertFalse(root.exists())
+            self.assertEqual(ng.read_bytes(),b"baseline nginx")
+            self.assertEqual(dns.read_bytes(),b"baseline dns")
+
+    def test_de_reset_incomplete_prearm_rejects_live_drift(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d)/"state";root.mkdir()
+            ng=Path(d)/"nginx.conf";dns=Path(d)/"Corefile"
+            ng.write_bytes(b"external edit");dns.write_bytes(b"baseline dns")
+            (root/"nginx.original").write_bytes(b"baseline nginx")
+            with patch.object(de,"ROOT",root),patch.object(de,"LIVE_NGINX",ng),\
+                 patch.object(de,"LIVE_DNS",dns),\
+                 patch.object(de,"active",return_value=True),\
+                 patch.object(de,"cmd",side_effect=AssertionError("must not mutate")):
+                with self.assertRaisesRegex(RuntimeError,"baseline drift"):
+                    de.reset()
+            self.assertTrue(root.exists())
+            self.assertEqual(ng.read_bytes(),b"external edit")
+
     def test_ru_reset_requires_worker_and_rules_absent(self):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d)/"state";root.mkdir()
