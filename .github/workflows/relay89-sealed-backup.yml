@@ -42,7 +42,7 @@ jobs:
                       for b in iter(lambda:f.read(1048576),b''):sys.stdout.buffer.write(b)
                   break
           else: raise RuntimeError('Expected existing sealed backup not found')
-                    PY
+          PY
           cat "$RUNNER_TEMP/backup-metadata.txt"
           expected=$(sed -n 's/^server_ciphertext_sha256=//p' "$RUNNER_TEMP/backup-metadata.txt")
           test "${#expected}" -eq 64
