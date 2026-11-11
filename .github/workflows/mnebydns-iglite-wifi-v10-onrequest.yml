@@ -65,7 +65,7 @@ jobs:
             'MNEBY_IGLITE_LIVE_APPROVED=YES MNEBY_IGLITE_TEMPORARY_ONLY_APPROVED=YES MNEBY_IGLITE_V11_ROUTE_ONLY_APPROVED=YES python3 -u /usr/local/libexec/mneby-iglite-v11/mnebydns_iglite_route_only_v11.py live' \
             > "$logfile" 2>&1
           cat "$logfile"
-          grep -Fqx 'iglite_rollback=VERIFIED_ORIGINAL_BYTES_AND_SERVICES' "$logfile"
+          grep -Fqx 'iglite_v11_rollback=VERIFIED_CONFIGS_AND_SERVICES_NO_TCP_WRITES' "$logfile"
           grep -Fqx 'iglite_v11_exact_host_count=11' "$logfile"
           grep -Fqx 'iglite_v11_transport=ROUTE_ONLY_NO_SYSCTL_NO_NFT' "$logfile"
           grep -Fqx 'iglite_v11_15min_window=READY' "$logfile"
