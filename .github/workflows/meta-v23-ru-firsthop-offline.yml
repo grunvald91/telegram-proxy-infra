@@ -8,6 +8,8 @@ on:
       - 'scripts/meta_v15_receive_window.py'
       - 'scripts/mnebydns-owner-domain-render-20261110.py'
       - 'scripts/tests/test_meta_v23_ru_firsthop_preview.py'
+      - 'scripts/meta_v25_source_view.py'
+      - 'scripts/tests/test_meta_v25_source_view.py'
   workflow_dispatch:
 permissions:
   contents: read
@@ -27,6 +29,8 @@ jobs:
           set -Eeuo pipefail
           python3 -m py_compile scripts/meta_v23_ru_firsthop_preview.py scripts/meta_v15_receive_window.py scripts/mnebydns-owner-domain-render-20261110.py
           python3 -m unittest discover -s scripts/tests -p 'test_meta_v23_ru_firsthop_preview.py' -v
+          python3 -m py_compile scripts/meta_v25_source_view.py
+          python3 -m unittest discover -s scripts/tests -p 'test_meta_v25_source_view.py' -v
           python3 scripts/mnebydns-owner-domain-render-20261110.py self-test
           python3 -m unittest discover -s scripts/tests -p 'test_meta_v17_isolation_quarantine.py' -v
           echo 'meta_v23_offline_route_reversibility=PASS' >> "$GITHUB_STEP_SUMMARY"
