@@ -194,18 +194,35 @@ def rollback():
     with lock():_rollback_locked()
 
 def reset():
-    """Forget only a verified restored DE trial and stop its watchdog."""
+    """Forget verified restored state, including interrupted pre-arm staging.
+
+    stage() never modifies production before writing 'armed'. A failure while
+    writing the checkpoints or checking Nginx therefore leaves an incomplete
+    directory that must be removable without requiring nonexistent snapshots.
+    """
     import shutil
     if not ROOT.is_dir():return
     with lock():
-        _rollback_locked()
+        armed=file("armed").is_file()
+        if armed:
+            _rollback_locked()
+        else:
+            # No production edits are allowed before the durable armed marker.
+            # Verify every original checkpoint that was successfully written.
+            for key,live in (("nginx",LIVE_NGINX),("dns",LIVE_DNS)):
+                prior=file(key+".original")
+                if prior.is_file() and live.read_bytes()!=prior.read_bytes():
+                    raise RuntimeError("DE unarmed reset rejected: "+key+" baseline drift")
+            if not active("nginx.service") or not active("mnebydns-dot.service"):
+                raise RuntimeError("DE unarmed reset rejected: baseline service inactive")
         if active(UNIT+".timer"):
             cmd(["systemctl","stop",UNIT+".timer"],timeout=12)
         if active(UNIT+".timer"):
             raise RuntimeError("DE watchdog did not stop")
-        for live,original,_candidate in snapshot().values():
-            if live.read_bytes()!=original:
-                raise RuntimeError("DE reset rejected: route not restored")
+        if armed:
+            for live,original,_candidate in snapshot().values():
+                if live.read_bytes()!=original:
+                    raise RuntimeError("DE reset rejected: route not restored")
     shutil.rmtree(ROOT)
     print("meta_v26_de_state_reset=VERIFIED",flush=True)
 
