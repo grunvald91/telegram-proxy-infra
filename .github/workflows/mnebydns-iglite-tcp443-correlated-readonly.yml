@@ -83,18 +83,9 @@ jobs:
             echo "peerwise_remote_exit=$rc"
             exit "$rc"
           fi
-          grep -Eq '^peerwise_443_in_SYN=[1-9][0-9]*
+          grep -Eq '^peerwise_443_in_SYN=[1-9][0-9]*$' "$logfile"
           grep -Fqx 'peerwise_server_changes=NONE' "$logfile"
           grep -Fqx 'peerwise_raw_addresses_or_payload_logged=false' "$logfile"
-          grep -q '^peerwise_443_in_SYN=' "$logfile"
-          grep -q '^peerwise_443_out_SYNACK=' "$logfile"
-          grep -q '^peerwise_conntrack_samples=' "$logfile"
-          echo 'peerwise_readonly_completed=true'
- "$logfile"
-          echo 'peerwise_external_probe=RUN_WITH_OBSERVER'
-          grep -Fqx 'peerwise_server_changes=NONE' "$logfile"
-          grep -Fqx 'peerwise_raw_addresses_or_payload_logged=false' "$logfile"
-          grep -q '^peerwise_443_in_SYN=' "$logfile"
           grep -q '^peerwise_443_out_SYNACK=' "$logfile"
           grep -q '^peerwise_conntrack_samples=' "$logfile"
           echo 'peerwise_readonly_completed=true'
