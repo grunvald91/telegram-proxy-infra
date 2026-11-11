@@ -1,4 +1,4 @@
-name: MNEBYDNS Instagram Lite Wi-Fi Window4 controlled packet-header canary
+name: MNEBYDNS Meta Wi-Fi Window4 15-minute live canary
 on:
   push:
     branches: [audit/mnebydns-instagram-lite-20261111]
@@ -12,7 +12,7 @@ concurrency:
 jobs:
   verified-short-canary:
     runs-on: ubuntu-latest
-    timeout-minutes: 9
+    timeout-minutes: 26
     env:
       DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
     steps:
@@ -23,12 +23,13 @@ jobs:
         run: |
           set -Eeuo pipefail
           test -n "$DE_PASS"
-          python3 -m py_compile scripts/mnebydns_iglite_wifi_de_temp_route_v6.py
+          python3 -m py_compile scripts/mnebydns_iglite_wifi_multi_meta_v7.py
           python3 scripts/mnebydns-owner-domain-render-20261110.py self-test
           python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_iglite_route_preview.py' -v
-          grep -Fq 'WATCHDOG_SECONDS = 270' scripts/mnebydns_iglite_wifi_de_temp_route_v6.py
+          grep -Fq 'WATCHDOG_SECONDS = 1200' scripts/mnebydns_iglite_wifi_multi_meta_v7.py
+          grep -Fq 'TRIAL_SECONDS = 900' scripts/mnebydns_iglite_wifi_multi_meta_v7.py
           python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_iglite_dns_wire_checks.py' -v
-          grep -Fq 'iglite_rollback=VERIFIED_ORIGINAL_BYTES_AND_SERVICES' scripts/mnebydns_iglite_wifi_de_temp_route_v6.py
+          grep -Fq 'iglite_rollback=VERIFIED_ORIGINAL_BYTES_AND_SERVICES' scripts/mnebydns_iglite_wifi_multi_meta_v7.py
       - name: Prepare pinned SSH
         run: |
           set -Eeuo pipefail
@@ -45,8 +46,8 @@ jobs:
             -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
           tar -C scripts -cf - mnebydns_iglite_wifi_de_temp_route_v6.py mnebydns-owner-domain-render-20261110.py mnebydns_iglite_dns_wire_checks.py |
             sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
-              'umask 077; mkdir -p -m 700 /run/mneby-iglite-stage-20261111-v6; tar -xf - -C /run/mneby-iglite-stage-20261111-v6'
-      - name: Observe Wi-Fi ClientHello TCP header sizes during Window4 with rollback
+              'umask 077; mkdir -p -m 700 /run/mneby-iglite-stage-20261111-v7; tar -xf - -C /run/mneby-iglite-stage-20261111-v7'
+      - name: Test 15-min Wi-Fi multi-Meta TCP Window4 and record header sizes with rollback
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -56,13 +57,13 @@ jobs:
             -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
             -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
           logfile="$RUNNER_TEMP/iglite-de-live.log"
-          timeout 310s sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
-             'MNEBY_IGLITE_LIVE_APPROVED=YES python3 /run/mneby-iglite-stage-20261111-v6/mnebydns_iglite_wifi_de_temp_route_v6.py live' \
+          timeout 1430s sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
+             'MNEBY_IGLITE_LIVE_APPROVED=YES python3 /run/mneby-iglite-stage-20261111-v7/mnebydns_iglite_wifi_de_temp_route_v6.py live' \
              > "$logfile" 2>&1 &
           remote=$!
           trap 'kill "$remote" 2>/dev/null || true; wait "$remote" 2>/dev/null || true' EXIT
           activated=0
-          for attempt in $(seq 1 700); do
+          for attempt in $(seq 1 1600); do
             if grep -q '^iglite_live_global_window4=ACTIVE$' "$logfile" 2>/dev/null; then
               activated=1
               break
@@ -98,6 +99,8 @@ jobs:
           grep -q '^iglite_rollback=VERIFIED_ORIGINAL_BYTES_AND_SERVICES$' "$logfile"
           grep -q '^iglite_live_dot_route_DE=PASS_NO_IPV6_OR_SVCB_ESCAPE$' "$logfile"
           grep -q '^iglite_end_to_end_android=NOT_TESTED$' "$logfile"
+          grep -q '^iglite_wifi_15min_window=READY$' "$logfile"
+          grep -q '^iglite_meta_routed_count=' "$logfile"
           grep -q '^iglite_wifi_pcap_persisted=false$' "$logfile"
           grep -q '^iglite_wifi_sni_byte_split=NOT_PROVEN_BY_HEADER_CAPTURE$' "$logfile"
       - name: Independent postcheck of nft, nginx and exact DNS checkpoint
@@ -124,7 +127,7 @@ jobs:
               good_ckpt=(root.joinpath('dns.stable').is_file() and root.joinpath('nginx.stable').is_file()
                          and core.read_bytes()==root.joinpath('dns.stable').read_bytes()
                          and nginx.read_bytes()==root.joinpath('nginx.stable').read_bytes())
-          nft_absent=cmd(['nft','list','table','inet','mneby_ig_lite_w4_20261111_v6'])!=0
+          nft_absent=cmd(['nft','list','table','inet','mneby_ig_lite_w4_20261111_v7'])!=0
           nginx_ok=cmd(['systemctl','is-active','--quiet','nginx.service'])==0
           dns_ok=cmd(['systemctl','is-active','--quiet','mnebydns-dot.service'])==0
           for k,v in [('nft_absent',nft_absent),('configs_original',good_ckpt),('nginx_active',nginx_ok),('dns_active',dns_ok)]:
