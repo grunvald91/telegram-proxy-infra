@@ -160,6 +160,7 @@ class V10Window20Review(unittest.TestCase):
         unit=(ROOT.parent / "ops/mneby-ig-lite-v10-recover.service").read_text()
         self.assertIn("DefaultDependencies=no",unit)
         self.assertIn("After=local-fs.target",unit)
+        self.assertIn("RequiresMountsFor=/var/lib/mneby-iglite-wifi-de-20261111-v10 /usr/local/libexec/mneby-iglite-v10",unit)
         self.assertIn("Before=nginx.service mnebydns-dot.service",unit)
         self.assertIn("ConditionPathExists=/var/lib/mneby-iglite-wifi-de-20261111-v10/mutation-ready",unit)
         self.assertIn("boot-rollback",unit)
