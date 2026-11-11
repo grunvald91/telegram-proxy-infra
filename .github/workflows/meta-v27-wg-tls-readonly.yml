@@ -50,7 +50,7 @@ jobs:
             'set -eu; umask 077; d=$(mktemp -d /tmp/mneby-v27-wg.XXXXXXXX); trap '\''rm -rf -- "$d"'\'' EXIT; tar -xf - -C "$d"; timeout 75s python3 -u "$d/meta_v27_wg_tls_probe.py" serve' \
             >"$logfile" 2>&1 &
           server_proc=$!
-          trap 'rc=$?; kill "$server_proc" 2>/dev/null || true; wait "$server_proc" 2>/dev/null || true; cat "$logfile" 2>/dev/null || true; exit "$rc"' EXIT
+          trap 'rc=$?; if [[ "${server_proc:-}" =~ ^[1-9][0-9]*$ ]]; then kill "$server_proc" 2>/dev/null || true; wait "$server_proc" 2>/dev/null || true; fi; cat "$logfile" 2>/dev/null || true; exit "$rc"' EXIT
           ready=0
           for attempt in $(seq 1 150); do
             if grep -Fq 'v27_wg_tls_proxy=READY' "$logfile" 2>/dev/null; then ready=1; break; fi
@@ -65,11 +65,12 @@ jobs:
           sshpass -e ssh "${opts[@]}" root@188.120.254.223 \
             'python3 -u - client' < scripts/meta_v27_wg_tls_probe.py | tee -a "$GITHUB_STEP_SUMMARY"
           wait "$server_proc"
-          server_proc=0
+          server_proc=''
           grep -Fq 'v27_de_temporary_nginx_stopped=true' "$logfile"
-          grep -Fq 'v27_de_production_configs_untouched=true' "$logfile"
+          grep -Fq 'v27_de_production_configs_hash_unchanged=true' "$logfile"
+          grep '^v27_' "$logfile" | tee -a "$GITHUB_STEP_SUMMARY"
           echo 'v27_de_temporary_nginx_stopped=true' >> "$GITHUB_STEP_SUMMARY"
-          echo 'v27_de_production_configs_untouched=true' >> "$GITHUB_STEP_SUMMARY"
+          echo 'v27_de_production_configs_hash_unchanged=true' >> "$GITHUB_STEP_SUMMARY"
           echo 'v27_public_dns_unchanged=true' >> "$GITHUB_STEP_SUMMARY"
           echo 'v27_public_tcp443_unchanged=true' >> "$GITHUB_STEP_SUMMARY"
           echo 'v27_android_or_isp=NOT_TESTED' >> "$GITHUB_STEP_SUMMARY"
