@@ -118,6 +118,13 @@ def rollback():
     if not ROOT.is_dir():
         print("iglite_rollback=NO_STATE", flush=True)
         return
+    nft_absent = command(["nft", "list", "table", "inet", TABLE], check=False).returncode != 0
+    originals = ((ROOT / "nginx.original").is_file() and (ROOT / "core.original").is_file())
+    if (nft_absent and originals and
+        NGINX.read_bytes() == (ROOT / "nginx.original").read_bytes() and
+        CORE.read_bytes() == (ROOT / "core.original").read_bytes()):
+        print("iglite_rollback=ALREADY_RESTORED", flush=True)
+        return
     failures = []
     # Remove the test table first, minimizing global window manipulation.
     if command(["nft", "list", "table", "inet", TABLE], check=False).returncode == 0:
@@ -172,11 +179,41 @@ def dot_query_a():
                 return data
             size=struct.unpack("!H",recv(2))[0]
             resp=recv(size)
-    if resp[:2] != b"\x71\x71" or not resp[2] & 0x80:
-        raise RuntimeError("DoT transaction/response mismatch")
-    if socket.inet_aton(DE) not in resp:
-        raise RuntimeError("Expected DE IPv4 not present in exact Lite DoT response")
+    if len(resp)<12:
+        raise RuntimeError("DoT response too short")
+    tid, flags, qd, an, _ns, _ar=struct.unpack_from("!HHHHHH",resp)
+    if tid!=0x7171 or not flags & 0x8000 or flags & 0xf:
+        raise RuntimeError("DoT transaction or RCODE mismatch")
+    def skip_name(at):
+        for _ in range(128):
+            if at>=len(resp): raise RuntimeError("Truncated DNS name")
+            label=resp[at]
+            if label&0xc0==0xc0:
+                if at+1>=len(resp): raise RuntimeError("Truncated DNS pointer")
+                return at+2
+            if label&0xc0 or label>63: raise RuntimeError("Invalid DNS label")
+            at+=1
+            if label==0:return at
+            at+=label
+        raise RuntimeError("DNS name loop")
+    at=12
+    for _ in range(qd):
+        at=skip_name(at)+4
+        if at>len(resp):raise RuntimeError("Truncated DNS question")
+    answers=[]
+    for _ in range(an):
+        at=skip_name(at)
+        if at+10>len(resp):raise RuntimeError("Truncated DNS answer")
+        kind, cls, _ttl, length=struct.unpack_from("!HHIH",resp,at)
+        at+=10
+        if at+length>len(resp): raise RuntimeError("Truncated DNS RDATA")
+        if kind==1 and cls==1 and length==4:
+            answers.append(socket.inet_ntoa(resp[at:at+4]))
+        at+=length
+    if answers != [DE]:
+        raise RuntimeError("Wrong DoT IPv4 records for exact Lite hostname")
     return True
+
 
 def live_tls():
     ctx = ssl.create_default_context()
