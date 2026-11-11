@@ -179,6 +179,35 @@ class OwnerDomainLiveHealthAndSSH(TestCase):
             owner.active_health()
         queries.assert_not_called()
 
+    def test_active_monitor_runs_with_nonempty_domain_queue(self):
+        task = confirm_row("CANARY")
+        with patch.object(owner, "get_task", return_value=task), \
+             patch.object(owner, "active_health") as health, \
+             patch.object(owner, "cancel_canary", side_effect=AssertionError("must not cancel")), \
+             patch.object(owner.time, "time", return_value=100), \
+             patch.object(owner.sys, "argv", ["controller", "run"]):
+            owner.main()
+        health.assert_called_once()
+
+    def test_active_monitor_still_runs_when_owner_transition_fails(self):
+        task = confirm_row("ROLLBACK_REQUESTED")
+        with patch.object(owner, "get_task", return_value=task), \
+             patch.object(owner, "cancel_canary", side_effect=RuntimeError("transition-failed")), \
+             patch.object(owner, "active_health") as health, \
+             patch.object(owner.sys, "argv", ["controller", "run"]):
+            with self.assertRaisesRegex(RuntimeError, "transition-failed"):
+                owner.main()
+        health.assert_called_once()
+
+    def test_active_monitor_failure_does_not_mask_transition_failure(self):
+        task = confirm_row("ROLLBACK_REQUESTED")
+        with patch.object(owner, "get_task", return_value=task), \
+             patch.object(owner, "cancel_canary", side_effect=RuntimeError("owner-state-failed")), \
+             patch.object(owner, "active_health", side_effect=RuntimeError("monitor-failed")), \
+             patch.object(owner.sys, "argv", ["controller", "run"]):
+            with self.assertRaisesRegex(RuntimeError, "owner-state-failed"):
+                owner.main()
+
     def test_main_idle_work_cycle_invokes_active_monitor(self):
         with patch.object(owner, "get_task", return_value=None), \
              patch.object(owner, "active_health") as health, \
