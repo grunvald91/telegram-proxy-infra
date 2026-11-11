@@ -178,15 +178,27 @@ class V10Window20Review(unittest.TestCase):
         self.assertLess(source.index(marker),
                         source.index('command(["sysctl", "-w", "net.ipv4.tcp_window_scaling=0"]'))
 
-    def test_live_workflow_is_disabled_until_reboot_safe_restore_exists(self):
+    def test_live_workflow_explicit_owner_temporary_mode(self):
         workflow=(ROOT.parent / ".github/workflows/mnebydns-iglite-wifi-v10-onrequest.yml").read_text()
-        self.assertEqual(workflow.count("if: ${{ false }}"),2)
-        self.assertIn("REVIEW BLOCKER: no persistent reboot-safe recovery unit yet",workflow)
+        # Both running jobs can only start after a deliberately changed launch marker.
+        self.assertEqual(workflow.count("if: ${{ true }}"),2)
+        self.assertIn("MNEBY_IGLITE_TEMPORARY_ONLY_APPROVED=YES",workflow)
+        self.assertIn("ops/mnebydns-iglite-wifi-v10-launch.marker",workflow)
         self.assertIn("timeout-minutes: 18",workflow)
         self.assertIn("for attempt in range(500)",workflow)
         self.assertIn("/var/lib/mneby-iglite-wifi-de-20261111-v10/ready_epoch",workflow)
         self.assertNotIn("/run/mneby-iglite-wifi-de-20261111-v10/ready_epoch",workflow)
         self.assertIn("/usr/local/libexec/mneby-iglite-v10/",workflow)
+
+    def test_owner_temporary_mode_never_skips_independent_timed_recovery(self):
+        src=inspect.getsource(self.v.baseline)
+        self.assertIn('MNEBY_IGLITE_TEMPORARY_ONLY_APPROVED',src)
+        self.assertIn('Reboot-persistent recovery service is not enabled',src)
+        run=inspect.getsource(self.v.live)
+        self.assertIn('command(["systemd-run"',run)
+        self.assertIn('if command(["systemctl", "is-active", "--quiet", UNIT + ".timer"]',run)
+        self.assertIn("remaining_watchdog < TRIAL_SECONDS + MIN_ROLLBACK_MARGIN",run)
+        self.assertIn("finally:\\n        rollback()",run)
 
     def test_observer_reports_not_phone_attribution(self):
         src=inspect.getsource(self.v.observe_wifi_tcp_headers)
