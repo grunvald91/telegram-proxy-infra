@@ -17,6 +17,11 @@ if nft list table inet "$TABLE" >/dev/null 2>&1; then
     echo 'de_global_abort=EXPERIMENT_TABLE_ALREADY_PRESENT'
     exit 1
 fi
+# A prior watchdog must finish naturally. Never disable/cancel its timer.
+for tick in {1..60}; do
+    if ! systemctl is-active --quiet "$UNIT.timer"; then break; fi
+    sleep 2
+done
 if systemctl is-active --quiet "$UNIT.timer"; then
     echo 'de_global_abort=PRIOR_TIMER_ACTIVE'
     exit 1
