@@ -4,8 +4,9 @@
 Verified Instagram/Meta hostnames are routed through DE while temporary
 Temporary TCP Window Scale=0 and early ACK advertised window=20 apply to all
 new DE TCP connections; only 11 selected Meta hostnames are routed via DNS.
-The current timer restores state on the same boot; this candidate is NOT safe
-to deploy until reboot-persistent restoration is implemented and verified.
+On the same boot a 1200-second transient systemd rollback timer restores state.
+If the VPS reboots during the trial, that timer will not survive; restore from
+the owner's offsite backup may be needed. Temporary-only mode is explicit.
 """
 from __future__ import annotations
 import hashlib
@@ -150,13 +151,17 @@ def baseline():
             raise RuntimeError("Earlier global Window4 table still active")
     if ROOT.exists():
         raise RuntimeError("Prior one-shot state exists; refuse duplicate")
-    # A reboot-persistent, boot-ordered recovery unit and script must be in
-    # place BEFORE the live task backs up or changes any configuration.
+    # Temporary-only mode is owner approved for this single 900s experiment.
+    # The transient 1200s independent systemd rollback timer remains REQUIRED.
+    # No claim is made for automatic reboot recovery: user holds offsite backup.
     if Path(__file__).resolve().parent != PERSISTENT_STAGE:
-        raise RuntimeError("Live script must run from persistent rescue directory")
-    if command(["systemctl", "is-enabled", "--quiet", RECOVERY_UNIT],
-               check=False).returncode != 0:
-        raise RuntimeError("Reboot-persistent recovery service is not enabled")
+        raise RuntimeError("Live script must run from persistent stage")
+    if os.environ.get("MNEBY_IGLITE_TEMPORARY_ONLY_APPROVED") != "YES":
+        if command(["systemctl", "is-enabled", "--quiet", RECOVERY_UNIT],
+                   check=False).returncode != 0:
+            raise RuntimeError("Reboot-persistent recovery service is not enabled")
+    else:
+        print("iglite_reboot_recovery=NOT_INSTALLED_OWNER_OPTED_FOR_BACKUP",flush=True)
     if command(["systemctl", "is-active", "--quiet", RECOVERY_UNIT],
                check=False).returncode == 0:
         raise RuntimeError("Recovery service already running")
