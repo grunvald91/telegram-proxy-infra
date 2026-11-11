@@ -21,17 +21,17 @@ import subprocess
 import sys
 import time
 
-ROOT = Path("/run/mneby-iglite-short-de-20261111-v4")
+ROOT = Path("/run/mneby-iglite-short-de-20261111-v5")
 NGINX = Path("/etc/nginx/nginx.conf")
 CORE = Path("/opt/mnebydns-dot/Corefile")
 CHECKPOINT_CURRENT = Path("/opt/mnebydns-stable-checkpoints/current")
 RENDERER = Path(__file__).resolve().parent / "mnebydns-owner-domain-render-20261110.py"
 DE = "89.125.90.101"
 HOST = "iglite-z.instagram.com"
-TABLE = "mneby_ig_lite_w4_20261111_v4"
-UNIT = "mneby-ig-lite-short-20261111-v4"
+TABLE = "mneby_ig_lite_w4_20261111_v5"
+UNIT = "mneby-ig-lite-short-20261111-v5"
 TRIAL_SECONDS = 35
-WATCHDOG_SECONDS = 110
+WATCHDOG_SECONDS = 160
 
 def command(argv, *, input=None, timeout=25, check=True):
     p = subprocess.run(argv, input=input, capture_output=True, text=True, timeout=timeout)
@@ -93,7 +93,8 @@ def baseline():
     # Never terminate an older independent timer to force a new trial.
     # Wait until BOTH its timer and rollback service are no longer running.
     prior_units = ("mneby-ig-lite-short-20261111-v2",
-                   "mneby-ig-lite-short-20261111-v3")
+                   "mneby-ig-lite-short-20261111-v3",
+                   "mneby-ig-lite-short-20261111-v4")
     for tick in range(76):
         in_flight = any(
             command(["systemctl", "is-active", "--quiet", name + suffix],
@@ -109,7 +110,8 @@ def baseline():
         raise RuntimeError("Earlier rollback watchdog did not finish; new test blocked")
     print("iglite_previous_rollback_watchdog_finished=true", flush=True)
     for old_table in ("mneby_ig_lite_w4_20261111_v2",
-                      "mneby_ig_lite_w4_20261111_v3"):
+                      "mneby_ig_lite_w4_20261111_v3",
+                      "mneby_ig_lite_w4_20261111_v4"):
         if command(["nft", "list", "table", "inet", old_table],
                    check=False).returncode == 0:
             raise RuntimeError("Earlier global Window4 table still active")
@@ -291,15 +293,21 @@ def live():
         command(["systemctl", "restart", "mnebydns-dot.service"], timeout=30)
         # A systemctl restart can complete before the public-only DoT bind
         # is accepting connections; service-is-active alone is not readiness.
-        for retry in range(31):
+        # A complete route requires no alternate IPv6/CNAME/HTTPS/SVCB
+        # reply that lets Android connect directly to Meta instead of DE.
+        # Load this helper ONLY during live mode, never during rollback.
+        from mnebydns_iglite_dns_wire_checks import check_exact_types
+        for retry in range(21):
             try:
-                dot_query_a()
+                dns_checks = check_exact_types()
                 break
             except (ConnectionRefusedError, ConnectionResetError, TimeoutError):
-                if retry == 30:
+                if retry == 20:
                     raise
                 time.sleep(.5)
-        print("iglite_live_dot_route_DE=PASS", flush=True)
+        for qtype, verdict in dns_checks.items():
+            print("iglite_live_dot_" + qtype + "=" + verdict, flush=True)
+        print("iglite_live_dot_route_DE=PASS_NO_IPV6_OR_SVCB_ESCAPE", flush=True)
         print("iglite_live_meta_tls=" + live_tls(), flush=True)
         command(["nft", "-f", "-"], input=rules)
         print("iglite_live_global_window4=ACTIVE", flush=True)
