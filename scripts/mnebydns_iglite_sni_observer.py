@@ -340,15 +340,34 @@ def parse_pcap(stream,analyzer,ready=None):
         if cap>PACKET_LIMIT or cap>wire:raise ValueError('unexpected PCAP record')
         analyzer.ethernet(read_exact(stream,cap),timestamp=sec)
 
-def begin(hosts,peer=None):
+def capture_command(*, edge="89.125.90.101", interface=None, peer=None):
+    """Build exact inbound pre-DNAT PCAP filter for either owner edge.
+
+    tcpdump on the RU external interface sees the original dst :443 before
+    prerouting DNAT. A DE-only filter silently recorded zero ClientHellos.
+    """
     import ipaddress
-    capture_filter='ip and tcp and dst host 89.125.90.101 and dst port 443'
+    interfaces={"89.125.90.101":"eth0","188.120.254.223":"ens3"}
+    if edge not in interfaces:
+        raise ValueError("unreviewed capture ingress IP")
+    expected=interfaces[edge]
+    if interface is None:
+        interface=expected
+    if interface!=expected:
+        raise ValueError("capture interface does not match owner ingress")
+    capture_filter='ip and tcp and dst host '+edge+' and dst port 443'
     if peer is not None:
-        capture_filter+=' and src host '+str(ipaddress.IPv4Address(peer))
+        parsed=ipaddress.IPv4Address(peer)
+        if not parsed.is_global or str(parsed)==edge:
+            raise ValueError("invalid capture client peer")
+        capture_filter+=' and src host '+str(parsed)
+    return ['tcpdump','-i',interface,'-n','-U','-s','1500','-w','-',capture_filter]
+
+
+def begin(hosts,peer=None,*,edge="89.125.90.101",interface=None):
     analyzer=Analyzer(hosts)
     process=subprocess.Popen(
-        ['tcpdump','-i','eth0','-n','-U','-s','1500','-w','-',
-         capture_filter],
+        capture_command(edge=edge,interface=interface,peer=peer),
         stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,bufsize=0)
     ready=threading.Event()
     process._mneby_stop_requested=threading.Event()
