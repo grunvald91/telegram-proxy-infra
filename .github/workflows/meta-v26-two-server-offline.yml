@@ -9,6 +9,9 @@ on:
       - 'scripts/tests/test_meta_v26_staging_guards.py'
       - 'scripts/meta_v25_source_view.py'
       - 'scripts/meta_v23_ru_firsthop_preview.py'
+      - 'scripts/meta_v29_two_server_sequence.py'
+      - 'scripts/tests/test_meta_v29_two_server_sequence.py'
+      - 'scripts/meta_v28_dot_view_smoke.py'
   workflow_dispatch:
 permissions:
   contents: read
@@ -27,8 +30,9 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          python3 -m py_compile scripts/meta_v26_de_stage.py scripts/meta_v26_ru_stage.py scripts/meta_v28_dot_view_smoke.py scripts/meta_v26_readonly_preflight.py
+          python3 -m py_compile scripts/meta_v26_de_stage.py scripts/meta_v26_ru_stage.py scripts/meta_v28_dot_view_smoke.py scripts/meta_v26_readonly_preflight.py scripts/meta_v29_two_server_sequence.py
           python3 -m unittest discover -s scripts/tests -p 'test_meta_v26_staging_guards.py' -v
+          python3 -m unittest discover -s scripts/tests -p 'test_meta_v29_two_server_sequence.py' -v
           python3 -m unittest discover -s scripts/tests -p 'test_meta_v25_source_view.py' -v
           python3 -m unittest discover -s scripts/tests -p 'test_meta_v23_ru_firsthop_preview.py' -v
           echo 'meta_v26_de_ru_rollback_regressions=PASS' >> "$GITHUB_STEP_SUMMARY"
