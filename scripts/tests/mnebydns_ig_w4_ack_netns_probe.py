@@ -163,9 +163,12 @@ def verify(file: str, mode: str):
     synack = synacks[0]
     if not synack["valid_checksum"]:
         raise AssertionError("Bad on-wire TCP checksum on SYN-ACK")
-    if mode in ("clamped","clamped_acks","clamped_no_ws"):
+    if mode in ("clamped","clamped_acks"):
         if synack["window"] != 4:
             raise AssertionError(f"Expected win 4, got {synack['window']}")
+    elif mode == "clamped_no_ws":
+        if synack["window"] != 20:
+            raise AssertionError(f"Expected win 20, got {synack['window']}")
     elif synack["window"] == 4:
         raise AssertionError("Reference SYN-ACK unexpectedly had win 4")
     payload = [p["payload_size"] for p in packets
@@ -173,8 +176,10 @@ def verify(file: str, mode: str):
                and p["dport"] == PORT and p["payload_size"] > 0]
     if not payload:
         raise AssertionError("No client payload in capture")
-    if mode in ("clamped","clamped_acks","clamped_wscale0") and payload[0] != 4:
+    if mode in ("clamped","clamped_acks") and payload[0] != 4:
         raise AssertionError(f"Expected first 4-byte TCP data segment; got {payload[0]}")
+    if mode == "clamped_no_ws" and payload[0] != 20:
+        raise AssertionError(f"Expected first 20-byte TCP data segment; got {payload[0]}")
     acks = [p["window"] for p in packets
             if p["src"] == SERVER and p["dst"] == CLIENT
             and p["sport"] == PORT and p["flags"] & 0x10
