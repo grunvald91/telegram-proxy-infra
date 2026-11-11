@@ -81,25 +81,31 @@ def choose_port() -> int:
         return s.getsockname()[1]
 
 def module_declaration() -> str:
-    version = subprocess.run(["nginx", "-V"], timeout=8,
-                             capture_output=True, text=True)
-    flags = version.stdout + version.stderr
-    if version.returncode:
-        raise RuntimeError("nginx_version_unavailable")
-    dynamic = ("--with-stream=dynamic" in flags)
-    paths = (
-        Path("/usr/lib/nginx/modules/ngx_stream_module.so"),
-        Path("/usr/share/nginx/modules/ngx_stream_module.so"),
-        Path("/usr/lib64/nginx/modules/ngx_stream_module.so"),
+    """Reuse the exact stream-module load syntax from a valid running Nginx.
+
+    Some vendor Nginx builds omit --with-stream from nginx -V even though
+    stream is available through a module loaded by the live configuration.
+    Only the known stream load directive is borrowed; no live listeners.
+    """
+    p = subprocess.run(["nginx", "-T"], timeout=12, capture_output=True, text=True)
+    if p.returncode:
+        raise RuntimeError("live_nginx_config_unavailable")
+    directives = re.findall(
+        r"(?m)^\\s*load_module\\s+([^;\\s]*ngx_stream_module\\.so)\\s*;",
+        p.stdout,
     )
-    available = next((x for x in paths if x.is_file()), None)
-    if dynamic and available is None:
-        raise RuntimeError("nginx_stream_dynamic_module_unavailable")
-    if available and dynamic:
-        return "load_module " + str(available) + ";\n"
-    if "--with-stream" in flags:
-        return ""
-    raise RuntimeError("nginx_stream_not_installed")
+    if len(directives) > 1:
+        raise RuntimeError("ambiguous_stream_module")
+    if directives:
+        candidate = directives[0]
+        if '"' in candidate or "'" in candidate or any(c in candidate for c in "{}"):
+            raise RuntimeError("untrusted_module_path")
+        return "load_module " + candidate + ";\n"
+    # The active configuration was parsed successfully by nginx -T, including
+    # its stream map. No explicit load_module means stream is built in.
+    if "stream {" not in p.stdout:
+        raise RuntimeError("live_stream_block_not_found")
+    return ""
 
 def isolated_nginx(tmp: Path, port: int, ip_map: dict[str, str]) -> Path:
     if not 1024 < port < 65536:
