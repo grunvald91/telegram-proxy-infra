@@ -71,7 +71,7 @@ capture reference
 cat > "$TMP/nft.rules" <<'NFT'
 add table inet mneby_ig_win4_netns
 add chain inet mneby_ig_win4_netns output { type filter hook output priority mangle; policy accept; }
-add rule inet mneby_ig_win4_netns output ip saddr 192.0.2.1 tcp sport 443 tcp flags & (syn | ack) == (syn | ack) counter tcp window set 4
+add rule inet mneby_ig_win4_netns output ip saddr 192.0.2.1 tcp sport 18443 tcp flags & (syn | ack) == (syn | ack) counter tcp window set 4
 NFT
 ip netns exec "$SERV" nft --check -f "$TMP/nft.rules"
 ip netns exec "$SERV" nft -f "$TMP/nft.rules"
@@ -84,4 +84,4 @@ capture failbypass
 ! ip netns exec "$SERV" nft list table inet mneby_ig_win4_netns >/dev/null 2>&1
 wait "$SPID"
 SPID=''
-echo 'nft_win4_synack_checksum_segmentation_and_rollback=PASS'
+echo 'nft_win4_synthetic18443_checksum_segmentation_and_rollback=PASS'
