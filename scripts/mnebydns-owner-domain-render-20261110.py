@@ -41,6 +41,23 @@ def validated_public_ip(ip: str) -> str:
     return str(parsed)
 
 
+def verify_pinned_origin_ip(host: str, ip: str, *, timeout: float = 5) -> str:
+    """Check a pinned Meta origin's hostname against its real TLS certificate.
+
+    A public IPv4 is not proof that the origin serves this hostname. The
+    caller must not deploy an SNI route unless this TLS handshake succeeds.
+    """
+    host = validate_domain(host)
+    ip = validated_public_ip(ip)
+    ctx = ssl.create_default_context()
+    with socket.create_connection((ip, 443), timeout=timeout) as tcp:
+        tcp.settimeout(timeout)
+        with ctx.wrap_socket(tcp, server_hostname=host) as tls:
+            if not tls.getpeercert():
+                raise RuntimeError("pinned origin TLS certificate missing")
+    return ip
+
+
 def origin_ip(host: str) -> str:
     validate_domain(host)
     candidates = sorted({
