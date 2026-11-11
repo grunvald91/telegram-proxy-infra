@@ -49,18 +49,19 @@ done
 
 capture() {
   local variant="$1"
-  ip netns exec "$SERV" tcpdump -i "$V1" -s 0 -U -w "$TMP/$variant.pcap" > "$TMP/$variant.capturelog" 2>&1 &
+  local ready="$TMP/$variant.capture-ready"
+  ip netns exec "$SERV" python3 -u "$PROBE" capture --interface "$V1" \
+    --pcap "$TMP/$variant.pcap" --ready "$ready" > "$TMP/$variant.capturelog" 2>&1 &
   CPID=$!
-  ready=0
   for i in {1..60}; do
-    if grep -q 'listening on' "$TMP/$variant.capturelog"; then ready=1; break; fi
-    kill -0 "$CPID" 2>/dev/null || break
+    [[ -s "$ready" ]] && break
+    kill -0 "$CPID" 2>/dev/null || { cat "$TMP/$variant.capturelog"; exit 1; }
     sleep .1
   done
-  [[ "$ready" == 1 ]] || { cat "$TMP/$variant.capturelog"; exit 1; }
+  [[ -s "$ready" ]] || { cat "$TMP/$variant.capturelog"; exit 1; }
   ip netns exec "$CLNT" python3 -u "$PROBE" client
   sleep .8
-  kill -INT "$CPID" 2>/dev/null || true
+  kill -TERM "$CPID" 2>/dev/null || true
   wait "$CPID" 2>/dev/null || true
   CPID=''
   cat "$TMP/$variant.capturelog"
