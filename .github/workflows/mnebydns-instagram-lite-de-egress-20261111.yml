@@ -66,3 +66,53 @@ jobs:
               print('de_core_anchor_gemini_count='+str(text.count('template IN A gemini.google.com {')),flush=True)
               print('de_core_cache_30_count='+str(text.count('    cache 30')),flush=True)
           PY
+
+      - name: DE 443 SYNACK global experimental preflight - READ ONLY
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY'
+          import ctypes.util,pathlib,re,shutil,subprocess
+          def cmd(a,limit=12):
+              try:
+                  p=subprocess.run(a,capture_output=True,text=True,timeout=limit)
+                  return p.returncode,p.stdout
+              except Exception:
+                  return 255,""
+          print("de_global_probe_read_only=true")
+          for tool in ("nft","iptables","systemd-run","systemctl","ss","nginx","python3"):
+              print("de_experiment_tool_"+tool+"="+str(shutil.which(tool) is not None).lower())
+          print("de_nfq_lib_available="+str(bool(ctypes.util.find_library("netfilter_queue"))).lower())
+          p=pathlib.Path("/proc/net/netfilter/nfnetlink_queue")
+          owners=[]
+          if p.is_file():
+              for row in p.read_text().splitlines():
+                  x=row.split()
+                  if x and x[0].isdigit():
+                      owners.append(x[0])
+          print("de_queue211_unowned="+str("211" not in owners).lower())
+          code,sockets=cmd(["ss","-ltn"])
+          print("de_socket_audit_works="+str(code==0).lower())
+          print("de_public_tcp443_listener_present="+str(bool(re.search(r":443\s",sockets))).lower())
+          rc,nft=cmd(["nft","-a","list","ruleset"])
+          print("de_nft_readable="+str(rc==0).lower())
+          print("de_mneby_ig_canary_absent="+str("MNEBY_IG_" not in nft).lower())
+          print("de_existing_queue211_reference="+str(bool(re.search(r"\b(?:queue\s+(?:num\s+)?211|to\s+211)\b",nft))).lower())
+          print("de_existing_postrouting_hooks="+str(len(re.findall(r"hook\s+postrouting",nft))))
+          print("de_existing_output_hooks="+str(len(re.findall(r"hook\s+output",nft))))
+          code,ip=cmd(["iptables","-t","mangle","-S","OUTPUT"])
+          print("de_iptables_mangle_readable="+str(code==0).lower())
+          print("de_existing_iptables_queue211="+str("211" in ip).lower())
+          conf=cmd(["nginx","-T"],20)
+          nginx=conf[1]
+          print("de_nginx_syntax_readable="+str(conf[0]==0).lower())
+          print("de_exact_lite_rules="+str(len(re.findall(r"(?mi)^\s*iglite-z[.]instagram[.]com\s+",nginx))))
+          print("de_ssl_preread_map_count="+str(nginx.count("map $ssl_preread_server_name $direct_mtproxy_backend {")))
+          print("de_instagram_lite_dns_existing="+str("iglite-z.instagram.com" in pathlib.Path("/opt/mnebydns-dot/Corefile").read_text() if pathlib.Path("/opt/mnebydns-dot/Corefile").is_file() else "unknown").lower())
+          print("de_rollback_systemd_available="+str(cmd(["systemctl","is-system-running"])[0] in (0,1)).lower())
+          PY
