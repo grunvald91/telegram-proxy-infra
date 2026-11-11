@@ -1,0 +1,100 @@
+name: MNEBYDNS Microsoft six-domain owner queue intake and live status
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebydns-microsoft-intake-20261111.yml'
+      - 'scripts/mnebydns-microsoft-six-owner-intake-20261111.sql'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebydns-microsoft-intake-20261111.yml'
+      - 'scripts/mnebydns-microsoft-six-owner-intake-20261111.sql'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-microsoft-six-intake
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Assert six exact Microsoft hosts, PENDING-only mutation and pinned SSH identity
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          src=Path('scripts/mnebydns-microsoft-six-owner-intake-20261111.sql').read_text()
+          names=re.findall(r"\('([a-z0-9.-]+)'\)",src.split('INSERT INTO dns_admin_domains')[0])
+          expected=['bing.com','copilot.microsoft.com','microsoft.com',
+                    'software-static.download.prss.microsoft.com',
+                    'xbox.com','xboxdesignlab.xbox.com']
+          assert names==expected,(names,expected)
+          assert 'ON CONFLICT (domain) DO UPDATE SET' in src
+          assert "dns_admin_domains.status='PENDING'" in src
+          assert "product='Microsoft'" in src
+          assert not re.search(r"\b(?:DELETE FROM|TRUNCATE|DROP TABLE|ALTER TABLE|UPDATE\s+dns_admin_domains\s+SET\s+status)\b",src,re.I)
+          assert Path('ops/mnebydns-owner-ssh-known_hosts').read_text().count(' ssh-ed25519 ')==2
+          print('microsoft_study_six_offline=PASS')
+          PY
+  enqueue:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    needs: offline
+    timeout-minutes: 7
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Insert exactly six Microsoft study names into canonical PENDING database
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 \
+            'docker exec -i mnebyvpn-stage-postgres psql -XqAt -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage' \
+            < scripts/mnebydns-microsoft-six-owner-intake-20261111.sql
+          echo microsoft_canonical_db_rows_begin
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 \
+            'docker exec -i mnebyvpn-stage-postgres psql -XqAt -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage' <<'SQL'
+          SELECT domain || '|' || product || '|' || status
+          FROM dns_admin_domains
+          WHERE domain IN ('bing.com','copilot.microsoft.com','microsoft.com',
+             'software-static.download.prss.microsoft.com',
+             'xbox.com','xboxdesignlab.xbox.com')
+          ORDER BY domain;
+          SQL
+          echo microsoft_canonical_db_rows_end
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY'
+          from pathlib import Path
+          import re
+          names=['bing.com','copilot.microsoft.com','microsoft.com',
+            'software-static.download.prss.microsoft.com','xbox.com','xboxdesignlab.xbox.com']
+          dns=Path('/opt/mnebydns-dot/Corefile').read_text()
+          nginx=Path('/etc/nginx/nginx.conf').read_text()
+          for n in names:
+            dns_seen=bool(re.search(r'(?<![A-Za-z0-9.-])'+re.escape(n)+r'(?![A-Za-z0-9.-])',dns))
+            nginx_seen=bool(re.search(r'(?<![A-Za-z0-9.-])'+re.escape(n)+r'(?![A-Za-z0-9.-])',nginx))
+            print('microsoft_live_route='+n+' corefile_mention='+str(dns_seen).lower()+' nginx_mention='+str(nginx_seen).lower())
+          print('microsoft_live_config_readonly=true')
+          PY
+          echo microsoft_new_routes_activated=false
