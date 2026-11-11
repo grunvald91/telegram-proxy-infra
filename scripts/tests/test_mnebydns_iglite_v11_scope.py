@@ -113,6 +113,12 @@ class V11RouteOnlySafety(unittest.TestCase):
                 self.assertFalse(any(c[0] in ("sysctl","iptables","tc") for c in calls))
                 self.assertFalse(any(c[0]=="nft" and c[1]!="list" for c in calls))
 
+    def test_old_v10_global_window20_live_entrypoint_is_retired(self):
+        old=(ROOT/"mnebydns_iglite_wifi_multi_meta_v10_w20.py").read_text()
+        self.assertIn("Legacy v10 global TCP Window20 trial disabled",old)
+        self.assertIn('if sys.argv[1]=="rollback":',old)
+        self.assertIn('rollback(boot=True)',old)
+
     def test_in_memory_only_no_pcap_files(self):
         self.assertIn("mnebydns_iglite_sni_observer import begin,finish,summary",self.src)
         self.assertNotIn("PCAP.write(",self.src)
