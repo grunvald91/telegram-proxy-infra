@@ -37,7 +37,7 @@ jobs:
           sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@188.120.254.223 'bash -s' <<'REMOTE'
           set -Eeuo pipefail
           echo "public_active_sha=$(cat /opt/mnebyvpn/public/active_sha)"
-          expected_release=c10b17ef86aa6b8f6250ef60d787625fe7c7a3d2
+          expected_release=cfbbabdd80adc6142d849491f671781e43c25976
           test "$(cat /opt/mnebyvpn/public/active_sha)" = "$expected_release"
           echo 'compact_release_sha_verified=true'
           # Pure HTTP GET checks: no payment or VPN state is mutated.
@@ -70,6 +70,10 @@ jobs:
           [[ "$style" == *'2026-11-11 reference parity'* ]]
           [[ "$style" == *'margin:0 auto; /* override .shell'* ]]
           [[ "$style" == *'body.journey-active .email-auth-panel .email-fields button'* ]]
+          [[ "$style" == *'background:none; /* no opaque ellipse:'* ]]
+          [[ "$style" == *'mask-composite:exclude;'* ]]
+          [[ "$style" == *'top:clamp(50px,6.5vh,70px);'* ]]
+          echo 'verified_clean_orbit_no_translucent_fills=true'
           echo 'new_globe_orbits_and_email_button_css_served=true'
           echo 'branded_order_screen_and_earth_halo_verified=true'
           echo 'trial_email_auth_and_globe_art_verified=true'
