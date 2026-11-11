@@ -1,0 +1,64 @@
+name: MNEBYDNS 109 strong RU403 live config overlap audit READ ONLY
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebydns-ru403-overlap-audit-20261111.yml'
+      - 'scripts/mnebydns-ru403-live-overlap-audit-20261111.py'
+      - 'data/mnebydns-ru-403-451-review-20261111.txt'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebydns-ru403-overlap-audit-20261111.yml'
+      - 'scripts/mnebydns-ru403-live-overlap-audit-20261111.py'
+      - 'data/mnebydns-ru-403-451-review-20261111.txt'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-ru403-live-overlap-readonly
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check 109-host review subset and fail-safe renderer classification
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-ru403-live-overlap-audit-20261111.py
+          python3 scripts/mnebydns-ru403-live-overlap-audit-20261111.py --self-test
+          test "$(grep -c ' ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts)" -eq 2
+          ! grep -Eq 'accept-new|StrictHostKeyChecking=no|curl.*-k|verify=False' scripts/mnebydns-ru403-live-overlap-audit-20261111.py
+  inspect:
+    if: github.event_name != 'pull_request'
+    needs: offline
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Inspect actual stable route maps and owner DB statuses, strictly read-only
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+          python3 scripts/mnebydns-ru403-live-overlap-audit-20261111.py --run
+      - name: Preserve full exact-host report and duplicates
+        uses: actions/upload-artifact@v4
+        with:
+          name: mnebydns-109-live-overlap-audit
+          path: overlap-audit-results/
+          if-no-files-found: error
+          retention-days: 30
