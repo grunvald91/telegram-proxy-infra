@@ -521,8 +521,16 @@ def active_health():
        not re.fullmatch(r"[1-9][0-9]{0,14}",rev):
         raise RuntimeError("Invalid ACTIVE row identifier")
     domain=_render.validate_domain(domain)
+    # Distinguish missing/invalid stored origin metadata from network failure.
+    # Never invent an origin IP, change routing, or clear an ACTIVE state.
     try:
         _render.validated_public_ip(ip)
+    except ValueError:
+        sql("UPDATE dns_admin_domains SET last_error_code='ACTIVE_ROUTE_METADATA_INVALID'"
+            " WHERE id="+id+" AND revision="+rev+" AND status='ACTIVE'")
+        print("owner_domain_ACTIVE_metadata_invalid="+domain,flush=True)
+        return
+    try:
         tag=_render.mark(domain)
         probe=(
             "set -Eeuo pipefail; "
@@ -563,7 +571,8 @@ def active_health():
         return
     sql("UPDATE dns_admin_domains SET last_error_code=NULL"
         " WHERE id="+id+" AND revision="+rev+" AND status='ACTIVE'"
-        " AND last_error_code='ACTIVE_ROUTE_CHECK_FAILED'")
+        " AND last_error_code IN ('ACTIVE_ROUTE_CHECK_FAILED',"
+        "'ACTIVE_ROUTE_METADATA_INVALID')")
     print("owner_domain_ACTIVE_health_verified="+domain,flush=True)
 
 
