@@ -581,33 +581,43 @@ def main():
         print("owner_domain_queue_empty=true",flush=True)
         active_health()
         return
-    status=item["status"]
-    print("owner_domain_queue_action="+status,flush=True)
-    if status=="APPLY_REQUESTED":
-        apply(item)
-    elif status in ("CONFIRM_REQUESTED","CONFIRMING"):
-        confirm(item)
-    elif status=="ROLLBACK_REQUESTED":
-        cancel_canary(item)
-    elif status=="CANARY":
-        if int(item["expires"] or 0)<int(time.time()):
-            cancel_canary(item,expired=True)
+    # A non-empty owner queue must not starve the ACTIVE-route monitor.
+    # Only read/inspect: active_health() refuses to touch routes while the
+    # shared live checkpoint differs from its committed baseline.
+    # Never let a health-monitor failure conceal a domain transition failure.
+    try:
+        status=item["status"]
+        print("owner_domain_queue_action="+status,flush=True)
+        if status=="APPLY_REQUESTED":
+            apply(item)
+        elif status in ("CONFIRM_REQUESTED","CONFIRMING"):
+            confirm(item)
+        elif status=="ROLLBACK_REQUESTED":
+            cancel_canary(item)
+        elif status=="CANARY":
+            if int(item["expires"] or 0)<int(time.time()):
+                cancel_canary(item,expired=True)
+            else:
+                print("owner_domain_canary_wait_for_user=true",flush=True)
+        elif status=="PROBING":
+            # Crash recovery: never accept orphaned tests as permanent.
+            if int(time.time())-int(item["updated"] or 0)>12*60:
+                if item["run"]:
+                    rollback_or_unchanged(item["run"])
+                elif not live_checkpoint_unchanged():
+                    raise RuntimeError("INTERRUPTED_OWNER_DEPLOY_ROLLBACK_UNVERIFIED")
+                update_error(item,"INTERRUPTED_OWNER_DEPLOY")
+            else:
+                print("owner_domain_probe_in_progress=true",flush=True)
+        elif status in ("REMOVAL_PENDING","REMOVING"):
+            remove(item)
         else:
-            print("owner_domain_canary_wait_for_user=true",flush=True)
-    elif status=="PROBING":
-        # Crash recovery: never accept orphaned tests as permanent.
-        if int(time.time())-int(item["updated"] or 0)>12*60:
-            if item["run"]:
-                rollback_or_unchanged(item["run"])
-            elif not live_checkpoint_unchanged():
-                raise RuntimeError("INTERRUPTED_OWNER_DEPLOY_ROLLBACK_UNVERIFIED")
-            update_error(item,"INTERRUPTED_OWNER_DEPLOY")
-        else:
-            print("owner_domain_probe_in_progress=true",flush=True)
-    elif status in ("REMOVAL_PENDING","REMOVING"):
-        remove(item)
-    else:
-        raise RuntimeError("Unsupported job state")
+            raise RuntimeError("Unsupported job state")
+    finally:
+        try:
+            active_health()
+        except Exception as exc:
+            print("owner_domain_active_audit_exception="+type(exc).__name__,flush=True)
 
 
 if __name__=="__main__":
