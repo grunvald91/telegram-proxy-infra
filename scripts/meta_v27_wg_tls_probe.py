@@ -91,7 +91,7 @@ def run_server() -> None:
             print("v27_de_origin_tls_verifications=2", flush=True)
             print("v27_de_listener_interface=wireguard_only", flush=True)
             print("v27_wg_tls_proxy=READY", flush=True)
-            until = time.monotonic() + 38
+            until = time.monotonic() + 22
             while time.monotonic() < until:
                 if proc.poll() is not None:
                     raise RuntimeError("isolated DE WG Nginx exited")
