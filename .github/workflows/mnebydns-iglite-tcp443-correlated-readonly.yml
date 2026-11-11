@@ -1,4 +1,4 @@
-name: MNEBYDNS Instagram Lite TCP443 correlated read-only probe
+name: MNEBYDNS Instagram Lite TCP443 passive egress correlation (read only)
 on:
   push:
     branches: [audit/mnebydns-instagram-lite-20261111]
@@ -23,8 +23,8 @@ jobs:
         run: |
           set -Eeuo pipefail
           test -n "$DE_PASS"
-          python3 -m py_compile scripts/mnebydns_iglite_de_443_ingress_readonly.py
-          python3 -m unittest discover -s scripts/tests -p test_mnebydns_iglite_de_443_ingress_readonly.py -v
+          python3 -m py_compile scripts/mnebydns_ig_tcp443_passive_correlate.py
+          python3 scripts/mnebydns_ig_tcp443_passive_correlate.py self-test
       - name: Prepare host-key-pinned SSH
         run: |
           set -Eeuo pipefail
@@ -40,14 +40,14 @@ jobs:
             -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
             -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
           logfile="$RUNNER_TEMP/iglite-correlated-readonly.log"
-          timeout 35s sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
-            'python3 -u -' < scripts/mnebydns_iglite_de_443_ingress_readonly.py \
+          timeout 38s sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
+            'python3 -u -' < scripts/mnebydns_ig_tcp443_passive_correlate.py \
             > "$logfile" 2>&1 &
           observer=$!
           trap 'kill "$observer" 2>/dev/null || true; wait "$observer" 2>/dev/null || true' EXIT
           ready=0
           for attempt in $(seq 1 120); do
-            if grep -Fqx 'de_443_observer=READY_RUNNER_SSH_SOURCE_SCOPED' "$logfile" 2>/dev/null;then ready=1;break;fi
+            if grep -Fqx 'passive_observer=READY' "$logfile" 2>/dev/null;then ready=1;break;fi
             kill -0 "$observer" 2>/dev/null || break
             sleep 0.1
           done
@@ -72,6 +72,8 @@ jobs:
           trap - EXIT
           cat "$logfile"
           test "$rc" -eq 0
-          grep -Fqx 'de_443_observer_frames_logged=0' "$logfile"
-          grep -Fqx 'de_443_observer_tls_content_logged=0' "$logfile"
+          grep -Fqx 'passive_packet_payload_recorded=false' "$logfile"
+          grep -Fqx 'passive_changes_to_server=NONE' "$logfile"
+          grep -q '^passive_q210_total_delta=' "$logfile"
+          grep -q '^passive_distinct_sources=' "$logfile"
           echo 'readonly_no_server_mutation=true'
