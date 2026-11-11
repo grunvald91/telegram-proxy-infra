@@ -15,6 +15,8 @@ import socket
 import ssl
 
 EDGE = "89.125.90.101"
+RU_FIRST_HOP = "188.120.254.223"
+ALLOWED_DNS_INGRESSES = frozenset((EDGE, RU_FIRST_HOP))
 KINDS = ("A", "AAAA", "HTTPS", "SVCB", "CNAME")
 DOMAIN = re.compile(r"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}$")
 FORBIDDEN = re.compile(r"\.(?:localhost|local|internal|test|invalid|example|onion|arpa|lan|home|corp)$")
@@ -168,8 +170,10 @@ def _assert_no_existing_nginx_route(source: str, domain: str) -> None:
         raise ValueError("SNI map default route missing")
 
 
-def core_add(stable: str, domain: str) -> str:
+def core_add(stable: str, domain: str, *, route_edge: str = EDGE) -> str:
     validate_domain(domain)
+    if route_edge not in ALLOWED_DNS_INGRESSES:
+        raise ValueError("DNS exact-owner ingress must be one of the two owner-controlled endpoints")
     begin, end = _block_bounds(stable, domain)
     if begin in stable or end in stable:
         raise ValueError("Already has owner domain route")
@@ -179,7 +183,7 @@ def core_add(stable: str, domain: str) -> str:
     hostname = re.escape(domain).replace(r"\.", "[.]")
     prefix = begin + "    # Owner-only exact domain, independent public TLS ingress\n"
     for kind in KINDS:
-        body = '        answer "{{ .Name }} 20 IN A ' + EDGE + '"\n' if kind == "A" \
+        body = '        answer "{{ .Name }} 20 IN A ' + route_edge + '"\n' if kind == "A" \
             else "        rcode NOERROR\n"
         prefix += (
             "    template IN "+kind+" . {\n"
