@@ -5,6 +5,8 @@ on:
     paths:
       - '.github/workflows/mnebydns-instagram-lite-offline-20261111.yml'
       - 'scripts/mnebydns_iglite_route_render_20261111.py'
+      - 'scripts/tests/mnebydns_ig_de_nft_netns_probe.py'
+      - 'scripts/tests/integration_mnebydns_ig_de_nft_win4_netns.sh'
       - 'scripts/tests/test_mnebydns_iglite_route_preview.py'
       - 'scripts/tests/integration_mnebydns_iglite_nginx_core_regex.sh'
 permissions:
@@ -30,3 +32,19 @@ jobs:
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nginx libnginx-mod-stream
       - name: Test Nginx syntax and Go RE2 exact host without touching VPS
         run: bash scripts/tests/integration_mnebydns_iglite_nginx_core_regex.sh
+  kernel-nft-window4:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install disposable netns and packet capture tools
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq iproute2 nftables tcpdump ethtool
+      - name: Assert native NFT window4 modifies real SYN-ACK and leaves valid checksum
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/tests/mnebydns_ig_de_nft_netns_probe.py
+          sudo bash scripts/tests/integration_mnebydns_ig_de_nft_win4_netns.sh
