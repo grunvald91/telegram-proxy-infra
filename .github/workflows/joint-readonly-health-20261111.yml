@@ -245,6 +245,40 @@ jobs:
             docker exec mnebyvpn-stage-postgres psql -XqAt -U mnebyvpn_stage -d mnebyvpn_stage -c "SELECT 'DNS_STATUS_'||status||'='||count(*) FROM dns_admin_domains GROUP BY status ORDER BY status" 2>/dev/null || true
           fi
           SH
+      - name: Compare RU direct to DE public 443 against WireGuard 443 without changing routes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no root@188.120.254.223 'python3 -' <<'PY'
+          import socket,ssl,time
+          for dest in ('89.125.90.101','10.66.77.1'):
+              for name in ('claude.ai','antigravity.google','i.instagram.com'):
+                  start=time.monotonic()
+                  try:
+                      with socket.create_connection((dest,443),timeout=5) as sock:
+                          sock.settimeout(5)
+                          with ssl.create_default_context().wrap_socket(sock,server_hostname=name) as conn:
+                              print('RU_PATH='+dest+' SNI='+name+' result=TLS_OK version='+str(conn.version())+' ms='+str(round(1000*(time.monotonic()-start))),flush=True)
+                  except Exception as ex:
+                      print('RU_PATH='+dest+' SNI='+name+' result='+type(ex).__name__+' ms='+str(round(1000*(time.monotonic()-start))),flush=True)
+          PY
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no root@89.125.90.101 'python3 -' <<'PY'
+          import subprocess,re
+          for unit in ('mnebydns-dot','mnebydns-googlepilot','xray'):
+              p=subprocess.run(['journalctl','-u',unit,'--since','-120 minutes','-n','150','--no-pager','-o','short-iso'],capture_output=True,text=True,timeout=7)
+              seen={}
+              for line in p.stdout.splitlines():
+                  lo=line.lower()
+                  for kind,pattern in (('reload',r'reload|restart'),('timed_out',r'timed? out|timeout'),('configuration',r'config|invalid|parse'),('connection',r'connection|refused|closed'),('upstream',r'upstream|dial|lookup|resolve'),('other_error',r'fail|error|panic')):
+                      if re.search(pattern,lo):
+                          ts=line[:25]
+                          bucket=(ts[:16],kind)
+                          seen[bucket]=seen.get(bucket,0)+1
+              for (stamp,kind),count in sorted(seen.items()):
+                  print('DE_JOURNAL='+unit+' time='+stamp+' kind='+kind+' count='+str(count),flush=True)
+          PY
       - name: Publish diagnostic run pointer as a GitHub commit status
         if: always()
         shell: bash
