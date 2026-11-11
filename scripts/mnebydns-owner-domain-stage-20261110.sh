@@ -34,6 +34,7 @@ for service in nginx mnebydns-dot.service mnebydns-googlepilot.service xray.serv
 done
 test -s "$work/mnebydns-owner-domain-render-20261110.py"
 test -s "$work/mnebydns-owner-domain-rollback-20261110.sh"
+test -s "$work/mnebydns-dot-config-change-20261111.sh"
 python3 "$work/mnebydns-owner-domain-render-20261110.py" self-test
 validated="$(python3 "$work/mnebydns-owner-domain-render-20261110.py" probe --domain "$domain")"
 [[ "$origin" == "$validated" ]] || { echo 'owner_domain_origin_changed_denied=true'; exit 3; }
@@ -58,6 +59,7 @@ for kind in dns nginx; do
 done
 nginx -t -c "$base/nginx.pilot" >/dev/null 2>&1
 install -m 700 "$work/mnebydns-owner-domain-rollback-20261110.sh" "$base/rollback.sh"
+install -m 700 "$work/mnebydns-dot-config-change-20261111.sh" "$base/reload.sh"
 install -m 700 "$work/mnebydns-owner-domain-confirm-20261110.sh" "$base/confirm.sh"
 cat > "$base/$name.service" <<UNIT
 [Unit]
@@ -100,7 +102,7 @@ systemctl is-active --quiet nginx
 cmp -s "$base/nginx.pilot" "$nginx"
 cp -p "$base/dns.pilot" "$dns.owner-stage-$id"
 mv -f "$dns.owner-stage-$id" "$dns"
-systemctl restart mnebydns-dot.service
+bash "$base/reload.sh" "$dns"
 for attempt in $(seq 1 45); do
   if systemctl is-active --quiet mnebydns-dot.service &&
      ss -H -lnt 'sport = :853' | grep -Fq '89.125.90.101:853'; then
