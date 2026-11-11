@@ -44,7 +44,7 @@ jobs:
             -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
           tar -C scripts -cf - mnebydns_iglite_de_temp_route.py mnebydns-owner-domain-render-20261110.py |
             sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
-              'umask 077; mkdir -p -m 700 /run/mneby-iglite-stage-20261111; tar -xf - -C /run/mneby-iglite-stage-20261111'
+              'umask 077; mkdir -p -m 700 /run/mneby-iglite-stage-20261111-v2; tar -xf - -C /run/mneby-iglite-stage-20261111-v2'
       - name: Test exact Lite DoT+TLS and global SYNACK window with guaranteed rollback
         shell: bash
         run: |
@@ -56,7 +56,7 @@ jobs:
             -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
           logfile="$RUNNER_TEMP/iglite-de-live.log"
           timeout 230s sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
-             'MNEBY_IGLITE_LIVE_APPROVED=YES python3 /run/mneby-iglite-stage-20261111/mnebydns_iglite_de_temp_route.py live' \
+             'MNEBY_IGLITE_LIVE_APPROVED=YES python3 /run/mneby-iglite-stage-20261111-v2/mnebydns_iglite_de_temp_route.py live' \
              > "$logfile" 2>&1 &
           remote=$!
           trap 'kill "$remote" 2>/dev/null || true; wait "$remote" 2>/dev/null || true' EXIT
@@ -120,7 +120,7 @@ jobs:
               good_ckpt=(root.joinpath('dns.stable').is_file() and root.joinpath('nginx.stable').is_file()
                          and core.read_bytes()==root.joinpath('dns.stable').read_bytes()
                          and nginx.read_bytes()==root.joinpath('nginx.stable').read_bytes())
-          nft_absent=cmd(['nft','list','table','inet','mneby_ig_lite_w4_20261111'])!=0
+          nft_absent=cmd(['nft','list','table','inet','mneby_ig_lite_w4_20261111_v2'])!=0
           nginx_ok=cmd(['systemctl','is-active','--quiet','nginx.service'])==0
           dns_ok=cmd(['systemctl','is-active','--quiet','mnebydns-dot.service'])==0
           for k,v in [('nft_absent',nft_absent),('configs_original',good_ckpt),('nginx_active',nginx_ok),('dns_active',dns_ok)]:
