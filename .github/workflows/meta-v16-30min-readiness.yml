@@ -17,7 +17,7 @@ permissions:
 
 concurrency:
   group: meta-v16-preflight-readonly
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   offline:
@@ -54,8 +54,16 @@ jobs:
           set -Eeuo pipefail
           test -n "$DE_PASS"
           test -s ops/mnebydns-owner-ssh-known_hosts
-          sudo apt-get update -qq
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+          command -v ssh >/dev/null
+          # OpenSSH's native askpass removes dependency on apt mirrors.
+          cat > "$RUNNER_TEMP/mneby-askpass" <<'SH'
+          #!/bin/sh
+          printf '%s\\n' "$DE_PASS"
+          SH
+          chmod 700 "$RUNNER_TEMP/mneby-askpass"
+          echo "SSH_ASKPASS=$RUNNER_TEMP/mneby-askpass" >> "$GITHUB_ENV"
+          echo "SSH_ASKPASS_REQUIRE=force" >> "$GITHUB_ENV"
+          echo "DISPLAY=:0" >> "$GITHUB_ENV"
       - name: Check DE active network state, queue exemption and watchdog readiness
         shell: bash
         run: |
@@ -70,7 +78,7 @@ jobs:
           tar -C scripts -cf - meta_v16_readonly_preflight.py meta_v15_phone_trial.py \
             meta_v15_receive_window.py mnebydns_iglite_route_only_v11.py \
             mnebydns_iglite_wifi_multi_meta_v10_w20.py mnebydns_iglite_sni_observer.py |
-            sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
+            setsid -w ssh "${opts[@]}" root@89.125.90.101 \
             'set -Eeuo pipefail; umask 077; d=$(mktemp -d /tmp/mneby-v16-preflight.XXXXXXXX); trap '\''rm -rf -- "$d"'\'' EXIT; tar -xf - -C "$d"; python3 "$d/meta_v16_readonly_preflight.py"' |
             tee -a "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
