@@ -76,7 +76,7 @@ class EvidenceGateTests(unittest.TestCase):
             classify(info)
 
     def test_log_wrappers_are_ignored(self):
-        p = parse("### Summary\\nexternal_dot_A_i_instagram_com=RCODE0_A_DE0\\n\\x1b[34mlog=foo\\n")
+        p = parse("### Summary\nexternal_dot_A_i_instagram_com=RCODE0_A_DE0\n\x1b[34mlog=foo\n")
         self.assertEqual(p["external_dot_A_i_instagram_com"], "RCODE0_A_DE0")
         self.assertNotIn("log", p)
 
