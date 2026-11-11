@@ -61,6 +61,46 @@ def locate_sni(record):
         return None
     return None
 
+def locate_partial_sni(prefix):
+    """Recognize a *complete visible* SNI extension before the full TLS record.
+    Diagnostic only. Do not label a partial record as a complete ClientHello or
+    infer the origin device from the tuple observed at the server.
+    """
+    data=bytes(prefix)
+    if len(data)<9 or data[0]!=22 or data[1]!=3 or data[2]>4 or data[5]!=1:
+        return None
+    declared=5+u16(data,3)
+    if declared<50 or declared>LIMIT:
+        return None
+    try:
+        at=9+2+32
+        if at>=len(data):return None
+        sid=data[at]
+        at+=1+sid
+        cipher=u16(data,at)
+        at+=2+cipher
+        compress=data[at]
+        at+=1+compress
+        extensions=u16(data,at)
+        at+=2
+        limit=at+extensions
+        if limit>declared:return None
+        while at+4<=limit and at+4<=len(data):
+            kind,n=u16(data,at),u16(data,at+2)
+            start=at+4
+            end=start+n
+            if end>limit or end>len(data):return None
+            if kind==0:
+                if start+5>end or u16(data,start)+2!=n:return None
+                size=u16(data,start+3)
+                endname=start+5+size
+                if data[start+2]!=0 or endname>end:return None
+                return data[start+5:endname].decode('ascii').lower()
+            at=end
+    except (IndexError,ValueError,UnicodeDecodeError):
+        return None
+    return None
+
 class Flow:
     def __init__(self,seq):
         self.start=(seq+1)&0xffffffff
@@ -83,6 +123,11 @@ class Flow:
         # intact hostname could be falsely reported as split on retry.
         if fresh and wire_len>0:
             self.ranges.add((offset,offset+wire_len))
+    def contiguous_prefix(self):
+        n=0
+        while n<LIMIT and self.covered[n]:n+=1
+        return bytes(self.buf[:n])
+
     def completed(self):
         if not all(self.covered[:5]):return None
         if self.buf[0]!=22 or self.buf[1]!=3:
@@ -116,7 +161,10 @@ class Analyzer:
             self.stats['syn']+=1
             return
         flow=self.flows.get(key)
-        if not flow or flow.finished or not payload:return
+        if not flow:
+            if payload:self.stats['payload_without_syn']+=1
+            return
+        if flow.finished or not payload:return
         flow.feed(seq,payload,len(payload) if wire_len is None else wire_len)
         record=flow.completed()
         if record is None:return
@@ -139,6 +187,37 @@ class Analyzer:
             self.peer_index[ip]=len(self.peer_index)+1
         if len(self.events)<512:
             self.events.append((int(timestamp or 0),self.peer_index[ip],host,split))
+    def incomplete_diagnostics(self):
+        """Aggregate only; no peer IP, payload, ports or plaintext retained."""
+        counts=Counter()
+        for flow in self.flows.values():
+            if flow.finished:continue
+            prefix=flow.contiguous_prefix()
+            if not any(flow.covered):
+                counts['syn_without_payload']+=1
+            elif not prefix:
+                counts['prefix_gap_after_syn']+=1
+            elif len(prefix)<5:
+                counts['tls_header_incomplete']+=1
+            elif prefix[0]!=22 or prefix[1]!=3:
+                counts['non_tls_first_record']+=1
+            elif len(prefix)<6:
+                counts['tls_handshake_type_missing']+=1
+            elif prefix[5]!=1:
+                counts['not_clienthello']+=1
+            else:
+                counts['clienthello_record_incomplete']+=1
+                host=locate_partial_sni(prefix)
+                if host in self.hosts:
+                    counts['target_sni_visible_in_partial_record']+=1
+                elif host:
+                    counts['other_sni_visible_in_partial_record']+=1
+                elif len(prefix)<50:
+                    counts['short_clienthello_prefix']+=1
+                else:
+                    counts['long_clienthello_without_complete_sni']+=1
+        return counts
+
     def ethernet(self,frame,timestamp=None):
         if len(frame)<14:return
         kind=u16(frame,12)
@@ -222,8 +301,15 @@ def finish(process,thread,analyzer,failures):
     return analyzer
 
 def summary(a):
-    for name in ('syn','target_clienthello','sni_split','sni_unsplit','no_sni','other_sni','evictions'):
+    for name in ('syn','target_clienthello','sni_split','sni_unsplit','no_sni','other_sni','evictions','payload_without_syn'):
         print('iglite_sni_'+name+'='+str(a.stats[name]),flush=True)
+    pending=a.incomplete_diagnostics()
+    for kind in ('syn_without_payload','prefix_gap_after_syn','tls_header_incomplete',
+                 'tls_handshake_type_missing','non_tls_first_record','not_clienthello',
+                 'clienthello_record_incomplete','short_clienthello_prefix',
+                 'long_clienthello_without_complete_sni',
+                 'target_sni_visible_in_partial_record','other_sni_visible_in_partial_record'):
+        print('iglite_sni_partial_'+kind+'='+str(pending[kind]),flush=True)
     for host in sorted(a.hosts):
         print('iglite_sni_host='+host+'|hello='+str(a.host_counts[host]),flush=True)
     print('iglite_sni_source_groups='+str(len(a.peer_index)),flush=True)
