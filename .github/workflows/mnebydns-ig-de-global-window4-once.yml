@@ -12,7 +12,7 @@ concurrency:
 jobs:
   owner-approved-live-window4:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 6
     env:
       DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
     steps:
@@ -26,6 +26,7 @@ jobs:
           test -n "$DE_PASS"
           grep -Fq -- '--on-active=90s' scripts/mnebydns_ig_de_global_window4_once.sh
           grep -Fq 'de_global_cleanup=PASS' scripts/mnebydns_ig_de_global_window4_once.sh
+          ! grep -Fq "nft -a list table inet \"\$TABLE\" | grep -Fq" scripts/mnebydns_ig_de_global_window4_once.sh
           ! grep -Eqi 'flush ruleset|restart nginx|restart mnebydns-dot' scripts/mnebydns_ig_de_global_window4_once.sh
       - name: Prepare hostkey-pinned SSH
         run: |
@@ -41,7 +42,7 @@ jobs:
             -o HostKeyAlgorithms=ssh-ed25519
             -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
             -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
-          timeout 125s sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
+          timeout 220s sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
             'MNEBY_IG_GLOBAL_APPROVED=YES bash -se' \
             < scripts/mnebydns_ig_de_global_window4_once.sh
       - name: Independently verify test table absent and stable services
