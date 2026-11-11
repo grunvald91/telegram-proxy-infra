@@ -42,6 +42,33 @@ class AdapterTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,"symlink"):
                 m.bundle(root)
 
+    def test_ru_staging_creates_missing_libexec_parent_without_overwriting_stage(self):
+        remote=object.__new__(m.Remote)
+        calls=[]
+        remote.call=lambda role,command,**kw: calls.append((role,command,kw))
+        remote.payload=b"fixture"
+        remote.stage_files("ru")
+        self.assertEqual(len(calls),1)
+        self.assertIn("test ! -L /usr/local/libexec",calls[0][1])
+        self.assertIn("install -d -m 0755 -o root -g root /usr/local/libexec",calls[0][1])
+        self.assertIn("test ! -e /usr/local/libexec/mneby-meta-v26",calls[0][1])
+        self.assertEqual(calls[0][2]["data"],b"fixture")
+
+    def test_approved_thirty_minute_test(self):
+        calls=[]
+        class Fake:
+            def preflight(self,role):pass
+            def stage_files(self,role):pass
+            def run(self,role,action,peer=None):pass
+            def active_window(self,seconds):calls.append(seconds)
+            def reset(self,role):pass
+        with patch.object(m,"Remote",return_value=Fake()), \
+             patch.dict(os.environ,{"GITHUB_EVENT_NAME":"workflow_dispatch",
+                         "MNEBY_META_V30_APPROVED":m.APPROVAL}), \
+             patch.object(m.signal,"signal"):
+            m.main(["--mode","activate","--phone-ip","185.137.178.123","--minutes","30"])
+        self.assertEqual(calls,[1800])
+
     def test_no_unapproved_remote_command_or_injection(self):
         remote=object.__new__(m.Remote)
         calls=[]
