@@ -230,3 +230,64 @@ jobs:
           core=pathlib.Path('/opt/mnebydns-dot/Corefile')
           print('de_443_diag_core_active='+str(core.is_file()).lower(),flush=True)
           PY
+
+      - name: Read-only TCP443 INPUT and queue rule-order audit
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY'
+          import json,re,subprocess
+          def run(argv):
+              try:return subprocess.run(argv,capture_output=True,text=True,timeout=12)
+              except Exception:return None
+          print('de_firewall_audit=READ_ONLY',flush=True)
+          nft=run(['nft','-j','-a','list','ruleset'])
+          if nft and nft.returncode==0:
+              data=json.loads(nft.stdout).get('nftables',[])
+              chaininfo={}
+              for item in data:
+                  c=item.get('chain')
+                  if c:
+                      key=(c.get('family'),c.get('table'),c.get('name'))
+                      chaininfo[key]=(c.get('hook','none'),c.get('prio','none'),c.get('policy','none'))
+                      if c.get('hook') in ('input','output','forward','prerouting'):
+                          print('de_fw_chain='+str(key)+' hook='+str(c.get('hook'))+' prio='+str(c.get('prio'))+' policy='+str(c.get('policy')),flush=True)
+              shown=0
+              for item in data:
+                  rule=item.get('rule')
+                  if not rule:continue
+                  key=(rule.get('family'),rule.get('table'),rule.get('chain'))
+                  hook=chaininfo.get(key,('none',))[0]
+                  expr=rule.get('expr',[])
+                  tokens=json.dumps(expr,separators=(',',':'))
+                  # Sanitized output includes verdict expression but not raw addresses.
+                  if hook in ('input','output','prerouting') or any(x in tokens for x in ('queue','443','drop','reject')):
+                      clean=re.sub(r'(?<![0-9])(?:\d{1,3}\.){3}\d{1,3}(?:/\d+)?','IP_REDACTED',tokens)
+                      print('de_fw_rule_chain='+str(key)+' hook='+str(hook)+' id='+str(rule.get('handle'))+' exp='+clean[:850],flush=True)
+                      shown+=1
+                      if shown>=42:break
+          else:
+              print('de_fw_nft_json_readable=false',flush=True)
+          for table in ('filter','mangle','raw'):
+              args=['iptables','-t',table,'-S']
+              p=run(args)
+              if p and p.returncode==0:
+                  shown=0
+                  for line in p.stdout.splitlines():
+                      if ('INPUT' in line or 'PREROUTING' in line or '443' in line or
+                          'QUEUE' in line or '-j DROP' in line or '-j REJECT' in line):
+                          clean=re.sub(r'(?<![0-9])(?:\d{1,3}\.){3}\d{1,3}(?:/\d+)?','IP_REDACTED',line)
+                          print('de_fw_iptables_'+table+'='+clean[:420],flush=True)
+                          shown+=1
+                          if shown>=25:break
+          p=run(['sysctl','-n','net.ipv4.conf.all.rp_filter'])
+          print('de_fw_rp_filter_all='+p.stdout.strip() if p and p.returncode==0 else 'de_fw_rp_filter_all=UNKNOWN',flush=True)
+          nfq=run(['cat','/proc/net/netfilter/nfnetlink_queue'])
+          if nfq and nfq.returncode==0:
+              print('de_fw_nfqueue_ids='+repr([row.split()[0] for row in nfq.stdout.splitlines() if row.split()]),flush=True)
+          PY
