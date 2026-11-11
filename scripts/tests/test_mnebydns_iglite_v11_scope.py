@@ -57,10 +57,10 @@ class V11RouteOnlySafety(unittest.TestCase):
         self.assertIn("base.WATCHDOG_SECONDS",self.src)
         self.assertIn("base.TRIAL_SECONDS+base.MIN_ROLLBACK_MARGIN",self.src)
 
-    def test_workflow_disarmed_and_not_triggered_by_code_changes(self):
+    def test_workflow_armed_only_by_new_v11_launch_marker(self):
         wf=self.workflow
-        self.assertEqual(wf.count("if: ${{ false }}"),2)
-        self.assertNotIn("if: ${{ true }}",wf)
+        self.assertEqual(wf.count("if: ${{ true }}"),2)
+        self.assertNotIn("if: ${{ false }}",wf)
         self.assertIn("ops/mnebydns-iglite-v11-launch.marker",wf)
         self.assertNotIn("'ops/mnebydns-iglite-wifi-v10-launch.marker'",wf)
         self.assertIn("mnebydns_iglite_route_only_v11.py",wf)
