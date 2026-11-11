@@ -1,4 +1,4 @@
-name: MNEBYDNS Instagram Lite live NFQUEUE210 SYNACK strategy audit (read only)
+name: MNEBYDNS Instagram Lite TCP443 peerwise conntrack check (read only)
 on:
   push:
     branches: [audit/mnebydns-instagram-lite-20261111]
@@ -24,15 +24,15 @@ jobs:
         run: |
           set -Eeuo pipefail
           test -n "$DE_PASS"
-          python3 -m py_compile scripts/mnebydns_iglite_q210_service_readonly.py
-          python3 scripts/mnebydns_iglite_q210_service_readonly.py self-test
+          python3 -m py_compile scripts/mnebydns_iglite_peerwise_readonly.py
+          python3 scripts/mnebydns_iglite_peerwise_readonly.py self-test
       - name: Prepare pinned SSH
         shell: bash
         run: |
           set -Eeuo pipefail
           sudo apt-get update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
-      - name: Inspect current NFQUEUE210 service, strategy and kernel queue without changes
+      - name: Correlate peer TCP443/853 packet headers and conntrack without changes
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -42,10 +42,13 @@ jobs:
             -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
             -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
           logfile="$RUNNER_TEMP/mnebydns-nfq-live-readonly.log"
-          timeout 30s sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
-            'python3 -u -' < scripts/mnebydns_iglite_q210_service_readonly.py \
+          timeout 55s sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
+            'python3 -u -' < scripts/mnebydns_iglite_peerwise_readonly.py \
             > "$logfile" 2>&1
           cat "$logfile"
-          grep -Fqx 'nfq_live_readonly=true' "$logfile"
-          grep -Fqx 'nfq_live_instagram_unblock=NOT_TESTED' "$logfile"
-          echo 'nfq_readonly_completed=true'
+          grep -Fqx 'peerwise_server_changes=NONE' "$logfile"
+          grep -Fqx 'peerwise_raw_addresses_or_payload_logged=false' "$logfile"
+          grep -q '^peerwise_443_in_SYN=' "$logfile"
+          grep -q '^peerwise_443_out_SYNACK=' "$logfile"
+          grep -q '^peerwise_conntrack_samples=' "$logfile"
+          echo 'peerwise_readonly_completed=true'
