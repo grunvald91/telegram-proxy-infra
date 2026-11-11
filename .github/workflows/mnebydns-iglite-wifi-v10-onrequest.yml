@@ -11,8 +11,9 @@ concurrency:
   cancel-in-progress: false
 jobs:
   canary:
-    # DISABLED pending next trial: route-only v11 changes no kernel settings.
-    if: ${{ false }}
+    # Owner-requested one-shot v11 diagnostic, triggered by a NEW launch marker.
+    # Code changes by themselves cannot launch this workflow.
+    if: ${{ true }}
     runs-on: ubuntu-latest
     timeout-minutes: 26
     env:
@@ -109,8 +110,8 @@ jobs:
           if not all(tests.values()):sys.exit(1)
           PY
   readiness:
-    # DISABLED pending next trial. Must not emit false READY.
-    if: ${{ false }}
+    # This independent job confirms server READY; no assumption from CI green.
+    if: ${{ true }}
     name: Independent actual capture READY check
     runs-on: ubuntu-latest
     timeout-minutes: 18
