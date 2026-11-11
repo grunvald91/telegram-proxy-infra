@@ -30,6 +30,19 @@ def rollback():
     if not root.is_dir() or not (root/base.MUTATION_MARKER).is_file():
         print("iglite_v11_rollback=NO_MUTATION",flush=True)
         return
+    # The independent timer may execute after an in-process rollback.
+    # An already-healthy host must not suffer another service restart.
+    oldcore=root/"core.original"
+    oldnginx=root/"nginx.original"
+    if (oldcore.is_file() and oldnginx.is_file()
+        and base.CORE.read_bytes()==oldcore.read_bytes()
+        and base.NGINX.read_bytes()==oldnginx.read_bytes()
+        and base.WSFILE.read_text().strip()=="1"
+        and base.command(["nft","list","table","inet",base.TABLE],check=False).returncode!=0
+        and all(base.command(["systemctl","is-active","--quiet",svc],check=False).returncode==0
+                for svc in ("nginx.service","mnebydns-dot.service"))):
+        print("iglite_v11_rollback=ALREADY_RESTORED_NO_RESTART",flush=True)
+        return
     failures=[]
     originals={}
     for key,path in (("core",base.CORE),("nginx",base.NGINX)):
