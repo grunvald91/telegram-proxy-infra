@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import io
 import os
+import signal
 from pathlib import Path
 import shlex
 import subprocess
@@ -70,6 +71,10 @@ def bundle(root=ROOT):
             info.mode=0o600
             archive.addfile(info,io.BytesIO(body))
     return output.getvalue()
+
+def cancel_trial(signum,frame):
+    raise InterruptedError("operator requested cancellation")
+
 
 def check_approval(phone_ip,approved,event):
     peer=checked_phone_ip(phone_ip)
@@ -156,11 +161,18 @@ class Remote:
                     raise RuntimeError(role+" health check failed: "+line)
 
     def active_window(self,seconds):
+        print("meta_v30_test_window_started=true",flush=True)
+        print("meta_v30_test_window_seconds="+str(seconds),flush=True)
         until=time.monotonic()+seconds
+        checks=0
         while True:
             self.verify_health()
+            checks+=1
+            print("meta_v30_health_check_count="+str(checks),flush=True)
             remaining=until-time.monotonic()
-            if remaining<=0:return
+            if remaining<=0:
+                print("meta_v30_test_window_completed=true",flush=True)
+                return
             time.sleep(min(15,remaining))
 
     def reset(self,role):
@@ -190,6 +202,9 @@ def main(argv=None):
                             os.environ.get("GITHUB_EVENT_NAME"))
         if args.minutes not in (5,15):
             raise ValueError("approved window must be 5 or 15 minutes")
+    if args.mode=="activate":
+        signal.signal(signal.SIGTERM,cancel_trial)
+        signal.signal(signal.SIGINT,cancel_trial)
     adapter=Remote()
     for role in ("de","ru"):
         adapter.preflight(role)
