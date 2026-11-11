@@ -38,7 +38,7 @@ def run_preflight():
         require("nginx_syntax",False)
     try:
         addresses=run(["ip","-4","-o","addr","show"]).stdout
-        require("de_edge_attached",bool(re.search(r"\\s"+re.escape(EDGE)+r"/",addresses)))
+        require("de_edge_attached",bool(re.search(r"\s"+re.escape(EDGE)+r"/",addresses)))
     except (OSError,subprocess.TimeoutExpired):
         require("de_edge_attached",False)
     require("live_owned_configs_present", NGINX.is_file() and CORE.is_file())
