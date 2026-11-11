@@ -147,6 +147,46 @@ class StagingRollbackTests(unittest.TestCase):
                 de.reset()
             self.assertFalse(root.exists())
 
+    def test_de_selective_dns_disable_keeps_nginx_routes_until_ru_teardown(self):
+        with tempfile.TemporaryDirectory() as d:
+            directory=Path(d);root=directory/"state";root.mkdir()
+            ng=directory/"nginx.conf";dns=directory/"Corefile"
+            for key,live in (("nginx",ng),("dns",dns)):
+                (root/(key+".original")).write_bytes(b"baseline")
+                (root/(key+".candidate")).write_bytes(b"pilot")
+                live.write_bytes(b"pilot")
+            (root/"armed").write_bytes(b"armed")
+            calls=[]
+            def call(args,**kwargs):
+                calls.append(tuple(args))
+                return SimpleNamespace(returncode=0,stdout="")
+            with patch.object(de,"ROOT",root),patch.object(de,"LIVE_NGINX",ng),\
+                 patch.object(de,"LIVE_DNS",dns),patch.object(de,"flag"),\
+                 patch.object(de,"active",return_value=True),\
+                 patch.object(de,"cmd",side_effect=call):
+                de.disable_dns()
+                self.assertEqual(dns.read_bytes(),b"baseline")
+                self.assertEqual(ng.read_bytes(),b"pilot")
+                de.disable_dns()
+            self.assertEqual(calls.count(("systemctl","restart","mnebydns-dot.service")),1)
+
+    def test_de_selective_dns_disable_refuses_drift(self):
+        with tempfile.TemporaryDirectory() as d:
+            directory=Path(d);root=directory/"state";root.mkdir()
+            ng=directory/"nginx.conf";dns=directory/"Corefile"
+            for key,live in (("nginx",ng),("dns",dns)):
+                (root/(key+".original")).write_bytes(b"baseline")
+                (root/(key+".candidate")).write_bytes(b"pilot")
+                live.write_bytes(b"pilot")
+            (root/"armed").write_bytes(b"armed")
+            dns.write_bytes(b"external edit")
+            with patch.object(de,"ROOT",root),patch.object(de,"LIVE_NGINX",ng),\
+                 patch.object(de,"LIVE_DNS",dns),patch.object(de,"flag"),\
+                 patch.object(de,"cmd",side_effect=AssertionError("no mutation")):
+                with self.assertRaisesRegex(RuntimeError,"drift"):
+                    de.disable_dns()
+            self.assertEqual(dns.read_bytes(),b"external edit")
+
     def test_de_reset_incomplete_prearm_staging_without_snapshots(self):
         # A failure before 'armed' cannot modify live Nginx/CoreDNS, but
         # previously made reset() demand nonexistent candidate checkpoints.
