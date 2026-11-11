@@ -44,8 +44,54 @@ jobs:
           logfile="$RUNNER_TEMP/mnebydns-nfq-live-readonly.log"
           timeout 55s sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
             'python3 -u -' < scripts/mnebydns_iglite_peerwise_readonly.py \
-            > "$logfile" 2>&1
+            > "$logfile" 2>&1 &
+          observer=$!
+          trap 'kill "$observer" 2>/dev/null || true; wait "$observer" 2>/dev/null || true' EXIT
+          ready=0
+          for attempt in $(seq 1 140); do
+            if grep -Fqx 'peerwise_observer=READY' "$logfile" 2>/dev/null; then
+              ready=1
+              break
+            fi
+            kill -0 "$observer" 2>/dev/null || break
+            sleep 0.1
+          done
+          if [[ "$ready" != 1 ]]; then
+            cat "$logfile"
+            echo 'peerwise_external_probe=OBSERVER_NOT_READY'
+            exit 1
+          fi
+          python3 - <<'PY'
+          import socket,time
+          for port in (443,443,443,853):
+              start=time.monotonic()
+              try:
+                  with socket.create_connection(('89.125.90.101',port),timeout=3):
+                      result='CONNECTED'
+              except Exception as exc:
+                  result=type(exc).__name__
+              print(f'peerwise_runner_{port}={result} elapsed_s={time.monotonic()-start:.3f}',flush=True)
+              time.sleep(.3)
+          PY
+          set +e
+          wait "$observer"
+          rc=$?
+          set -e
+          trap - EXIT
           cat "$logfile"
+          if [[ "$rc" != 0 ]]; then
+            echo "peerwise_remote_exit=$rc"
+            exit "$rc"
+          fi
+          grep -Eq '^peerwise_443_in_SYN=[1-9][0-9]*
+          grep -Fqx 'peerwise_server_changes=NONE' "$logfile"
+          grep -Fqx 'peerwise_raw_addresses_or_payload_logged=false' "$logfile"
+          grep -q '^peerwise_443_in_SYN=' "$logfile"
+          grep -q '^peerwise_443_out_SYNACK=' "$logfile"
+          grep -q '^peerwise_conntrack_samples=' "$logfile"
+          echo 'peerwise_readonly_completed=true'
+ "$logfile"
+          echo 'peerwise_external_probe=RUN_WITH_OBSERVER'
           grep -Fqx 'peerwise_server_changes=NONE' "$logfile"
           grep -Fqx 'peerwise_raw_addresses_or_payload_logged=false' "$logfile"
           grep -q '^peerwise_443_in_SYN=' "$logfile"
