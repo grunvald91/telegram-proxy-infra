@@ -6,6 +6,8 @@ on:
     paths:
       - '.github/workflows/meta-v12-ru-de-readonly-path.yml'
       - 'scripts/meta_v12_ru_de_readonly.py'
+      - 'scripts/meta_v12_routing_gate.py'
+      - 'scripts/tests/test_meta_v12_routing_gate.py'
   workflow_dispatch:
 
 permissions:
@@ -30,10 +32,11 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          python3 -m py_compile scripts/meta_v12_ru_de_readonly.py
+          python3 -m py_compile scripts/meta_v12_ru_de_readonly.py scripts/meta_v12_routing_gate.py scripts/tests/test_meta_v12_routing_gate.py
+          python3 -m unittest discover -s scripts/tests -p 'test_meta_v12_routing_gate.py' -v
           echo '### External DoT DNS answers (GitHub runner, NOT a Russian phone)' >> "$GITHUB_STEP_SUMMARY"
           echo '```text' >> "$GITHUB_STEP_SUMMARY"
-          python3 scripts/meta_v12_ru_de_readonly.py external | tee -a "$GITHUB_STEP_SUMMARY"
+          python3 scripts/meta_v12_ru_de_readonly.py external | tee -a "$RUNNER_TEMP/meta-v12-aggregates.txt" "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
       - name: Prepare pinned SSH, fail closed when secrets unavailable
         shell: bash
@@ -54,8 +57,16 @@ jobs:
           echo '### Server-origin TLS diagnostics (no configuration changes)' >> "$GITHUB_STEP_SUMMARY"
           echo '```text' >> "$GITHUB_STEP_SUMMARY"
           export SSHPASS="$RU_PASS"
-          sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 - ru' < scripts/meta_v12_ru_de_readonly.py | tee -a "$GITHUB_STEP_SUMMARY"
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 - ru' < scripts/meta_v12_ru_de_readonly.py | tee -a "$RUNNER_TEMP/meta-v12-aggregates.txt" "$GITHUB_STEP_SUMMARY"
           export SSHPASS="$DE_PASS"
-          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 - de' < scripts/meta_v12_ru_de_readonly.py | tee -a "$GITHUB_STEP_SUMMARY"
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 - de' < scripts/meta_v12_ru_de_readonly.py | tee -a "$RUNNER_TEMP/meta-v12-aggregates.txt" "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          echo 'no_live_file_changes=true'
+          echo 'no_live_file_changes=true' | tee -a "$RUNNER_TEMP/meta-v12-aggregates.txt" "$GITHUB_STEP_SUMMARY"
+      - name: Classify observed Meta route without claiming Android success
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo '### Meta route classification (not an Android test)' >> "$GITHUB_STEP_SUMMARY"
+          echo '\`\`\`text' >> "$GITHUB_STEP_SUMMARY"
+          python3 scripts/meta_v12_routing_gate.py "$RUNNER_TEMP/meta-v12-aggregates.txt" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '\`\`\`' >> "$GITHUB_STEP_SUMMARY"
