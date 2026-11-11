@@ -13,6 +13,8 @@ import ipaddress
 import os
 from pathlib import Path
 import re
+import signal
+import threading
 import shutil
 import socket
 import ssl
@@ -260,6 +262,82 @@ def live_tls():
                 raise RuntimeError("Meta certificate not verified")
             return tls.version()
 
+
+def observe_wifi_tcp_headers(seconds):
+    """Aggregate eth0 TCP443 packet *headers*; never log IPs or TLS contents."""
+    import collections
+    import shutil
+    if not shutil.which("tcpdump"):
+        raise RuntimeError("Wi-Fi capture cannot start: tcpdump absent")
+    counters = collections.Counter()
+    clients = set()
+    pattern = re.compile(
+        r"\bIP (\d{1,3}(?:\.\d{1,3}){3})\.(\d+)\s*>\s*"
+        r"(\d{1,3}(?:\.\d{1,3}){3})\.(\d+):.*?"
+        r"\bFlags \[([^\]]+)\].*?\blength (\d+)"
+    )
+    proc = subprocess.Popen(
+        ["tcpdump", "-i", "eth0", "-n", "-nn", "-l", "-tt", "-s", "96",
+         "-c", "8000", "tcp and host " + DE + " and port 443"],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        text=True, bufsize=1
+    )
+    def consume():
+        for line in proc.stdout:
+            m = pattern.search(line)
+            if not m:
+                continue
+            src, srcport, dst, dstport, flags, length = m.groups()
+            n = int(length)
+            inbound = dst == DE and dstport == "443"
+            outbound = src == DE and srcport == "443"
+            if inbound:
+                clients.add(src)
+                if "S" in flags and "." not in flags:
+                    counters["inbound_syn"] += 1
+                if n:
+                    counters["inbound_data_segments"] += 1
+                    if n <= 4:
+                        counters["inbound_data_le4"] += 1
+                    else:
+                        counters["inbound_data_gt4"] += 1
+            if outbound:
+                if "S" in flags and "." in flags:
+                    counters["outbound_synack"] += 1
+                    win = re.search(r"\bwin (\d+)\b", line)
+                    if win and int(win.group(1)) == 4:
+                        counters["outbound_synack_window4"] += 1
+                elif "S" in flags:
+                    counters["outbound_syn_only"] += 1
+                elif "." in flags and n == 0:
+                    counters["outbound_ack_only"] += 1
+    thread = threading.Thread(target=consume, daemon=True)
+    thread.start()
+    time.sleep(.7)
+    if proc.poll() is not None:
+        raise RuntimeError("tcpdump exited before capture became ready")
+    print("iglite_wifi_header_capture=READY_ON_ETH0", flush=True)
+    try:
+        time.sleep(seconds)
+    finally:
+        if proc.poll() is None:
+            proc.send_signal(signal.SIGINT)
+        thread.join(timeout=5)
+        if thread.is_alive():
+            proc.kill()
+            thread.join(timeout=3)
+        if proc.stdout:
+            proc.stdout.close()
+    names = ("inbound_syn", "inbound_data_segments", "inbound_data_le4",
+             "inbound_data_gt4", "outbound_synack",
+             "outbound_synack_window4", "outbound_syn_only", "outbound_ack_only")
+    for name in names:
+        print("iglite_wifi_" + name + "=" + str(counters[name]), flush=True)
+    print("iglite_wifi_unique_peer_sources=" + str(len(clients)), flush=True)
+    print("iglite_wifi_pcap_persisted=false", flush=True)
+    print("iglite_wifi_android_peer_identified=false", flush=True)
+    print("iglite_wifi_sni_byte_split=NOT_PROVEN_BY_HEADER_CAPTURE", flush=True)
+
 def live():
     originals = baseline()
     m = owner()
@@ -313,7 +391,7 @@ def live():
         print("iglite_live_meta_tls=" + live_tls(), flush=True)
         command(["nft", "-f", "-"], input=rules)
         print("iglite_live_global_window4=ACTIVE", flush=True)
-        time.sleep(TRIAL_SECONDS)
+        observe_wifi_tcp_headers(TRIAL_SECONDS)
         snapshot=command(["nft", "-a", "list", "table", "inet", TABLE]).stdout
         match=re.search(r"counter packets (\d+)", snapshot)
         print("iglite_live_window4_synacks=" + (match.group(1) if match else "UNKNOWN"), flush=True)
