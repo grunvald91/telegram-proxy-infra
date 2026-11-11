@@ -78,6 +78,31 @@ class StagingRollbackTests(unittest.TestCase):
                 de._rollback_locked()
                 self.assertFalse(calls,"already restored must not restart production services")
 
+    def test_de_rollback_attempts_nginx_even_if_dns_restart_fails(self):
+        with tempfile.TemporaryDirectory() as d:
+            directory=Path(d);root=directory/"state";root.mkdir()
+            ng=directory/"nginx.conf";dns=directory/"Corefile"
+            for key,live in (("nginx",ng),("dns",dns)):
+                (root/(key+".original")).write_bytes(b"stable")
+                (root/(key+".candidate")).write_bytes(b"candidate")
+                live.write_bytes(b"candidate")
+            (root/"armed").write_bytes(b"armed")
+            calls=[]
+            def failing_dns(args,**kwargs):
+                calls.append(tuple(args))
+                if args==["systemctl","restart","mnebydns-dot.service"]:
+                    raise RuntimeError("simulated DNS restart failure")
+                return SimpleNamespace(returncode=0,stdout="")
+            with patch.object(de,"ROOT",root),patch.object(de,"LIVE_NGINX",ng),\
+                 patch.object(de,"LIVE_DNS",dns),patch.object(de,"active",return_value=True),\
+                 patch.object(de,"cmd",side_effect=failing_dns):
+                with self.assertRaisesRegex(RuntimeError,"dns_restart"):
+                    de._rollback_locked()
+            self.assertEqual(ng.read_bytes(),b"stable")
+            self.assertEqual(dns.read_bytes(),b"stable")
+            self.assertIn(("systemctl","reload","nginx.service"),calls)
+            self.assertIn(("nginx","-t"),calls)
+
     def test_de_rollback_external_drift_fails_before_writes(self):
         with tempfile.TemporaryDirectory() as d:
             directory=Path(d);root=directory/"state";root.mkdir()
