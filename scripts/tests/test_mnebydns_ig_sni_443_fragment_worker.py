@@ -93,10 +93,16 @@ class PhoneSniFragmentBytes(TestCase):
             with self.subTest(case=candidate[:25]):
                 self.assertEqual(worker.transform(candidate,peer=PEER,server=foreign),candidate)
 
-    def test_rejects_unapproved_server_ip(self):
-        with self.assertRaises(ValueError):
-            worker.transform(packet(),peer=PEER,server="8.8.8.8")
+    def test_production_cli_rejects_unapproved_server_ip(self):
+        # The transform is intentionally pure for RFC5737 network namespaces;
+        # only the CLI invocation can connect it to a real NFQUEUE worker.
+        from unittest.mock import patch
         self.assertEqual(worker.ALLOWED_SERVERS, (RU, "89.125.90.101"))
+        argv=["worker.py", "--client", PEER, "--server", "8.8.8.8",
+              "--ready-file", "/tmp/unreachable-test-marker"]
+        with patch.object(sys, "argv", argv), self.assertRaises(SystemExit) as raised:
+            worker.main()
+        self.assertEqual(raised.exception.code, 2)
 
     def test_client_sni_payload_never_clamped(self):
         src=packet(src=PEER,dst=RU,sport=59127,flags=0x18,payload=b"\x16\x03\x01Instagram")
