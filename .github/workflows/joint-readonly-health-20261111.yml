@@ -6,6 +6,7 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+  statuses: write
 concurrency:
   group: joint-readonly-health-20261111
   cancel-in-progress: false
@@ -167,3 +168,26 @@ jobs:
           audit_remote RU 188.120.254.223 "$RU_PASS"
           audit_remote DE 89.125.90.101 "$DE_PASS"
           echo 'JOINT_DIAG_FINISHED=true'
+      - name: Publish diagnostic run pointer as a GitHub commit status
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OVERALL: ${{ job.status }}
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY' > "$RUNNER_TEMP/diag-run-status.json"
+          import json,os
+          print(json.dumps({
+            "state": "success" if os.environ.get("OVERALL") == "success" else "failure",
+            "context": "diagnostics/dns-vpn-proxy-readonly",
+            "description": "Read-only diagnostic run id "+os.environ["GITHUB_RUN_ID"],
+            "target_url": "https://github.com/"+os.environ["GITHUB_REPOSITORY"]+"/actions/runs/"+os.environ["GITHUB_RUN_ID"]
+          }))
+          PY
+          curl --fail --silent --show-error --retry 2 -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            --data-binary "@$RUNNER_TEMP/diag-run-status.json" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" -o /dev/null
