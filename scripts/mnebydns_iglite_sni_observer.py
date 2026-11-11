@@ -98,7 +98,10 @@ class Analyzer:
         self.flows=OrderedDict()
         self.stats=Counter()
         self.host_counts=Counter()
-    def tcp(self,ip,port,seq,syn,payload,wire_len=None):
+        self.events=[]
+        self.peer_index={}
+        self.uncovered_meta=set()
+    def tcp(self,ip,port,seq,syn,payload,wire_len=None,timestamp=None):
         key=(ip,port)
         if syn:
             self.flows.pop(key,None)
@@ -120,12 +123,18 @@ class Analyzer:
         host,begin,end=info
         if host not in self.hosts:
             self.stats['other_sni']+=1
+            if host.endswith(('.instagram.com','.facebook.com','.fbcdn.net')):
+                self.uncovered_meta.add(host)
             return
         split=any(begin<b<end for a,b in flow.ranges)
         self.stats['target_clienthello']+=1
         self.stats['sni_split' if split else 'sni_unsplit']+=1
         self.host_counts[host]+=1
-    def ethernet(self,frame):
+        if ip not in self.peer_index:
+            self.peer_index[ip]=len(self.peer_index)+1
+        if len(self.events)<512:
+            self.events.append((int(timestamp or 0),self.peer_index[ip],host,split))
+    def ethernet(self,frame,timestamp=None):
         if len(frame)<14:return
         kind=u16(frame,12)
         at=14
@@ -150,7 +159,7 @@ class Analyzer:
         payload=frame[tcp+header:end]
         actual=max(0,wire_len-ihl-header)
         self.tcp(bytes(frame[at+12:at+16]),u16(frame,tcp),seq,
-                 bool(frame[tcp+13]&2),payload,actual)
+                 bool(frame[tcp+13]&2),payload,actual,timestamp)
 
 def read_exact(stream,n):
     chunks=[]
@@ -171,9 +180,9 @@ def parse_pcap(stream,analyzer,ready=None):
     while True:
         try: rec=read_exact(stream,16)
         except EOFError:break
-        _,_,cap,wire=struct.unpack(end+'IIII',rec)
+        sec,_fraction,cap,wire=struct.unpack(end+'IIII',rec)
         if cap>PACKET_LIMIT or cap>wire:raise ValueError('unexpected PCAP record')
-        analyzer.ethernet(read_exact(stream,cap))
+        analyzer.ethernet(read_exact(stream,cap),timestamp=sec)
 
 def begin(hosts):
     analyzer=Analyzer(hosts)
@@ -212,5 +221,12 @@ def summary(a):
         print('iglite_sni_'+name+'='+str(a.stats[name]),flush=True)
     for host in sorted(a.hosts):
         print('iglite_sni_host='+host+'|hello='+str(a.host_counts[host]),flush=True)
+    print('iglite_sni_source_groups='+str(len(a.peer_index)),flush=True)
+    for sec,source_index,hostname,is_split in a.events:
+        print('iglite_sni_event=utc_epoch:'+str(sec)
+              +'|source_group:'+str(source_index)
+              +'|host:'+hostname+'|split:'+str(is_split).lower(),flush=True)
+    for hostname in sorted(a.uncovered_meta)[:40]:
+        print('iglite_sni_uncovered_meta_hostname='+hostname,flush=True)
     print('iglite_sni_android_identified=false',flush=True)
     print('iglite_sni_pcap_written_to_disk=false',flush=True)
