@@ -156,7 +156,7 @@ jobs:
           print('CURRENT_FORWARD_BLOCK_BEGIN',flush=True)
           for s in raw[-12:]:print('CURRENT_FORWARD_LINE='+s.strip()[:220],flush=True)
           print('CURRENT_FORWARD_BLOCK_END',flush=True)
-          p=subprocess.run(['sh','-c','/usr/local/bin/coredns -version 2>&1 || /usr/bin/coredns -version 2>&1 || true'],stdout=subprocess.PIPE,text=True,timeout=5)
+          p=subprocess.run(['sh','-c','/opt/mnebydns-dot/coredns -version 2>&1 || true'],stdout=subprocess.PIPE,text=True,timeout=5)
           print('COREDNS_VERSION='+p.stdout[:350].replace('\n',' '),flush=True)
           names=('example.org','api.telegram.org','cloudflare.com','microsoft.com','www.youtube.com','example.com')
           def exact(s,n):
@@ -176,7 +176,7 @@ jobs:
                   rawsock.settimeout(6)
                   s=ssl.create_default_context().wrap_socket(rawsock,server_hostname=sni)
                   print('UPSTREAM_TLS='+ip+' name='+sni+' version='+str(s.version()),flush=True)
-                  for round in range(8):
+                  for iteration in range(8):
                       for name in names:
                           t=time.monotonic()
                           try:
