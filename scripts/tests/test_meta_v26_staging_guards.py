@@ -31,11 +31,13 @@ class StagingRollbackTests(unittest.TestCase):
                  patch.object(preflight.de,"active",return_value=False), \
                  patch.object(preflight.de,"compiled_plugins",return_value="view template tls"), \
                  patch.object(preflight,"render") as renderer, \
-                 patch.object(preflight,"verify_core_view_runtime",side_effect=RuntimeError("real view mismatch")) as smoke:
+                 patch.object(preflight,"verify_core_view_runtime",side_effect=RuntimeError("real view mismatch")) as smoke, \
+                 patch.object(preflight,"verify_dot_view_runtime") as dot_smoke:
                 with self.assertRaisesRegex(RuntimeError,"real view mismatch"):
                     preflight.audit_de()
                 renderer.return_value.verify_rollback.assert_called_once_with()
                 smoke.assert_called_once_with()
+                dot_smoke.assert_not_called()
 
     def test_ru_non_meta_fallback_checks_real_tcp_connection(self):
         from unittest.mock import MagicMock
