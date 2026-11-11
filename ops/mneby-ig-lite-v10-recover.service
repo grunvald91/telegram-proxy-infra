@@ -3,6 +3,7 @@ Description=MNEBYDNS Instagram v10 emergency recovery of DNS, nginx and TCP conf
 Documentation=https://github.com/grunvald91/telegram-proxy-infra/pull/79
 DefaultDependencies=no
 After=local-fs.target
+RequiresMountsFor=/var/lib/mneby-iglite-wifi-de-20261111-v10 /usr/local/libexec/mneby-iglite-v10
 Before=nginx.service mnebydns-dot.service
 ConditionPathExists=/var/lib/mneby-iglite-wifi-de-20261111-v10/mutation-ready
 
