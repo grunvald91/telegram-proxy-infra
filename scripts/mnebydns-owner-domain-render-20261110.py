@@ -20,6 +20,7 @@ DOMAIN = re.compile(r"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}$")
 FORBIDDEN = re.compile(r"\.(?:localhost|local|internal|test|invalid|example|onion|arpa|lan|home|corp)$")
 NGINX_ANCHOR = "map $ssl_preread_server_name $direct_mtproxy_backend {"
 CACHE_ANCHOR = "    cache 30\n"
+RESILIENT_CACHE_ANCHOR = "    cache 30 {\n"
 
 
 def validate_domain(name: str) -> str:
@@ -173,7 +174,14 @@ def core_add(stable: str, domain: str) -> str:
     begin, end = _block_bounds(stable, domain)
     if begin in stable or end in stable:
         raise ValueError("Already has owner domain route")
-    if stable.count(CACHE_ANCHOR) != 1 or "template IN A gemini.google.com {" not in stable:
+    # Preserve strict exact-template collision checks, but support the new
+    # CoreDNS cache block after the resilient upstream upgrade. Legacy cache
+    # syntax remains valid for owner deployments during migration.
+    anchor = next((item for item in (CACHE_ANCHOR, RESILIENT_CACHE_ANCHOR)
+                   if stable.count(item) == 1), None)
+    if (anchor is None or
+        sum(stable.count(item) for item in (CACHE_ANCHOR, RESILIENT_CACHE_ANCHOR)) != 1 or
+        "template IN A gemini.google.com {" not in stable):
         raise ValueError("Unrecognized CoreDNS stable baseline")
     _assert_no_existing_core_route(stable, domain)
     hostname = re.escape(domain).replace(r"\.", "[.]")
@@ -189,7 +197,7 @@ def core_add(stable: str, domain: str) -> str:
             "    }\n"
         )
     prefix += end
-    out = stable.replace(CACHE_ANCHOR, prefix+CACHE_ANCHOR, 1)
+    out = stable.replace(anchor, prefix+anchor, 1)
     if out.replace(prefix, "", 1) != stable:
         raise AssertionError("CoreDNS edit must be additive")
     return out
