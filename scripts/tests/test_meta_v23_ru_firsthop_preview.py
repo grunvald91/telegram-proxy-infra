@@ -95,6 +95,8 @@ class RussianIngressTests(unittest.TestCase):
     def test_worker_only_routes_to_owner_private_wg(self):
         argv=p.worker_arguments("8.8.8.8")
         self.assertIn(("--backend-address",p.WG_BACKEND),tuple(zip(argv,argv[1:])))
+        self.assertIn(("--non-meta-backend-address",p.RU_EDGE),
+                      tuple(zip(argv,argv[1:])))
         self.assertEqual(argv[-2:],("--max-lifetime","2700"))
         self.assertEqual(p.worker_arguments("8.8.8.8",trial_seconds=900)[-2:],
                          ("--max-lifetime","1500"))
@@ -106,5 +108,22 @@ class RussianIngressTests(unittest.TestCase):
         proxy=WindowProxy(p.RU_EDGE,"8.8.8.8",backend=(p.WG_BACKEND,443))
         self.assertEqual(proxy.backend,(p.WG_BACKEND,443))
         self.assertNotEqual(proxy.backend[0],p.DE_EDGE)
+
+    def test_ru_receiver_routes_only_target_sni_over_wireguard(self):
+        from meta_v15_receive_window import WindowProxy,HOSTS
+        ru=(p.RU_EDGE,443)
+        de=(p.WG_BACKEND,443)
+        proxy=WindowProxy(p.RU_EDGE,"8.8.8.8",backend=de,non_meta_backend=ru)
+        for target in HOSTS:
+            with self.subTest(host=target):
+                self.assertEqual(proxy.destination_for(target),de)
+        for not_meta in (None,"www.youtube.com","mnebyvpn.site",
+                         "claude.ai","unlisted.instagram.com"):
+            with self.subTest(host=not_meta):
+                self.assertEqual(proxy.destination_for(not_meta),ru)
+        with self.assertRaises(ValueError):
+            WindowProxy(p.DE_EDGE,"8.8.8.8",backend=de,non_meta_backend=ru)
+        with self.assertRaises(ValueError):
+            WindowProxy(p.RU_EDGE,"8.8.8.8",backend=ru,non_meta_backend=ru)
 
 if __name__=="__main__": unittest.main()
