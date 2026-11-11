@@ -31,6 +31,13 @@ class TwoServerSequenceTests(unittest.TestCase):
             ("ru","rollback",None),
             ("de","rollback",None)])
 
+    def test_thirty_minute_trial_with_watchdog_margin(self):
+        self.assertEqual(m.MAX_SECONDS,1800)
+        actions,trial=self.recorder()
+        trial.run("185.137.178.123",seconds=1800)
+        self.assertIn(("active","window",1800),actions)
+        self.assertEqual(actions[-1],("de","rollback",None))
+
     def test_failure_before_ru_never_enables_dns_but_cleans_both(self):
         actions,trial=self.recorder(fail=("ru","start"))
         with self.assertRaisesRegex(m.TrialFailure,"trial aborted"):
@@ -66,7 +73,7 @@ class TwoServerSequenceTests(unittest.TestCase):
             with self.subTest(peer=peer),self.assertRaises(ValueError):
                 trial.run(peer)
             self.assertEqual(actions,[])
-        for seconds in (0,901,-1,True,10.2):
+        for seconds in (0,1801,-1,True,10.2):
             actions,trial=self.recorder()
             with self.subTest(seconds=seconds),self.assertRaises(ValueError):
                 trial.run("8.8.8.8",seconds=seconds)
