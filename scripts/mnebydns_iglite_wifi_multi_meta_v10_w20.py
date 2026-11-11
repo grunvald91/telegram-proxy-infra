@@ -556,4 +556,4 @@ if __name__ == "__main__":
     elif sys.argv[1]=="boot-rollback":
         rollback(boot=True)
     else:
-        live()
+        raise SystemExit("Legacy v10 global TCP Window20 trial disabled; use route-only v11")
