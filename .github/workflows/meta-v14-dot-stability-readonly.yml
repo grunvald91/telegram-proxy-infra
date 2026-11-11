@@ -1,0 +1,37 @@
+name: MNEBYDNS Meta v14 read-only DoT stability comparison
+
+on:
+  push:
+    branches: [fix/meta-routing-quic-sni-validation]
+    paths:
+      - 'scripts/meta_v14_dot_stability.py'
+      - 'scripts/tests/test_meta_v14_dot_stability.py'
+      - 'scripts/meta_v12_ru_de_readonly.py'
+      - '.github/workflows/meta-v14-dot-stability-readonly.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sample:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile and validate offline status classification
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/meta_v14_dot_stability.py scripts/meta_v12_ru_de_readonly.py scripts/tests/test_meta_v14_dot_stability.py
+          python3 -m unittest discover -s scripts/tests -p 'test_meta_v14_dot_stability.py' -v
+      - name: Compare public DE DoT against Quad9 DoT in five bounded rounds
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo '### DNS response stability: GitHub runner only, NOT Android or ISP' >> "$GITHUB_STEP_SUMMARY"
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          python3 scripts/meta_v14_dot_stability.py | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
