@@ -126,6 +126,8 @@ def verify(file: str, mode: str):
                if p["src"] == SERVER and p["dst"] == CLIENT
                and p["sport"] == PORT and p["flags"] & 0x12 == 0x12]
     if len(synacks) != 1:
+        print("debug_pcap_packet_count="+str(len(packets)),flush=True)
+        print("debug_pcap_first_packets="+repr([(p["src"],p["dst"],p["sport"],p["dport"],p["flags"],p["payload_size"]) for p in packets[:15]]),flush=True)
         raise AssertionError(f"Need exactly 1 SYN-ACK, saw {len(synacks)}")
     synack = synacks[0]
     if not synack["valid_checksum"]:
