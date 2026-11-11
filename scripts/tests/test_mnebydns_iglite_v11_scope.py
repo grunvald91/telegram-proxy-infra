@@ -50,7 +50,10 @@ class V11RouteOnlySafety(unittest.TestCase):
         self.assertIn("mneby-ig-lite-route-only-20261111-v11",self.src)
         self.assertIn('base.command(["systemd-run"',self.src)
         self.assertIn("base.MUTATION_MARKER",self.src)
-        self.assertIn("finally:\n        base.rollback()",self.src)
+        self.assertIn("finally:\n        rollback()",self.src)
+        self.assertNotIn("base.rollback()",self.src)
+        self.assertIn("iglite_v11_rollback=ALREADY_RESTORED_NO_RESTART",self.src)
+        self.assertIn("iglite_v11_rollback=VERIFIED_CONFIGS_AND_SERVICES_NO_TCP_WRITES",self.src)
         self.assertIn("base.WATCHDOG_SECONDS",self.src)
         self.assertIn("base.TRIAL_SECONDS+base.MIN_ROLLBACK_MARGIN",self.src)
 
