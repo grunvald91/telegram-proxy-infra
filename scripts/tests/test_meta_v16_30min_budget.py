@@ -29,7 +29,7 @@ class DurationSafety(unittest.TestCase):
     def test_duration_rejected_before_remote_commands(self):
         with patch.object(trial,"command",side_effect=AssertionError("unexpected command")):
             with self.assertRaises(ValueError):
-                trial.live("185.137.178.123", duration=3600)
+                trial.live("8.8.8.8", duration=3600)
 
     def test_live_script_uses_both_budgets_for_recovery(self):
         source=Path(trial.__file__).read_text()
