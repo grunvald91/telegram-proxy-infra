@@ -68,7 +68,7 @@ jobs:
                   if typ==1 and cls==1 and rdlen==4:ips.append(socket.inet_ntoa(response[offset:offset+4]))
                   offset+=rdlen
               return flags&15,ips
-          for host in ('claude.ai','antigravity.google','instagram.com','www.tiktok.com','example.org'):
+          for host in ('claude.ai','antigravity.google','instagram.com','i.instagram.com','test-gateway.instagram.com','z-m-gateway.facebook.com','www.youtube.com','api.telegram.org','www.tiktok.com','example.org'):
               try:
                   rcode,ips=query(host)
                   print('DOT_QUERY='+host+' rcode='+str(rcode)+' A='+','.join(ips[:6]),flush=True)
