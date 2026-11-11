@@ -2,9 +2,10 @@
 """Owner-approved bounded multi-Meta DE SmartDNS 15min SNI-split trial.
 
 Verified Instagram/Meta hostnames are routed through DE while temporary
-nftables SYN-ACK window=4 covers DE public IPv4 TCP/443. Only exact hosts
-with verified origin TLS are admitted. An independent watchdog restores
-original Corefile, nginx.conf and test-owned firewall table. No permanent changes.
+Temporary TCP Window Scale=0 and early ACK advertised window=20 apply to all
+new DE TCP connections; only 11 selected Meta hostnames are routed via DNS.
+The current timer restores state on the same boot; this candidate is NOT safe
+to deploy until reboot-persistent restoration is implemented and verified.
 """
 from __future__ import annotations
 import hashlib
@@ -194,7 +195,10 @@ def rollback():
     if (nft_absent and originals and original_ws is not None
         and WSFILE.read_text().strip() == original_ws
         and NGINX.read_bytes() == (ROOT / "nginx.original").read_bytes()
-        and CORE.read_bytes() == (ROOT / "core.original").read_bytes()):
+        and CORE.read_bytes() == (ROOT / "core.original").read_bytes()
+        and all(command(["systemctl", "is-active", "--quiet", svc],
+                        check=False).returncode == 0
+                for svc in ("nginx.service", "mnebydns-dot.service"))):
         print("iglite_rollback=ALREADY_RESTORED", flush=True)
         return
     failures = []
@@ -234,7 +238,10 @@ def rollback():
     good = (command(["nft", "list", "table", "inet", TABLE], check=False).returncode != 0
             and original_ws is not None and WSFILE.read_text().strip() == original_ws
             and NGINX.read_bytes() == (ROOT / "nginx.original").read_bytes()
-            and CORE.read_bytes() == (ROOT / "core.original").read_bytes())
+            and CORE.read_bytes() == (ROOT / "core.original").read_bytes()
+            and all(command(["systemctl", "is-active", "--quiet", svc],
+                            check=False).returncode == 0
+                    for svc in ("nginx.service", "mnebydns-dot.service")))
     if not good or failures:
         print("iglite_rollback=FAILED_" + ",".join(failures), flush=True)
         raise RuntimeError("Rollback not verified")
@@ -391,7 +398,7 @@ def observe_wifi_tcp_headers(seconds):
                   and counters["inbound_data_segments"] > 0)
     print("iglite_wifi_transport_observation_valid=" + str(sufficient).lower(), flush=True)
     if not sufficient:
-        raise RuntimeError("Missing real Window4 SYNACK/client data: trial inconclusive")
+        raise RuntimeError("Missing real Window20 SYNACK/client data: trial inconclusive")
 
 def live():
     originals = baseline()
