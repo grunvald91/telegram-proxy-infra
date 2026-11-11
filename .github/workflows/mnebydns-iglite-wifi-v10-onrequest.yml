@@ -11,9 +11,9 @@ concurrency:
   cancel-in-progress: false
 jobs:
   canary:
-    # REVIEW BLOCKER: no persistent reboot-safe recovery unit yet.
-    # Do not start the owner experiment until this guard is explicitly removed.
-    if: ${{ false }}
+    # Owner explicitly accepts lack of reboot-persistent recovery for one
+    # 15-minute trial; 20-minute independent same-boot timer remains mandatory.
+    if: ${{ true }}
     runs-on: ubuntu-latest
     timeout-minutes: 26
     env:
@@ -32,8 +32,10 @@ jobs:
           python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_iglite_sni_observer.py' -v
           python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_iglite_wifi_readiness_helpers.py' -v
           python3 scripts/mnebydns-owner-domain-render-20261110.py self-test
-          # Live stage requires independently installed/enabled boot recovery.
-          grep -Fq 'Before=nginx.service mnebydns-dot.service' ops/mneby-ig-lite-v10-recover.service
+          # The explicit temporary-only mode retains a separate 1200-second
+          # systemd timer and a finally: rollback() path; it does NOT promise
+          # automatic recovery if the host reboots during the experiment.
+          python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_iglite_v10_guard.py' -v
       - name: Prepare pinned SSH
         shell: bash
         run: |
@@ -63,7 +65,7 @@ jobs:
             -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
           logfile="$RUNNER_TEMP/iglite-v10-live.log"
           timeout 1400s sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
-            'MNEBY_IGLITE_LIVE_APPROVED=YES python3 -u /usr/local/libexec/mneby-iglite-v10/mnebydns_iglite_wifi_multi_meta_v10_w20.py live' \
+            'MNEBY_IGLITE_LIVE_APPROVED=YES MNEBY_IGLITE_TEMPORARY_ONLY_APPROVED=YES python3 -u /usr/local/libexec/mneby-iglite-v10/mnebydns_iglite_wifi_multi_meta_v10_w20.py live' \
             > "$logfile" 2>&1
           cat "$logfile"
           grep -Fqx 'iglite_rollback=VERIFIED_ORIGINAL_BYTES_AND_SERVICES' "$logfile"
@@ -111,8 +113,8 @@ jobs:
           if not all(tests.values()):sys.exit(1)
           PY
   readiness:
-    # Disabled together with the live canary; must not emit false READY.
-    if: ${{ false }}
+    # Independent readiness runs only for a specifically committed launch marker.
+    if: ${{ true }}
     name: Independent actual capture READY check
     runs-on: ubuntu-latest
     timeout-minutes: 18
