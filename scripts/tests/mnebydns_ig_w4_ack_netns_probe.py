@@ -40,15 +40,19 @@ def listener(ready: str, count: int):
             with conn:
                 conn.settimeout(3)
                 block = bytearray()
+                expected = None
                 while len(block) < 16384:
                     chunk = conn.recv(16384 - len(block))
                     if not chunk:
                         break
                     block.extend(chunk)
-                    if b"i.instagram.com" in block:
+                    if expected is None and len(block)>=5:
+                        expected=5+int.from_bytes(block[3:5],'big')
+                    if expected is not None and len(block)>=expected:
                         break
-                if b"i.instagram.com" not in block:
-                    raise AssertionError("Expected authentic TLS ClientHello with SNI")
+                if expected is None or len(block)<expected or b"i.instagram.com" not in block:
+                    raise AssertionError("Expected complete TLS ClientHello with SNI")
+                conn.sendall(b"OK")
                 print(f"listener_received_tls_clienthello_bytes={len(block)}", flush=True)
 
 
@@ -67,8 +71,11 @@ def client():
         pass
     hello = outgoing.read()
     assert len(hello) > 100 and b"i.instagram.com" in hello
-    with socket.create_connection((SERVER, PORT), timeout=5) as sock:
+    with socket.create_connection((SERVER, PORT), timeout=8) as sock:
+        sock.settimeout(8)
         sock.sendall(hello)
+        if sock.recv(2)!=b"OK":
+            raise RuntimeError("listener did not receive complete ClientHello")
     print(f"client_sent_tls_clienthello_bytes={len(hello)}", flush=True)
 
 
@@ -81,7 +88,7 @@ def capture(interface: str, dest: str, ready: str):
         with open(dest, "wb", buffering=0) as out:
             out.write(struct.pack("<IHHIIII", 0xa1b2c3d4, 2, 4, 0, 0, 65535, 1))
             Path(ready).write_text("ready\n")
-            deadline=time.monotonic()+7.0
+            deadline=time.monotonic()+12.0
             seen=0
             while time.monotonic()<deadline:
                 try: frame=sock.recv(65535)
