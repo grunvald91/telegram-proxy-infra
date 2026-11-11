@@ -7,7 +7,7 @@ import struct
 import unittest
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from mnebydns_iglite_sni_observer import Analyzer, Flow, locate_sni, parse_pcap
+from mnebydns_iglite_sni_observer import Analyzer, Flow, locate_sni, locate_partial_sni, parse_pcap
 
 HOST='iglite-z.instagram.com'
 
@@ -114,6 +114,51 @@ class ClientHelloBoundaryTests(unittest.TestCase):
         a.tcp(peer,45454,501,False,tls_hello(other))
         self.assertEqual(a.uncovered_meta,{other})
         self.assertEqual(a.stats['other_sni'],1)
+
+    def test_incomplete_tls_clienthello_is_visible_without_full_record(self):
+        full=bytearray(tls_hello())
+        # Append an extension after SNI and adjust all three declared lengths.
+        # A visible SNI prefix must NOT be called a complete ClientHello.
+        pad=b'\x00\x15'+struct.pack('!H',24)+b'\0'*24
+        extat=50
+        oldext=struct.unpack_from('!H',full,extat)[0]
+        full[extat:extat+2]=struct.pack('!H',oldext+len(pad))
+        full.extend(pad)
+        full[6:9]=(len(full)-9).to_bytes(3,'big')
+        full[3:5]=struct.pack('!H',len(full)-5)
+        shown=bytes(full[:-17])
+        self.assertEqual(locate_partial_sni(shown),HOST)
+        self.assertIsNone(locate_sni(shown))
+        a=Analyzer([HOST]);peer=b'\xcb\0\x71\x02'
+        a.tcp(peer,40404,50,True,b'')
+        a.tcp(peer,40404,51,False,shown)
+        counts=a.incomplete_diagnostics()
+        self.assertEqual(counts['clienthello_record_incomplete'],1)
+        self.assertEqual(counts['target_sni_visible_in_partial_record'],1)
+        self.assertEqual(a.stats['target_clienthello'],0)
+        a.tcp(peer,40404,51+len(shown),False,bytes(full[len(shown):]))
+        self.assertEqual(a.stats['target_clienthello'],1)
+        self.assertEqual(a.incomplete_diagnostics()['clienthello_record_incomplete'],0)
+
+    def test_short_tls_prefix_and_gap_have_distinct_aggregate_counters(self):
+        a=Analyzer([HOST]);peer=b'\xcb\0\x71\x02';h=tls_hello()
+        a.tcp(peer,40001,200,True,b'')
+        a.tcp(peer,40001,201,False,h[:20])
+        a.tcp(peer,40002,300,True,b'')
+        a.tcp(peer,40002,316,False,h[15:])
+        a.tcp(peer,40003,400,True,b'')
+        c=a.incomplete_diagnostics()
+        self.assertEqual(c['clienthello_record_incomplete'],1)
+        self.assertEqual(c['short_clienthello_prefix'],1)
+        self.assertEqual(c['prefix_gap_after_syn'],1)
+        self.assertEqual(c['syn_without_payload'],1)
+        self.assertEqual(c['target_sni_visible_in_partial_record'],0)
+
+    def test_capture_missing_syn_not_silently_ignored(self):
+        a=Analyzer([HOST])
+        a.tcp(b'\xcb\0\x71\x02',40000,44,False,tls_hello())
+        self.assertEqual(a.stats['payload_without_syn'],1)
+        self.assertEqual(a.stats['target_clienthello'],0)
 
     def test_no_raw_ips_or_payload_prints(self):
         import inspect
