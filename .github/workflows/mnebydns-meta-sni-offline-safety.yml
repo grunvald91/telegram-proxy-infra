@@ -1,0 +1,53 @@
+name: MNEBYDNS Meta SNI offline regressions (no VPS access)
+on:
+  push:
+    branches:
+      - fix/meta-routing-quic-sni-validation
+    paths:
+      - .github/workflows/mnebydns-meta-sni-offline-safety.yml
+      - scripts/mnebydns_iglite_sni_observer.py
+      - scripts/tests/test_mnebydns_iglite_sni_observer.py
+      - scripts/mnebydns_iglite_dns_wire_checks.py
+      - scripts/tests/test_mnebydns_iglite_dns_wire_checks.py
+      - scripts/mnebydns_iglite_route_only_v11.py
+      - scripts/tests/test_mnebydns_iglite_v11_scope.py
+  pull_request:
+    branches:
+      - audit/mnebydns-instagram-lite-20261111
+    paths:
+      - .github/workflows/mnebydns-meta-sni-offline-safety.yml
+      - scripts/mnebydns_iglite_sni_observer.py
+      - scripts/tests/test_mnebydns_iglite_sni_observer.py
+      - scripts/mnebydns_iglite_dns_wire_checks.py
+      - scripts/tests/test_mnebydns_iglite_dns_wire_checks.py
+      - scripts/mnebydns_iglite_route_only_v11.py
+      - scripts/tests/test_mnebydns_iglite_v11_scope.py
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile Meta diagnostic modules
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns_iglite_sni_observer.py scripts/mnebydns_iglite_dns_wire_checks.py scripts/mnebydns_iglite_route_only_v11.py
+      - name: Reject truncated captures and ambiguous TCP segmentation
+        run: |
+          set -Eeuo pipefail
+          python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_iglite_sni_observer.py' -v
+      - name: Confirm existing route-only and DNS safety contracts
+        run: |
+          set -Eeuo pipefail
+          python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_iglite_v11_scope.py' -v
+          python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_iglite_dns_wire_checks.py' -v
+      - name: Explicit scope attestation
+        run: |
+          echo 'OFFLINE_ONLY=true'
+          echo 'NO_SSH_NO_SECRETS_NO_REMOTE_DEPLOY=true'
+          echo 'DOES_NOT_PROVE_INSTAGRAM_ANDROID_E2E=true'
