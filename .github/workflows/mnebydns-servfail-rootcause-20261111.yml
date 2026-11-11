@@ -1,0 +1,161 @@
+name: MNEBYDNS read-only root cause - resolver errors, cache and RTT
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/mnebydns-servfail-rootcause-20261111.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  statuses: write
+concurrency:
+  group: mnebydns-diagnose-root-cause
+  cancel-in-progress: false
+jobs:
+  rootcause:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Read-only foreign CoreDNS configuration, recent resolver errors and local upstream probes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS"
+          command -v sshpass >/dev/null || { sudo apt-get update -qq; sudo apt-get install -y -qq sshpass; }
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 \
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no root@89.125.90.101 'python3 -' <<'PY'
+          import pathlib,subprocess,re,collections,socket,struct,os,time,hashlib
+          def call(cmd,timeout=9):
+              try:
+                  r=subprocess.run(cmd,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=timeout)
+                  return r.returncode,r.stdout.strip()
+              except Exception as e:
+                  return 254,type(e).__name__
+          def out(k,v):print('ROOT_'+k+'='+str(v),flush=True)
+          out('CLOCK',time.strftime('%Y-%m-%d %H:%M:%S UTC',time.gmtime()))
+          src=pathlib.Path('/opt/mnebydns-dot/Corefile')
+          if not src.exists():raise SystemExit('Corefile missing')
+          lines=src.read_text().splitlines()
+          out('COREFILE_SHA12',hashlib.sha256(src.read_bytes()).hexdigest()[:12])
+          out('COREFILE_LINES',len(lines))
+          keywords=('forward','cache','errors','log','health','ready','reload','hosts','template','rewrite','loadbalance','tls','bind','loop','prometheus','fallthrough','policy','max_fails','max_concurrent','expire','prefetch','serve_stale','local','import')
+          for n,line in enumerate(lines,1):
+              s=line.strip()
+              if not s or s.startswith('#'):continue
+              word=s.split()[0]
+              if word in keywords:
+                  if word=='template':s='template [redacted-zone-details]'
+                  if word=='rewrite':s='rewrite [redacted-rewrite-details]'
+                  s=re.sub(r'(?i)(?:token|password|secret|key)=[^ ]+','[redacted]',s)
+                  out('COREFILE_DIR_'+str(n),s[:240])
+          rc,services=call(['systemctl','show','mnebydns-dot','-p','ExecStart','-p','ActiveState','-p','NRestarts','-p','Result'])
+          out('UNIT',services[:700])
+          rc,ports=call(['ss','-lntupH'],8)
+          for line in ports.splitlines():
+              if 'coredns' in line.lower() or ':853 ' in line or ':53 ' in line or ':5353 ' in line:
+                  out('LISTENER',line[:230])
+          r=pathlib.Path('/etc/resolv.conf')
+          if r.exists():
+              out('RESOLVCONF',','.join(x.strip() for x in r.read_text().splitlines() if x.strip().startswith(('nameserver ','options ')))[:320])
+          rc,logs=call(['journalctl','-u','mnebydns-dot','--since','-150 minutes','-n','500','--no-pager','-o','cat'],9)
+          out('JOURNAL_EXIT',rc)
+          lc=collections.Counter()
+          samples=[]
+          for line in logs.splitlines():
+              lo=line.lower()
+              if any(x in lo for x in ('error','fail','timeout','refused','loop','reload','restart','no upstream')):
+                  typ=next((x for x in ('timeout','refused','upstream','servfail','reload','restart','fail','error') if x in lo),'other')
+                  lc[typ]+=1
+                  if len(samples)<24:
+                      red=re.sub(r'(?:[0-9]{1,3}\.){3}[0-9]{1,3}', '<ip>',line)
+                      red=re.sub(r'(?i)(password|token|secret|key)=[^ ,]+',r'\1=[redacted]',red)
+                      samples.append(red[:260])
+          out('JOURNAL_CLASS',dict(lc))
+          for i,s in enumerate(samples):out('JOURNAL_SAMPLE_'+str(i+1),s)
+          def qwire(domain):
+              parts=b''.join(bytes([len(x)])+x.encode('ascii') for x in domain.split('.'))+b'\0'
+              return struct.pack('!HHHHHH',0x6ac1,0x0100,1,0,0,0)+parts+struct.pack('!HH',1,1)
+          def udp(domain,ip,port=53):
+              s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.settimeout(2.5); t=time.monotonic()
+              try:
+                  p=qwire(domain);s.sendto(p,(ip,port));r,_=s.recvfrom(4096)
+                  if len(r)<12:raise ValueError('short_dns')
+                  return str(r[3]&15)+'/'+str(struct.unpack('!H',r[6:8])[0])+'/'+str(round((time.monotonic()-t)*1000))
+              except Exception as e:return type(e).__name__
+              finally:s.close()
+          for host in ('example.org','api.telegram.org','microsoft.com','claude.ai'):
+              for ip,port in (('127.0.0.1',53),('127.0.0.1',5353),('1.1.1.1',53),('9.9.9.9',53)):
+                  out('UDP_'+host+'_'+ip+':'+str(port),udp(host,ip,port))
+          out('READ_ONLY_FINISHED',True)
+          PY
+      - name: Compare one-session DoT request latency against reconnect-on-each-request
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import socket,ssl,struct,time,statistics
+          host='89.125.90.101';name='dns.mnebyvpn.site'
+          qs=('example.org','api.telegram.org','example.com','cloudflare.com','microsoft.com','claude.ai')*3
+          def pack(q):
+              question=b''.join(bytes([len(x)])+x.encode() for x in q.split('.'))+b'\0'+struct.pack('!HH',1,1)
+              return struct.pack('!HHHHHH',0x3322,0x100,1,0,0,0)+question
+          def get(s,n):
+              b=b''
+              while len(b)<n:
+                  x=s.recv(n-len(b))
+                  if not x:raise EOFError()
+                  b+=x
+              return b
+          def query(s,q):
+              d=pack(q)
+              t=time.monotonic()
+              s.sendall(struct.pack('!H',len(d))+d)
+              packet=get(s,struct.unpack('!H',get(s,2))[0])
+              return packet[3]&15,round((time.monotonic()-t)*1000)
+          def connect():
+              t=time.monotonic()
+              s=socket.create_connection((host,853),timeout=7);s.settimeout(7)
+              tls=ssl.create_default_context().wrap_socket(s,server_hostname=name)
+              return tls,round((time.monotonic()-t)*1000)
+          session,handshake=connect()
+          print('SESSION_TLS_CONNECT_MS='+str(handshake),flush=True)
+          with session:
+              measurements=[]
+              for q in qs:
+                  try:
+                      code,ms=query(session,q)
+                      measurements.append(ms)
+                      print('SESSION_QUERY='+q+' rcode='+str(code)+' ms='+str(ms),flush=True)
+                  except Exception as e:
+                      print('SESSION_QUERY='+q+' ERROR='+type(e).__name__,flush=True)
+                      break
+          if measurements:print('SESSION_MEDIAN_MS='+str(statistics.median(measurements)),flush=True)
+          for q in ('example.org','api.telegram.org','cloudflare.com'):
+              try:
+                  tls,connect_ms=connect()
+                  with tls:code,query_ms=query(tls,q)
+                  print('FRESH_QUERY='+q+' connect_ms='+str(connect_ms)+' query_ms='+str(query_ms)+' rcode='+str(code),flush=True)
+              except Exception as e:print('FRESH_QUERY='+q+' error='+type(e).__name__,flush=True)
+          PY
+      - name: Record diagnostic run id
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OVERALL: ${{ job.status }}
+        run: |
+          python3 - <<'PY' > "$RUNNER_TEMP/status.json"
+          import os,json
+          print(json.dumps(dict(state='success' if os.environ['OVERALL']=='success' else 'failure',
+            context='diagnostics/mnebydns-rootcause',
+            description='Read-only live resolver diagnostic',
+            target_url='https://github.com/'+os.environ['GITHUB_REPOSITORY']+'/actions/runs/'+os.environ['GITHUB_RUN_ID'])))
+          PY
+          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+             --data-binary "@$RUNNER_TEMP/status.json" "https://api.github.com/repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" >/dev/null
