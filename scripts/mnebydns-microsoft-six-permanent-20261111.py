@@ -137,6 +137,24 @@ def prepare(name):
         print("microsoft_existing_COVERED="+name,flush=True)
         return "COVERED"
 
+    # Recover a Microsoft exact-host promotion interrupted AFTER the bot's
+    # CONFIRM_REQUESTED -> CONFIRMING CAS, but BEFORE checkpoint verification.
+    # The existing owner controller independently re-verifies live Nginx,
+    # DoT, RU->DE TLS and the armed rollback timer before committing ACTIVE.
+    # Never auto-confirm an unrelated domain or assume a DB flag is live proof.
+    if current["status"] in ("CONFIRM_REQUESTED","CONFIRMING"):
+        if other_owner_transition(name):
+            raise RuntimeError("Another owner route is changing during Microsoft recovery")
+        print("microsoft_resume_checkpoint_confirmation="+name,flush=True)
+        owner.confirm(current)
+        if row(name)["status"]!="ACTIVE":
+            raise RuntimeError("Interrupted Microsoft confirmation was not committed")
+        if not owner.live_checkpoint_unchanged():
+            raise RuntimeError("Unverified stable checkpoint after Microsoft recovery")
+        health(name)
+        print("microsoft_resumed_permanent_ACTIVE="+name,flush=True)
+        return "ACTIVE"
+
     if other_owner_transition(name):
         print("microsoft_blocked_by_other_owner_transition="+name,flush=True)
         return "DEFERRED"
