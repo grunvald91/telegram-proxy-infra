@@ -10,6 +10,8 @@ on:
       - 'scripts/tests/test_mnebydns_iglite_dns_wire_checks.py'
       - 'scripts/tests/mnebydns_ig_de_nft_netns_probe.py'
       - 'scripts/tests/integration_mnebydns_ig_de_nft_win4_netns.sh'
+      - 'scripts/tests/integration_mnebydns_ig_w4_ack_netns.sh'
+      - 'scripts/tests/mnebydns_ig_w4_ack_netns_probe.py'
       - 'scripts/tests/test_mnebydns_iglite_route_preview.py'
       - 'scripts/mnebydns_iglite_wifi_multi_meta_v8_review.py'
       - 'scripts/mnebydns_iglite_wifi_multi_meta_v9_sni.py'
@@ -66,3 +68,21 @@ jobs:
           set -Eeuo pipefail
           python3 -m py_compile scripts/tests/mnebydns_ig_de_nft_netns_probe.py
           sudo bash scripts/tests/integration_mnebydns_ig_de_nft_win4_netns.sh
+
+  kernel-nft-window4-ack-boundary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install disposable network namespace tools
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq iproute2 nftables tcpdump ethtool
+      - name: Inspect SYNACK-only vs early ACK window clamp and actual TLS SNI TCP boundary
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/tests/mnebydns_ig_w4_ack_netns_probe.py
+          sudo bash scripts/tests/integration_mnebydns_ig_w4_ack_netns.sh
