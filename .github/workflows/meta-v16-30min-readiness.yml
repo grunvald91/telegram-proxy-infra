@@ -1,0 +1,77 @@
+name: Meta v16 30-minute canary read-only readiness (NO DEPLOY)
+
+on:
+  push:
+    branches: [fix/meta-routing-quic-sni-validation]
+    paths:
+      - '.github/workflows/meta-v16-30min-readiness.yml'
+      - 'scripts/meta_v16_readonly_preflight.py'
+      - 'scripts/tests/test_meta_v16_30min_budget.py'
+      - 'scripts/meta_v15_phone_trial.py'
+      - 'scripts/meta_v15_receive_window.py'
+      - 'scripts/mnebydns_iglite_route_only_v11.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: meta-v16-preflight-readonly
+  cancel-in-progress: false
+
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile and check 30-minute budget, SNI observer, controller and socket
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/meta_v16_readonly_preflight.py scripts/meta_v15_phone_trial.py scripts/meta_v15_receive_window.py scripts/mnebydns_iglite_route_only_v11.py
+          python3 -m unittest discover -s scripts/tests -p 'test_meta_v16_30min_budget.py' -v
+          python3 -m unittest discover -s scripts/tests -p 'test_meta_v15_phone_trial.py' -v
+          python3 -m unittest discover -s scripts/tests -p 'test_meta_v15_receive_window.py' -v
+          python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_iglite_v11_scope.py' -v
+          echo 'offline_30min_contract=PASS' >> "$GITHUB_STEP_SUMMARY"
+
+  inspect-de:
+    needs: offline
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prepare pinned SSH for read-only probe
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+      - name: Check DE active network state, queue exemption and watchdog readiness
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          echo '### DE 30-minute preflight — READ ONLY, no public DNS switch' >> "$GITHUB_STEP_SUMMARY"
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          tar -C scripts -cf - meta_v16_readonly_preflight.py meta_v15_phone_trial.py \
+            meta_v15_receive_window.py mnebydns_iglite_route_only_v11.py \
+            mnebydns_iglite_wifi_multi_meta_v10_w20.py mnebydns_iglite_sni_observer.py |
+            sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
+            'set -Eeuo pipefail; umask 077; d=$(mktemp -d /tmp/mneby-v16-preflight.XXXXXXXX); trap '\''rm -rf -- "$d"'\'' EXIT; tar -xf - -C "$d"; python3 "$d/meta_v16_readonly_preflight.py"' |
+            tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo 'live_route_mutations=none' >> "$GITHUB_STEP_SUMMARY"
