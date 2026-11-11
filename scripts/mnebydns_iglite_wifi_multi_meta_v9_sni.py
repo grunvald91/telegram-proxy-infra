@@ -336,8 +336,12 @@ def observe_wifi_tcp_headers(seconds):
     if proc.poll() is not None:
         raise RuntimeError("tcpdump exited before capture became ready")
     print("iglite_wifi_header_capture=READY_ON_ETH0", flush=True)
+    ready_epoch = int(time.time())
+    # A metadata-only readiness marker lets a separate Actions job confirm
+    # activation while this long-running SSH job is still executing.
+    write_exclusive(ROOT / "ready_epoch", str(ready_epoch).encode("ascii"))
+    print("iglite_wifi_capture_start_epoch_s=" + str(ready_epoch), flush=True)
     print("iglite_wifi_15min_window=READY", flush=True)
-    print("iglite_wifi_capture_start_epoch_s=" + str(int(time.time())), flush=True)
     try:
         time.sleep(seconds)
     finally:
