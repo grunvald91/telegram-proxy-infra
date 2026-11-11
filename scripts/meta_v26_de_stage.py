@@ -193,6 +193,22 @@ def rollback():
     if not ROOT.is_dir():return
     with lock():_rollback_locked()
 
+def reset():
+    """Forget only a verified restored DE trial and stop its watchdog."""
+    import shutil
+    if not ROOT.is_dir():return
+    with lock():
+        _rollback_locked()
+        if active(UNIT+".timer"):
+            cmd(["systemctl","stop",UNIT+".timer"],timeout=12)
+        if active(UNIT+".timer"):
+            raise RuntimeError("DE watchdog did not stop")
+        for live,original,_candidate in snapshot().values():
+            if live.read_bytes()!=original:
+                raise RuntimeError("DE reset rejected: route not restored")
+    shutil.rmtree(ROOT)
+    print("meta_v26_de_state_reset=VERIFIED",flush=True)
+
 def status():
     if not ROOT.is_dir():
         print("meta_v26_de_status=NO_STATE",flush=True);return
@@ -206,7 +222,7 @@ def status():
 
 if __name__=="__main__":
     p=argparse.ArgumentParser()
-    p.add_argument("mode",choices=("stage","enable-dns","rollback","status"))
+    p.add_argument("mode",choices=("stage","enable-dns","rollback","status","reset"))
     p.add_argument("--peer")
     args=p.parse_args()
     if args.mode=="stage":
@@ -214,4 +230,5 @@ if __name__=="__main__":
         stage(args.peer)
     elif args.mode=="enable-dns":enable_dns()
     elif args.mode=="rollback":rollback()
+    elif args.mode=="reset":reset()
     else:status()
