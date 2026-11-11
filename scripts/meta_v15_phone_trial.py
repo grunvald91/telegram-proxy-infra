@@ -26,6 +26,8 @@ WORKER="mneby-meta-v15-proxy"
 TABLE="mneby_meta_v15"
 EDGE="89.125.90.101"
 PORT=18443
+DEFAULT_TRIAL_SECONDS=900
+LONG_TRIAL_SECONDS=1800
 
 route.base.ROOT=Path("/var/lib/mneby-meta-v15-routes")
 route.base.UNIT="mneby-meta-v15-route-watchdog"
@@ -146,7 +148,15 @@ def _cleanup_locked():
     print("meta_v15_cleanup=VERIFIED",flush=True)
 
 
-def live(peer):
+def live(peer, *, duration=DEFAULT_TRIAL_SECONDS):
+    if duration not in (DEFAULT_TRIAL_SECONDS, LONG_TRIAL_SECONDS):
+        raise ValueError("trial duration must be 900 or 1800 seconds")
+    # Set both the controller and imported v11 engine time budgets before
+    # creating any state or modifying active production configuration.
+    watchdog=1200 if duration==900 else 2400
+    lifetime=1500 if duration==900 else 2700
+    route.base.TRIAL_SECONDS=duration
+    route.base.WATCHDOG_SECONDS=watchdog
     peer=str(ipaddress.IPv4Address(peer))
     if not ipaddress.IPv4Address(peer).is_global or peer==EDGE:
         raise ValueError("identified test-phone public IPv4 required")
@@ -186,15 +196,16 @@ def live(peer):
     try:
         # Exists independently of SSH and the Python controller. The inner
         # v11 timer also points back to this full cleanup entrypoint.
-        route.EXTERNAL_DEADLINE=time.monotonic()+1500
+        route.EXTERNAL_DEADLINE=time.monotonic()+lifetime
         command(["systemd-run","--quiet","--collect","--unit",UNIT,
-                 "--on-active=1500s","/usr/bin/python3",str(Path(__file__).resolve()),"rollback"])
+                 "--on-active="+str(lifetime)+"s","/usr/bin/python3",str(Path(__file__).resolve()),"rollback"])
         if command(["systemctl","is-active","--quiet",UNIT+".timer"],check=False).returncode:
             raise RuntimeError("independent full cleanup timer not armed")
         command(["systemd-run","--quiet","--collect","--unit",WORKER,
-                 "--property=RuntimeMaxSec=1500","--property=KillMode=control-group",
+                 "--property=RuntimeMaxSec="+str(lifetime),"--property=KillMode=control-group",
                  "/usr/bin/python3","-u",str(STAGE/"meta_v15_receive_window.py"),
-                 "--peer",peer,"--edge",EDGE,"--port",str(PORT)])
+                 "--peer",peer,"--edge",EDGE,"--port",str(PORT),
+                 "--max-lifetime",str(lifetime)])
         startup_deadline=time.monotonic()+8
         while time.monotonic()<startup_deadline:
             if worker_ready():break
@@ -202,6 +213,7 @@ def live(peer):
         else:raise RuntimeError("dedicated proxy not listening")
         with mutation_guard():command(["nft","-f","-"],input=rules)
         route.CAPTURE_PEER=peer
+        print("meta_v15_trial_duration_seconds="+str(duration),flush=True)
         print("meta_v15_mechanism=PER_SOCKET_SCALE0_WINDOW8_UNTIL_SNI",flush=True)
         print("meta_v15_scope=ONE_IPV4_PEER_TCP443",flush=True)
         print("meta_v15_phone_identity=NAT_PEER_ONLY_NOT_DEVICE_PROOF",flush=True)
@@ -218,7 +230,8 @@ if __name__=="__main__":
     parser=argparse.ArgumentParser()
     parser.add_argument("mode",choices=("live","rollback"))
     parser.add_argument("--peer")
+    parser.add_argument("--duration",type=int,choices=(900,1800),default=900)
     args=parser.parse_args()
     if args.mode=="rollback":cleanup()
-    elif args.peer:live(args.peer)
+    elif args.peer:live(args.peer,duration=args.duration)
     else:parser.error("live requires --peer (test-phone public IPv4)")
