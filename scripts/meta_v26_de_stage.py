@@ -164,6 +164,35 @@ def enable_dns():
             raise RuntimeError("DE DoT activation not verified")
     print("meta_v26_de_source_scoped_dns_ready=true",flush=True)
 
+def disable_dns():
+    """Restore selected-source DNS first, leaving DE SNI routing temporarily.
+
+    The coordinated shutdown then removes RU nft interception before DE
+    rolls back its exact SNI routes. Independent timers remain authoritative.
+    """
+    flag()
+    if not ROOT.is_dir():return
+    with lock():
+        if not file("armed").is_file():
+            return
+        files=snapshot()
+        live,original,candidate=files["dns"]
+        now=live.read_bytes()
+        if now not in (original,candidate):
+            raise RuntimeError("DE scoped DNS drift; cannot selectively disable")
+        if now==candidate:
+            replace(live,original)
+            try:
+                cmd(["systemctl","restart","mnebydns-dot.service"],timeout=30)
+            except (OSError,subprocess.TimeoutExpired,RuntimeError):
+                raise RuntimeError("DE scoped DNS restart failed during disable")
+        if live.read_bytes()!=original or not active("mnebydns-dot.service"):
+            raise RuntimeError("DE scoped DNS disable unverified")
+        if LIVE_NGINX.read_bytes() not in (files["nginx"][1],files["nginx"][2]):
+            raise RuntimeError("DE Nginx drift during scoped DNS disable")
+    print("meta_v26_de_scoped_dns_disabled=VERIFIED",flush=True)
+
+
 def _rollback_locked():
     if not file("armed").is_file():
         print("meta_v26_de_rollback=NO_MUTATION",flush=True)
@@ -253,13 +282,14 @@ def status():
 
 if __name__=="__main__":
     p=argparse.ArgumentParser()
-    p.add_argument("mode",choices=("stage","enable-dns","rollback","status","reset"))
+    p.add_argument("mode",choices=("stage","enable-dns","disable-dns","rollback","status","reset"))
     p.add_argument("--peer")
     args=p.parse_args()
     if args.mode=="stage":
         if not args.peer:p.error("stage needs --peer")
         stage(args.peer)
     elif args.mode=="enable-dns":enable_dns()
+    elif args.mode=="disable-dns":disable_dns()
     elif args.mode=="rollback":rollback()
     elif args.mode=="reset":reset()
     else:status()
