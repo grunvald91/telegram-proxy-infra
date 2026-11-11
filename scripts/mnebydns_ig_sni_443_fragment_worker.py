@@ -15,12 +15,16 @@ import struct
 
 from mnebydns_synack_window_canary import checksum
 RU = "188.120.254.223"
+DE = "89.125.90.101"
+ALLOWED_SERVERS = (RU, DE)
 HTTPS = 443
 QUEUE = 211
 WINDOW = 4
 
 def transform(raw: bytes, *, peer: str, server: str = RU) -> bytes:
-    """Modify SYN|ACK from server HTTPS/443 to one test peer; fail unchanged."""
+    """Modify SYN|ACK from approved owner HTTPS/443 VPS to one test peer."""
+    if server not in ALLOWED_SERVERS:
+        raise ValueError("Server must be a pinned project RU or DE IPv4")
     server_p = ipaddress.IPv4Address(server).packed
     peer_p = ipaddress.IPv4Address(peer).packed
     if len(raw) < 40 or raw[0] >> 4 != 4:
@@ -54,17 +58,19 @@ def transform(raw: bytes, *, peer: str, server: str = RU) -> bytes:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--client", required=True)
+    parser.add_argument("--server", choices=ALLOWED_SERVERS, default=RU,
+                        help="Exact owner VPS source IPv4; defaults to original RU canary")
     parser.add_argument("--ready-file", required=True)
     args = parser.parse_args()
     peer = ipaddress.IPv4Address(args.client)
-    if not peer.is_global or str(peer) == RU:
+    if not peer.is_global or str(peer) in ALLOWED_SERVERS:
         parser.error("A distinct global IPv4 peer is required")
     if os.geteuid() != 0:
         parser.error("NFQUEUE requires root")
     from mnebydns_nfq_failopen import arm_parent_death_signal, run_queue
     arm_parent_death_signal()
     logging.basicConfig(level=logging.WARNING)
-    run_queue(QUEUE, lambda b: transform(b, peer=str(peer)),
+    run_queue(QUEUE, lambda b: transform(b, peer=str(peer), server=args.server),
               ready_file=args.ready_file, max_len=256)
 
 if __name__ == "__main__":
