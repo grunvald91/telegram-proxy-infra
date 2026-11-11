@@ -77,9 +77,9 @@ class ClientHelloBoundaryTests(unittest.TestCase):
         data=tls_hello()
         inside=locate_sni(data)[1]+5
         from mnebydns_iglite_sni_observer import Flow
-        flow=Flow(100)
-        flow.feed(100,data,len(data))
-        flow.feed(100,data[:inside],inside)
+        flow=Flow(100)  # SYN sequence is 100; payload starts at 101.
+        flow.feed(101,data,len(data))
+        flow.feed(101,data[:inside],inside)
         self.assertEqual(flow.ranges,{(0,len(data))})
 
     def test_binary_pcap_split(self):
