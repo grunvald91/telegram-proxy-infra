@@ -36,6 +36,7 @@ BASE="/opt/mnebydns-owner-domain"
 WORK="/tmp/mnebydns-owner-domain-"+RUNID
 FILES=(
     "mnebydns-owner-domain-render-20261110.py",
+    "mnebydns-dot-config-change-20261111.sh",
     "mnebydns-owner-domain-stage-20261110.sh",
     "mnebydns-owner-domain-rollback-20261110.sh",
     "mnebydns-owner-domain-confirm-20261110.sh",
