@@ -1,0 +1,68 @@
+name: MNEBYDNS Instagram DE global TCP443 Window4 one-shot experiment
+on:
+  push:
+    branches: [audit/mnebydns-instagram-lite-20261111]
+    paths:
+      - '.github/workflows/mnebydns-ig-de-global-window4-once.yml'
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-de-global-tcp443-owner-one-shot
+  cancel-in-progress: false
+jobs:
+  owner-approved-live-window4:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Offline safety checks before live SSH
+        run: |
+          set -Eeuo pipefail
+          bash -n scripts/mnebydns_ig_de_global_window4_once.sh
+          test -n "$DE_PASS"
+          grep -Fq -- '--on-active=90s' scripts/mnebydns_ig_de_global_window4_once.sh
+          grep -Fq 'de_global_cleanup=PASS' scripts/mnebydns_ig_de_global_window4_once.sh
+          ! grep -Eqi 'flush ruleset|restart nginx|restart mnebydns-dot' scripts/mnebydns_ig_de_global_window4_once.sh
+      - name: Prepare hostkey-pinned SSH
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+      - name: Run owner-approved brief DE TCP443 global canary
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          timeout 125s sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
+            'MNEBY_IG_GLOBAL_APPROVED=YES bash -se' \
+            < scripts/mnebydns_ig_de_global_window4_once.sh
+      - name: Independently verify test table absent and stable services
+        if: always()
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS"
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY'
+          import subprocess,sys
+          table=subprocess.run(["nft","list","table","inet","mneby_ig_w4_20261111"],capture_output=True,text=True,timeout=15)
+          good=table.returncode!=0
+          nginx=subprocess.run(["systemctl","is-active","--quiet","nginx.service"],timeout=12).returncode==0
+          dot=subprocess.run(["systemctl","is-active","--quiet","mnebydns-dot.service"],timeout=12).returncode==0
+          print("de_global_table_removed="+str(good).lower(),flush=True)
+          print("de_global_nginx_running="+str(nginx).lower(),flush=True)
+          print("de_global_dot_running="+str(dot).lower(),flush=True)
+          if not all((good,nginx,dot)):sys.exit(1)
+          PY
