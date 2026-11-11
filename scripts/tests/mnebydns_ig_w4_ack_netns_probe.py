@@ -156,7 +156,7 @@ def verify(file: str, mode: str):
     synack = synacks[0]
     if not synack["valid_checksum"]:
         raise AssertionError("Bad on-wire TCP checksum on SYN-ACK")
-    if mode in ("clamped","clamped_acks"):
+    if mode in ("clamped","clamped_acks","clamped_wscale0"):
         if synack["window"] != 4:
             raise AssertionError(f"Expected win 4, got {synack['window']}")
     elif synack["window"] == 4:
@@ -166,7 +166,7 @@ def verify(file: str, mode: str):
                and p["dport"] == PORT and p["payload_size"] > 0]
     if not payload:
         raise AssertionError("No client payload in capture")
-    if mode in ("clamped","clamped_acks") and payload[0] != 4:
+    if mode in ("clamped","clamped_acks","clamped_wscale0") and payload[0] != 4:
         raise AssertionError(f"Expected first 4-byte TCP data segment; got {payload[0]}")
     acks = [p["window"] for p in packets
             if p["src"] == SERVER and p["dst"] == CLIENT
@@ -203,7 +203,7 @@ def main():
     p.add_argument("--count", type=int, default=3)
     p.add_argument("--interface")
     p.add_argument("--pcap")
-    p.add_argument("--variant", choices=("reference", "clamped", "clamped_acks", "failbypass"))
+    p.add_argument("--variant", choices=("reference", "clamped", "clamped_acks", "clamped_wscale0", "failbypass"))
     args = p.parse_args()
     if args.mode == "listener":
         if not args.ready:
