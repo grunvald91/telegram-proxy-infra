@@ -32,6 +32,8 @@ jobs:
           python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_iglite_sni_observer.py' -v
           python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_iglite_wifi_readiness_helpers.py' -v
           python3 scripts/mnebydns-owner-domain-render-20261110.py self-test
+          # Live stage requires independently installed/enabled boot recovery.
+          grep -Fq 'Before=nginx.service mnebydns-dot.service' ops/mneby-ig-lite-v10-recover.service
       - name: Prepare pinned SSH
         shell: bash
         run: |
@@ -49,7 +51,7 @@ jobs:
             -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
           tar -C scripts -cf - mnebydns_iglite_wifi_multi_meta_v10_w20.py mnebydns_iglite_sni_observer.py mnebydns_iglite_wifi_readiness_helpers.py mnebydns-owner-domain-render-20261110.py mnebydns_iglite_dns_wire_checks.py |
             sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
-              'umask 077; mkdir -p -m 700 /run/mneby-iglite-stage-20261111-v10; tar -xf - -C /run/mneby-iglite-stage-20261111-v10'
+              'umask 077; mkdir -p -m 700 /usr/local/libexec/mneby-iglite-v10; tar -xf - -C /usr/local/libexec/mneby-iglite-v10'
       - name: Run verified on-demand 15-minute Wi-Fi test, no synthetic runner TLS probe
         shell: bash
         run: |
@@ -61,7 +63,7 @@ jobs:
             -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
           logfile="$RUNNER_TEMP/iglite-v10-live.log"
           timeout 1400s sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
-            'MNEBY_IGLITE_LIVE_APPROVED=YES python3 -u /run/mneby-iglite-stage-20261111-v10/mnebydns_iglite_wifi_multi_meta_v10_w20.py live' \
+            'MNEBY_IGLITE_LIVE_APPROVED=YES python3 -u /usr/local/libexec/mneby-iglite-v10/mnebydns_iglite_wifi_multi_meta_v10_w20.py live' \
             > "$logfile" 2>&1
           cat "$logfile"
           grep -Fqx 'iglite_rollback=VERIFIED_ORIGINAL_BYTES_AND_SERVICES' "$logfile"
@@ -139,7 +141,7 @@ jobs:
           sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY'
           import pathlib, subprocess, sys, time
           from pathlib import Path
-          sys.path.insert(0,'/run/mneby-iglite-stage-20261111-v10')
+          sys.path.insert(0,'/usr/local/libexec/mneby-iglite-v10')
           hosts=('iglite-z.instagram.com','i.instagram.com',
                  'i-fallback.instagram.com','test-gateway.instagram.com',
                  'graph.instagram.com','z-m-gateway.facebook.com',
