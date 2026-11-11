@@ -100,6 +100,27 @@ class AdapterTests(unittest.TestCase):
         self.assertIn(("reset","de"),calls)
         self.assertNotIn(("reset","ru"),calls)
 
+    def test_cancel_during_live_window_attempts_ordered_rollback(self):
+        calls=[]
+        class Fake:
+            def preflight(self,role):calls.append(("preflight",role))
+            def stage_files(self,role):calls.append(("stagefiles",role))
+            def run(self,role,action,peer=None):
+                calls.append(("run",role,action,peer))
+            def active_window(self,seconds):
+                m.cancel_trial(15,None)
+            def reset(self,role):calls.append(("reset",role))
+        with patch.object(m,"Remote",return_value=Fake()), \
+             patch.dict(os.environ,{"GITHUB_EVENT_NAME":"workflow_dispatch",
+                         "MNEBY_META_V30_APPROVED":m.APPROVAL}), \
+             patch.object(m.signal,"signal"):
+            with self.assertRaisesRegex(RuntimeError,"cleanup verified"):
+                m.main(["--mode","activate","--phone-ip","8.8.8.8"])
+        self.assertEqual(calls[-5:],[("run","de","disable-dns",None),
+                                     ("run","ru","rollback",None),
+                                     ("run","de","rollback",None),
+                                     ("reset","ru"),("reset","de")])
+
     def test_preflight_has_no_stage_or_restart(self):
         calls=[]
         class Fake:
