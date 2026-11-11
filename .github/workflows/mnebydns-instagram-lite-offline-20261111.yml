@@ -11,6 +11,8 @@ on:
       - 'scripts/tests/mnebydns_ig_de_nft_netns_probe.py'
       - 'scripts/tests/integration_mnebydns_ig_de_nft_win4_netns.sh'
       - 'scripts/tests/integration_mnebydns_ig_w4_ack_netns.sh'
+      - 'scripts/mnebydns_iglite_wifi_multi_meta_v10_w20.py'
+      - 'scripts/tests/test_mnebydns_iglite_v10_guard.py'
       - 'scripts/tests/mnebydns_ig_w4_ack_netns_probe.py'
       - 'scripts/tests/test_mnebydns_iglite_route_preview.py'
       - 'scripts/mnebydns_iglite_wifi_multi_meta_v8_review.py'
@@ -38,6 +40,8 @@ jobs:
           python3 -m py_compile scripts/mnebydns_iglite_de_temp_route.py
           python3 -m py_compile scripts/mnebydns_iglite_wifi_multi_meta_v8_review.py
           python3 -m py_compile scripts/mnebydns_iglite_wifi_multi_meta_v9_sni.py scripts/mnebydns_iglite_sni_observer.py
+          python3 -m py_compile scripts/mnebydns_iglite_wifi_multi_meta_v10_w20.py
+          python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_iglite_v10_guard.py' -v
           python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_iglite_sni_observer.py' -v
           python3 -m py_compile scripts/mnebydns_iglite_wifi_readiness_helpers.py
           python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_iglite_wifi_readiness_helpers.py' -v
