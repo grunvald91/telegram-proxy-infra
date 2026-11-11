@@ -43,7 +43,7 @@ class V11RouteOnlySafety(unittest.TestCase):
         self.assertIn("m.core_remove(reverse_core,hostname)",self.src)
         self.assertIn("byte-reversible",self.src)
         self.assertIn("check_exact_types(host=hostname)",self.src)
-        self.assertIn("iglite_v11_transport=ROUTE_ONLY_NO_SYSCTL_NO_NFT",self.src)
+        self.assertIn('TRANSPORT_LABEL = "ROUTE_ONLY_NO_SYSCTL_NO_NFT"',self.src)
 
     def test_distinct_run_state_and_independent_same_boot_restore(self):
         self.assertIn("mneby-iglite-wifi-de-20261111-v11",self.src)

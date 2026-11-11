@@ -21,6 +21,10 @@ base.ROOT = Path("/var/lib/mneby-iglite-wifi-de-20261111-v11")
 base.UNIT = "mneby-ig-lite-route-only-20261111-v11"
 base.TABLE = "mneby_ig_lite_route_only_20261111_v11"
 base.PERSISTENT_STAGE = Path("/usr/local/libexec/mneby-iglite-v11")
+ROLLBACK_SCRIPT = Path(__file__).resolve()
+CAPTURE_PEER = None
+EXTERNAL_DEADLINE = None
+TRANSPORT_LABEL = "ROUTE_ONLY_NO_SYSCTL_NO_NFT"
 
 def check_retired_v10():
     # base.baseline uses the overridden v11 UNIT/TABLE, so it no longer
@@ -145,7 +149,7 @@ def live():
     watchdog_start=time.monotonic()
     base.command(["systemd-run","--quiet","--collect","--unit",base.UNIT,
                   "--on-active="+str(base.WATCHDOG_SECONDS)+"s",
-                  "/usr/bin/python3",str(Path(__file__).resolve()),"rollback"])
+                  "/usr/bin/python3",str(ROLLBACK_SCRIPT),"rollback"])
     if base.command(["systemctl","is-active","--quiet",base.UNIT+".timer"],
                     check=False).returncode!=0:
         raise RuntimeError("Independent v11 same-boot rollback timer not armed")
@@ -179,14 +183,19 @@ def live():
         if base.command(["nft","list","table","inet",base.TABLE],check=False).returncode==0:
             raise RuntimeError("Unexpected v11 nft table during diagnostic")
         from mnebydns_iglite_sni_observer import begin,finish,summary
-        pcap,thread,analyzer,errors=begin(base.HOSTS)
+        if CAPTURE_PEER is None:
+            pcap,thread,analyzer,errors=begin(base.HOSTS)
+        else:
+            pcap,thread,analyzer,errors=begin(base.HOSTS,peer=CAPTURE_PEER)
         if pcap.poll() is not None:
             raise RuntimeError("SNI observer unexpectedly stopped")
         remaining=base.WATCHDOG_SECONDS-(time.monotonic()-watchdog_start)
+        if EXTERNAL_DEADLINE is not None:
+            remaining=min(remaining,EXTERNAL_DEADLINE-time.monotonic())
         if remaining<base.TRIAL_SECONDS+base.MIN_ROLLBACK_MARGIN:
             finish(pcap,thread,analyzer,errors)
             raise RuntimeError("Insufficient rollback margin before the 900s capture")
-        print("iglite_v11_transport=ROUTE_ONLY_NO_SYSCTL_NO_NFT",flush=True)
+        print("iglite_v11_transport="+TRANSPORT_LABEL,flush=True)
         start=int(time.time())
         base.write_exclusive(root/"ready_epoch",str(start).encode("ascii"))
         print("iglite_v11_capture_start_epoch_s="+str(start),flush=True)

@@ -12,6 +12,11 @@ on:
       - scripts/mnebydns_iglite_route_only_v11.py
       - scripts/tests/test_mnebydns_iglite_v11_scope.py
       - .github/workflows/mnebydns-iglite-wifi-v10-onrequest.yml
+      - scripts/meta_v15_receive_window.py
+      - scripts/meta_v15_phone_trial.py
+      - .github/workflows/meta-v15-phone-canary.yml
+      - scripts/tests/test_meta_v15_receive_window.py
+      - scripts/tests/integration_meta_v15_netns.py
   workflow_dispatch:
 permissions:
   contents: read
@@ -21,7 +26,7 @@ concurrency:
 jobs:
   offline:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 7
     steps:
       - uses: actions/checkout@v4
         with:
@@ -44,4 +49,21 @@ jobs:
           echo 'OFFLINE_ONLY=true'
           echo 'NO_SSH_NO_SECRETS_NO_REMOTE_DEPLOY=true'
           echo 'DOES_NOT_PROVE_INSTAGRAM_ANDROID_E2E=true'
+      - name: Receiver window unit and real socket checks
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/meta_v15_receive_window.py scripts/tests/integration_meta_v15_netns.py
+          python3 -m unittest discover -s scripts/tests -p 'test_meta_v15_receive_window.py' -v
+      - name: Verify actual client SNI segmentation in an isolated network namespace
+        run: |
+          set -Eeuo pipefail
+          missing=()
+          for pair in 'ip:iproute2' 'nft:nftables' 'tcpdump:tcpdump' 'ethtool:ethtool'; do
+            command -v "${pair%%:*}" >/dev/null || missing+=("${pair#*:}")
+          done
+          if ((${#missing[@]})); then
+            sudo apt-get update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${missing[@]}"
+          fi
+          sudo timeout 100s python3 scripts/tests/integration_meta_v15_netns.py
 

@@ -289,11 +289,15 @@ def parse_pcap(stream,analyzer,ready=None):
         if cap>PACKET_LIMIT or cap>wire:raise ValueError('unexpected PCAP record')
         analyzer.ethernet(read_exact(stream,cap),timestamp=sec)
 
-def begin(hosts):
+def begin(hosts,peer=None):
+    import ipaddress
+    capture_filter='ip and tcp and dst host 89.125.90.101 and dst port 443'
+    if peer is not None:
+        capture_filter+=' and src host '+str(ipaddress.IPv4Address(peer))
     analyzer=Analyzer(hosts)
     process=subprocess.Popen(
         ['tcpdump','-i','eth0','-n','-U','-s','1500','-w','-',
-         'ip and tcp and dst host 89.125.90.101 and dst port 443'],
+         capture_filter],
         stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,bufsize=0)
     ready=threading.Event()
     process._mneby_stop_requested=threading.Event()
