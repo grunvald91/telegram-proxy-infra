@@ -292,7 +292,7 @@ def observe_wifi_tcp_headers(seconds):
     )
     proc = subprocess.Popen(
         ["tcpdump", "-i", "eth0", "-n", "-nn", "-l", "-tt", "-s", "96",
-         "-c", "8000", "tcp and host " + DE + " and port 443"],
+         "tcp and host " + DE + " and port 443"],
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
         text=True, bufsize=1
     )
