@@ -21,7 +21,7 @@ if systemctl is-active --quiet "$UNIT.timer"; then
     echo 'de_global_abort=PRIOR_TIMER_ACTIVE'
     exit 1
 fi
-if nft list ruleset | grep -Fq 'MNEBY_IG_GLOBAL_WIN4'; then
+if [[ "$(nft list ruleset)" == *MNEBY_IG_GLOBAL_WIN4* ]]; then
     echo 'de_global_abort=OTHER_TEST_ACTIVE'
     exit 1
 fi
@@ -48,11 +48,11 @@ cleanup(){
 }
 trap cleanup EXIT
 printf '%s\n' "$RULES" | nft -f -
-nft -a list table inet "$TABLE" | grep -Fq 'MNEBY_IG_GLOBAL_WIN4'
+nft -a list table inet "$TABLE" | grep -F 'MNEBY_IG_GLOBAL_WIN4' >/dev/null
 echo 'de_global_tcp_window4=ACTIVE'
 sleep 35
 SNAPSHOT="$(nft -a list table inet "$TABLE")"
-COUNT="$(printf '%s\n' "$SNAPSHOT" | sed -nE 's/.*counter packets ([0-9]+) bytes.*/\1/p' | head -n 1)"
+COUNT="$(printf '%s\n' "$SNAPSHOT" | sed -nE 's/.*counter packets ([0-9]+) bytes.*/\1/p')"
 if [[ -z "$COUNT" ]]; then COUNT=UNKNOWN; fi
 echo "de_global_matched_synack_packets=$COUNT"
 echo 'de_global_transport_only_no_android_e2e=true'
