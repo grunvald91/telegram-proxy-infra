@@ -261,6 +261,7 @@ def main():
     parser.add_argument("--edge",default="89.125.90.101")
     parser.add_argument("--peer",required=True)
     parser.add_argument("--port",type=int,default=18443)
+    parser.add_argument("--max-lifetime",type=int,choices=(1500,2700),default=1500)
     args=parser.parse_args()
     if not ipaddress.IPv4Address(args.peer).is_global or args.peer==args.edge:
         raise SystemExit("distinct public test-phone IPv4 required")
@@ -271,7 +272,7 @@ def main():
     print("meta_v15_listener_ready=true",flush=True)
     try:
         # Controller supplies an independent 900s lifetime and nft teardown.
-        proxy.stop.wait(MAX_LIFETIME)
+        proxy.stop.wait(args.max_lifetime)
         if proxy.stats["accept_failed"]:
             raise RuntimeError("proxy accept loop failed")
     finally:
