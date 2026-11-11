@@ -19,9 +19,15 @@ NGINX=("stream {\n"
        "}\n")
 ORIGINS={host:"93.184.215.14" for host in p.HOSTS}
 
+def verified_fixture(hostname, ip):
+    if hostname not in ORIGINS or ip != ORIGINS[hostname]:
+        raise ValueError("fixture TLS origin verification failed")
+    return ip
+
+
 class RussianIngressTests(unittest.TestCase):
     def test_round_trip_all_meta_names_and_preserve_unrelated_services(self):
-        core,nginx=p.render_existing_servers(original_core=CORE,original_de_nginx=NGINX,origins=ORIGINS)
+        core,nginx=p.render_existing_servers(original_core=CORE,original_de_nginx=NGINX,origins=ORIGINS,verify_origin=verified_fixture)
         self.assertEqual(len(p.HOSTS),11)
         self.assertEqual(core.count('answer "{{ .Name }} 20 IN A '+p.RU_EDGE+'"'),11)
         self.assertEqual(core.count('rcode NOERROR'),44)
@@ -50,13 +56,30 @@ class RussianIngressTests(unittest.TestCase):
     def test_no_partial_or_unverified_domain_mapping(self):
         with self.assertRaises(ValueError):
             p.render_existing_servers(original_core=CORE,original_de_nginx=NGINX,
-                                      origins=dict(list(ORIGINS.items())[:-1]))
+                                      origins=dict(list(ORIGINS.items())[:-1]),verify_origin=verified_fixture)
         with self.assertRaises(ValueError):
             p.render_existing_servers(original_core=CORE,original_de_nginx=NGINX,
-                                      origins=dict(ORIGINS,**{"other.example.com":"93.184.215.14"}))
+                                      origins=dict(ORIGINS,**{"other.example.com":"93.184.215.14"}),verify_origin=verified_fixture)
         wrong=dict(ORIGINS);wrong["i.instagram.com"]="127.0.0.1"
         with self.assertRaises(ValueError):
-            p.render_existing_servers(original_core=CORE,original_de_nginx=NGINX,origins=wrong)
+            p.render_existing_servers(original_core=CORE,original_de_nginx=NGINX,origins=wrong,verify_origin=verified_fixture)
+
+    def test_pinned_origin_must_be_verified_for_each_meta_hostname(self):
+        with self.assertRaisesRegex(ValueError,"pinned Meta origin"):
+            p.render_existing_servers(original_core=CORE,original_de_nginx=NGINX,
+                                      origins=ORIGINS,verify_origin=lambda _host,_ip:"8.8.8.8")
+        calls=[]
+        def trusted(host,ip):
+            calls.append(host)
+            return verified_fixture(host,ip)
+        p.render_existing_servers(original_core=CORE,original_de_nginx=NGINX,
+                                  origins=ORIGINS,verify_origin=trusted)
+        self.assertEqual(set(calls),set(p.HOSTS))
+        renderer=p.load_renderer()
+        from unittest.mock import patch
+        with patch.object(renderer.socket, "create_connection", side_effect=OSError("unreachable")):
+            with self.assertRaises(OSError):
+                renderer.verify_pinned_origin_ip("i.instagram.com","93.184.215.14")
 
     def test_only_test_peer_natted_on_ru_ens3_and_only_443(self):
         rules=p.ru_peer_rules("8.8.8.8")
@@ -64,13 +87,19 @@ class RussianIngressTests(unittest.TestCase):
         self.assertIn('dnat ip to '+p.RU_EDGE+':18443',rules)
         self.assertIn('ip saddr '+p.RU_EDGE+' ip daddr 8.8.8.8 tcp sport 18443',rules)
         self.assertNotIn('ip daddr '+p.DE_EDGE+' tcp dport 443',rules)
-        for invalid in ("8.8.8.8/0","0.0.0.0/0","evil;flush ruleset"):
+        for invalid in ("8.8.8.8/0","0.0.0.0/0","evil;flush ruleset",
+                        "127.0.0.1","0.0.0.0","192.168.1.22",p.RU_EDGE,p.DE_EDGE):
             with self.assertRaises(ValueError):
                 p.ru_peer_rules(invalid)
 
     def test_worker_only_routes_to_owner_private_wg(self):
         argv=p.worker_arguments("8.8.8.8")
-        self.assertEqual(argv[-2:],("--backend-address",p.WG_BACKEND))
+        self.assertIn(("--backend-address",p.WG_BACKEND),tuple(zip(argv,argv[1:])))
+        self.assertEqual(argv[-2:],("--max-lifetime","2700"))
+        self.assertEqual(p.worker_arguments("8.8.8.8",trial_seconds=900)[-2:],
+                         ("--max-lifetime","1500"))
+        with self.assertRaises(ValueError):
+            p.worker_arguments("8.8.8.8",trial_seconds=3600)
         self.assertIn("--edge",argv)
         self.assertIn(p.RU_EDGE,argv)
         from meta_v15_receive_window import WindowProxy
