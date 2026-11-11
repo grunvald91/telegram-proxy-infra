@@ -135,3 +135,32 @@ jobs:
           except Exception as exc:
               print("de_nft_window4_parse_exception="+type(exc).__name__,flush=True)
           PY
+
+      - name: DE old rollback timer and safe checkpoint - READ ONLY
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY'
+          import pathlib,subprocess
+          def rc(a):
+              return subprocess.run(a,capture_output=True,text=True,timeout=10).returncode
+          root=pathlib.Path('/run/mneby-iglite-short-de-20261111')
+          unit='mneby-ig-lite-short-20261111.timer'
+          current=pathlib.Path('/opt/mnebydns-stable-checkpoints/current')
+          stable=pathlib.Path(current.read_text().strip()) if current.is_file() else pathlib.Path('/missing')
+          nx=pathlib.Path('/etc/nginx/nginx.conf')
+          core=pathlib.Path('/opt/mnebydns-dot/Corefile')
+          print('old_timer_active='+str(rc(['systemctl','is-active','--quiet',unit])==0).lower(),flush=True)
+          print('old_state_dir_exists='+str(root.exists()).lower(),flush=True)
+          print('old_state_original_backup_exists='+str(root.joinpath('nginx.original').is_file() and root.joinpath('core.original').is_file()).lower(),flush=True)
+          print('old_nft_table_absent='+str(rc(['nft','list','table','inet','mneby_ig_lite_w4_20261111'])!=0).lower(),flush=True)
+          print('current_nginx_eq_checkpoint='+str(stable.joinpath('nginx.stable').is_file() and nx.read_bytes()==stable.joinpath('nginx.stable').read_bytes()).lower(),flush=True)
+          print('current_dns_eq_checkpoint='+str(stable.joinpath('dns.stable').is_file() and core.read_bytes()==stable.joinpath('dns.stable').read_bytes()).lower(),flush=True)
+          print('nginx_active='+str(rc(['systemctl','is-active','--quiet','nginx.service'])==0).lower(),flush=True)
+          print('dns_active='+str(rc(['systemctl','is-active','--quiet','mnebydns-dot.service'])==0).lower(),flush=True)
+          PY
