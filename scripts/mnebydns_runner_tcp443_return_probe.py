@@ -161,31 +161,36 @@ def observe() -> None:
         print(f"capture_format_{key}={count}", flush=True)
     for key, count in scope_counts.items():
         print(f"capture_scope_{key}={count}", flush=True)
+    # Some hosted-runner network setups expose only the inbound half of a
+    # handshake to AF_PACKET, even though our direct connect() did send SYN.
+    # Never require an observed outbound packet for a valid inbound SYN-ACK.
     for name in ("control443", "foreign443"):
         syn = observed[name]["SYN"]
-        ack = observed[name]["SYNACK"] & syn
-        rst = observed[name]["RST"] & syn
+        synack = observed[name]["SYNACK"]
+        rst = observed[name]["RST"]
         attempts = [result for label, result in results if label == name]
-        if not syn:
-            classification = "no_outbound_syn_observed"
-        elif ack:
-            classification = "synack_observed_on_runner"
+        if synack:
+            classification = "inbound_synack_observed"
         elif rst:
-            classification = "rst_observed_on_runner"
+            classification = "inbound_rst_observed_no_synack"
+        elif attempts and all(result == "TimeoutError" for result in attempts):
+            classification = "connect_timeouts_no_inbound_synack_observed"
+        elif "connected" in attempts:
+            classification = "connected_but_synack_capture_missing"
         else:
-            classification = "outbound_syn_but_no_response_observed"
+            classification = "inconclusive_no_response_class"
         print(f"{name}_connect_results={','.join(attempts)}", flush=True)
-        print(f"{name}_outbound_syn_flows={len(syn)}", flush=True)
-        print(f"{name}_inbound_synack_flows={len(ack)}", flush=True)
+        print(f"{name}_outbound_syn_visible={len(syn)}", flush=True)
+        print(f"{name}_inbound_synack_flows={len(synack)}", flush=True)
         print(f"{name}_inbound_rst_flows={len(rst)}", flush=True)
         print(f"{name}_classification={classification}", flush=True)
-    # Without an observed SYN to a working control endpoint, this sniffer
-    # cannot distinguish real path loss from a broken capture implementation.
-    if not observed["control443"]["SYN"] or not any(
+    # Validate the same-direction positive control; otherwise fail closed.
+    if not observed["control443"]["SYNACK"] or not any(
         label == "control443" and result == "connected" for label, result in results
     ):
-        raise RuntimeError("inconclusive_probe_control_not_captured")
-    print("control_capture_validated=true", flush=True)
+        raise RuntimeError("inconclusive_probe_control_synack_not_captured")
+    print("control_inbound_synack_capture_validated=true", flush=True)
+    print(f"runner_outbound_syn_capture_visible={bool(observed['control443']['SYN'])}", flush=True)
     print("vantage=github_runner_only", flush=True)
     print("no_remote_server_access_or_changes=true", flush=True)
     print("packet_payload_ip_and_ports_not_logged=true", flush=True)
