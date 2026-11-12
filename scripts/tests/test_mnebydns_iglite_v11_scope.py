@@ -43,14 +43,14 @@ class V11RouteOnlySafety(unittest.TestCase):
         self.assertIn("m.core_remove(reverse_core,hostname)",self.src)
         self.assertIn("byte-reversible",self.src)
         self.assertIn("check_exact_types(host=hostname)",self.src)
-        self.assertIn("iglite_v11_transport=ROUTE_ONLY_NO_SYSCTL_NO_NFT",self.src)
+        self.assertIn('TRANSPORT_LABEL = "ROUTE_ONLY_NO_SYSCTL_NO_NFT"',self.src)
 
     def test_distinct_run_state_and_independent_same_boot_restore(self):
         self.assertIn("mneby-iglite-wifi-de-20261111-v11",self.src)
         self.assertIn("mneby-ig-lite-route-only-20261111-v11",self.src)
         self.assertIn('base.command(["systemd-run"',self.src)
         self.assertIn("base.MUTATION_MARKER",self.src)
-        self.assertIn("finally:\n        rollback()",self.src)
+        self.assertIn("try:\n            rollback()",self.src)
         self.assertNotIn("base.rollback()",self.src)
         self.assertIn("iglite_v11_rollback=ALREADY_RESTORED_NO_RESTART",self.src)
         self.assertIn("iglite_v11_rollback=VERIFIED_CONFIGS_AND_SERVICES_NO_TCP_WRITES",self.src)
@@ -125,5 +125,131 @@ class V11RouteOnlySafety(unittest.TestCase):
         self.assertNotIn("tcpdump",self.src)
         self.assertIn("iglite_v11_end_to_end_android=NOT_PROVEN",self.src)
 
+class V11RuntimeFailures(unittest.TestCase):
+    def setUp(self):
+        import importlib.util
+        import sys
+        import tempfile
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        sys.path.insert(0,str(ROOT))
+        spec=importlib.util.spec_from_file_location("v11_failures",SCRIPT)
+        self.v=importlib.util.module_from_spec(spec);spec.loader.exec_module(self.v)
+        self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
+        home=Path(self.tmp.name);root=home/"state";root.mkdir()
+        self.root=root
+        (root/"mutation-ready").write_bytes(b"armed\n")
+        self.paths={}
+        for key in ("core","nginx"):
+            (root/(key+".original")).write_bytes((key+"-original").encode())
+            (root/(key+".candidate")).write_bytes((key+"-candidate").encode())
+            self.paths[key]=home/key
+            self.paths[key].write_bytes((key+"-candidate").encode())
+        ws=home/"ws";ws.write_text("1\n")
+        self.calls=[]
+        def command(args,**kwargs):
+            self.calls.append(tuple(args))
+            return SimpleNamespace(returncode=1 if args[0]=="nft" else 0)
+        for name,value in (("ROOT",root),("CORE",self.paths["core"]),
+                           ("NGINX",self.paths["nginx"]),("WSFILE",ws)):
+            p=patch.object(self.v.base,name,value);p.start();self.addCleanup(p.stop)
+        p=patch.object(self.v.base,"command",side_effect=command)
+        p.start();self.addCleanup(p.stop)
+
+    def test_external_drift_is_checked_before_either_file_is_written(self):
+        for drifted in ("core","nginx"):
+            for key,path in self.paths.items():path.write_bytes((key+"-candidate").encode())
+            self.paths[drifted].write_bytes(b"external-change")
+            before={key:path.read_bytes() for key,path in self.paths.items()}
+            with self.assertRaisesRegex(RuntimeError,"restoration incomplete"):
+                self.v.rollback()
+            self.assertEqual(before,{key:path.read_bytes() for key,path in self.paths.items()})
+            self.assertFalse(any(c[:2] in (("systemctl","restart"),("systemctl","reload"))
+                                 for c in self.calls))
+
+    def test_restore_write_failure_still_reloads_successfully_restored_file(self):
+        from unittest.mock import patch
+        real=self.v.base.atomic_replace
+        def replace(path,data):
+            if path==self.paths["core"]:raise OSError("simulated write failure")
+            real(path,data)
+        with patch.object(self.v.base,"atomic_replace",side_effect=replace):
+            with self.assertRaisesRegex(RuntimeError,"recovery verification"):
+                self.v.rollback()
+        self.assertEqual(self.paths["nginx"].read_bytes(),b"nginx-original")
+        self.assertIn(("systemctl","reload","nginx.service"),self.calls)
+
+    def test_v10_timer_service_or_table_blocks_v11(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        for active in (".timer",".service","table"):
+            def command(args,**kwargs):
+                hit=(args[0]=="nft" if active=="table" else args[-1].endswith(active))
+                return SimpleNamespace(returncode=0 if hit else 3)
+            with patch.object(self.v.base,"command",side_effect=command):
+                with self.assertRaisesRegex(RuntimeError,"v10"):
+                    self.v.check_retired_v10()
+
+    def test_term_and_hup_unwind_to_finally_restoration(self):
+        import signal
+        for sig in (signal.SIGTERM,signal.SIGHUP):
+            for key,path in self.paths.items():path.write_bytes((key+"-candidate").encode())
+            with self.assertRaises(SystemExit) as result:
+                try:self.v.interrupted(sig,None)
+                finally:self.v.rollback()
+            self.assertEqual(result.exception.code,128+sig)
+            for key,path in self.paths.items():
+                self.assertEqual(path.read_bytes(),(key+"-original").encode())
+
+    def test_live_term_stops_capture_and_restores_before_exit(self):
+        self._live_failure(before_ready=False)
+
+    def test_readiness_failure_stops_capture_and_restores(self):
+        self._live_failure(before_ready=True)
+
+    def _live_failure(self,*,before_ready):
+        from contextlib import ExitStack
+        import os
+        import shutil
+        import signal
+        from types import SimpleNamespace
+        from unittest.mock import Mock,patch
+        import mnebydns_iglite_dns_wire_checks as wire
+        import mnebydns_iglite_sni_observer as observer
+        shutil.rmtree(self.root)
+        originals={key:path.read_bytes() for key,path in self.paths.items()}
+        renderer=SimpleNamespace(
+            origin_ip=lambda host:"157.240.0.160",
+            nginx_add=lambda text,*args:text+"-new",
+            core_add=lambda text,*args:text+"-new",
+            nginx_remove=lambda text,*args:text.removesuffix("-new"),
+            core_remove=lambda text,*args:text.removesuffix("-new"))
+        proc=Mock();proc.poll.return_value=None
+        finish=Mock(return_value=object())
+        live_check=Mock(side_effect=[None,RuntimeError("synthetic readiness failure")]) if before_ready else None
+        previous=signal.getsignal(signal.SIGTERM)
+        with ExitStack() as stack:
+            for target,name,value in (
+                (self.v,"check_retired_v10",Mock()),
+                (self.v,"LIVE_CHECK",live_check),
+                (self.v.base,"baseline",lambda:(originals["nginx"],originals["core"])),
+                (self.v.base,"owner",lambda:renderer),
+                (self.v.base,"HOSTS",("i.instagram.com",)),
+                (self.v.base,"live_tls",lambda:"TLSv1.3"),
+                (wire,"check_exact_types",lambda **kw:{"A":"A_EXACT_DE"}),
+                (observer,"begin",lambda hosts:(proc,Mock(),object(),[])),
+                (observer,"finish",finish),(observer,"summary",Mock()),
+                (self.v.time,"sleep",lambda seconds:signal.raise_signal(signal.SIGTERM)),
+            ):
+                stack.enter_context(patch.object(target,name,value))
+            stack.enter_context(patch.dict(os.environ,{"MNEBY_IGLITE_V11_ROUTE_ONLY_APPROVED":"YES"}))
+            with self.assertRaises(RuntimeError if before_ready else SystemExit) as result:self.v.live()
+        if before_ready:self.assertIn("synthetic readiness",str(result.exception))
+        else:self.assertEqual(result.exception.code,128+signal.SIGTERM)
+        finish.assert_called_once()
+        self.assertEqual(signal.getsignal(signal.SIGTERM),previous)
+        for key,path in self.paths.items():self.assertEqual(path.read_bytes(),originals[key])
+
 if __name__=="__main__":
     unittest.main()
+

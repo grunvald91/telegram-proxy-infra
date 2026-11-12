@@ -1,0 +1,70 @@
+name: Meta v21 Russian first-hop and private WireGuard feasibility READ ONLY
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: meta-v21-ru-first-hop-readonly
+  cancel-in-progress: false
+jobs:
+  probe-ru:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prepare pinned SSH, no configuration changes
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          if ! command -v sshpass >/dev/null; then
+            timeout 35s sudo apt-get -o Acquire::Retries=0 -o Acquire::http::Timeout=7 update -qq || true
+            timeout 55s sudo DEBIAN_FRONTEND=noninteractive apt-get install -qq -y sshpass >/dev/null
+          fi
+      - name: RU internet 443 vs WireGuard private 443 and safe receiver readiness
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          echo '### Read-only RU188 -> DE89 via public / private WireGuard' >> "$GITHUB_STEP_SUMMARY"
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -' <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import subprocess,ssl,socket,ipaddress,json
+          RU="188.120.254.223"
+          DE="89.125.90.101"
+          WG="10.66.77.1"
+          def run(a,t=9):
+              return subprocess.run(a,capture_output=True,text=True,timeout=t,check=False)
+          def out(k,v): print("meta_v21_"+k+"="+str(v),flush=True)
+          ips=run(["ip","-4","-o","addr","show"]).stdout
+          out("ru_public_edge_present",RU+"/" in ips)
+          out("ru_tcp443_listening",":443 " in run(["ss","-H","-lnt"]).stdout)
+          out("ru_tcp18443_free",not run(["ss","-H","-lnt","sport","=",":18443"]).stdout.strip())
+          out("ru_global_window_scaling",run(["sysctl","-n","net.ipv4.tcp_window_scaling"]).stdout.strip())
+          out("ru_wg_interface_exists",run(["ip","link","show","tg-relay"]).returncode==0)
+          for dest,label in ((DE,"public_de"),(WG,"wg_de")):
+              lookup=run(["ip","-j","route","get",dest],t=6)
+              if lookup.returncode==0:
+                  try: out("route_"+label+"_dev",json.loads(lookup.stdout)[0].get("dev","UNKNOWN"))
+                  except Exception:out("route_"+label+"_dev","UNKNOWN")
+              for host in ("i.instagram.com","claude.ai"):
+                  try:
+                      with socket.create_connection((dest,443),timeout=4) as plain:
+                          plain.settimeout(4)
+                          with ssl.create_default_context().wrap_socket(plain,server_hostname=host) as tls:
+                              result="VERIFIED_"+str(tls.version())
+                  except ssl.SSLCertVerificationError:
+                      result="TCP_TLS_REACHES_BACKEND_HOSTNAME_MISMATCH"
+                  except Exception as e:
+                      result=type(e).__name__
+                  out("tls_"+label+"_"+host.replace(".","_"),result)
+          print("meta_v21_changes=none")
+          PY
+          echo '```' >> "$GITHUB_STEP_SUMMARY"

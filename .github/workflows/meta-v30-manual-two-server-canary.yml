@@ -1,0 +1,100 @@
+name: Meta v30 manually gated RU/DE phone canary
+on:
+  push:
+    branches: [fix/meta-routing-quic-sni-validation]
+    paths:
+      - 'data/meta-v30-oneoff-phone-20261113.txt'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'preflight (read only) or activate (changes DoT, Nginx, RU nft)'
+        type: choice
+        options: [preflight, activate]
+        required: true
+        default: preflight
+      phone_ip:
+        description: 'all = no client-IP restriction; alternatively one public phone IPv4'
+        type: string
+        required: false
+        default: 'all'
+      approval:
+        description: 'For activate type CONFIRM_CURRENT_PHONE_IP_AND_SNI_TEST'
+        type: string
+        required: false
+      duration_minutes:
+        description: 'Test window in minutes'
+        type: choice
+        options: ['15', '30']
+        required: true
+        default: '30'
+permissions:
+  contents: read
+concurrency:
+  group: mneby-meta-v30-single-phone-owner-experiment
+  cancel-in-progress: false
+jobs:
+  operator:
+    if: >-
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' &&
+       (inputs.mode == 'preflight' ||
+        (inputs.mode == 'activate' &&
+         inputs.phone_ip != '' &&
+         inputs.approval == 'CONFIRM_CURRENT_PHONE_IP_AND_SNI_TEST')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      RELAY89_SSH_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      SERVER188_SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      MNEBY_META_V30_APPROVED: ${{ github.event_name == 'push' && 'CONFIRM_CURRENT_PHONE_IP_AND_SNI_TEST' || inputs.approval }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Authorize one-off Git-controlled owner phone trial (no SSH)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            target=data/meta-v30-oneoff-phone-20261113.txt
+            test "$(cat "$target")" = "run-15m-all-clients-sni-20261113-retry1"
+            test "$(git diff --name-only HEAD^ HEAD --)" = "$target"
+            echo 'MNEBY_META_V30_ONEOFF_RELEASE=run-15m-all-clients-sni-20261113-retry1' >> "$GITHUB_ENV"
+            echo "owner_oneoff_phone_trial=AUTHORIZED" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Validate code and manual controls
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/meta_v30_actions_adapter.py scripts/meta_v29_two_server_sequence.py
+          python3 scripts/meta_v30_actions_adapter.py --mode validate
+          python3 -m unittest discover -s scripts/tests -p 'test_meta_v30_actions_adapter.py' -v
+          test -n "$RELAY89_SSH_PASSWORD" && test -n "$SERVER188_SSH_PASSWORD"
+          if ! command -v sshpass >/dev/null; then
+            timeout 35s sudo apt-get -o Acquire::Retries=0 -o Acquire::http::Timeout=7 update -qq || true
+            timeout 55s sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+          fi
+      - name: Pinned two-host operation, bounded time
+        shell: bash
+        env:
+          SELECTED_MODE: ${{ github.event_name == 'push' && 'activate' || inputs.mode }}
+          SELECTED_IP: ${{ github.event_name == 'push' && 'all' || inputs.phone_ip }}
+          SELECTED_MINUTES: ${{ github.event_name == 'push' && '15' || inputs.duration_minutes }}
+        run: |
+          set -Eeuo pipefail
+          if [[ "$SELECTED_MODE" == "preflight" ]]; then
+            python3 -u scripts/meta_v30_actions_adapter.py --mode preflight | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            python3 -u scripts/meta_v30_actions_adapter.py --mode activate \
+              --phone-ip "$SELECTED_IP" --minutes "$SELECTED_MINUTES" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+          echo 'SNI success requires finalized RU packet evidence; Android login/feed remains a separate phone check.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Preserve SNI packet evidence including failed trials
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: meta-v31-phone-sni-evidence
+          path: ${{ runner.temp }}/meta-v31-evidence/phone-sni.json
+          if-no-files-found: ignore
+          retention-days: 7

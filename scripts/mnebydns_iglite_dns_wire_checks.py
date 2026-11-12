@@ -70,7 +70,7 @@ def check_answer(packet: bytes, transaction_id: int, qtype: int, host: str = HOS
     if len(packet) < 12:
         raise ValueError("truncated DNS header")
     tid, flags, qd, an, ns, ar = struct.unpack_from("!HHHHHH", packet)
-    if tid != transaction_id or not (flags & 0x8000) or (flags & 0xF):
+    if tid != transaction_id or not (flags & 0x8000) or (flags & 0x780F):
         raise ValueError("wrong DNS response/RCODE")
     if flags & 0x0200:
         raise ValueError("truncated DNS response")
@@ -85,7 +85,7 @@ def check_answer(packet: bytes, transaction_id: int, qtype: int, host: str = HOS
     if name != host + "." or qt != qtype or cls != 1:
         raise ValueError("DNS question mismatch")
     answers = []
-    for _ in range(an):
+    for index in range(an + ns + ar):
         owner, pos = read_name(packet, pos)
         if pos + 10 > len(packet):
             raise ValueError("truncated DNS RR header")
@@ -97,7 +97,14 @@ def check_answer(packet: bytes, transaction_id: int, qtype: int, host: str = HOS
         pos += size
         # Every answer RR for exact owner is evaluated. A CNAME, HTTPS
         # service binding or AAAA can evade routing through EDGE.
-        answers.append((owner, kind, klass, value))
+        if index < an:
+            answers.append((owner, kind, klass, value))
+        elif kind in (1, 28, 5, 39, 64, 65):
+            raise ValueError("authority/additional record could bypass edge")
+        if kind == 41 and ttl >> 24:
+            raise ValueError("extended DNS RCODE is not NOERROR")
+    if pos != len(packet):
+        raise ValueError("trailing DNS data outside declared sections")
     if qtype == QTYPES["A"]:
         if len(answers) != 1:
             raise ValueError("A response must contain one exact edge RR")
@@ -141,3 +148,4 @@ def check_exact_types(host: str = HOST) -> dict[str, str]:
     for name, kind in QTYPES.items():
         checks[name] = read_exact_dot_type(kind, host=host)
     return checks
+

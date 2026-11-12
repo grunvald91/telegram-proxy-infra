@@ -9,6 +9,7 @@ TLS SNI capture is in memory and prints aggregate counters only.
 This is a diagnostic, NOT a proven DPI bypass or a proof of phone identity.
 """
 from __future__ import annotations
+from contextlib import nullcontext
 import os
 from pathlib import Path
 import signal
@@ -21,6 +22,29 @@ base.ROOT = Path("/var/lib/mneby-iglite-wifi-de-20261111-v11")
 base.UNIT = "mneby-ig-lite-route-only-20261111-v11"
 base.TABLE = "mneby_ig_lite_route_only_20261111_v11"
 base.PERSISTENT_STAGE = Path("/usr/local/libexec/mneby-iglite-v11")
+ROLLBACK_SCRIPT = Path(__file__).resolve()
+CAPTURE_PEER = None
+EXTERNAL_DEADLINE = None
+TRANSPORT_LABEL = "ROUTE_ONLY_NO_SYSCTL_NO_NFT"
+MUTATION_GUARD = nullcontext
+LIVE_CHECK = None
+TRIAL_WAIT = None
+
+def check_retired_v10():
+    # base.baseline uses the overridden v11 UNIT/TABLE, so it no longer
+    # checks the v10 state that could still affect every HTTPS connection.
+    for suffix in (".timer", ".service"):
+        if base.command(["systemctl","is-active","--quiet",
+                         "mneby-ig-lite-wifi-20261111-v10"+suffix],
+                        check=False).returncode==0:
+            raise RuntimeError("Earlier v10 rollback still active")
+    if base.command(["nft","list","table","inet",
+                     "mneby_ig_lite_w20_20261111_v10"],
+                    check=False).returncode==0:
+        raise RuntimeError("Earlier global v10 Window20 table still active")
+
+def interrupted(signum, frame):
+    raise SystemExit(128+signum)
 
 def rollback():
     """Restore only the exact DNS/Nginx files owned by v11.
@@ -57,12 +81,15 @@ def rollback():
             failures.append(key+"_external_drift")
             continue
         originals[key]=old
-        if now!=old:
-            try:base.atomic_replace(path,old)
-            except Exception:failures.append(key+"_restore")
     if failures:
         print("iglite_v11_rollback=FAILED_"+",".join(failures),flush=True)
         raise RuntimeError("v11 config restoration incomplete")
+    # Validate BOTH ownership checks before modifying either file. If a
+    # write fails, still reload the files successfully restored below.
+    for key,path in (("core",base.CORE),("nginx",base.NGINX)):
+        if path.read_bytes()!=originals[key]:
+            try:base.atomic_replace(path,originals[key])
+            except Exception:failures.append(key+"_restore")
     for cmd in (["nginx","-t"],
                 ["systemctl","reload","nginx.service"],
                 ["systemctl","restart","mnebydns-dot.service"]):
@@ -89,6 +116,7 @@ def rollback():
 def live():
     if os.environ.get("MNEBY_IGLITE_V11_ROUTE_ONLY_APPROVED") != "YES":
         raise RuntimeError("Owner must explicitly approve route-only v11")
+    check_retired_v10()
     original_nginx,original_core=base.baseline()
     if base.WSFILE.read_text().strip()!="1":
         raise RuntimeError("Refuse v11 if normal TCP scaling is disabled")
@@ -125,20 +153,23 @@ def live():
     watchdog_start=time.monotonic()
     base.command(["systemd-run","--quiet","--collect","--unit",base.UNIT,
                   "--on-active="+str(base.WATCHDOG_SECONDS)+"s",
-                  "/usr/bin/python3",str(Path(__file__).resolve()),"rollback"])
+                  "/usr/bin/python3",str(ROLLBACK_SCRIPT),"rollback"])
     if base.command(["systemctl","is-active","--quiet",base.UNIT+".timer"],
                     check=False).returncode!=0:
         raise RuntimeError("Independent v11 same-boot rollback timer not armed")
     print("iglite_v11_same_boot_watchdog_armed=true",flush=True)
     base.write_exclusive(root/base.MUTATION_MARKER,b"armed\n")
     base.fsync_directory(root)
+    previous_handlers={sig:signal.signal(sig,interrupted)
+                       for sig in (signal.SIGTERM,signal.SIGHUP)}
     try:
         # No sysctl or nft mutations are allowed anywhere in the v11 live path.
-        base.atomic_replace(base.NGINX,ng.encode())
-        base.command(["nginx","-t"],timeout=20)
-        base.command(["systemctl","reload","nginx.service"],timeout=20)
-        base.atomic_replace(base.CORE,core.encode())
-        base.command(["systemctl","restart","mnebydns-dot.service"],timeout=30)
+        with MUTATION_GUARD():
+            base.atomic_replace(base.NGINX,ng.encode())
+            base.command(["nginx","-t"],timeout=20)
+            base.command(["systemctl","reload","nginx.service"],timeout=20)
+            base.atomic_replace(base.CORE,core.encode())
+            base.command(["systemctl","restart","mnebydns-dot.service"],timeout=30)
         from mnebydns_iglite_dns_wire_checks import check_exact_types
         for hostname in accepted:
             for attempt in range(21):
@@ -157,26 +188,44 @@ def live():
         if base.command(["nft","list","table","inet",base.TABLE],check=False).returncode==0:
             raise RuntimeError("Unexpected v11 nft table during diagnostic")
         from mnebydns_iglite_sni_observer import begin,finish,summary
-        pcap,thread,analyzer,errors=begin(base.HOSTS)
-        if pcap.poll() is not None:
-            raise RuntimeError("SNI observer unexpectedly stopped")
-        remaining=base.WATCHDOG_SECONDS-(time.monotonic()-watchdog_start)
-        if remaining<base.TRIAL_SECONDS+base.MIN_ROLLBACK_MARGIN:
-            finish(pcap,thread,analyzer,errors)
-            raise RuntimeError("Insufficient rollback margin before the 900s capture")
-        print("iglite_v11_transport=ROUTE_ONLY_NO_SYSCTL_NO_NFT",flush=True)
-        start=int(time.time())
-        base.write_exclusive(root/"ready_epoch",str(start).encode("ascii"))
-        print("iglite_v11_capture_start_epoch_s="+str(start),flush=True)
-        print("iglite_v11_15min_window=READY",flush=True)
+        if LIVE_CHECK is not None:LIVE_CHECK()
+        if CAPTURE_PEER is None:
+            pcap,thread,analyzer,errors=begin(base.HOSTS)
+        else:
+            pcap,thread,analyzer,errors=begin(base.HOSTS,peer=CAPTURE_PEER)
         try:
-            time.sleep(base.TRIAL_SECONDS)
+            if pcap.poll() is not None:
+                raise RuntimeError("SNI observer unexpectedly stopped")
+            remaining=base.WATCHDOG_SECONDS-(time.monotonic()-watchdog_start)
+            if EXTERNAL_DEADLINE is not None:
+                remaining=min(remaining,EXTERNAL_DEADLINE-time.monotonic())
+            if remaining<base.TRIAL_SECONDS+base.MIN_ROLLBACK_MARGIN:
+                raise RuntimeError("Insufficient rollback margin before the 900s capture")
+            if LIVE_CHECK is not None:LIVE_CHECK()
+            print("iglite_v11_transport="+TRANSPORT_LABEL,flush=True)
+            start=int(time.time())
+            base.write_exclusive(root/"ready_epoch",str(start).encode("ascii"))
+            print("iglite_v11_capture_start_epoch_s="+str(start),flush=True)
+            print("iglite_v11_trial_duration_seconds="+str(base.TRIAL_SECONDS),flush=True)
+            if base.TRIAL_SECONDS == 900:
+                print("iglite_v11_15min_window=READY",flush=True)
+            elif base.TRIAL_SECONDS == 1800:
+                print("iglite_v11_30min_window=READY",flush=True)
+            else:
+                raise RuntimeError("Unreviewed trial duration")
+            if TRIAL_WAIT is None:time.sleep(base.TRIAL_SECONDS)
+            else:TRIAL_WAIT(base.TRIAL_SECONDS)
         finally:
             summary(finish(pcap,thread,analyzer,errors))
         if base.WSFILE.read_text().strip()!="1":
             raise RuntimeError("TCP scaling changed unexpectedly")
     finally:
-        rollback()
+        # A repeated TERM/HUP must not interrupt file/service restoration.
+        for sig in previous_handlers:signal.signal(sig,signal.SIG_IGN)
+        try:
+            rollback()
+        finally:
+            for sig,handler in previous_handlers.items():signal.signal(sig,handler)
     print("iglite_v11_end_to_end_android=NOT_PROVEN",flush=True)
 
 if __name__=="__main__":
@@ -186,3 +235,4 @@ if __name__=="__main__":
         rollback()
     else:
         live()
+

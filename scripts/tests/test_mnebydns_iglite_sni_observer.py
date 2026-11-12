@@ -21,6 +21,12 @@ def tls_hello(host=HOST):
     handshake=b'\x01'+len(body).to_bytes(3,'big')+body
     return b'\x16\x03\x03'+struct.pack('!H',len(handshake))+handshake
 
+def fragment_records(data,cuts):
+    handshake=data[5:]
+    points=(0,*cuts,len(handshake))
+    return b''.join(data[:3]+struct.pack('!H',end-start)+handshake[start:end]
+                    for start,end in zip(points,points[1:]))
+
 def packet(seq,flags,contents=b'',sport=42424):
     tcp=struct.pack('!HHIIHHHH',sport,443,seq,0,(5<<12)|flags,4096,0,0)
     ip=(b'\x45\0'+struct.pack('!H',20+len(tcp)+len(contents))
@@ -35,6 +41,76 @@ def make_pcap(records):
     return BytesIO(hdr)
 
 class ClientHelloBoundaryTests(unittest.TestCase):
+    def test_clienthello_across_tls_records_and_tcp_segments(self):
+        hello=tls_hello();inside=locate_sni(hello)[1]+5
+        fragmented=fragment_records(hello,(2,30,inside-5))
+        info=locate_sni(fragmented)
+        self.assertEqual(info[0],HOST)
+        self.assertEqual(locate_partial_sni(fragmented[:-1]),None)
+        a=Analyzer([HOST]);peer=b'\xcb\0\x71\x02'
+        a.tcp(peer,45601,100,True,b'')
+        for offset in range(0,len(fragmented),8):
+            a.tcp(peer,45601,101+offset,False,fragmented[offset:offset+8])
+        self.assertEqual(a.stats['target_clienthello'],1)
+        self.assertEqual(a.stats['sni_split'],1)
+
+    def test_first_complete_tls_fragment_is_not_complete_clienthello(self):
+        hello=tls_hello();fragmented=fragment_records(hello,(30,))
+        first=fragmented[:35]
+        self.assertIsNone(locate_sni(first))
+        self.assertIsNone(locate_partial_sni(first))
+        a=Analyzer([HOST]);peer=b'\xcb\0\x71\x02'
+        a.tcp(peer,45601,100,True,b'')
+        a.tcp(peer,45601,101,False,first)
+        self.assertFalse(a.flows[(peer,45601)].finished)
+        a.tcp(peer,45601,136,False,fragmented[35:])
+        self.assertEqual(a.stats['target_clienthello'],1)
+        self.assertEqual(a.stats['sni_unsplit'],1)
+
+    def test_early_clean_eof_does_not_pass_capture_preflight(self):
+        from unittest.mock import Mock,patch
+        from mnebydns_iglite_sni_observer import begin
+        process=Mock();process.stdout=make_pcap([])
+        process.poll.return_value=0;process.wait.return_value=0
+        with patch('mnebydns_iglite_sni_observer.subprocess.Popen',return_value=process):
+            with self.assertRaisesRegex(RuntimeError,'preflight'):
+                begin([HOST])
+        process.wait.assert_called_once()
+        self.assertTrue(process.stdout.closed)
+
+    def test_overlapping_retransmission_does_not_prove_sni_split(self):
+        data=tls_hello()
+        inside=locate_sni(data)[1]+5
+        a=Analyzer([HOST]);peer=b'\xcb\0\x71\x02'
+        a.tcp(peer,45601,100,True,b'')
+        a.tcp(peer,45601,101,False,data[:inside])
+        # This second segment contains the entire hostname as well as fresh
+        # bytes, so first delivery boundaries cannot be inferred reliably.
+        a.tcp(peer,45601,101,False,data)
+        self.assertEqual(a.stats['target_clienthello'],1)
+        self.assertEqual(a.stats['sni_boundary_indeterminate'],1)
+        self.assertEqual(a.stats['sni_split'],0)
+
+    def test_tcpdump_failure_is_not_a_successful_capture(self):
+        from unittest.mock import Mock
+        from mnebydns_iglite_sni_observer import finish
+        process=Mock();process.poll.return_value=1;process.wait.return_value=1
+        thread=Mock();thread.is_alive.return_value=False
+        with self.assertRaisesRegex(RuntimeError,'CaptureExit1'):
+            finish(process,thread,Analyzer([HOST]),[])
+        process.wait.assert_called_once()
+
+    def test_tcpdump_normal_stop_reaped_and_stream_closed(self):
+        from unittest.mock import Mock
+        from mnebydns_iglite_sni_observer import finish
+        process=Mock();process.poll.return_value=None;process.wait.return_value=0
+        thread=Mock();thread.is_alive.return_value=False
+        analyzer=Analyzer([HOST])
+        self.assertIs(finish(process,thread,analyzer,[]),analyzer)
+        process.send_signal.assert_called_once()
+        process.wait.assert_called_once()
+        process.stdout.close.assert_called_once()
+
     def test_real_sni_offsets(self):
         data=tls_hello()
         value=locate_sni(data)
@@ -81,6 +157,40 @@ class ClientHelloBoundaryTests(unittest.TestCase):
         flow.feed(101,data,len(data))
         flow.feed(101,data[:inside],inside)
         self.assertEqual(flow.ranges,{(0,len(data))})
+
+    def test_clean_pcap_eof_is_valid(self):
+        a=Analyzer([HOST])
+        parse_pcap(make_pcap([packet(900,2),packet(901,24,tls_hello())]),a)
+        self.assertEqual(a.stats['syn'],1)
+        self.assertEqual(a.stats['sni_unsplit'],1)
+
+    def test_partial_pcap_record_header_fails_closed(self):
+        complete=make_pcap([]).getvalue()
+        for trailing in (1,5,15):
+            with self.subTest(trailing=trailing):
+                a=Analyzer([HOST])
+                with self.assertRaises(EOFError):
+                    parse_pcap(BytesIO(complete+b'\x00'*trailing),a)
+
+    def test_partial_pcap_record_body_fails_closed(self):
+        complete=make_pcap([packet(900,2)]).getvalue()
+        with self.assertRaises(EOFError):
+            parse_pcap(BytesIO(complete[:-1]),Analyzer([HOST]))
+
+    def test_uncaptured_tcp_segment_boundary_not_misclassified(self):
+        h=tls_hello()
+        inside=locate_sni(h)[1]+5
+        a=Analyzer([HOST])
+        peer=b'\xcb\0\x71\x02'
+        a.tcp(peer,45001,700,True,b'')
+        # tcpdump captured a prefix, but the wire segment contained more.
+        a.tcp(peer,45001,701,False,h[:inside],wire_len=len(h))
+        # Missing bytes are later recovered from a retransmission.
+        a.tcp(peer,45001,701+inside,False,h[inside:])
+        self.assertEqual(a.stats['target_clienthello'],1)
+        self.assertEqual(a.stats['sni_boundary_indeterminate'],1)
+        self.assertEqual(a.stats['sni_split'],0)
+        self.assertEqual(a.stats['sni_unsplit'],0)
 
     def test_binary_pcap_split(self):
         h=tls_hello();i=locate_sni(h)[1]+5
@@ -170,3 +280,4 @@ class ClientHelloBoundaryTests(unittest.TestCase):
         self.assertNotIn('print(payload',s)
 
 if __name__=='__main__': unittest.main()
+

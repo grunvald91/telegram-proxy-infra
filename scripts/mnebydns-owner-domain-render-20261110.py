@@ -15,11 +15,14 @@ import socket
 import ssl
 
 EDGE = "89.125.90.101"
+RU_FIRST_HOP = "188.120.254.223"
+ALLOWED_DNS_INGRESSES = frozenset((EDGE, RU_FIRST_HOP))
 KINDS = ("A", "AAAA", "HTTPS", "SVCB", "CNAME")
 DOMAIN = re.compile(r"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}$")
 FORBIDDEN = re.compile(r"\.(?:localhost|local|internal|test|invalid|example|onion|arpa|lan|home|corp)$")
 NGINX_ANCHOR = "map $ssl_preread_server_name $direct_mtproxy_backend {"
 CACHE_ANCHOR = "    cache 30\n"
+RESILIENT_CACHE_ANCHOR = "    cache 30 {\n"
 
 
 def validate_domain(name: str) -> str:
@@ -37,6 +40,23 @@ def validated_public_ip(ip: str) -> str:
     if str(parsed) in (EDGE, "188.120.254.223"):
         raise ValueError("Self-reference to SmartDNS edge")
     return str(parsed)
+
+
+def verify_pinned_origin_ip(host: str, ip: str, *, timeout: float = 5) -> str:
+    """Check a pinned Meta origin's hostname against its real TLS certificate.
+
+    A public IPv4 is not proof that the origin serves this hostname. The
+    caller must not deploy an SNI route unless this TLS handshake succeeds.
+    """
+    host = validate_domain(host)
+    ip = validated_public_ip(ip)
+    ctx = ssl.create_default_context()
+    with socket.create_connection((ip, 443), timeout=timeout) as tcp:
+        tcp.settimeout(timeout)
+        with ctx.wrap_socket(tcp, server_hostname=host) as tls:
+            if not tls.getpeercert():
+                raise RuntimeError("pinned origin TLS certificate missing")
+    return ip
 
 
 def origin_ip(host: str) -> str:
@@ -168,18 +188,26 @@ def _assert_no_existing_nginx_route(source: str, domain: str) -> None:
         raise ValueError("SNI map default route missing")
 
 
-def core_add(stable: str, domain: str) -> str:
+def core_add(stable: str, domain: str, *, route_edge: str = EDGE) -> str:
     validate_domain(domain)
+    if route_edge not in ALLOWED_DNS_INGRESSES:
+        raise ValueError("DNS exact-owner ingress must be one of the two owner-controlled endpoints")
     begin, end = _block_bounds(stable, domain)
     if begin in stable or end in stable:
         raise ValueError("Already has owner domain route")
-    if stable.count(CACHE_ANCHOR) != 1 or "template IN A gemini.google.com {" not in stable:
+    # CoreDNS upgraded to a resilient cache stanza; both old and new anchors
+    # are supported, but exactly one must be present to avoid ambiguous edits.
+    matching_anchors = [a for a in (CACHE_ANCHOR, RESILIENT_CACHE_ANCHOR) if stable.count(a) == 1]
+    if (len(matching_anchors) != 1 or
+        sum(stable.count(a) for a in (CACHE_ANCHOR, RESILIENT_CACHE_ANCHOR)) != 1 or
+        "template IN A gemini.google.com {" not in stable):
         raise ValueError("Unrecognized CoreDNS stable baseline")
+    anchor = matching_anchors[0]
     _assert_no_existing_core_route(stable, domain)
     hostname = re.escape(domain).replace(r"\.", "[.]")
     prefix = begin + "    # Owner-only exact domain, independent public TLS ingress\n"
     for kind in KINDS:
-        body = '        answer "{{ .Name }} 20 IN A ' + EDGE + '"\n' if kind == "A" \
+        body = '        answer "{{ .Name }} 20 IN A ' + route_edge + '"\n' if kind == "A" \
             else "        rcode NOERROR\n"
         prefix += (
             "    template IN "+kind+" . {\n"
@@ -189,7 +217,7 @@ def core_add(stable: str, domain: str) -> str:
             "    }\n"
         )
     prefix += end
-    out = stable.replace(CACHE_ANCHOR, prefix+CACHE_ANCHOR, 1)
+    out = stable.replace(anchor, prefix+anchor, 1)
     if out.replace(prefix, "", 1) != stable:
         raise AssertionError("CoreDNS edit must be additive")
     return out

@@ -1,0 +1,65 @@
+name: Meta v16 read-only live READY confirmation
+
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+
+concurrency:
+  group: meta-v16-live-readonly-status
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prepare pinned SSH
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          if ! command -v sshpass >/dev/null; then
+            timeout 35s sudo apt-get -o Acquire::Retries=0 -o Acquire::http::Timeout=7 update -qq || true
+            timeout 55s sudo DEBIAN_FRONTEND=noninteractive apt-get install -qq -y sshpass >/dev/null
+          fi
+          command -v sshpass >/dev/null
+      - name: Check live experiment state without changing server
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          echo '### Actual remote 30-minute experiment READY (read-only status)' >> "$GITHUB_STEP_SUMMARY"
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
+            'set -eu
+            root=/var/lib/mneby-meta-v15-routes
+            state=/var/lib/mneby-meta-v15-controller
+            if test -f "$root/ready_epoch" && test -f "$state/owner" &&
+               test "$(cat "$state/owner")" = 43047967491 &&
+               test ! -e "$state/cleanup-started" &&
+               systemctl is-active --quiet mneby-meta-v15-proxy.service &&
+               systemctl is-active --quiet nginx.service &&
+               systemctl is-active --quiet mnebydns-dot.service &&
+               nft list table inet mneby_meta_v15 >/dev/null 2>&1; then
+              start=$(cat "$root/ready_epoch")
+              case "$start" in ""|*[!0-9]*) exit 1;; esac
+              echo "meta_v16_remote_ready=true"
+              echo "meta_v16_ready_epoch_s=$start"
+              echo "meta_v16_expected_end_epoch_s=$((start+1800))"
+              echo "meta_v16_server_time_epoch_s=$(date +%s)"
+              echo "meta_v16_route_services_active=true"
+              echo "meta_v16_owner_run_matches=true"
+            else
+              echo "meta_v16_remote_ready=false"
+              exit 1
+            fi' | tee -a "$GITHUB_STEP_SUMMARY"

@@ -62,10 +62,12 @@ jobs:
             -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
             -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
           logfile="$RUNNER_TEMP/iglite-v10-live.log"
+          status=0
           timeout 1400s sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
             'MNEBY_IGLITE_LIVE_APPROVED=YES MNEBY_IGLITE_TEMPORARY_ONLY_APPROVED=YES MNEBY_IGLITE_V11_ROUTE_ONLY_APPROVED=YES python3 -u /usr/local/libexec/mneby-iglite-v11/mnebydns_iglite_route_only_v11.py live' \
-            > "$logfile" 2>&1
+            > "$logfile" 2>&1 || status=$?
           cat "$logfile"
+          test "$status" -eq 0
           grep -Fqx 'iglite_v11_rollback=VERIFIED_CONFIGS_AND_SERVICES_NO_TCP_WRITES' "$logfile"
           grep -Fqx 'iglite_v11_exact_host_count=11' "$logfile"
           grep -Fqx 'iglite_v11_transport=ROUTE_ONLY_NO_SYSCTL_NO_NFT' "$logfile"
@@ -179,3 +181,4 @@ jobs:
           print('iglite_v11_actual_ready=false',flush=True)
           sys.exit(1)
           PY
+

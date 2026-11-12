@@ -1,0 +1,63 @@
+name: Meta v17 separate-edge inventory READ ONLY
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: meta-v17-isolation-inventory
+  cancel-in-progress: true
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prepare pinned SSH
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          if ! command -v sshpass >/dev/null; then
+            timeout 35s sudo apt-get -o Acquire::Retries=0 -o Acquire::http::Timeout=7 update -qq || true
+            timeout 55s sudo DEBIAN_FRONTEND=noninteractive apt-get install -qq -y sshpass >/dev/null
+          fi
+      - name: Count public local endpoints and check plugin support without changes
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          echo '### DE read-only Meta dedicated endpoint inventory' >> "$GITHUB_STEP_SUMMARY"
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import ipaddress,json,pathlib,re,subprocess
+          def cmd(a):
+              return subprocess.run(a,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,timeout=8,check=False)
+          a=cmd(["ip","-j","-4","address","show"]).stdout
+          addrs=[]
+          for intf in json.loads(a or "[]"):
+              for record in intf.get("addr_info",[]):
+                  try: ip=ipaddress.IPv4Address(record["local"])
+                  except Exception: continue
+                  if ip.is_global and ip not in (ipaddress.IPv4Address("89.125.90.101"),):
+                      addrs.append((ip,intf.get("ifname","")))
+          print("meta_v17_secondary_public_ipv4_count="+str(len(addrs)))
+          print("meta_v17_secondary_public_ip_available="+str(bool(addrs)).lower())
+          print("meta_v17_shared_ingress_ip_present="+str("89.125.90.101" in a).lower())
+          c=pathlib.Path("/opt/mnebydns-dot/Corefile").read_text()
+          print("meta_v17_core_view_directive_present="+str(bool(re.search(r"(?m)^\\s*view\\s",c))).lower())
+          for plugin in ("view","template","tls"):
+              print("meta_v17_core_"+plugin+"_mentioned="+str(plugin in c).lower())
+          print("meta_v17_old_trial_state_present="+str(pathlib.Path("/var/lib/mneby-meta-v15-controller").exists()).lower())
+          print("meta_v17_old_cleanup_marker_present="+str(pathlib.Path("/var/lib/mneby-meta-v15-controller/cleanup-started").exists()).lower())
+          for svc in ("nginx.service","mnebydns-dot.service"):
+              print("meta_v17_"+svc.replace(".service","").replace("-","_")+"_active="+str(cmd(["systemctl","is-active","--quiet",svc]).returncode==0).lower())
+          print("meta_v17_observation_only=true")
+          PY
+          echo '```' >> "$GITHUB_STEP_SUMMARY"

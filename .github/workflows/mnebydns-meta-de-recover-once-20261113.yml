@@ -1,0 +1,196 @@
+name: MNEBYDNS emergency DE DoT recovery after Meta v30 canary
+on:
+  push:
+    branches: [fix/meta-routing-quic-sni-validation]
+    paths:
+      - 'data/mnebydns-meta-de-recover-once-20261113.txt'
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-google-public-443-change
+  cancel-in-progress: false
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Verify single owner emergency restore trigger
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          t=data/mnebydns-meta-de-recover-once-20261113.txt
+          test "$(cat "$t")" = 'recover-corefile-dedicated-group-v30-20261113'
+          test "$(git diff --name-only HEAD^ HEAD --)" = "$t"
+          test -n "$DE_PASS" && test -n "$RU_PASS"
+          test "$(grep -c ' ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts)" -eq 2
+      - name: Restore verified stable DoT and Nginx with existing Meta snapshots
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if ! command -v sshpass >/dev/null; then
+            sudo apt-get update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+          fi
+          export SSHPASS="$DE_PASS"
+          opts=(-o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519
+                -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+                -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no
+                -o ConnectTimeout=12 -o LogLevel=ERROR)
+          sshpass -e ssh -T "${opts[@]}" root@89.125.90.101 'bash -s' <<'SERVER'
+          set -Eeuo pipefail
+          dns=/opt/mnebydns-dot/Corefile
+          nginx=/etc/nginx/nginx.conf
+          proxy=/etc/mnebydns-googlepilot/nginx.conf
+          checkpoint="$(cat /opt/mnebydns-stable-checkpoints/current)"
+          [[ "$checkpoint" =~ ^/opt/mnebydns-stable-checkpoints/[0-9]+$ ]]
+          (cd "$checkpoint" && sha256sum -c stable-manifest.sha256 >/dev/null)
+          echo meta_recovery_checkpoint_manifest=PASS
+          exec 9>/run/lock/mnebyvpn-public-route.lock
+          flock -w 35 9
+          staged=/var/lib/mneby-meta-v26-de
+          script=/usr/local/libexec/mneby-meta-v26/meta_v26_de_stage.py
+          if [[ -d "$staged" && -f "$script" ]]; then
+            # The owned rollback verifies file identity before restoring.
+            if python3 "$script" rollback; then
+              echo meta_recovery_owned_rollback=PASS
+            else
+              echo meta_recovery_owned_rollback=REQUIRES_REPAIR
+            fi
+          fi
+          for kind in dns nginx; do
+            if [[ "$kind" == dns ]]; then live="$dns"; else live="$nginx"; fi
+            stable="$checkpoint/$kind.stable"
+            if cmp -s "$live" "$stable"; then
+              echo "meta_recovery_${kind}_stable=ALREADY"
+              continue
+            fi
+            if [[ ! -f "$staged/$kind.candidate" ]] ||
+               ! cmp -s "$live" "$staged/$kind.candidate" ||
+               [[ ! -f "$staged/$kind.original" ]] ||
+               ! cmp -s "$stable" "$staged/$kind.original"; then
+              echo "meta_recovery_${kind}_foreign_drift=BLOCKED" >&2
+              exit 7
+            fi
+            cp -p "$stable" "$live.meta-emergency.$$"
+            mv -f "$live.meta-emergency.$$" "$live"
+            echo "meta_recovery_${kind}_restored_from_stable=PASS"
+          done
+          cmp -s "$checkpoint/proxy.stable" "$proxy"
+          # Metadata is critical: the original Corefile is read by an
+          # unprivileged systemd service. Meta atomic writes lost these bits.
+          for kind in dns nginx; do
+            if [[ "$kind" == dns ]]; then live="$dns"; else live="$nginx"; fi
+            original="$checkpoint/$kind.stable"
+            [[ ! -L "$live" && ! -L "$original" ]]
+            cmp -s "$live" "$original"
+            echo "meta_recovery_${kind}_before_permissions=$(stat -c '%a:%u:%g' "$live")"
+            echo "meta_recovery_${kind}_reference_permissions=$(stat -c '%a:%u:%g' "$original")"
+            chown --reference="$original" "$live"
+            chmod --reference="$original" "$live"
+            test "$(stat -c '%a:%u:%g' "$live")" = "$(stat -c '%a:%u:%g' "$original")"
+          done
+          echo meta_recovery_stable_file_metadata_restored=PASS
+          trap 'rc=$?; echo "meta_recovery_error_line=$LINENO exit=$rc" >&2' ERR
+          # Keep DynamicUser isolation while letting CoreDNS read just the
+          # configuration, not the TLS private-key credentials.
+          user=$(systemctl show -P User mnebydns-dot.service)
+          dynamic=$(systemctl show -P DynamicUser mnebydns-dot.service)
+          echo "meta_recovery_service_user=$user dynamic=$dynamic"
+          test "$user" = 'mnebydns-dot'
+          test "$dynamic" = 'yes'
+          echo meta_recovery_reader_group_setup_begin=true
+          group=mnebydns-corefile-readers
+          if ! getent group "$group" >/dev/null; then
+            groupadd --system "$group"
+          fi
+          unit_dir=/etc/systemd/system/mnebydns-dot.service.d
+          install -d -m 755 "$unit_dir"
+          dropin="$unit_dir/50-corefile-readers.conf"
+          if [[ -L "$dropin" ]]; then
+            echo meta_recovery_dropin_symlink_blocked=true >&2
+            exit 7
+          fi
+          if [[ -e "$dropin" ]]; then
+            if grep -Fxq "SupplementaryGroups=$group" "$dropin"; then
+              echo meta_recovery_existing_reader_dropin=VERIFIED
+            elif grep -Fxq "[Service]\\nSupplementaryGroups=$group\\n" "$dropin"; then
+              printf '%s\n' '[Service]' "SupplementaryGroups=$group" > "$dropin"
+              echo meta_recovery_malformed_reader_dropin=REPAIRED
+            else
+              echo meta_recovery_unexpected_reader_dropin=BLOCKED >&2
+              exit 7
+            fi
+          else
+            printf '%s\n' '[Service]' "SupplementaryGroups=$group" > "$dropin"
+            echo meta_recovery_reader_dropin=CREATED
+          fi
+          chmod 644 "$dropin"
+          grep -Fxq '[Service]' "$dropin"
+          grep -Fxq "SupplementaryGroups=$group" "$dropin"
+          chown "root:$group" "$dns"
+          chmod 640 "$dns"
+          test "$(stat -c %a "$dns")" = 640
+          test "$(stat -c %G "$dns")" = "$group"
+          systemctl daemon-reload
+          actual_groups=$(systemctl show -P SupplementaryGroups mnebydns-dot.service)
+          echo "meta_recovery_service_supplementary_groups=$actual_groups"
+          test "$actual_groups" = "$group"
+          echo meta_recovery_corefile_service_reader_group=PASS
+          nginx -t >/dev/null
+          if ! systemctl is-active --quiet nginx.service; then
+            systemctl start nginx.service
+          else
+            systemctl reload nginx.service
+          fi
+          systemctl reset-failed mnebydns-dot.service || true
+          if ! systemctl is-active --quiet mnebydns-dot.service ||
+             ! ss -H -lnt 'sport = :853' | grep -Fq '89.125.90.101:853'; then
+            systemctl restart mnebydns-dot.service
+          fi
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            if systemctl is-active --quiet mnebydns-dot.service &&
+               ss -H -lnt 'sport = :853' | grep -Fq '89.125.90.101:853'; then break; fi
+            sleep 1
+          done
+          systemctl is-active --quiet mnebydns-dot.service
+          ss -H -lnt 'sport = :853' | grep -Fq '89.125.90.101:853'
+          cmp -s "$dns" "$checkpoint/dns.stable"
+          cmp -s "$nginx" "$checkpoint/nginx.stable"
+          echo meta_recovery_config_and_853_listener=PASS
+          python3 - <<'PY'
+          import socket,ssl,struct
+          host='www.youtube.com'
+          q=b''.join(bytes([len(p)])+p.encode() for p in host.split('.'))+b'\0'
+          pkt=b'\x81\x91'+struct.pack('!HHHHH',256,1,0,0,0)+q+struct.pack('!HH',1,1)
+          with socket.create_connection(('89.125.90.101',853),timeout=7) as s:
+              s.settimeout(7)
+              with ssl.create_default_context().wrap_socket(s,server_hostname='dns.mnebyvpn.site') as tls:
+                  tls.sendall(len(pkt).to_bytes(2,'big')+pkt)
+                  n=tls.recv(2)
+                  assert len(n)==2
+                  wire=tls.recv(int.from_bytes(n,'big'))
+          assert wire[:2]==pkt[:2] and (wire[3]&15)==0 and int.from_bytes(wire[6:8],'big')>=1
+          print('meta_recovery_public_DoT_youtube=PASS')
+          PY
+          if [[ -d "$staged" && -f "$script" ]]; then
+            python3 "$script" reset && echo meta_recovery_meta_stage_cleared=PASS ||
+              echo meta_recovery_meta_stage_requires_followup=true
+          fi
+          SERVER
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T "${opts[@]}" root@188.120.254.223 'bash -s' <<'SERVER'
+          set -Eeuo pipefail
+          if nft list table inet mneby_meta_v26_ru >/dev/null 2>&1; then
+            echo meta_recovery_ru_nft_still_present=true
+            exit 6
+          fi
+          echo meta_recovery_ru_nft_removed=PASS
+          SERVER
+          echo 'DE DoT recovery completed and RU table absent' >> "$GITHUB_STEP_SUMMARY"

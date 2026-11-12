@@ -20,7 +20,7 @@ def u16(buf,i):
     if i+2>len(buf): raise ValueError('truncated')
     return int.from_bytes(buf[i:i+2],'big')
 
-def locate_sni(record):
+def _single_record_sni(record):
     data=bytes(record)
     if len(data)<9 or data[0]!=22 or data[1]!=3 or data[2]>4:
         return None
@@ -61,7 +61,7 @@ def locate_sni(record):
         return None
     return None
 
-def locate_partial_sni(prefix):
+def _single_record_partial_sni(prefix):
     """Recognize a *complete visible* SNI extension before the full TLS record.
     Diagnostic only. Do not label a partial record as a complete ClientHello or
     infer the origin device from the tuple observed at the server.
@@ -101,12 +101,68 @@ def locate_partial_sni(prefix):
         return None
     return None
 
+def clienthello_view(prefix):
+    """Reassemble TLS record fragments without changing their wire offsets.
+
+    Returns a synthetic single-record parsing view, completion flag and
+    (handshake offset, TCP-stream offset, size) spans. The original TCP bytes
+    remain untouched for forwarding and actual packet-boundary measurements.
+    """
+    data=bytes(prefix)
+    handshake=bytearray();spans=[];at=0;expected=None;complete=False
+    while at<len(data):
+        if len(data)-at<5:break
+        if data[at]!=22 or data[at+1]!=3 or data[at+2]>4:
+            raise ValueError('not a ClientHello record sequence')
+        size=u16(data,at+3)
+        if size==0 or size+5>LIMIT:
+            raise ValueError('unsupported TLS fragment size')
+        end=at+5+size
+        shown=data[at+5:min(end,len(data))]
+        spans.append((len(handshake),at+5,len(shown)))
+        handshake.extend(shown)
+        if handshake and handshake[0]!=1:
+            raise ValueError('first handshake is not ClientHello')
+        if len(handshake)>=4:
+            expected=4+int.from_bytes(handshake[1:4],'big')
+            if expected<42 or expected+5>LIMIT:
+                raise ValueError('unsupported ClientHello length')
+            if len(handshake)>=expected:
+                complete=len(data)>=end
+                break
+        if len(data)<end:break
+        at=end
+    if expected is None:return b'',False,spans
+    virtual=b'\x16\x03\x03'+expected.to_bytes(2,'big')+bytes(handshake[:expected])
+    return virtual,complete,spans
+
+def locate_sni(record):
+    try:virtual,complete,spans=clienthello_view(record)
+    except ValueError:return None
+    if not complete:return None
+    info=_single_record_sni(virtual)
+    if info is None:return None
+    host,begin,end=info
+    def wire(index):
+        for offset,start,size in spans:
+            if offset<=index<offset+size:return start+index-offset
+        raise ValueError('uncaptured SNI byte')
+    return host,wire(begin-5),wire(end-6)+1
+
+def locate_partial_sni(prefix):
+    try:virtual,_,_=clienthello_view(prefix)
+    except ValueError:return None
+    return _single_record_partial_sni(virtual)
+
 class Flow:
     def __init__(self,seq):
         self.start=(seq+1)&0xffffffff
         self.buf=bytearray(LIMIT)
         self.covered=bytearray(LIMIT)
         self.ranges=set()
+        # A truncated capture does not reveal the actual TCP segment boundary.
+        # Such a flow cannot be classified as SNI-split or unsplit reliably.
+        self.segment_boundary_unknown=False
         self.finished=False
     def feed(self,seq,payload,wire_len):
         offset=(seq-self.start)&0xffffffff
@@ -114,15 +170,26 @@ class Flow:
         n=min(len(payload),LIMIT-offset)
         if n<=0:return
         fresh=False
+        overlap=False
         for i in range(n):
             if not self.covered[offset+i]:
                 self.buf[offset+i]=payload[i]
                 self.covered[offset+i]=1
                 fresh=True
+            else:
+                overlap=True
         # Exclude purely redundant retransmissions: otherwise an initially
         # intact hostname could be falsely reported as split on retry.
+        if fresh and wire_len != len(payload):
+            self.segment_boundary_unknown=True
+        # Partly overlapping retransmissions do not establish which packet
+        # boundaries delivered the hostname. Fully redundant retries remain
+        # ignored, including short retries of an already complete SNI.
+        if fresh and overlap:
+            self.segment_boundary_unknown=True
         if fresh and wire_len>0:
-            self.ranges.add((offset,offset+wire_len))
+            # Never infer a captured segment boundary past captured bytes.
+            self.ranges.add((offset,offset+min(wire_len,len(payload))))
     def contiguous_prefix(self):
         n=0
         while n<LIMIT and self.covered[n]:n+=1
@@ -130,16 +197,14 @@ class Flow:
 
     def completed(self):
         if not all(self.covered[:5]):return None
-        if self.buf[0]!=22 or self.buf[1]!=3:
+        prefix=self.contiguous_prefix()
+        try:_,complete,_=clienthello_view(prefix)
+        except ValueError:
             self.finished=True
             return None
-        size=5+int.from_bytes(self.buf[3:5],'big')
-        if size<50 or size>LIMIT:
-            self.finished=True
-            return None
-        if not all(self.covered[:size]):return None
+        if not complete:return None
         self.finished=True
-        return bytes(self.buf[:size])
+        return prefix
 
 class Analyzer:
     def __init__(self,hosts):
@@ -179,10 +244,15 @@ class Analyzer:
                 if len(self.uncovered_meta)<40:
                     self.uncovered_meta.add(host)
             return
-        split=any(begin<b<end for a,b in flow.ranges)
         self.stats['target_clienthello']+=1
-        self.stats['sni_split' if split else 'sni_unsplit']+=1
         self.host_counts[host]+=1
+        if flow.segment_boundary_unknown:
+            # The bytes may be reconstructed using retransmissions, but the
+            # actual segment boundary was not fully observed. Fail closed.
+            self.stats['sni_boundary_indeterminate']+=1
+            return
+        split=any(begin<b<end for a,b in flow.ranges)
+        self.stats['sni_split' if split else 'sni_unsplit']+=1
         if ip not in self.peer_index:
             self.peer_index[ip]=len(self.peer_index)+1
         if len(self.events)<512:
@@ -262,22 +332,51 @@ def parse_pcap(stream,analyzer,ready=None):
         raise ValueError('expected classic Ethernet PCAP')
     if ready:ready.set()
     while True:
-        try: rec=read_exact(stream,16)
-        except EOFError:break
+        # EOF at a record boundary is valid; 1..15 trailing bytes are not.
+        first=stream.read(1)
+        if not first:break
+        rec=first+read_exact(stream,15)
         sec,_fraction,cap,wire=struct.unpack(end+'IIII',rec)
         if cap>PACKET_LIMIT or cap>wire:raise ValueError('unexpected PCAP record')
         analyzer.ethernet(read_exact(stream,cap),timestamp=sec)
 
-def begin(hosts):
+def capture_command(*, edge="89.125.90.101", interface=None, peer=None):
+    """Build exact inbound pre-DNAT PCAP filter for either owner edge.
+
+    tcpdump on the RU external interface sees the original dst :443 before
+    prerouting DNAT. A DE-only filter silently recorded zero ClientHellos.
+    """
+    import ipaddress
+    interfaces={"89.125.90.101":"eth0","188.120.254.223":"ens3"}
+    if edge not in interfaces:
+        raise ValueError("unreviewed capture ingress IP")
+    expected=interfaces[edge]
+    if interface is None:
+        interface=expected
+    if interface!=expected:
+        raise ValueError("capture interface does not match owner ingress")
+    capture_filter='ip and tcp and dst host '+edge+' and dst port 443'
+    if peer is not None:
+        parsed=ipaddress.IPv4Address(peer)
+        if not parsed.is_global or str(parsed)==edge:
+            raise ValueError("invalid capture client peer")
+        capture_filter+=' and src host '+str(parsed)
+    return ['tcpdump','-i',interface,'-n','-U','-s','1500','-w','-',capture_filter]
+
+
+def begin(hosts,peer=None,*,edge="89.125.90.101",interface=None):
     analyzer=Analyzer(hosts)
     process=subprocess.Popen(
-        ['tcpdump','-i','eth0','-n','-U','-s','1500','-w','-',
-         'ip and tcp and dst host 89.125.90.101 and dst port 443'],
+        capture_command(edge=edge,interface=interface,peer=peer),
         stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,bufsize=0)
     ready=threading.Event()
+    process._mneby_stop_requested=threading.Event()
     failures=[]
     def consume():
-        try:parse_pcap(process.stdout,analyzer,ready)
+        try:
+            parse_pcap(process.stdout,analyzer,ready)
+            if not process._mneby_stop_requested.is_set():
+                failures.append('UnexpectedCaptureEOF')
         except (EOFError,ValueError,OSError) as exc:
             failures.append(type(exc).__name__)
             ready.set()
@@ -285,23 +384,35 @@ def begin(hosts):
     thread.start()
     if not ready.wait(3) or failures or process.poll() is not None:
         if process.poll() is None:process.kill()
+        process.wait(timeout=3)
         thread.join(timeout=3)
+        if process.stdout:process.stdout.close()
         raise RuntimeError('SNI PCAP observer failed preflight')
     return process,thread,analyzer,failures
 
 def finish(process,thread,analyzer,failures):
+    stopping=getattr(process,'_mneby_stop_requested',None)
+    if stopping is not None:stopping.set()
     if process.poll() is None:process.send_signal(signal.SIGINT)
     thread.join(timeout=6)
     if thread.is_alive():
         process.kill()
         thread.join(timeout=4)
+    try:
+        status=process.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        status=process.wait(timeout=3)
+        failures.append('CaptureStopTimeout')
+    if status not in (0,-signal.SIGINT):
+        failures.append('CaptureExit'+str(status))
     if process.stdout:process.stdout.close()
     if thread.is_alive() or failures:
         raise RuntimeError('SNI capture failed: '+','.join(failures))
     return analyzer
 
 def summary(a):
-    for name in ('syn','target_clienthello','sni_split','sni_unsplit','no_sni','other_sni','evictions','payload_without_syn'):
+    for name in ('syn','target_clienthello','sni_split','sni_unsplit','sni_boundary_indeterminate','no_sni','other_sni','evictions','payload_without_syn'):
         print('iglite_sni_'+name+'='+str(a.stats[name]),flush=True)
     pending=a.incomplete_diagnostics()
     for kind in ('syn_without_payload','prefix_gap_after_syn','tls_header_incomplete',
@@ -321,3 +432,4 @@ def summary(a):
         print('iglite_sni_uncovered_meta_hostname='+hostname,flush=True)
     print('iglite_sni_android_identified=false',flush=True)
     print('iglite_sni_pcap_written_to_disk=false',flush=True)
+

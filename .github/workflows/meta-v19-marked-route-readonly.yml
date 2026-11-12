@@ -1,0 +1,83 @@
+name: Meta v19 server marked SYNACK route and kernel path READ ONLY
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: meta-v19-routing-readonly
+  cancel-in-progress: false
+jobs:
+  investigate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Pinned SSH transport
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          if ! command -v sshpass >/dev/null; then
+            timeout 35s sudo apt-get -o Acquire::Retries=0 -o Acquire::http::Timeout=7 update -qq || true
+            timeout 55s sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+          fi
+      - name: Diagnose SO_MARK routing on production DE without mutations
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          echo '### SO_MARK 0x40000000 routing and TCP SYNACK postmortem (read only)' >> "$GITHUB_STEP_SUMMARY"
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import pathlib,subprocess,re,json
+          EDGE="89.125.90.101"
+          def cmd(argv,timeout=12):
+              return subprocess.run(argv,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,timeout=timeout,check=False)
+          def out(k,v):
+              print("meta_v19_"+k+"="+str(v),flush=True)
+          # The live client IP is read only on the server and never printed.
+          peerfile=pathlib.Path("/var/lib/mneby-meta-v15-controller/peer")
+          peer=peerfile.read_text().strip() if peerfile.exists() else "1.1.1.1"
+          for label,mark in (("unmarked",None),("bypass","0x40000000"),("released","0x60000000")):
+              args=["ip","-j","route","get",peer,"from",EDGE]
+              if mark is not None:args+=["mark",mark]
+              r=cmd(args)
+              if r.returncode!=0:
+                  out("route_"+label,"UNAVAILABLE")
+                  continue
+              try:
+                  info=json.loads(r.stdout)[0]
+                  out("route_"+label+"_dev",info.get("dev","none"))
+                  out("route_"+label+"_src_is_edge",info.get("prefsrc",info.get("src"))==EDGE)
+                  out("route_"+label+"_table",info.get("table","main"))
+                  out("route_"+label+"_type",info.get("type","unicast"))
+              except Exception as e:
+                  out("route_"+label,"INVALID_JSON")
+          rules=cmd(["ip","-j","rule","show"])
+          if rules.returncode==0:
+              info=json.loads(rules.stdout)
+              out("ip_rule_count",len(info))
+              marked=[v for v in info if "fwmark" in v]
+              out("ip_fwmark_rule_count",len(marked))
+              for rule in marked[:12]:
+                  out("ip_fwmark_rule","priority:"+str(rule.get("priority"))+"|table:"+str(rule.get("table"))+"|has_mask:"+str("fwmask" in rule))
+          # Some conntrack queue paths have interface routing restrictions.
+          for name in ("net.ipv4.conf.all.rp_filter",
+                       "net.ipv4.conf.eth0.rp_filter",
+                       "net.ipv4.tcp_syncookies",
+                       "net.ipv4.tcp_window_scaling"):
+              r=cmd(["sysctl","-n",name])
+              out("sysctl_"+name.replace(".","_"),r.stdout.strip() if r.returncode==0 else "UNKNOWN")
+          for name in ("nginx.service","mnebydns-dot.service"):
+              out("service_"+name.split(".")[0].replace("-","_")+"_ok",
+                  cmd(["systemctl","is-active","--quiet",name]).returncode==0)
+          print("meta_v19_mutations=none")
+          PY
+          echo '```' >> "$GITHUB_STEP_SUMMARY"

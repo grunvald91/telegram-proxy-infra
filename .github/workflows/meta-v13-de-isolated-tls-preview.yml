@@ -1,0 +1,77 @@
+name: Meta v13 isolated DE TLS route preview (no live changes)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: meta-v13-isolated-preview
+  cancel-in-progress: false
+
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Strict offline candidate renderer contract
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/meta_v13_isolated_de.py scripts/mnebydns-owner-domain-render-20261110.py
+          python3 scripts/mnebydns-owner-domain-render-20261110.py self-test
+          python3 scripts/meta_v13_isolated_de.py self-test
+          python3 - <<'PY'
+          from pathlib import Path
+          src=Path('scripts/meta_v13_isolated_de.py').read_text()
+          assert '127.0.0.1:' in src
+          assert 'public_dns_unchanged=true' in src
+          assert 'android_e2e=NOT_TESTED' in src
+          assert 'PRODUCTION_CONFIG_HASH_DRIFT' in src
+          print('offline_isolation_policy=PASS')
+          PY
+
+  stage-de:
+    needs: offline
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prepare host-key-pinned SSH for isolated temporary process
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -qq -y sshpass >/dev/null
+      - name: Test two exact Meta origins via private loopback Nginx on DE
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o BatchMode=no
+                -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519
+                -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+                -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          echo '### Isolated DE-origin exact SNI TLS preview; NOT Android/ISP verification' >> "$GITHUB_STEP_SUMMARY"
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          tar -C scripts -cf - meta_v13_isolated_de.py mnebydns-owner-domain-render-20261110.py |
+            sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
+            'set -Eeuo pipefail; umask 077; d=$(mktemp -d /tmp/mneby-meta-v13.XXXXXXXX); trap '\''rm -rf -- "$d"'\'' EXIT; tar -xf - -C "$d"; python3 "$d/meta_v13_isolated_de.py" de-test' |
+            tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+      - name: Confirm active public Smart DNS routes were not replaced
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/meta_v12_ru_de_readonly.py external |
+            grep -E '^(external_dot_A_(i_instagram_com|iglite_z_instagram_com|www_youtube_com))=' |
+            tee -a "$GITHUB_STEP_SUMMARY"
