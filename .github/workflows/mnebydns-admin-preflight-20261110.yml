@@ -1,0 +1,57 @@
+name: MNEBYVPN private DNS admin preflight (read-only, no secrets)
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths: [.github/workflows/mnebydns-admin-preflight-20261110.yml]
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Verify owner ID configured in deployed bot, PostgreSQL and Threads rollback
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass >/dev/null
+          SSHPASS="$RU_PASS" sshpass -e ssh -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=12 root@188.120.254.223 'bash -s' <<'SH'
+          set -Eeuo pipefail
+          envfile=/opt/mnebyvpn/bot/web.env
+          test -s "$envfile"
+          if grep -q '^DNS_ADMIN_TELEGRAM_ID=' "$envfile"; then
+            grep -Eq '^DNS_ADMIN_TELEGRAM_ID=[1-9][0-9]{0,15}$' "$envfile"
+            echo 'DNS_admin_dedicated_numeric_owner_configured=true'
+          else
+            grep -Eq '^SUPPORT_TELEGRAM_OPERATOR_ID=[1-9][0-9]{0,15}$' "$envfile"
+            echo 'DNS_admin_existing_operator_numeric_owner_configured=true'
+          fi
+          grep -Eq '^DATABASE_URL=postgresql://' "$envfile"
+          echo 'DNS_admin_private_Postgres_connection_configured=true'
+          test "$(docker inspect -f '{{.State.Running}}' mnebyvpn-stage-postgres)" = true
+          docker exec mnebyvpn-stage-postgres pg_isready -U mnebyvpn_stage -d mnebyvpn_stage >/dev/null
+          echo 'DNS_admin_PostgreSQL_ready=true'
+          test "$(docker inspect -f '{{.State.Running}}' mnebyvpn-bot-info)" = true
+          code="$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --max-time 4 http://127.0.0.1:8793/readyz)"
+          test "$code" = 200
+          echo 'DNS_admin_existing_bot_ready=true'
+          schema="$(docker exec mnebyvpn-stage-postgres psql -At -U mnebyvpn_stage -d mnebyvpn_stage -c "SELECT CASE WHEN to_regclass('public.dns_admin_domains') IS NULL THEN 'pending' ELSE 'present' END")"
+          echo "DNS_admin_schema_status=$schema"
+          curl --noproxy '*' -s -o /dev/null -w 'DNS_admin_unsigned_webhook_http=%{http_code}\n' --max-time 4 -X POST -H 'Content-Type: application/json' -d '{"update_id":100}' http://127.0.0.1:8793/webhooks/telegram
+          echo 'DNS_admin_preflight_RU_no_changes=true'
+          SH
+          SSHPASS="$DE_PASS" sshpass -e ssh -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=12 root@89.125.90.101 'bash -s' <<'SH'
+          set -Eeuo pipefail
+          base="$(cat /opt/mnebydns-stable-checkpoints/current)"
+          [[ "$base" =~ ^/opt/mnebydns-stable-checkpoints/[0-9]+$ ]]
+          cmp -s "$base/dns.stable" /opt/mnebydns-dot/Corefile
+          cmp -s "$base/nginx.stable" /etc/nginx/nginx.conf
+          echo 'DNS_and_nginx_stable_post_Threads_pilot=true'
+          echo 'DNS_admin_preflight_DE_no_changes=true'
+          SH
