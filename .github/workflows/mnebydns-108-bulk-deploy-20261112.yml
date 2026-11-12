@@ -48,7 +48,7 @@ jobs:
           python3 scripts/mnebydns-owner-domain-render-20261110.py self-test
           python3 scripts/mnebydns-batch-108-canary-20261112.py self-test
           test "$(grep -c ' ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts)" -eq 2
-          test "$(cat data/mnebydns-bulk-108-mode-20261112.txt)" = plan || test "$(cat data/mnebydns-bulk-108-mode-20261112.txt)" = deploy-once-20261112
+          test "$(cat data/mnebydns-bulk-108-mode-20261112.txt)" = plan || test "$(cat data/mnebydns-bulk-108-mode-20261112.txt)" = deploy-once-20261112-r2
           echo MNEBYDNS_BULK_OFFLINE_TESTS=PASS
       - name: Exercise atomic 99-host-style SQL CAS on disposable PostgreSQL
         shell: bash
@@ -56,10 +56,21 @@ jobs:
           set -Eeuo pipefail
           docker run -d --rm --name mnebydns-bulk-pg -e POSTGRES_PASSWORD=localtest -p 127.0.0.1:54329:5432 postgres:16-alpine >/dev/null
           trap 'docker rm -f mnebydns-bulk-pg >/dev/null 2>&1 || true' EXIT
-          for attempt in $(seq 1 60); do
-            if docker exec mnebydns-bulk-pg pg_isready -U postgres -q; then break; fi
+          # The official PostgreSQL container briefly starts a temporary
+          # init server before restarting its final instance. pg_isready can
+          # falsely succeed in that gap. Require two stable real SQL queries.
+          ready=0
+          for attempt in $(seq 1 90); do
+            if docker exec mnebydns-bulk-pg psql -XqAt -v ON_ERROR_STOP=1 -U postgres -c 'SELECT 1' 2>/dev/null | grep -qx 1; then
+              sleep 2
+              if docker exec mnebydns-bulk-pg psql -XqAt -v ON_ERROR_STOP=1 -U postgres -c 'SELECT 1' 2>/dev/null | grep -qx 1; then
+                ready=1
+                break
+              fi
+            fi
             sleep .5
           done
+          test "$ready" -eq 1
           docker exec -i mnebydns-bulk-pg psql -Xq -v ON_ERROR_STOP=1 -U postgres <<'SQL'
           CREATE TABLE dns_admin_domains (
             domain text PRIMARY KEY, product text NOT NULL,
@@ -117,7 +128,7 @@ jobs:
             mode=deploy
           elif [[ "$GITHUB_EVENT_NAME" == push &&
                   "$HEAD_COMMIT_TITLE" == "deploy(MNEBYDNS): one-time 108 exact-host bulk" &&
-                  "$(cat data/mnebydns-bulk-108-mode-20261112.txt)" == deploy-once-20261112 ]]; then
+                  "$(cat data/mnebydns-bulk-108-mode-20261112.txt)" == deploy-once-20261112-r2 ]]; then
             mode=deploy
           fi
           [[ "$mode" =~ ^(plan|deploy)$ ]]
