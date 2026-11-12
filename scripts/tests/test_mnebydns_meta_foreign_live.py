@@ -27,7 +27,7 @@ class MetaLiveTests(unittest.TestCase):
         self.assertIsNotNone(mod.RUN_RE.fullmatch("43260000000"))
 
     def test_conflicting_owner_timer_blocks(self):
-        with patch.object(mod,"cmd",return_value="Thu 2026 owner mnebydns-owner-rollback-123.timer") as c:
+        with patch.object(mod,"cmd",return_value="Thu 2026 owner mnebydns-owner-rollback-43260000009.timer") as c:
             with self.assertRaisesRegex(RuntimeError,"Owner DNS timer"):
                 mod.owner_quiescent()
             self.assertIn("--no-legend",c.call_args[0])
