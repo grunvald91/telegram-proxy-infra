@@ -31,6 +31,16 @@ class AdapterTests(unittest.TestCase):
         with self.assertRaises(PermissionError):
             m.check_approval("all",m.APPROVAL,"push")
 
+    def test_reviewed_oneoff_push_requires_trusted_release_marker(self):
+        token={"MNEBY_META_V30_ONEOFF_RELEASE":"run-15m-all-clients-sni-20261113"}
+        with patch.dict(os.environ,token):
+            self.assertEqual(m.check_approval("all",m.APPROVAL,"push"),"all")
+            with self.assertRaises(PermissionError):
+                m.check_approval("all","INVALID","push")
+        with patch.dict(os.environ,{"MNEBY_META_V30_ONEOFF_RELEASE":"false"}):
+            with self.assertRaises(PermissionError):
+                m.check_approval("all",m.APPROVAL,"push")
+
     def test_bundle_has_only_flat_explicit_regular_source_files(self):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d)

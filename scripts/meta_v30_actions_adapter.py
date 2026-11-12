@@ -87,8 +87,11 @@ def cancel_trial(signum,frame):
 
 def check_approval(phone_ip,approved,event):
     peer=checked_phone_ip(phone_ip)
-    if event!="workflow_dispatch" or approved!=APPROVAL:
-        raise PermissionError("manually approved workflow_dispatch required")
+    owner_oneoff=(event=="push" and
+                  os.environ.get("MNEBY_META_V30_ONEOFF_RELEASE")==
+                      "run-15m-all-clients-sni-20261113")
+    if approved!=APPROVAL or not (event=="workflow_dispatch" or owner_oneoff):
+        raise PermissionError("manual dispatch or explicit Git-controlled one-off required")
     return peer
 
 class Remote:
