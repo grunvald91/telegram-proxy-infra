@@ -13,3 +13,7 @@ retry_exact_hosts=bing.com,microsoft.com
 requested_at_utc=2026-11-12T14:35:00Z
 manual_approval_required=false
 wildcard_microsoft_routes=false
+
+# Follow-up: previous push workflow 43239292903 skipped release despite reviewed trigger.
+# Explicit second reviewed activation after fixing diff-based gate.
+retry_round=2
