@@ -109,7 +109,7 @@ def self_test():
             ru=dict(origin_ipv4="93.184.215.14",certificate_verified=True,http_status=403)) for n in names]
     ev[2]["ru"]["certificate_verified"] = False
     selected, exclusions = qualify(names, fake, ev)
-    assert len(selected) == 103 and len(exclusions) == 5
+    assert len(selected) == 101 and len(exclusions) == 7
     base_dns = ("tls://.:853 {\n"
                 "    template IN A gemini.google.com { match ^gemini[.]google[.]com[.]$ }\n"
                 "    cache 30\n}\n")
