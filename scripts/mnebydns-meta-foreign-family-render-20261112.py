@@ -165,7 +165,7 @@ def self_test() -> None:
              "  map $ssl_preread_server_name $experimental_origin {\n"
              "    default 127.0.0.1:1;\n"
              "    www.youtube.com www.youtube.com:443;\n  }\n"
-             "  server { ssl_preread on; proxy_pass $experimental_origin; }\n}\n")
+             "  server {\n    ssl_preread on;\n    proxy_pass $experimental_origin;\n  }\n}\n")
     out = render(core, shared, pilot)
     assert len(out) == 3
     assert "20 IN A " + FOREIGN in out["Corefile.meta-candidate"]
