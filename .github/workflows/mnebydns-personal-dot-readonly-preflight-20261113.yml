@@ -204,6 +204,24 @@ jobs:
               for line in raw.splitlines() if len(line.split())>3))
           code,raw=run('bash','-lc','test -d /opt/mnebyvpn && test -d /opt/mnebyvpn/staging')
           out('CANARY_STAGING_PATH_PRESENT',code==0)
+          code,images=run('docker','image','ls','--format','{{.Repository}}:{{.Tag}}')
+          if code==0:
+              relevant=[x for x in images.splitlines() if any(
+                  word in x.lower() for word in ('node','postgres','mnebyvpn'))]
+              out('RELEVANT_DOCKER_IMAGES',','.join(relevant[:25])[:650])
+          import socket,ssl,time
+          for label,ip,name in (
+              ('FOREIGN_DOT','89.125.90.101','dns.mnebyvpn.site'),
+              ('INDEPENDENT_DOT','1.1.1.1','one.one.one.one')):
+              start=time.monotonic()
+              try:
+                  with socket.create_connection((ip,853),timeout=5) as raw:
+                      with ssl.create_default_context().wrap_socket(raw,server_hostname=name) as tls:
+                          out(label+'_TLS_OK',True)
+                          out(label+'_TLS_HANDSHAKE_MS',round((time.monotonic()-start)*1000,1))
+              except Exception as exc:
+                  out(label+'_TLS_OK',False)
+                  out(label+'_ERROR',type(exc).__name__)
           out('READONLY_NO_MUTATIONS',True)
           PY
       - name: Summary
