@@ -177,9 +177,14 @@ def inner():
             rules=nft_rules(EDGE,PEER,interface="v15srv")
             run(["nft","--check","-f","-"],input=rules.encode())
             run(["nft","-f","-"],input=rules.encode())
-            # Mimic the existing mark exemption after reverse NAT. This
-            # counter MUST remain zero for the dedicated proxy's replies.
+            # Reproduce both production telegram_nfqws hooks. If BYPASS is
+            # set on the socket before conntrack, this notrack rule breaks
+            # the reverse DNAT 18443 -> 443 and the client handshake fails.
+            # The experimental postrouting rule must mark AFTER conntrack,
+            # but BEFORE the production queue at priority 101.
             audit=("add table inet v15audit\n"
+                "add chain inet v15audit predefrag { type filter hook output priority -401; policy accept; }\n"
+                "add rule inet v15audit predefrag meta mark & 0x40000000 != 0 counter notrack\n"
                 "add chain inet v15audit post { type filter hook postrouting priority 101; policy accept; }\n"
                 f"add rule inet v15audit post ip saddr {EDGE} ip daddr {PEER} "
                 "tcp sport 443 meta mark & 0x40000000 == 0 counter\n")
@@ -227,7 +232,7 @@ def inner():
             audit=json.loads(run(["nft","-j","list","table","inet","v15audit"]).stdout)
             counters=[e["counter"]["packets"] for item in audit["nftables"]
                       for e in item.get("rule",{}).get("expr",[]) if "counter" in e]
-            assert counters==[0],counters
+            assert counters==[0,0],counters
             assert proxy.stats["failed"]==0,dict(proxy.stats)
             assert proxy.stats["window_released"]==2,dict(proxy.stats)
             assert proxy.stats["target_sni"]==2,dict(proxy.stats)
