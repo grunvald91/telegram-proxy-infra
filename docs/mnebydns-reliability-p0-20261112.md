@@ -36,3 +36,10 @@ No edits to CoreDNS, nginx, Xray, WireGuard, MTProxy, firewall, OS, TLS keys, DN
 ## P1 after gates
 
 Prepare an independent DNS ingress; prove failover from user-side networks without changing ordinary browsing. Keep the same foreign exit IP when possible, or explicitly avoid promising IP continuity until a proven floating-egress mechanism exists. Next implement bounded proxy recovery policies with cooldown and rollback, and only then publish frictionless personal onboarding. Existing production state remains unchanged throughout this PR.
+
+
+## Initial read-only run and review fix (12 November 2026)
+
+The first merged workflow returned zero **DNS / direct-egress** regressions, but nine TLS SNI passthrough attempts timed out from the public GitHub runner. This must **not** be presented to customers as nine working services: a correct DNS answer does not establish a working TCP/443 connection. Instagram and Threads remained direct-mode DNS observations, not confirmed functional applications.
+
+The next monitor revision separately tests raw ingress TCP/443 and a control TCP/443 connection to an ordinary public site. It does not guess whether failures are caused by the exit server, access network, filtering, or origin policy. If the control host is reachable but ingress TCP is not, the GitHub Action fails as a **target-specific external path alarm**, not as proof that every phone/ISP is affected. When ingress TCP is unavailable, per-service TLS probes are skipped rather than repeatedly timing out and incorrectly marking individual applications as failed. Per-service application-level tests and independent client vantages remain required.
