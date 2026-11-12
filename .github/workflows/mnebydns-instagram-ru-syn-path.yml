@@ -1,0 +1,67 @@
+name: MNEBYDNS Instagram RU SYN path diagnosis (read only)
+on:
+  push:
+    branches: [experiment/instagram-synack-window-canary-20261110]
+    paths:
+      - ".github/workflows/mnebydns-instagram-ru-syn-path.yml"
+      - "scripts/mnebydns_instagram_ru_syn_path_observer.py"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-ru-syn-path-diagnostic
+  cancel-in-progress: false
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Measure ingress SYN versus outgoing SYN-ACK without server writes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS"
+          python3 -m py_compile scripts/mnebydns_instagram_ru_syn_path_observer.py
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -qq -y sshpass >/dev/null
+          SRC="$(curl -4fsS --max-time 8 https://api.ipify.org)"
+          python3 - "$SRC" <<'PY'
+          import ipaddress,sys
+          if not ipaddress.IPv4Address(sys.argv[1]).is_global: raise SystemExit("invalid runner public IPv4")
+          PY
+          export SSHPASS="$RU_PASS"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519
+                -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+                -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          LOG="$RUNNER_TEMP/mnebydns-syn-path.log"
+          timeout 45s sshpass -e ssh "${opts[@]}" root@188.120.254.223 "python3 - $SRC" < scripts/mnebydns_instagram_ru_syn_path_observer.py > "$LOG" 2>&1 &
+          MONITOR=$!
+          trap 'kill "$MONITOR" 2>/dev/null || true; wait "$MONITOR" 2>/dev/null || true' EXIT
+          READY=0
+          for i in $(seq 1 50); do
+            if grep -q "ru_syn_path_capture=READY" "$LOG" 2>/dev/null; then READY=1; break; fi
+            if ! kill -0 "$MONITOR" 2>/dev/null; then break; fi
+            sleep 0.2
+          done
+          if [[ "$READY" != 1 ]]; then cat "$LOG"; echo "monitor_not_ready" >&2; exit 1; fi
+          python3 - <<'PY'
+          import socket,time
+          for port in (80,443,18443):
+              for i in range(3):
+                  try:
+                      with socket.create_connection(("188.120.254.223",port),timeout=2.3):
+                          status="connected"
+                  except OSError as exc:
+                      status=type(exc).__name__
+                  print(f"external_tcp_{port}_attempt_{i+1}={status}",flush=True)
+                  time.sleep(.15)
+          PY
+          wait "$MONITOR"
+          cat "$LOG"
+          grep -q "ru_syn_path_capture=COMPLETE_READ_ONLY" "$LOG"
+          echo "ru_syn_path_test=READ_ONLY_COMPLETE"

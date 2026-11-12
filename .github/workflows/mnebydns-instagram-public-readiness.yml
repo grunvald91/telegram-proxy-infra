@@ -1,0 +1,28 @@
+name: MNEBYDNS Instagram public network readiness (no SSH)
+on:
+  push:
+    branches: [experiment/instagram-synack-window-canary-20261110]
+    paths:
+      - 'scripts/mnebydns_instagram_public_readiness.py'
+      - 'scripts/mnebydns_ig_sni_443_field_canary.py'
+      - 'scripts/tests/test_mnebydns_ig_sni_443_field_canary.py'
+      - '.github/workflows/mnebydns-instagram-public-readiness.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-instagram-public-readiness
+  cancel-in-progress: false
+jobs:
+  public-readiness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Read-only public TCP and certificate-validated DoT
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns_instagram_public_readiness.py
+          python3 scripts/mnebydns_instagram_public_readiness.py

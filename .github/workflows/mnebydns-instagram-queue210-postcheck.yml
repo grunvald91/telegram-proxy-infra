@@ -1,0 +1,52 @@
+name: MNEBYDNS Instagram queue210 post-test health check
+on:
+  push:
+    branches: [experiment/instagram-synack-window-canary-20261110]
+    paths:
+      - '.github/workflows/mnebydns-instagram-queue210-postcheck.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-instagram-queue210-postcheck
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify original queue210 and Telegram service after A/B rollback
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+          export SSHPASS="$RU_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -' <<'PY'
+          import pathlib,re,subprocess,sys
+          def read(args):
+              v=subprocess.run(args,text=True,capture_output=True,timeout=12)
+              if v.returncode: raise RuntimeError('read-only audit command failed')
+              return v.stdout
+          chain=read(['nft','-a','list','chain','inet','telegram_nfqws','post'])
+          no_test_rule='MNEBY_IG_SYNACK_AB_' not in chain
+          queue_rule=any('tcp sport 443' in l and 'to 210' in l and 'bypass' in l for l in chain.splitlines())
+          worker= subprocess.run(['systemctl','is-active','--quiet','telegram-nfqws.service'],timeout=10).returncode==0
+          listeners=read(['ss','-H','-lnt'])
+          https_listener=any(re.search(r':443\s',l) for l in listeners.splitlines())
+          qpath=pathlib.Path('/proc/net/netfilter/nfnetlink_queue')
+          q210=bool(qpath.exists() and any(l.split() and l.split()[0]=='210' for l in qpath.read_text().splitlines()))
+          for k,v in [('no_experimental_rule',no_test_rule),('original_queue210_rule',queue_rule),('telegram_nfqws_running',worker),('https_listener',https_listener),('queue210_handler_bound',q210)]:
+              print(k+'='+('PASS' if v else 'FAIL'),flush=True)
+          if not all((no_test_rule,queue_rule,worker,https_listener,q210)):sys.exit(1)
+          PY

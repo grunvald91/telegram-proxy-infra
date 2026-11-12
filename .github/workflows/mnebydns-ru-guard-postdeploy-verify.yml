@@ -1,0 +1,68 @@
+name: MNEBYDNS RU NFQUEUE210 guard post-deploy independent audit
+on:
+  push:
+    branches: [experiment/instagram-synack-window-canary-20261110]
+    paths:
+      - '.github/workflows/mnebydns-ru-guard-postdeploy-verify.yml'
+      - 'docs/mnebydns-android-mobile-field-test.md'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-ru-guard-postdeploy-verify
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Independently inspect unchanged queue, active services and backed-up generator
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+          export SSHPASS="$RU_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -' <<'PY'
+          import hashlib,pathlib,re,subprocess,sys
+          live=pathlib.Path('/usr/local/sbin/telegram-nfqws-rules')
+          backup=pathlib.Path('/var/backups/mnebydns-nfqws/telegram-nfqws-rules.42885852171.bak')
+          expected='8beeffbe10e7da097e10bde4b1ef568219d52c2f1c04b189e71602069de9ec3f'
+          original='c95ea1ad1bc1b801fef6c7ce1d89a99c93d5c823595b605aaf595480607c0cb6'
+          def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else 'MISSING'
+          p=subprocess.run(['nft','-a','list','chain','inet','telegram_nfqws','post'],text=True,capture_output=True,timeout=10)
+          chain=p.stdout if p.returncode==0 else ''
+          q210=any('tcp sport 443' in l and 'to 210' in l and 'bypass' in l for l in chain.splitlines())
+          no_guard='MNEBYDNS_SYNACK_CANARY_PEER_V1' not in chain and 'MNEBY_IG_SYNACK_AB_' not in chain
+          svc=subprocess.run(['systemctl','is-active','--quiet','telegram-nfqws.service'],timeout=8).returncode==0
+          nginx=subprocess.run(['systemctl','is-active','--quiet','nginx.service'],timeout=8).returncode==0
+          p=subprocess.run(['ss','-H','-lnt'],text=True,capture_output=True,timeout=8)
+          https=any(re.search(r':443\s',l) for l in p.stdout.splitlines())
+          qpath=pathlib.Path('/proc/net/netfilter/nfnetlink_queue')
+          qbound=qpath.is_file() and any(l.split() and l.split()[0]=='210' for l in qpath.read_text().splitlines())
+          no_default=not pathlib.Path('/etc/mnebydns/telegram-synack-canary-ipv4').exists()
+          no_temp=not any(pathlib.Path('/run').glob('mnebydns-synack-peer-*'))
+          checks={'guard_generator_sha':sha(live)==expected,
+            'original_generator_backup_sha':sha(backup)==original,
+            'original_queue210_present':q210,
+            'temporary_guard_absent':no_guard,
+            'telegram_service_active':svc,
+            'nginx_service_active':nginx,
+            'https_listener_present':https,
+            'queue210_handler_bound':qbound,
+            'default_opt_in_absent':no_default,
+            'test_peer_file_absent':no_temp}
+          for key,value in checks.items():print('postdeploy_'+key+'='+('PASS' if value else 'FAIL'),flush=True)
+          if not all(checks.values()):sys.exit(1)
+          PY
+      - name: Verify existing public DoT answers and Gemini/Claude routing
+        run: python3 scripts/mnebydns_instagram_public_readiness.py
