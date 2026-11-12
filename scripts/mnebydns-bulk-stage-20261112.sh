@@ -44,6 +44,8 @@ for kind in timer service; do test ! -e "/etc/systemd/system/$name.$kind"; done
 install -d -m 700 /opt/mnebydns-owner-domain "$base"
 cp -p "$dns" "$base/dns.before"
 cp -p "$nginx" "$base/nginx.before"
+cut -f1 "$work/manifest.tsv" | head -n1 > "$base/domain"
+printf "%s\n" bulk > "$base/mode"
 cp -p "$work/dns.pilot" "$base/dns.pilot"
 cp -p "$work/nginx.pilot" "$base/nginx.pilot"
 chmod --reference="$dns" "$base/dns.pilot"
