@@ -42,6 +42,16 @@ class Batch108Inventory(TestCase):
                 with self.assertRaises(ValueError):
                     batch.phase_id(illegal)
 
+    def test_pg_inet_metadata_accepts_host_prefix_only(self):
+        self.assertEqual(batch.owner.pg_inet_host("13.227.192.109/32"),
+                         "13.227.192.109")
+        self.assertEqual(batch.owner.pg_inet_host("13.227.192.109"),
+                         "13.227.192.109")
+        for bad in ("13.227.192.109/24","10.0.0.1/32","::1/128",
+                    "13.227.192.109/abc","89.125.90.101/32",""):
+            with self.assertRaises(ValueError,msg=bad):
+                batch.owner.pg_inet_host(bad)
+
     def test_select_pending_skips_active_and_failed(self):
         names=("a.example.com","b.example.com","c.example.com")
         rows={
@@ -121,7 +131,7 @@ class Batch108Transactions(TestCase):
              patch.object(batch.owner,"apply") as apply, \
              patch.object(batch.owner,"confirm") as confirm, \
              patch.object(batch,"status_of",side_effect=status), \
-             patch.object(batch,"db",return_value="93.184.215.14"), \
+             patch.object(batch,"db",return_value="93.184.215.14/32"), \
              patch.object(batch,"http_probe",side_effect=[200,403,302]) as http, \
              patch.object(batch.owner,"oracle_canary_check") as oracle, \
              patch.object(batch,"report"):
@@ -154,7 +164,7 @@ class Batch108Transactions(TestCase):
              patch.object(batch.owner,"apply"), \
              patch.object(batch.owner,"confirm") as confirmed, \
              patch.object(batch,"status_of",side_effect=["CANARY","ACTIVE"]), \
-             patch.object(batch,"db",return_value=rotated), \
+             patch.object(batch,"db",return_value=rotated+"/32"), \
              patch.object(batch,"http_probe",side_effect=[200,403,200]) as http, \
              patch.object(batch.owner,"oracle_canary_check"), \
              patch.object(batch,"report") as report:
@@ -177,7 +187,7 @@ class Batch108Transactions(TestCase):
              patch.object(batch.owner,"apply"), \
              patch.object(batch.owner,"confirm") as confirm, \
              patch.object(batch,"status_of",side_effect=["CANARY","CANARY","CANARY"]), \
-             patch.object(batch,"db",side_effect=["93.184.215.14",domain]) as db, \
+             patch.object(batch,"db",side_effect=["93.184.215.14/32",domain]) as db, \
              patch.object(batch,"http_probe",side_effect=[200,403,403]), \
              patch.object(batch.owner,"rollback_or_unchanged") as rollback, \
              patch.object(batch.owner,"oracle_canary_check") as oracle, \

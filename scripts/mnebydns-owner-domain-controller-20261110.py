@@ -7,6 +7,7 @@ Root SSH secrets exist only in the CI job. No arbitrary SQL or shell values.
 """
 from __future__ import annotations
 import datetime as dt
+import ipaddress
 import os
 import re
 import shlex
@@ -43,6 +44,23 @@ FILES=(
     "mnebydns-owner-domain-remove-20261110.sh",
 )
 TIMEOUT=90
+
+
+def pg_inet_host(raw: str) -> str:
+    """Interpret PostgreSQL INET::text safely as IPv4 host only.
+
+    PostgreSQL may return 13.227.192.109/32 instead of 13.227.192.109.
+    Reject IPv4 subnets with a broader mask, IPv6, internal/own IPs.
+    """
+    if not isinstance(raw,str):
+        raise ValueError("Origin inet must be a string")
+    try:
+        iface=ipaddress.ip_interface(raw)
+    except ValueError as exc:
+        raise ValueError("Unrecognized PostgreSQL INET origin") from exc
+    if iface.version!=4 or iface.network.prefixlen!=32:
+        raise ValueError("Origin metadata is not an exact IPv4 host")
+    return _render.validated_public_ip(str(iface.ip))
 
 
 def cmd(args:list[str], password:str|None=None, timeout=TIMEOUT,
@@ -525,7 +543,7 @@ def active_health():
     # Distinguish missing/invalid stored origin metadata from network failure.
     # Never invent an origin IP, change routing, or clear an ACTIVE state.
     try:
-        _render.validated_public_ip(ip)
+        ip=pg_inet_host(ip)
     except ValueError:
         sql("UPDATE dns_admin_domains SET last_error_code='ACTIVE_ROUTE_METADATA_INVALID'"
             " WHERE id="+id+" AND revision="+rev+" AND status='ACTIVE'")
