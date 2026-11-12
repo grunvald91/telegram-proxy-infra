@@ -3,6 +3,7 @@
 import importlib.util
 from pathlib import Path
 from unittest import TestCase, main
+from unittest.mock import patch
 
 BASE = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location(
@@ -119,6 +120,50 @@ class OwnerDomainRouteSafety(TestCase):
         for ip in ("89.125.90.101", "188.120.254.223", "127.0.0.1", "10.0.0.1"):
             with self.assertRaises(ValueError, msg=ip):
                 render.nginx_add(NGINX, TARGET, ip)
+
+
+class OwnerDomainPinnedOriginCertProof(TestCase):
+    def test_valid_pinned_cdn_ip_uses_original_hostname_sni_not_second_dns_lookup(self):
+        with patch.object(render.socket,"getaddrinfo",side_effect=AssertionError("DNS must not be queried")), \
+             patch.object(render.socket,"create_connection") as dial, \
+             patch.object(render.ssl,"create_default_context") as ssl_ctx:
+            sock=dial.return_value.__enter__.return_value
+            session=ssl_ctx.return_value.wrap_socket.return_value.__enter__.return_value
+            session.getpeercert.return_value={"subject":("trusted",)}
+            ip=render.verify_pinned_origin("microsoft.com","150.171.109.101")
+        self.assertEqual(ip,"150.171.109.101")
+        dial.assert_called_once_with(("150.171.109.101",443),timeout=6)
+        ssl_ctx.return_value.wrap_socket.assert_called_once_with(sock,server_hostname="microsoft.com")
+        sock.settimeout.assert_called_once_with(6)
+
+    def test_empty_or_unverified_certificate_is_denied(self):
+        with patch.object(render.socket,"create_connection") as dial, \
+             patch.object(render.ssl,"create_default_context") as ssl_ctx:
+            ssl_ctx.return_value.wrap_socket.return_value.__enter__.return_value.getpeercert.return_value={}
+            with self.assertRaisesRegex(RuntimeError,"CERT_NOT_VERIFIED"):
+                render.verify_pinned_origin("bing.com","150.171.27.10")
+        dial.assert_called_once()
+
+    def test_private_self_reference_or_ipv6_not_connected(self):
+        with patch.object(render.socket,"create_connection") as dial:
+            for ip in ("89.125.90.101","188.120.254.223","127.0.0.1","10.0.0.1","::1"):
+                with self.assertRaises(ValueError,msg=ip):
+                    render.verify_pinned_origin("microsoft.com",ip)
+        dial.assert_not_called()
+
+    def test_owner_stage_uses_selected_ip_tls_not_dns_equality(self):
+        stage=(BASE/"mnebydns-owner-domain-stage-20261110.sh").read_text()
+        self.assertIn("verify-origin",stage)
+        self.assertIn('owner_domain_same_pinned_origin_tls_verified=true',stage)
+        self.assertNotIn('origin_changed_denied',stage)
+        self.assertNotIn('probe --domain "$domain"',stage)
+        self.assertIn('owner_domain_selected_origin_tls_failed=true',stage)
+
+    def test_renderer_probe_and_verify_commands_both_available(self):
+        code=(BASE/"mnebydns-owner-domain-render-20261110.py").read_text()
+        self.assertIn('"verify-origin"',code)
+        self.assertIn('print(verify_pinned_origin(domain,args.ip),flush=True)',code)
+        self.assertIn('print(origin_ip(domain),flush=True)',code)
 
 
 if __name__ == "__main__":
