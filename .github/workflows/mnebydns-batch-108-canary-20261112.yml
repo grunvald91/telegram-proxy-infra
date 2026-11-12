@@ -1,0 +1,127 @@
+name: MNEBYDNS guarded automated 108-domain RU403 batch canaries
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - ".github/workflows/mnebydns-batch-108-canary-20261112.yml"
+      - "scripts/mnebydns-batch-108-canary-20261112.py"
+      - "scripts/tests/test_mnebydns_batch_108_canary.py"
+      - "data/mnebydns-batch-auto-enabled-20261112.txt"
+      - "data/mnebydns-108-canary-review-20261111.txt"
+      - "data/mnebydns-ru-403-451-de-success-20261111.csv"
+  push:
+    branches: [main]
+    paths:
+      - "data/mnebydns-batch-auto-enabled-20261112.txt"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "plan: read-only; deploy: 1-5 exact-host 60m guarded canaries"
+        type: choice
+        options: [plan, deploy]
+        default: plan
+      max_domains:
+        description: "Maximum independent confirmed routes in this run (1-5)"
+        required: true
+        type: number
+        default: 1
+  schedule:
+    # Applied only if the separately reviewed Git-controlled switch is enabled.
+    - cron: '17 */3 * * *'
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('mnebydns-108-offline-{0}', github.ref) || 'mnebydns-google-public-443-change' }}
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Strict offline unit tests and complete fixed research inventory
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-batch-108-canary-20261112.py
+          python3 scripts/mnebydns-batch-108-canary-20261112.py self-test
+          python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_batch_108_canary.py' -v
+          python3 scripts/mnebydns-owner-domain-controller-20261110.py self-test
+          python3 scripts/mnebydns-owner-domain-render-20261110.py self-test
+          test "$(grep -c ' ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts)" -eq 2
+          ! grep -Eq 'StrictHostKeyChecking=no|accept-new|verify=False|check_hostname=False|_create_unverified_context' scripts/mnebydns-batch-108-canary-20261112.py
+          echo MNEBYDNS_108_BATCH_OFFLINE=PASS
+  batch:
+    if: github.event_name != 'pull_request'
+    needs: offline
+    runs-on: ubuntu-latest
+    timeout-minutes: 39
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Resolve activation mode and hard-stop rules
+        shell: bash
+        env:
+          DISPATCH_MODE: ${{ github.event.inputs.mode }}
+          DISPATCH_MAX: ${{ github.event.inputs.max_domains }}
+        run: |
+          set -Eeuo pipefail
+          if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then
+            mode=deploy
+            max=3
+          elif [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            mode="${DISPATCH_MODE:-plan}"
+            max="${DISPATCH_MAX:-1}"
+          else
+            if [ "$(cat data/mnebydns-batch-auto-enabled-20261112.txt)" = "enabled" ]; then
+              mode=deploy
+              max=1
+            else
+              mode=plan
+              max=1
+            fi
+          fi
+          [[ "$mode" =~ ^(deploy|plan)$ ]]
+          [[ "$max" =~ ^[1-5]$ ]]
+          echo "BATCH_MODE=$mode" >> "$GITHUB_ENV"
+          echo "BATCH_MAX=$max" >> "$GITHUB_ENV"
+          echo "MNEBYDNS batch mode=$mode max=$max"
+      - name: Get pinned SSH prerequisites for read-only scan or safe canary
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+      - name: Existing owner controller transitions with hard limits and rollback
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/mnebydns-batch-108-canary-20261112.py "$BATCH_MODE" --max "$BATCH_MAX"
+      - name: Record summary and evidence
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Guarded 108 exact-host batch"
+            echo "See events.jsonl in the artifact. Never interpret a successful TLS/GET / as a working app/login."
+            echo "Switch: $(cat data/mnebydns-batch-auto-enabled-20261112.txt)"
+            if [ -f batch-108-results/events.jsonl ]; then
+              tail -n 25 batch-108-results/events.jsonl
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload verifiable per-host run log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mnebydns-108-batch-run-${{ github.run_id }}
+          path: batch-108-results/
+          if-no-files-found: warn
+          retention-days: 30
