@@ -62,6 +62,18 @@ jobs:
               except Exception:print('ru_nft_counter_parse=FAILED',flush=True)
           code,data=command('ss','-H','-lnt','sport','=',' :18443'.strip())
           print('ru_test_listener_18443='+str(bool(data)).lower(),flush=True)
+          peer_file=root/'peer'
+          marker_file=root/'firewall-pending'
+          print('ru_firewall_marker_present='+str(marker_file.is_file()).lower(),flush=True)
+          if peer_file.is_file():
+              peer=peer_file.read_text().strip()
+              if peer!='all':
+                  args=('iptables','-w','5','-C','ufw-user-input','-s',peer+'/32',
+                        '-d','188.120.254.223/32','-p','tcp','--dport','18443',
+                        '-m','comment','--comment','mneby-meta-v26-scoped-tcp18443',
+                        '-j','ACCEPT')
+                  code,_=command(*args)
+                  print('ru_ufw_owned_18443_allow_active='+str(code==0).lower(),flush=True)
           report=root/'evidence.json'
           print('ru_packet_evidence_exists='+str(report.is_file()).lower(),flush=True)
           if report.is_file():
