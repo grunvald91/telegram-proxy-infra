@@ -84,6 +84,11 @@ jobs:
             if [ "$(cat data/mnebydns-batch-auto-enabled-20261112.txt)" = "enabled" ]; then
               mode=deploy
               max=1
+              # Only this explicitly reviewed content-marked Git trigger
+              # authorizes the next limited wave of THREE exact hosts.
+              if [ "$(cat data/mnebydns-batch-first-canary-trigger-20261112.txt)" = "next-guarded-three-20261112" ]; then
+                max=3
+              fi
             else
               mode=plan
               max=1
