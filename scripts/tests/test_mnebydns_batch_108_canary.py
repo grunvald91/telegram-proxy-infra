@@ -3,6 +3,7 @@
 from __future__ import annotations
 import importlib.util
 import os
+import shlex
 from pathlib import Path
 from unittest import TestCase, main
 from unittest.mock import patch, call
@@ -62,6 +63,16 @@ class Batch108Inventory(TestCase):
         with patch.object(batch,"db",return_value="1"),patch.object(batch.owner,"live_checkpoint_unchanged"):
             with self.assertRaisesRegex(RuntimeError,"OWNER_QUEUE_BUSY"):
                 batch.ensure_quiet()
+
+    def test_remote_python_payloads_compile_before_live_use(self):
+        compile(batch.HTTP_CODE,"<remote_http>", "exec")
+        with patch.object(batch.owner,"ssh",return_value="93.184.215.14") as remote, \
+             patch.object(batch,"http_probe",side_effect=[200,403]):
+            batch.preflight("a.example.com")
+        command=remote.call_args.args[1]
+        parts=shlex.split(command)
+        self.assertEqual(parts[0:2],["python3","-c"])
+        compile(parts[2],"<remote_dns_and_tls>","exec")
 
     def test_preflight_requires_fresh_same_ip_ru403_foreign2xx(self):
         with patch.object(batch.owner,"ssh",return_value="93.184.215.14"), \
@@ -127,7 +138,7 @@ class Batch108Transactions(TestCase):
              patch.object(batch,"select_own_task",return_value={"domain":domain,"status":"APPLY_REQUESTED"}), \
              patch.object(batch.owner,"apply"), \
              patch.object(batch.owner,"confirm") as confirm, \
-             patch.object(batch,"status_of",side_effect=["CANARY","CANARY"]), \
+             patch.object(batch,"status_of",side_effect=["CANARY","CANARY","CANARY"]), \
              patch.object(batch,"db",side_effect=["93.184.215.14",domain]) as db, \
              patch.object(batch,"http_probe",return_value=403), \
              patch.object(batch.owner,"rollback_or_unchanged") as rollback, \
