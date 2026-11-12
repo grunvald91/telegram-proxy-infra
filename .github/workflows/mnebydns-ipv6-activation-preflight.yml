@@ -153,62 +153,49 @@ jobs:
           else:
               verdict='HOST_IPV6_READINESS_CANDIDATE'
           print('host_ipv6_preflight_verdict='+verdict)
-          # Diagnose persistent IPv6 disable safely: print only
-          # controlled key names and config file basenames, no config values
-          # except literal disable_ipv6=0/1, no network secrets.
+          import pathlib
           import re
-          sourcefiles=[pathlib.Path('/etc/sysctl.conf')]
-          sourcefiles+=sorted(pathlib.Path('/etc/sysctl.d').glob('*.conf'))
-          sourcefiles+=sorted(pathlib.Path('/usr/lib/sysctl.d').glob('*.conf'))
-          sourcefiles+=sorted(pathlib.Path('/lib/sysctl.d').glob('*.conf'))
-          matched=[]
-          for path in sourcefiles:
+          conf_paths=[pathlib.Path('/etc/sysctl.conf')]
+          conf_paths+=list(pathlib.Path('/etc/sysctl.d').glob('*.conf'))
+          conf_paths+=list(pathlib.Path('/usr/lib/sysctl.d').glob('*.conf'))
+          conf_paths+=list(pathlib.Path('/lib/sysctl.d').glob('*.conf'))
+          rules=[]
+          for conf in conf_paths:
               try:
-                  body=path.read_text(errors='replace')
+                  content=conf.read_text(errors='replace')
               except OSError:
                   continue
-              for line in body.splitlines():
-                  line=line.strip()
-                  if not line or line.startswith(('#',';')):
+              for config_line in content.splitlines():
+                  clean=config_line.strip()
+                  if clean.startswith(('#',';')) or 'disable_ipv6' not in clean:
                       continue
-                  match=re.match(
-                    r'^-?net\\.ipv6\\.conf\\.([A-Za-z0-9_.-]+)\\.disable_ipv6\\s*=\\s*([01])(?:\\s*(?:[;#].*)?)?
-          print('remote_inbound_443_unverified=true')
-          print('client_ipv4_only_fallback_unverified=true')
-          print('nothing_modified=true')
-          PY
-            unset SSHPASS
-          done
-          echo 'preflight=READ_ONLY_COMPLETE'
-,
-                    line)
-                  if match:
-                      key,value=match.groups()
-                      matched.append((path.name,key,value))
-          print('persistent_ipv6_disable_entries='+str(len(matched)))
-          for filename,key,value in matched[:12]:
-              print('persistent_ipv6_knob='+filename+':'+key+':'+value)
-          boot=(pathlib.Path('/proc/cmdline').read_text(errors='replace')
-                if pathlib.Path('/proc/cmdline').exists() else '')
-          print('boot_kernel_ipv6_disable='+str(
-            'ipv6.disable=1' in boot.split()).lower())
-          netplan=list(pathlib.Path('/etc/netplan').glob('*.yaml'))
-          netplan+=list(pathlib.Path('/etc/netplan').glob('*.yml'))
-          print('netplan_config_file_count='+str(len(netplan)))
-          patterns=['dhcp6:','accept-ra:','link-local:','ipv6-address-generation:']
-          for pattern in patterns:
-              present=False
-              for path in netplan:
+                  fields=clean.split('=',1)
+                  if len(fields)==2 and fields[0].strip().startswith('net.ipv6.conf.'):
+                      flag=fields[1].split('#')[0].strip()
+                      if flag in ('0','1'):
+                          rules.append((conf.name,fields[0].strip(),flag))
+          print('persistent_ipv6_disable_entries='+str(len(rules)))
+          for name,key,value in rules[:12]:
+              if key.endswith('.disable_ipv6'):
+                  print('ipv6_disable_source='+name+':'+key.rsplit('.',2)[-2]+':'+value)
+          try:
+              boot=pathlib.Path('/proc/cmdline').read_text(errors='replace')
+          except OSError:
+              boot=''
+          print('kernel_boot_ipv6_disabled='+str('ipv6.disable=1' in boot.split()).lower())
+          netplans=list(pathlib.Path('/etc/netplan').glob('*.yaml'))
+          netplans+=list(pathlib.Path('/etc/netplan').glob('*.yml'))
+          print('netplan_file_count='+str(len(netplans)))
+          for key in ('dhcp6:','accept-ra:','link-local:'):
+              found=False
+              for p in netplans:
                   try:
-                      if pattern in path.read_text(errors='replace'):
-                          present=True
+                      found=found or key in p.read_text(errors='replace')
                   except OSError:
                       pass
-              print('netplan_key_'+pattern.rstrip(':').replace('-','_')+'='+str(present).lower())
-          print('systemd_networkd_active='+str(
-             run('systemctl','is-active','--quiet','systemd-networkd')[0]==0).lower())
-          print('networkmanager_active='+str(
-             run('systemctl','is-active','--quiet','NetworkManager')[0]==0).lower())
+              print('netplan_has_'+key[:-1].replace('-','_')+'='+str(found).lower())
+          print('systemd_networkd_active='+str(run('systemctl','is-active','--quiet','systemd-networkd')[0]==0).lower())
+          print('networkmanager_active='+str(run('systemctl','is-active','--quiet','NetworkManager')[0]==0).lower())
           print('provider_prefix_allocation_unverified=true')
           print('remote_inbound_443_unverified=true')
           print('client_ipv4_only_fallback_unverified=true')
