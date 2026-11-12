@@ -52,13 +52,19 @@ jobs:
           test "$(grep -c ' ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts)" -eq 2
           ! grep -Eq 'StrictHostKeyChecking=no|accept-new|verify=False|ssl\._create_unverified_context' \
             scripts/mnebydns-microsoft-six-permanent-20261111.py
+          python3 - <<'PY'
+          from pathlib import Path
+          f=Path('.github/workflows/mnebydns-microsoft-six-permanent-20261111.yml').read_text()
+          assert "git diff --name-only HEAD^ HEAD --" in f
+          assert "grep -Fxq \"$target\"" in f
+          assert "if: steps.reviewed.outputs.approved == 'yes'" in f
+          assert "fetch-depth: 2" in f
+          assert "if: github.event_name != 'pull_request'" in f
+          print("microsoft_explicit_trigger_offline=PASS")
+          PY
           echo microsoft_six_offline_preflight=PASS
   release:
-    if: >-
-      (github.event_name == 'workflow_dispatch' && inputs.mode == 'deploy') ||
-      (github.event_name == 'push' &&
-       (contains(github.event.head_commit.added, 'data/mnebydns-microsoft-six-rollout-trigger-20261112.txt') ||
-        contains(github.event.head_commit.modified, 'data/mnebydns-microsoft-six-rollout-trigger-20261112.txt')))
+    if: github.event_name != 'pull_request'
     needs: offline
     runs-on: ubuntu-latest
     timeout-minutes: 29
@@ -69,7 +75,30 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          fetch-depth: 2
+      - name: Authorize release ONLY for explicit reviewed trigger changed in this commit
+        id: reviewed
+        shell: bash
+        env:
+          REQUESTED_MODE: ${{ inputs.mode }}
+        run: |
+          set -Eeuo pipefail
+          target=data/mnebydns-microsoft-six-rollout-trigger-20261112.txt
+          approved=no
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            [[ "${REQUESTED_MODE:-review}" == deploy ]] && approved=yes || :
+          elif [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            # Do not use github.event.head_commit.added/modified arrays; some
+            # GitHub event payloads omit them. Inspect the actual tree diff.
+            git cat-file -e HEAD^
+            if git diff --name-only HEAD^ HEAD -- | grep -Fxq "$target"; then
+              approved=yes
+            fi
+          fi
+          echo "approved=$approved" >> "$GITHUB_OUTPUT"
+          echo "microsoft_explicit_release_approved=$approved"
       - name: Permanently promote all six exact-host routes one-by-one with independent rollback timers
+        if: steps.reviewed.outputs.approved == 'yes'
         shell: bash
         run: |
           set -Eeuo pipefail
