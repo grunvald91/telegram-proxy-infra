@@ -360,7 +360,9 @@ def main():
     preexisting_failure(rows,names)
     next_host=select_next(names,rows)
     report("PLAN",candidate_count=len(names),remaining=sum(
-        rows.get(n,("", "", ""))[0]=="PENDING" for n in names),next=next_host)
+        rows.get(n,("", "", ""))[0]=="PENDING" for n in names),next=next_host,
+        existing_or_excluded={n:rows.get(n,("MISSING","", ""))[0] for n in names
+                              if rows.get(n,("MISSING","", ""))[0]!="PENDING"})
     if args.mode=="plan":
         # Real readiness gate even in dry run: must observe actual server state
         # without writing a DNS route, touching a DB row, or changing canary.
