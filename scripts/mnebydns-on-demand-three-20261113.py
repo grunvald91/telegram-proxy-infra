@@ -46,13 +46,13 @@ def emit(event, **info):
         f.write(json.dumps(line,sort_keys=True,ensure_ascii=False)+"\n")
     print("REQUESTED_THREE="+json.dumps(line,sort_keys=True,ensure_ascii=False),flush=True)
 
-def states():
+def states(allow_failed=False):
     rows=batch.table()
     for domain,product in TARGETS:
         if domain not in rows:raise RuntimeError("Exact domain DB row is absent: "+domain)
         state,actual_product,last_error=rows[domain]
         if actual_product!=product:raise RuntimeError("Domain ownership changed: "+domain)
-        if state not in ("PENDING","ACTIVE"):
+        if state not in (("PENDING","ACTIVE","FAILED") if allow_failed else ("PENDING","ACTIVE")):
             raise RuntimeError("Unsafe preexisting domain status: "+domain+"/"+state)
         if state=="ACTIVE" and last_error:
             raise RuntimeError("ACTIVE domain has unresolved health error: "+domain)
@@ -150,9 +150,12 @@ def deploy():
     if not owner.live_checkpoint_unchanged():
         raise RuntimeError("Production checkpoint changed during preflight")
     for number,(domain,product) in enumerate(TARGETS,1):
-        rows=states()
+        rows=states(allow_failed=True)
         if rows[domain][0]=="ACTIVE":
             emit("SKIP_ALREADY_ACTIVE",domain=domain)
+            continue
+        if rows[domain][0]=="FAILED":
+            emit("SKIP_EARLIER_VERIFIED_FAILURE",domain=domain)
             continue
         if domain not in eligible:
             emit("NOT_ELIGIBLE_DE_TLS",domain=domain)
@@ -204,7 +207,7 @@ def deploy():
             # Continue only if the previous stable state was proven restored.
             batch.ensure_quiet()
             continue
-    results=states()
+    results=states(allow_failed=True)
     items=[dict(domain=d,product=p,status=results[d][0],
                 last_error=results[d][2]) for d,p in TARGETS]
     (OUTPUT/"final-status.json").write_text(json.dumps(items,indent=2,ensure_ascii=False)+"\n")
