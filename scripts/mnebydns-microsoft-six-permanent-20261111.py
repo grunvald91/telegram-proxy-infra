@@ -119,6 +119,10 @@ def verify_failed_transition(name):
         raise RuntimeError("MICROSOFT_SHARED_CHECKPOINT_DRIFT")
     if current["status"] in ACTIVE_TRANSITIONS:
         raise RuntimeError("MICROSOFT_UNRESOLVED_OWNER_TRANSITION_"+current["status"])
+    if current["status"] not in ("FAILED","CANCELLED","PENDING"):
+        # ACTIVE following a failed post-confirmation health check is not
+        # a verified success. Stop before touching the next Microsoft host.
+        raise RuntimeError("MICROSOFT_NONTERMINAL_OR_UNVERIFIED_STATE_"+current["status"])
     return current["status"]
 
 
