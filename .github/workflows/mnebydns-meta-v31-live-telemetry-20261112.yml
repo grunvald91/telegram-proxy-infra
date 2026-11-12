@@ -1,0 +1,118 @@
+name: MNEBYDNS Instagram live SNI trial telemetry (read-only)
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/mnebydns-meta-v31-live-telemetry-20261112.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-meta-v31-live-telemetry-only
+  cancel-in-progress: false
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install SSH client helper
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          if ! command -v sshpass >/dev/null; then
+            timeout 35s sudo apt-get -o Acquire::Retries=0 -o Acquire::http::Timeout=7 update -qq || true
+            timeout 55s sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+          fi
+      - name: Read current Russian ingress and real packet evidence (no raw packets)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -' <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import datetime,json,pathlib,subprocess,time
+          def command(*args,timeout=6):
+              try:
+                  p=subprocess.run(args,capture_output=True,text=True,timeout=timeout)
+                  return p.returncode,p.stdout.strip()
+              except Exception:return 127,""
+          print("monitor_utc="+datetime.datetime.now(datetime.timezone.utc).isoformat(),flush=True)
+          print("node=RU188",flush=True)
+          for service in ('wg-quick@tg-relay.service','nginx.service','mneby-meta-v26-ru-window.service','mneby-meta-v26-ru-watchdog.timer'):
+              code,_=command('systemctl','is-active','--quiet',service)
+              print("ru_service_"+service+"="+("active" if code==0 else "inactive"),flush=True)
+          root=pathlib.Path('/var/lib/mneby-meta-v26-ru')
+          print("ru_trial_state_dir="+str(root.is_dir()).lower(),flush=True)
+          code,data=command('nft','-j','list','table','inet','mneby_meta_v26_ru')
+          print("ru_trial_nft_active="+str(code==0).lower(),flush=True)
+          if code==0:
+              try:
+                  j=json.loads(data)
+                  rules=[x['rule'] for x in j.get('nftables',[]) if 'rule' in x]
+                  counts=[e['counter']['packets'] for x in rules for e in x.get('expr',[]) if 'counter' in e]
+                  print("ru_nft_rule_counters="+json.dumps(counts),flush=True)
+              except Exception:print('ru_nft_counter_parse=FAILED',flush=True)
+          code,data=command('ss','-H','-lnt','sport','=',' :18443'.strip())
+          print('ru_test_listener_18443='+str(bool(data)).lower(),flush=True)
+          report=root/'evidence.json'
+          print('ru_packet_evidence_exists='+str(report.is_file()).lower(),flush=True)
+          if report.is_file():
+              try:
+                  j=json.loads(report.read_text())
+                  print('ru_evidence_age_seconds='+str(round(time.time()-j.get('updated_at',0))),flush=True)
+                  for key in ('capture_point','final','capture_ok','verdict','kernel_drops','android_login_feed','failure_codes','uncovered_meta_hosts'):
+                      print('ru_evidence_'+key+'='+json.dumps(j.get(key)),flush=True)
+                  for k,v in sorted(j.get('stats',{}).items()):
+                      print('ru_evidence_stat_'+k+'='+str(v),flush=True)
+                  for k,v in sorted(j.get('proxy',{}).items()):
+                      if isinstance(v,(int,float,bool)):
+                          print('ru_proxy_'+k+'='+str(v),flush=True)
+                  for host,stats in sorted(j.get('hosts',{}).items()):
+                      if stats.get('hello',0)>0:
+                          print('ru_seen_host='+host+' count='+str(stats['hello'])+' split='+str(stats.get('split',0)),flush=True)
+              except Exception as exc:print('ru_evidence_error='+type(exc).__name__,flush=True)
+          code,data=command('ip','-j','route','get','10.66.77.1')
+          if code==0:
+              try:print('ru_wg_route_dev='+str(json.loads(data)[0].get('dev')),flush=True)
+              except Exception:pass
+          PY
+      - name: Read current foreign DNS and Nginx Meta route status
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import datetime,pathlib,subprocess
+          def cmd(*args,timeout=15):
+              try:
+                  p=subprocess.run(args,text=True,capture_output=True,timeout=timeout)
+                  return p.returncode,p.stdout.strip()
+              except Exception:return 127,''
+          print('node=DE89')
+          print('monitor_utc='+datetime.datetime.now(datetime.timezone.utc).isoformat())
+          for s in ('nginx.service','mnebydns-dot.service','mnebydns-googlepilot.service','mneby-meta-v26-de-watchdog.timer'):
+              r,_=cmd('systemctl','is-active','--quiet',s)
+              print('de_service_'+s+'='+('active' if r==0 else 'inactive'))
+          stage=pathlib.Path('/usr/local/libexec/mneby-meta-v26/meta_v26_de_stage.py')
+          print('de_trial_stage_present='+str(stage.is_file()).lower())
+          if stage.is_file():
+              r,data=cmd('python3',str(stage),'status')
+              print('de_trial_status_exit='+str(r))
+              for line in data.splitlines():
+                  if line.startswith('meta_v26_de_'):print(line)
+          core=pathlib.Path('/opt/mnebydns-dot/Corefile').read_text()
+          print('de_scoped_client_dns_view_present='+str('view mneby_meta_phone' in core).lower())
+          print('de_instagram_a_template_count='+str(core.count('template IN A i.instagram.com {')))
+          print('de_google_template_still_present='+str('template IN A gemini.google.com {' in core).lower())
+          PY
