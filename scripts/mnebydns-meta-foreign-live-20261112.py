@@ -84,11 +84,15 @@ def write_atomically(path:Path, content:bytes) -> None:
     tmp=path.with_name(path.name+".meta-candidate-tmp")
     if tmp.exists():raise RuntimeError("Unexpected staged config exists")
     stat=path.stat()
-    with tmp.open("xb") as out:
-        out.write(content);out.flush();os.fsync(out.fileno())
-    os.chmod(tmp,stat.st_mode & 0o777)
-    os.chown(tmp,stat.st_uid,stat.st_gid)
-    os.replace(tmp,path)
+    try:
+        with tmp.open("xb") as out:
+            out.write(content);out.flush();os.fsync(out.fileno())
+        os.chmod(tmp,stat.st_mode & 0o777)
+        os.chown(tmp,stat.st_uid,stat.st_gid)
+        os.replace(tmp,path)
+    finally:
+        # Leave recovery possible even if a staged write/chown fails.
+        if tmp.exists():tmp.unlink()
 
 def renderer(path:Path):
     spec=importlib.util.spec_from_file_location("meta_route",path)
@@ -288,7 +292,13 @@ def deploy(runid:str,work:Path) -> None:
                 raise RuntimeError("Meta direct origin TLS failed before deploy: "+host) from exc
         # Recovery timer is persistent and independent of Actions connection.
         write_timer(base,runid)
-        (base/"pending").write_text("timed canary\n")
+        with (base/"pending").open("x") as marker:
+            marker.write("timed canary\n")
+            marker.flush()
+            os.fsync(marker.fileno())
+        fd=os.open(base,os.O_RDONLY|os.O_DIRECTORY)
+        try:os.fsync(fd)
+        finally:os.close(fd)
         try:
             # Install downstream first, DNS last to minimize broken-client window.
             write_atomically(LIVE["proxy"],(base/"proxy.candidate").read_bytes())
