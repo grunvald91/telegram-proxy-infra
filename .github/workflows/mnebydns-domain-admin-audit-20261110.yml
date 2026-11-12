@@ -81,3 +81,34 @@ jobs:
           echo "bot_ready_http=$code"
           echo 'dns_admin_ru_readonly_done=true'
           SH
+
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Read-only YouTube and video-CDN DNS routing evidence
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,'scripts')
+          from mnebydns_reliability_monitor import dot_query
+          ingress="89.125.90.101"
+          names=("youtube.com","www.youtube.com","googlevideo.com",
+                 "redirector.googlevideo.com","i.ytimg.com","youtu.be")
+          for host in names:
+              try:
+                  a=dot_query(ingress,"dns.mnebyvpn.site",host,1,timeout=5)
+                  ips=a.addresses
+                  route="unknown" if a.rcode!=0 or not ips else (
+                      "proxy" if set(ips)=={ingress} else (
+                          "mixed" if ingress in ips else "direct"))
+                  try:
+                      v6=dot_query(ingress,"dns.mnebyvpn.site",host,28,timeout=5)
+                      ipv6="yes" if v6.addresses else ("none" if v6.rcode==0 else "unknown")
+                  except Exception:
+                      ipv6="unknown"
+                  print(f"youtube_dns_host={host} a_route={route} a_count={len(ips)} aaaa={ipv6} rcode={a.rcode}",flush=True)
+              except Exception as exc:
+                  print(f"youtube_dns_host={host} a_route=unverified error={type(exc).__name__}",flush=True)
+          PY
