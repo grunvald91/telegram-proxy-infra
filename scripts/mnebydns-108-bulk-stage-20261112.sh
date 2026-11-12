@@ -21,7 +21,7 @@ stable_pointer=/opt/mnebydns-stable-checkpoints/current
 for file in dns.before nginx.before dns.pilot nginx.pilot checksums.sha256 plan.json; do
   [[ -f "$work/$file" && ! -L "$work/$file" ]] || exit 3
 done
-for file in rollback.sh confirm.sh reload.sh; do
+for file in rollback.sh rollback-original.sh confirm.sh reload.sh; do
   [[ -s "$work/$file" && ! -L "$work/$file" ]] || exit 3
 done
 (cd "$work" && sha256sum -c checksums.sha256 >/dev/null)
@@ -61,6 +61,7 @@ for kind in dns nginx; do
   chmod --reference="$live" "$base/$kind.pilot"
   chown --reference="$live" "$base/$kind.pilot"
 done
+install -m 700 "$work/rollback-original.sh" "$base/rollback-original.sh"
 install -m 700 "$work/rollback.sh" "$base/rollback.sh"
 install -m 700 "$work/confirm.sh" "$base/confirm.sh"
 install -m 700 "$work/reload.sh" "$base/reload.sh"

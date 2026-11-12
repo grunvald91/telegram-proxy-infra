@@ -44,6 +44,7 @@ jobs:
           python3 scripts/mnebydns-108-bulk-deploy-20261112.py self-test
           bash -n scripts/mnebydns-108-bulk-stage-20261112.sh
           bash -n scripts/mnebydns-108-bulk-compensate-20261112.sh
+          bash -n scripts/mnebydns-108-bulk-rollback-20261112.sh
           python3 scripts/mnebydns-owner-domain-render-20261110.py self-test
           python3 scripts/mnebydns-batch-108-canary-20261112.py self-test
           test "$(grep -c ' ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts)" -eq 2
