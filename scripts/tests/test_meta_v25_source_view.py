@@ -33,6 +33,14 @@ class ScopedDNSViewTests(unittest.TestCase):
             self.assertNotIn(name,ungated)
         self.assertIn("gemini.google.com",ungated)
 
+    def test_resilient_cache_baseline_supported(self):
+        resilient=CORE.replace("    cache 30\\n", "    cache 30 {\\n        success 2048\\n    }\\n")
+        plan=render(corefile=resilient,phone_ip="8.8.8.8",compiled_plugins=PLUGINS)
+        plan.verify_rollback()
+        self.assertTrue(plan.candidate.endswith(resilient))
+        self.assertIn("view "+VIEW_NAME,plan.candidate)
+        self.assertEqual(plan.selected_hosts,len(HOSTS))
+
     def test_view_must_be_compiled(self):
         for plugins in ("view tls", "template view", "acl template tls"):
             with self.subTest(plugins=plugins),self.assertRaisesRegex(RuntimeError,"lacks"):
