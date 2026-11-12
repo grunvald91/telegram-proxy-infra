@@ -59,7 +59,7 @@ jobs:
             if docker exec mnebydns-bulk-pg pg_isready -U postgres -q; then break; fi
             sleep .5
           done
-          docker exec mnebydns-bulk-pg psql -Xq -v ON_ERROR_STOP=1 -U postgres <<'SQL'
+          docker exec -i mnebydns-bulk-pg psql -Xq -v ON_ERROR_STOP=1 -U postgres <<'SQL'
           CREATE TABLE dns_admin_domains (
             domain text PRIMARY KEY, product text NOT NULL,
             status text NOT NULL, revision bigint NOT NULL DEFAULT 1,
