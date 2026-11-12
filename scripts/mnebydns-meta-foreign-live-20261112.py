@@ -76,6 +76,14 @@ def owner_quiescent() -> None:
     timers=cmd("systemctl","list-timers","--no-legend",output=True)
     for line in timers.splitlines():
         if OWNER_TIMER_PATTERN in line:
+            ids=re.findall(r"mnebydns-owner-rollback-([1-9][0-9]{8,12})\.timer",line)
+            if len(ids)!=1:
+                raise RuntimeError("Unknown active owner rollback timer")
+            # Confirmed owner canaries have an inert timer until expiry;
+            # their rollback script exits immediately on this sentinel.
+            ownerbase=Path("/opt/mnebydns-owner-domain")/ids[0]
+            if (ownerbase/"confirmed").is_file():
+                continue
             raise RuntimeError("Owner DNS timer present: defer Meta canary")
     if any(RUNROOT.glob("*/pending")):
         raise RuntimeError("Another Meta canary awaits recovery")
