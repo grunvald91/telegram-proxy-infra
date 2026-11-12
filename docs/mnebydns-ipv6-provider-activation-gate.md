@@ -1,4 +1,6 @@
-# MNEBYDNS #84 — IPv6 /64 у FirstVDS: подтверждённые препятствия и порядок запуска
+# MNEBYDNS #84 — аудит IPv6 RU FirstVDS (не сетевой ingress SmartDNS)
+> **ВАЖНО — исправление топологии (12.11.2026):** действующий CoreDNS `mnebydns-dot` и DNS→SNI-прокси размещены на зарубежном узле **89.125.90.101**, а не на RU FirstVDS **188.120.254.223**. Это видно в [workflow развёртывания DoT/CoreDNS](https://github.com/grunvald91/telegram-proxy-infra/blob/main/.github/workflows/mnebydns-dot-resilience-20261111.yml) и [публичных проверках DNS-прокси](https://github.com/grunvald91/telegram-proxy-infra/blob/main/.github/workflows/mnebydns-stable-five-public-health.yml). **Покупка IPv6 /64 у FirstVDS для RU сервера НЕ решает идентификацию платных соединений на зарубежном HTTPS ingress. Не покупать /64 на RU ради MNEBYDNS.** Прежний анализ FirstVDS ниже является только инвентаризацией RU VPS, а не инструкцией по созданию платных DNS-профилей. Необходимые входящие уникальные адреса (если вообще выбран такой вариант монетизации) должны быть назначены/маршрутизированы до фактического **TCP ingress** за рубежом, провайдер которого не подтверждён. Сам DNS-резолвер IPv6 /64 для работы не требует. Не отправлять подготовленный черновик FirstVDS до решения использовать RU как отдельный TCP ingress.
+
 Дата проверки: 2026-11-12. **Только read-only.** Не выполнялись изменения на RU/foreign VPS.
 
 ## Фактическое состояние VPS
