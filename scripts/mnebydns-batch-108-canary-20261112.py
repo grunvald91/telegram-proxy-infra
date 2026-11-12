@@ -129,7 +129,7 @@ def capacity():
         raise RuntimeError("INSUFFICIENT_CAPACITY_OR_SERVICE_UNHEALTHY")
 
 def table():
-    raw=db("SELECT domain||'|'||status||'|'||product||'|'||"
+    raw=db("SELECT domain||'|'||status||'|'||coalesce(product,'')||'|'||"
            "coalesce(last_error_code,'') FROM dns_admin_domains ORDER BY domain")
     rows={}
     for line in raw.splitlines():
@@ -143,7 +143,7 @@ def table():
     return rows
 
 def preexisting_failure(rows, names):
-    incidents=[h for h in names if h in rows and rows[h][0]=="FAILED"
+    incidents=[h for h in names if h in rows and rows[h][1]==PRODUCT and rows[h][0]=="FAILED"
                and rows[h][2].startswith("BATCH_INCIDENT_")]
     if incidents:
         raise RuntimeError("BATCH_CIRCUIT_BREAKER_ACTIVE: "+",".join(incidents[:5]))
@@ -154,6 +154,8 @@ def select_next(names, rows):
             raise RuntimeError("RESEARCH_ROW_MISSING: "+host)
         status,product,_ = rows[host]
         if product!=PRODUCT:
+            if status=="ACTIVE":
+                continue  # Already active and owned by an earlier workflow; never touch it.
             raise RuntimeError("NON_RESEARCH_OWNER: "+host+" "+product)
         if status=="PENDING":
             return host
@@ -207,8 +209,6 @@ def http_probe(role, host, ip):
     return int(raw.rsplit("=",1)[1])
 
 def preflight(host):
-    origin=owner.ssh("de","python3 "+
-        shlex.quote("/opt/mnebydns-owner-domain/THIS_PATH_IS_NOT_USED"),1) if False else None
     # Resolver and origin TLS are *both* verified by the existing renderer,
     # executed from DE via SSH with its exact immutable public IP selection.
     code=(
@@ -278,6 +278,8 @@ def recover_failed_canary(host,run):
     elif state=="FAILED":
         if not owner.live_checkpoint_unchanged():
             raise RuntimeError("BATCH_INCIDENT_FAILED_BUT_BASELINE_DRIFT")
+        db("UPDATE dns_admin_domains SET last_error_code='BATCH_INCIDENT_CANARY_ABORT' "
+           "WHERE domain='"+host+"' AND product='"+PRODUCT+"' AND status='FAILED'")
         report("CANARY_FAILED_SAFE",domain=host)
     else:
         raise RuntimeError("BATCH_INCIDENT_UNRECOGNIZED_FAILURE_STATE="+state)
