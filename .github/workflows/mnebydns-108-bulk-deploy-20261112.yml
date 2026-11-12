@@ -48,7 +48,7 @@ jobs:
           python3 scripts/mnebydns-owner-domain-render-20261110.py self-test
           python3 scripts/mnebydns-batch-108-canary-20261112.py self-test
           test "$(grep -c ' ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts)" -eq 2
-          test "$(cat data/mnebydns-bulk-108-mode-20261112.txt)" = plan || test "$(cat data/mnebydns-bulk-108-mode-20261112.txt)" = deploy-once-20261112-r2
+          test "$(cat data/mnebydns-bulk-108-mode-20261112.txt)" = plan || test "$(cat data/mnebydns-bulk-108-mode-20261112.txt)" = deploy-once-20261112-r3
           echo MNEBYDNS_BULK_OFFLINE_TESTS=PASS
       - name: Exercise atomic 99-host-style SQL CAS on disposable PostgreSQL
         shell: bash
@@ -128,7 +128,7 @@ jobs:
             mode=deploy
           elif [[ "$GITHUB_EVENT_NAME" == push &&
                   "$HEAD_COMMIT_TITLE" == "deploy(MNEBYDNS): one-time 108 exact-host bulk" &&
-                  "$(cat data/mnebydns-bulk-108-mode-20261112.txt)" == deploy-once-20261112-r2 ]]; then
+                  "$(cat data/mnebydns-bulk-108-mode-20261112.txt)" == deploy-once-20261112-r3 ]]; then
             mode=deploy
           fi
           [[ "$mode" =~ ^(plan|deploy)$ ]]
