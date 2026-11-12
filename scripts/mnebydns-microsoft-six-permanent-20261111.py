@@ -104,6 +104,10 @@ def rollback_live_canary(name):
     if not owner.live_checkpoint_unchanged():
         raise RuntimeError("Rollback changed or failed stable baseline")
 
+class UnresolvedMicrosoftRouteState(RuntimeError):
+    """A route transition or checkpoint state needing recovery, not retry."""
+
+
 def verify_failed_transition(name):
     """Fail closed unless the failed attempt is in a terminal DB state.
 
@@ -116,13 +120,13 @@ def verify_failed_transition(name):
         rollback_live_canary(name)
         current=row(name)
     if not owner.live_checkpoint_unchanged():
-        raise RuntimeError("MICROSOFT_SHARED_CHECKPOINT_DRIFT")
+        raise UnresolvedMicrosoftRouteState("MICROSOFT_SHARED_CHECKPOINT_DRIFT")
     if current["status"] in ACTIVE_TRANSITIONS:
-        raise RuntimeError("MICROSOFT_UNRESOLVED_OWNER_TRANSITION_"+current["status"])
+        raise UnresolvedMicrosoftRouteState("MICROSOFT_UNRESOLVED_OWNER_TRANSITION_"+current["status"])
     if current["status"] not in ("FAILED","CANCELLED","PENDING"):
         # ACTIVE following a failed post-confirmation health check is not
         # a verified success. Stop before touching the next Microsoft host.
-        raise RuntimeError("MICROSOFT_NONTERMINAL_OR_UNVERIFIED_STATE_"+current["status"])
+        raise UnresolvedMicrosoftRouteState("MICROSOFT_NONTERMINAL_OR_UNVERIFIED_STATE_"+current["status"])
     return current["status"]
 
 
@@ -247,6 +251,12 @@ def main():
                 raise RuntimeError("Mismatch between staged and committed canary identifier")
             commit_canary(name)
             statuses.append((name,"ACTIVE"))
+        except UnresolvedMicrosoftRouteState as exc:
+            # The first failure check has already found an unsafe live or
+            # database state. Do not re-enter it or try another host.
+            print("microsoft_CRITICAL_UNRESOLVED_OWNER_STATE="+name+":"+
+                  type(exc).__name__,flush=True)
+            raise
         except Exception as exc:
             print("microsoft_route_error="+name+":"+type(exc).__name__+
                   ":"+str(exc)[:200].replace("\n"," "),flush=True)
