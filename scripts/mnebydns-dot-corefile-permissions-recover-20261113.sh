@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # One-time narrowly scoped repair of DoT config readability. No DNS content edits.
 set -Eeuo pipefail
+trap 'exit_code=$?; echo "MNEBYDNS_DOT_RECOVERY_FAILED line=$LINENO code=$exit_code" >&2; exit "$exit_code"' ERR
+echo 'MNEBYDNS_DOT_RECOVERY_PRECHECK_STARTED=true'
 (( EUID == 0 )) || exit 2
 [[ $# == 0 ]] || exit 2
 dns=/opt/mnebydns-dot/Corefile
