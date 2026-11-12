@@ -23,7 +23,7 @@ for pair in "dns:$dns" "nginx:$nginx" "proxy:$proxy"; do
 done
 test "$(systemctl show --value -p User "$service")" = mnebydns-dot
 test "$(systemctl show --value -p Group "$service")" = mnebydns-dot
-getent passwd mnebydns-dot >/dev/null
+test "$(systemctl show --value -p DynamicUser "$service")" = yes
 test "$(stat -c '%u' "$dns")" = 0
 before="$(sha256sum "$dns" | cut -d' ' -f1)"
 exec 9>/run/lock/mnebyvpn-public-route.lock
@@ -32,19 +32,30 @@ test "$(cat "$pointer")" = "$checkpoint"
 cmp -s "$checkpoint/dns.stable" "$dns"
 cmp -s "$checkpoint/nginx.stable" "$nginx"
 cmp -s "$checkpoint/proxy.stable" "$proxy"
-if ! getent group mnebydns-dot >/dev/null; then
-  # The unit explicitly names this service group. Recreate only that
-  # missing system group, preserving all existing users and routing files.
-  test "$(systemctl show --value -p Group "$service")" = mnebydns-dot
-  getent passwd mnebydns-dot >/dev/null
-  groupadd --system -- mnebydns-dot
-  echo 'MNEBYDNS_DOT_SYSTEM_GROUP_RECREATED=true'
+# Keep DynamicUser=yes, granting file read only via a restricted static group.
+reader=mnebydns-config-read
+if ! getent group "$reader" >/dev/null; then
+  groupadd --system -- "$reader"
+  echo 'MNEBYDNS_DOT_STATIC_READER_GROUP_CREATED=true'
 fi
-getent group mnebydns-dot >/dev/null
-chgrp mnebydns-dot "$dns"
+getent group "$reader" >/dev/null
+dropin_dir=/etc/systemd/system/mnebydns-dot.service.d
+dropin="$dropin_dir/90-config-reader.conf"
+install -d -m 755 "$dropin_dir"
+if test -e "$dropin"; then
+  test -f "$dropin" && test ! -L "$dropin"
+  test "$(cat "$dropin")" = "[Service]
+SupplementaryGroups=mnebydns-config-read"
+else
+  printf '[Service]\\nSupplementaryGroups=mnebydns-config-read\\n' > "$dropin"
+  chmod 0644 "$dropin"
+fi
+chgrp "$reader" "$dns"
 chmod 0640 "$dns"
-test "$(stat -c '%a:%U:%G' "$dns")" = '640:root:mnebydns-dot'
-runuser -u mnebydns-dot -g mnebydns-dot -- test -r "$dns"
+test "$(stat -c '%a:%U:%G' "$dns")" = '640:root:mnebydns-config-read'
+systemctl daemon-reload
+test "$(systemctl show --value -p DynamicUser "$service")" = yes
+systemctl show --value -p SupplementaryGroups "$service" | grep -Fxq "$reader"
 test "$before" = "$(sha256sum "$dns" | cut -d' ' -f1)"
 cmp -s "$checkpoint/dns.stable" "$dns"
 systemctl reset-failed "$service"
