@@ -291,9 +291,15 @@ def run_one(host, index):
     report("PRECHECK_STARTED",domain=host)
     try:
         origin,de,ru=preflight(host)
+    except RuntimeError as ex:
+        if str(ex).startswith("STALE_DIFFERENTIAL"):
+            fail_preflight(host,"STALE_DIFFERENTIAL")
+            return False
+        report("PRECHECK_INFRA_ERROR",domain=host,error_type=type(ex).__name__)
+        raise  # Network or SSH errors must NOT permanently reject the hostname.
     except Exception as ex:
-        fail_preflight(host,type(ex).__name__)
-        return False
+        report("PRECHECK_INFRA_ERROR",domain=host,error_type=type(ex).__name__)
+        raise
     if not owner.live_checkpoint_unchanged():
         raise RuntimeError("LIVE_CHANGED_AFTER_PRECHECK")
     ensure_quiet()
