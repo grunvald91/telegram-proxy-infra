@@ -1,5 +1,7 @@
 # MNEBYDNS P1 — readiness gate for independent failover
 
+**DEFERRED BY OWNER (2026-11-12):** P1 multi-server / independent-ingress and proxy failover is NOT the current delivery milestone. Keep DNS and proxy on the existing foreign VPS only; no other VPS, no Russian server standby, no purchased nodes, and no production switching. The criteria below are preserved for later use once the client base justifies new servers. Current active roadmap: [single-node plan](mnebydns-single-node-plan-20261112.md).
+
 **Status (2026-11-12): preparation only. No backup ingress has been verified, no live failover enabled.**
 
 ## What is already present
