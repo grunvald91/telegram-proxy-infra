@@ -109,7 +109,7 @@ jobs:
               while time.monotonic()<end:
                   try:frame=sock.recv(2048)
                   except socket.timeout:continue
-                  if len(frame)<54 or frame[12:14]!=b'\\x08\\x00':continue
+                  if len(frame)<54 or frame[12:14]!=b'\x08\x00':continue
                   ip=frame[14:]
                   n=(ip[0]&15)*4
                   if ip[0]>>4!=4 or ip[9]!=6 or n<20 or len(ip)<n+20:continue
@@ -131,7 +131,7 @@ jobs:
                   if (flags&0x10) and not(flags&0x02):stats[direction+'_ack']+=1
                   if flags&0x04:stats[direction+'_rst']+=1
                   if payload:stats[direction+'_payload']+=1
-                  if payload[:1]==b'\\x16':stats[direction+'_tls_record_start']+=1
+                  if payload[:1]==b'\x16':stats[direction+'_tls_record_start']+=1
                   if direction=='out' and (flags&0x12)==0x12 and len(windows)<20:
                       windows.append(struct.unpack_from('!H',tcp,14)[0])
           finally:sock.close()
