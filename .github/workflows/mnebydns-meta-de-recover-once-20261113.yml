@@ -113,12 +113,27 @@ jobs:
           unit_dir=/etc/systemd/system/mnebydns-dot.service.d
           install -d -m 755 "$unit_dir"
           dropin="$unit_dir/50-corefile-readers.conf"
-          if [[ -e "$dropin" ]]; then
-            grep -Fxq "SupplementaryGroups=$group" "$dropin" || { echo 'meta_recovery_existing_dropin_mismatch=true' >&2; exit 7; }
-          else
-            printf '[Service]\\nSupplementaryGroups=%s\\n' "$group" > "$dropin"
-            chmod 644 "$dropin"
+          if [[ -L "$dropin" ]]; then
+            echo meta_recovery_dropin_symlink_blocked=true >&2
+            exit 7
           fi
+          if [[ -e "$dropin" ]]; then
+            if grep -Fxq "SupplementaryGroups=$group" "$dropin"; then
+              echo meta_recovery_existing_reader_dropin=VERIFIED
+            elif grep -Fxq "[Service]\\nSupplementaryGroups=$group\\n" "$dropin"; then
+              printf '%s\n' '[Service]' "SupplementaryGroups=$group" > "$dropin"
+              echo meta_recovery_malformed_reader_dropin=REPAIRED
+            else
+              echo meta_recovery_unexpected_reader_dropin=BLOCKED >&2
+              exit 7
+            fi
+          else
+            printf '%s\n' '[Service]' "SupplementaryGroups=$group" > "$dropin"
+            echo meta_recovery_reader_dropin=CREATED
+          fi
+          chmod 644 "$dropin"
+          grep -Fxq '[Service]' "$dropin"
+          grep -Fxq "SupplementaryGroups=$group" "$dropin"
           chown "root:$group" "$dns"
           chmod 640 "$dns"
           test "$(stat -c %a "$dns")" = 640
