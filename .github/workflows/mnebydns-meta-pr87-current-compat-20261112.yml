@@ -21,18 +21,19 @@ jobs:
       - name: Checkout reviewed PR87 code, no release
         uses: actions/checkout@v4
         with:
-          ref: bbcded501941c1809baaea104236af2438436590
+          ref: 4311842f9f6b5f675e1e5cc14792f915c4f7c04b
           persist-credentials: false
       - name: Validate reviewed source and offline contracts
         shell: bash
         run: |
           set -Eeuo pipefail
-          test "$(git rev-parse HEAD)" = "bbcded501941c1809baaea104236af2438436590"
+          test "$(git rev-parse HEAD)" = "4311842f9f6b5f675e1e5cc14792f915c4f7c04b"
           python3 -m py_compile scripts/meta_v30_actions_adapter.py scripts/meta_v29_two_server_sequence.py scripts/meta_v15_receive_window.py scripts/meta_v31_sni_evidence.py
           python3 scripts/meta_v30_actions_adapter.py --mode validate
+          python3 -m unittest discover -s scripts/tests -p 'test_meta_v25_source_view.py' -q
           python3 -m unittest discover -s scripts/tests -p 'test_meta_v30_actions_adapter.py' -q
           python3 -m unittest discover -s scripts/tests -p 'test_meta_v31_runtime_evidence.py' -q
-          echo 'Reviewed SHA = bbcded501941c1809baaea104236af2438436590' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Reviewed SHA = 4311842f9f6b5f675e1e5cc14792f915c4f7c04b' >> "$GITHUB_STEP_SUMMARY"
       - name: Check current RU and DE using reviewed read-only preflight
         shell: bash
         run: |
