@@ -51,6 +51,7 @@ HEALTH={
         "meta_v26_ru_table_present=true",
         "meta_v26_ru_worker_ready=true",
         "meta_v26_ru_timer_active=true",
+        "meta_v26_ru_firewall_scoped=true",
         "meta_v26_ru_evidence_ready=true",
         "meta_v26_ru_wg_tls=PASS",
     ),
