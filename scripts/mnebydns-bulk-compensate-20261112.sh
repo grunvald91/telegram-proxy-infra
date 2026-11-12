@@ -27,8 +27,13 @@ cmp -s "$before/dns.stable" "$base/dns.before"
 cmp -s "$before/nginx.stable" "$base/nginx.before"
 cmp -s "$before/proxy.stable" /etc/mnebydns-googlepilot/nginx.conf
 nginx -t -c "$base/nginx.before" >/dev/null 2>&1
-new="/opt/mnebydns-stable-checkpoints/$(date -u +%s)"
-test ! -e "$new"
+now="$(date -u +%s)"
+new=""
+for add in 1 2 3; do
+  candidate="/opt/mnebydns-stable-checkpoints/$((now+add))"
+  if test ! -e "$candidate"; then new="$candidate"; break; fi
+done
+test -n "$new"
 mkdir -m 700 "$new"
 cp -a "$before/." "$new/"
 (cd "$new" && sha256sum -c stable-manifest.sha256 >/dev/null)
