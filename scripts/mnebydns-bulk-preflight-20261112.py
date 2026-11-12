@@ -6,6 +6,7 @@ A working HTTPS root is not proof that a full application works.
 """
 from __future__ import annotations
 import argparse
+import base64
 import collections
 import datetime as dt
 import hashlib
@@ -117,6 +118,12 @@ def self_test():
         raise AssertionError("Duplicate route did not fail closed")
     print("MNEBYDNS_BULK_PREFLIGHT_OFFLINE=PASS selected=" + str(len(selected)))
 
+def read_exact_remote(role: str, path: str) -> str:
+    # The shared SSH wrapper .strip()s stdout; base64 preserves the EXACT source
+    # bytes, including the trailing newline required by byte-for-byte rollback.
+    encoded = owner.ssh(role, "base64 -w0 " + path, 40)
+    return base64.b64decode(encoded, validate=True).decode("utf-8")
+
 def live_plan():
     names = batch.inventory()
     batch.ensure_quiet()
@@ -125,8 +132,8 @@ def live_plan():
     batch.preexisting_failure(rows, names)
     if not owner.live_checkpoint_unchanged():
         raise RuntimeError("CHECKPOINT_NOT_CLEAN")
-    core = owner.ssh("de", "cat /opt/mnebydns-dot/Corefile", 40)
-    nginx = owner.ssh("de", "cat /etc/nginx/nginx.conf", 40)
+    core = read_exact_remote("de", "/opt/mnebydns-dot/Corefile")
+    nginx = read_exact_remote("de", "/etc/nginx/nginx.conf")
     targets = [{"host": h} for h in names]
     de = scanner.via_ssh("DE", targets)
     ru = scanner.via_ssh("RU", [{"host": h, "origin_ipv4": de[h].get("origin_ipv4")}
@@ -138,8 +145,8 @@ def live_plan():
     verdicts, selected, generated_core, generated_nginx = evaluate(
         names, rows, de, ru, core, nginx)
     # Fail closed if an external job replaced the exact source files.
-    if owner.ssh("de", "cat /opt/mnebydns-dot/Corefile", 40) != core or (
-        owner.ssh("de", "cat /etc/nginx/nginx.conf", 40) != nginx):
+    if read_exact_remote("de", "/opt/mnebydns-dot/Corefile") != core or (
+        read_exact_remote("de", "/etc/nginx/nginx.conf") != nginx):
         raise RuntimeError("SHARED_SOURCE_CHANGED_DURING_DRY_RENDER")
     OUTPUT.mkdir(parents=True, exist_ok=True)
     counts = dict(collections.Counter(x["decision"] for x in verdicts))

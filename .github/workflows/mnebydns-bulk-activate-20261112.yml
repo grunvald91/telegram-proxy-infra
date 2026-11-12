@@ -1,0 +1,129 @@
+name: MNEBYDNS one-pass guarded bulk exact-host activation and verified rollback
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - ".github/workflows/mnebydns-bulk-activate-20261112.yml"
+      - "scripts/mnebydns-bulk-*20261112.*"
+      - "scripts/tests/test_mnebydns_bulk_activation.py"
+      - "data/mnebydns-batch-auto-enabled-20261112.txt"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/mnebydns-bulk-activate-20261112.yml"
+      - "data/mnebydns-bulk-deploy-trigger-20261112.txt"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Review-only live plan; no DNS changes"
+        type: choice
+        options: [plan]
+        default: plan
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('mnebydns-bulk-offline-{0}',github.ref) || 'mnebydns-google-public-443-change' }}
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate Python and bash, manifest protections, and rollback contracts
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-bulk-deploy-20261112.py scripts/mnebydns-bulk-preflight-20261112.py scripts/mnebydns-bulk-remote-verify-20261112.py
+          bash -n scripts/mnebydns-bulk-stage-20261112.sh
+          bash -n scripts/mnebydns-bulk-compensate-20261112.sh
+          python3 scripts/mnebydns-bulk-preflight-20261112.py self-test
+          python3 scripts/mnebydns-bulk-deploy-20261112.py self-test
+          python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_bulk_activation.py' -v
+          test "$(grep -c ' ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts)" -eq 2
+          test "$(cat data/mnebydns-batch-auto-enabled-20261112.txt)" = disabled
+          ! grep -Eq 'StrictHostKeyChecking=no|accept-new|verify=False|check_hostname=False|_create_unverified_context' scripts/mnebydns-bulk-deploy-20261112.py scripts/mnebydns-bulk-preflight-20261112.py
+          echo BULK_OFFLINE_SAFETY=PASS
+  deploy:
+    if: github.event_name == 'push'
+    needs: offline
+    runs-on: ubuntu-latest
+    timeout-minutes: 52
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install pinned SSH transport
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+      - name: Check reviewed opt-in before any live mutation
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(cat data/mnebydns-bulk-deploy-trigger-20261112.txt)" = "one-pass-reviewed-20261112"
+          test "$(cat data/mnebydns-batch-auto-enabled-20261112.txt)" = disabled
+      - name: Stage all current eligible routes once; verify and confirm or roll back
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/mnebydns-bulk-deploy-20261112.py deploy
+      - name: Report actual per-host outcome
+        if: always()
+        shell: bash
+        run: |
+          if [ -f bulk-108-activation-results/report.md ]; then
+            cat bulk-108-activation-results/report.md >> "$GITHUB_STEP_SUMMARY"
+          elif [ -f bulk-108-activation-results/events.jsonl ]; then
+            echo '# Bulk deploy incomplete or rolled back' >> "$GITHUB_STEP_SUMMARY"
+            tail -n 15 bulk-108-activation-results/events.jsonl >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'No verified rollout occurred' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Archive per-host outcome and fresh preflight (no production config)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mnebydns-bulk-activation-${{ github.run_id }}
+          path: |
+            bulk-108-activation-results/
+            bulk-108-preflight-results/
+          if-no-files-found: warn
+          retention-days: 30
+  plan:
+    if: github.event_name == 'workflow_dispatch'
+    needs: offline
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Pinned transport prerequisites
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+      - name: Read-only exact host plan
+        run: python3 scripts/mnebydns-bulk-preflight-20261112.py plan
+      - name: Upload preflight report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mnebydns-bulk-review-${{ github.run_id }}
+          path: bulk-108-preflight-results/
+          if-no-files-found: warn
