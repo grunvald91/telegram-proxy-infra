@@ -157,9 +157,11 @@ def select_next(names, rows):
             raise RuntimeError("RESEARCH_ROW_MISSING: "+host)
         status,product,_ = rows[host]
         if product!=PRODUCT:
-            if status=="ACTIVE":
-                continue  # Already active and owned by an earlier workflow; never touch it.
-            raise RuntimeError("NON_RESEARCH_OWNER: "+host+" "+product)
+            # The research inventory includes some legitimate domains already
+            # owned by another product's queue (e.g. cloud.oracle.com).
+            # Even their PENDING/FAILED records are not ours to modify.
+            # In-flight work is still blocked by ensure_quiet() globally.
+            continue
         if status=="PENDING":
             return host
         if status not in ("ACTIVE", "FAILED"):

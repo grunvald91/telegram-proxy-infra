@@ -46,6 +46,7 @@ def summarize(names,rows):
     failures=[]
     active=[]
     abnormal=[]
+    foreign=[]
     for host in names:
         if host not in rows:
             abnormal.append({"domain":host,"reason":"NO_DB_RECORD"})
@@ -54,17 +55,20 @@ def summarize(names,rows):
         status=entry["status"]
         counters[status]+=1
         if entry["product"]!=batch.PRODUCT:
-            if status!="ACTIVE":
-                abnormal.append({"domain":host,"reason":"FOREIGN_OWNER_NON_ACTIVE",
-                                 "status":status})
+            # Never claim another product's PENDING domain as a research task.
+            foreign.append({"domain":host,"status":status,"product":entry["product"]})
         if status=="FAILED":
             failures.append({"domain":host,"reason":entry["error"]})
         if status=="ACTIVE":
             active.append(host)
     circuit=[r for r in failures if r["reason"].startswith("BATCH_INCIDENT_")]
     busy=[h for h in names if rows.get(h,{}).get("status") in batch.BUSY]
+    eligible_pending=sum(rows.get(h,{}).get("status")=="PENDING"
+                         and rows.get(h,{}).get("product")==batch.PRODUCT
+                         for h in names)
     return {"candidate_total":len(names),"status_counts":dict(sorted(counters.items())),
-            "missing_or_abnormal":abnormal,"active":active,"failed":failures,
+            "missing_or_abnormal":abnormal,"foreign_owned_not_modified":foreign,
+            "eligible_pending":eligible_pending,"active":active,"failed":failures,
             "incident_circuit_breaker":circuit,"busy_candidates":busy}
 
 def inspect_active_routes(names,rows,core,nginx):
@@ -156,9 +160,11 @@ def inspect():
     info["active_route_checks"]=inspect_active_routes(names,rows,core,nginx)
     info["active_route_issues"]=[v for v in info["active_route_checks"]
        if v["health"] not in ("PIN_PRESENT","FOREIGN_ACTIVE_NOT_MODIFIED")]
-    info["remaining_pending"]=info["status_counts"].get("PENDING",0)
+    info["remaining_pending"]=info["eligible_pending"]
+    info["pending_including_other_owners"]=info["status_counts"].get("PENDING",0)
     info["next_pending"]=next((n for n in names if
-        rows.get(n,{}).get("status")=="PENDING"),None)
+        rows.get(n,{}).get("status")=="PENDING" and
+        rows.get(n,{}).get("product")==batch.PRODUCT),None)
     info["ready_for_next_guarded_wave"]=(
         info["baseline_clean"] and info["services_healthy"]
         and not info["active_route_issues"]
@@ -173,7 +179,8 @@ def inspect():
            "Validated current DE stable checkpoint and RU PostgreSQL database.",
            "",
            "- Total reviewed: "+str(info["candidate_total"]),
-           "- Pending: "+str(info["remaining_pending"]),
+           "- Pending under research ownership: "+str(info["remaining_pending"]),
+           "- Other product owned, excluded: "+str(len(info["foreign_owned_not_modified"])),
            "- Active: "+str(info["status_counts"].get("ACTIVE",0)),
            "- Failed: "+str(info["status_counts"].get("FAILED",0)),
            "- Next: "+str(info["next_pending"]),
