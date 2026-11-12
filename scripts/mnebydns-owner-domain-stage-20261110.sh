@@ -30,7 +30,10 @@ for pair in "dns:$dns" "nginx:$nginx" "proxy:/etc/mnebydns-googlepilot/nginx.con
   }
 done
 for service in nginx mnebydns-dot.service mnebydns-googlepilot.service xray.service; do
-  systemctl is-active --quiet "$service"
+  systemctl is-active --quiet "$service" || {
+    echo "owner_domain_preflight_service_unhealthy=$service" >&2
+    exit 3
+  }
 done
 test -s "$work/mnebydns-owner-domain-render-20261110.py"
 test -s "$work/mnebydns-owner-domain-rollback-20261110.sh"
