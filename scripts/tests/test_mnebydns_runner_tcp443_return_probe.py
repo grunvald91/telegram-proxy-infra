@@ -28,7 +28,7 @@ class ScopedFrameTests(unittest.TestCase):
                          target_port if incoming else 50001,
                          50001 if incoming else target_port)
         tcp[13] = flags
-        return b"\x00" * 12 + b"\x08\x00" + bytes(ip) + bytes(tcp)
+        return bytes(ip) + bytes(tcp)
 
     def test_matching_outgoing_syn(self):
         self.assertEqual(m.packet_event(self.frame(), self.dst), ("foreign443", "SYN", 50001))
@@ -47,10 +47,10 @@ class ScopedFrameTests(unittest.TestCase):
         self.assertIsNone(m.packet_event(b"", self.dst))
         self.assertIsNone(m.packet_event(self.frame()[:20], self.dst))
         pkt = bytearray(self.frame())
-        pkt[14 + 6:14 + 8] = b"\x00\x01"
+        pkt[6:8] = b"\x00\x01"
         self.assertIsNone(m.packet_event(bytes(pkt), self.dst))
         pkt = bytearray(self.frame())
-        pkt[12:14] = b"\x86\xdd"
+        pkt[0] = 0x60
         self.assertIsNone(m.packet_event(bytes(pkt), self.dst))
 
 
