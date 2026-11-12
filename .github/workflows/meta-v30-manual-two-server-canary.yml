@@ -16,15 +16,15 @@ on:
         type: string
         required: false
       approval:
-        description: 'For activate type CONFIRM_CURRENT_PHONE_IP_AND_15_MINUTE_TEST'
+        description: 'For activate type CONFIRM_CURRENT_PHONE_IP_AND_SNI_TEST'
         type: string
         required: false
       duration_minutes:
         description: 'Test window in minutes'
         type: choice
-        options: ['5', '15']
+        options: ['15', '30']
         required: true
-        default: '15'
+        default: '30'
 permissions:
   contents: read
 concurrency:
@@ -40,9 +40,9 @@ jobs:
       (inputs.mode == 'preflight' ||
        (inputs.mode == 'activate' &&
         inputs.phone_ip != '' &&
-        inputs.approval == 'CONFIRM_CURRENT_PHONE_IP_AND_15_MINUTE_TEST')))
+        inputs.approval == 'CONFIRM_CURRENT_PHONE_IP_AND_SNI_TEST')))
     runs-on: ubuntu-latest
-    timeout-minutes: 28
+    timeout-minutes: 45
     env:
       RELAY89_SSH_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
       SERVER188_SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
@@ -51,12 +51,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-          ref: 32768c49a0412d4d974e00d66fdb0be7cf17e1df
+          ref: 4311842f9f6b5f675e1e5cc14792f915c4f7c04b
       - name: Validate code and manual controls
         shell: bash
         run: |
           set -Eeuo pipefail
-          test "$(git rev-parse HEAD)" = '32768c49a0412d4d974e00d66fdb0be7cf17e1df'
+          test "$(git rev-parse HEAD)" = '4311842f9f6b5f675e1e5cc14792f915c4f7c04b'
           python3 -m py_compile scripts/meta_v30_actions_adapter.py scripts/meta_v29_two_server_sequence.py
           python3 scripts/meta_v30_actions_adapter.py --mode validate
           python3 -m unittest discover -s scripts/tests -p 'test_meta_v30_actions_adapter.py' -v
@@ -79,4 +79,12 @@ jobs:
             python3 -u scripts/meta_v30_actions_adapter.py --mode activate \
               --phone-ip "$SELECTED_IP" --minutes "$SELECTED_MINUTES" | tee -a "$GITHUB_STEP_SUMMARY"
           fi
-          echo 'Android login/feed and ISP SNI splitting are NOT proven by a green Actions check.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Only finalized on-wire packet evidence can prove ClientHello SNI segmentation; Android login/feed is a separate phone check.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Preserve SNI packet evidence including failed trials
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: meta-pr87-phone-sni-evidence
+          path: ${{ runner.temp }}/meta-v31-evidence/phone-sni.json
+          if-no-files-found: ignore
+          retention-days: 7
