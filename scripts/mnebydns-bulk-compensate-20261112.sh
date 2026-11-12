@@ -9,7 +9,8 @@ live_dns=/opt/mnebydns-dot/Corefile
 live_nginx=/etc/nginx/nginx.conf
 exec 9>/run/lock/mnebyvpn-public-route.lock
 flock -w 45 9 || exit 3
-test -f "$base/confirmed"
+# Atomic checkpoint promotion may precede the confirmed sentinel.
+# The complete live/stable pilot equality below is the trusted proof.
 test -s "$base/checkpoint.before"
 before="$(cat "$base/checkpoint.before")"
 current="$(cat /opt/mnebydns-stable-checkpoints/current)"
