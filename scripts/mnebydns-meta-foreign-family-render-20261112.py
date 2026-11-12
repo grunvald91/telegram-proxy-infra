@@ -118,9 +118,11 @@ def render_coredns(source: str) -> str:
     if "template IN A gemini.google.com {" not in source:
         raise ValueError("Missing live Google SmartDNS baseline")
     # Match the same CoreDNS insertion point used by the successful Google pilot.
-    marker = "    cache 30\n"
-    if source.count(marker) != 1:
-        raise ValueError("CoreDNS template structure changed")
+    # Legacy v1 used "cache 30"; resilient CoreDNS uses "cache 30 { ... }"
+    # with a reload plugin. Insert BEFORE the unchanged cache stanza in both.
+    markers = list(re.finditer(r"(?m)^    cache 30(?: \{)?\n", source))
+    if len(markers) != 1:
+        raise ValueError("CoreDNS cache stanza missing or ambiguous")
     # A prior Meta DNS overlay must be reviewed and removed by its owner first.
     if any(z in source.replace(r"\.", ".") for z in META_SUFFIXES):
         raise ValueError("Existing Meta DNS policy must not be shadowed")
@@ -134,7 +136,7 @@ def render_coredns(source: str) -> str:
         else:
             insertion += "        rcode NOERROR\n"
         insertion += "        fallthrough\n    }\n"
-    return source.replace(marker, insertion + marker, 1)
+    return source[:markers[0].start()] + insertion + source[markers[0].start():]
 
 def render(dns: str, shared: str, pilot: str) -> dict[str, str]:
     preflight()
