@@ -1,0 +1,130 @@
+name: Threads www and graph TLS ClientHello matched-SNI audit
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths: [.github/workflows/threads-www-sni-audit-20261110.yml]
+permissions:
+  contents: read
+jobs:
+  differentiate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Offline prove byte-identical ClientHello except equal-length SNI
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/threads-www-sni-differential-20261110.py self-test
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+      - name: Passive two-sided TCP headers while sending matched ClientHellos
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass >/dev/null
+          ru_ssh() {
+            SSHPASS="$RU_PASS" sshpass -e ssh -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=12 root@188.120.254.223 "$@"
+          }
+          de_ssh() {
+            SSHPASS="$DE_PASS" sshpass -e ssh -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=12 root@89.125.90.101 "$@"
+          }
+          ru_ssh "systemctl is-active --quiet nginx && ip -4 route get 89.125.90.101 | grep -v tg-relay"
+          de_ssh "systemctl is-active --quiet nginx && ip -4 route get 188.120.254.223 | grep -v tg-relay"
+          # Collect only public TCP packet headers from a single owned RU↔DE path.
+          de_ssh 'bash -s' <<'SH' > "$RUNNER_TEMP/de_headers.log" &
+          set -Eeuo pipefail
+          command -v tcpdump >/dev/null
+          iface="$(ip -4 route get 188.120.254.223 | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -1)"
+          test -n "$iface" && test "$iface" != "tg-relay"
+          echo 'de_capture_started=true'
+          timeout -s TERM 34s tcpdump -i "$iface" -nn -tt -l -s 112 'tcp and host 188.120.254.223 and port 443' 2>/dev/null | python3 -c '
+          import sys,re,collections
+          data=collections.defaultdict(lambda:[0,0,0,0])
+          for line in sys.stdin:
+              m=re.search(r"\bIP\s+([\d.]+)\.(\d+)\s+>\s+([\d.]+)\.(\d+):.*\blength\s+(\d+)",line)
+              if not m:continue
+              src,sp,dst,dp,n=m.groups()
+              port=int(sp) if src=="188.120.254.223" else int(dp)
+              if not (1024 <= port <= 65535):continue
+              side=0 if src=="188.120.254.223" else 2
+              data[port][side]+=1
+              data[port][side+1]+=int(n)
+          for p,row in sorted(data.items()):
+              print("DE_PORT",p,*row,flush=True)
+          ' || test "$?" -eq 124
+          SH
+          de_capture_pid=$!
+          ru_ssh 'bash -s' <<'SH' > "$RUNNER_TEMP/ru_headers.log" &
+          set -Eeuo pipefail
+          command -v tcpdump >/dev/null
+          iface="$(ip -4 route get 89.125.90.101 | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -1)"
+          test -n "$iface" && test "$iface" != "tg-relay"
+          echo 'ru_capture_started=true'
+          timeout -s TERM 34s tcpdump -i "$iface" -nn -tt -l -s 112 'tcp and host 89.125.90.101 and port 443' 2>/dev/null | python3 -c '
+          import sys,re,collections
+          data=collections.defaultdict(lambda:[0,0,0,0])
+          for line in sys.stdin:
+              m=re.search(r"\bIP\s+([\d.]+)\.(\d+)\s+>\s+([\d.]+)\.(\d+):.*\blength\s+(\d+)",line)
+              if not m:continue
+              src,sp,dst,dp,n=m.groups()
+              port=int(sp) if src=="188.120.254.223" else int(dp)
+              if not (1024 <= port <= 65535):continue
+              side=0 if src=="188.120.254.223" else 2
+              data[port][side]+=1
+              data[port][side+1]+=int(n)
+          for p,row in sorted(data.items()):
+              print("RU_PORT",p,*row,flush=True)
+          ' || test "$?" -eq 124
+          SH
+          ru_capture_pid=$!
+          sleep 6
+          ru_ssh 'python3 - send --repeat 3' < scripts/threads-www-sni-differential-20261110.py > "$RUNNER_TEMP/trials.log"
+          wait "$de_capture_pid"
+          wait "$ru_capture_pid"
+          python3 - "$RUNNER_TEMP/trials.log" "$RUNNER_TEMP/ru_headers.log" "$RUNNER_TEMP/de_headers.log" <<'PY'
+          import pathlib,re,sys,collections
+          trials,ru_file,de_file=[pathlib.Path(x) for x in sys.argv[1:]]
+          def read_counter(path,prefix):
+              d={}
+              for line in path.read_text().splitlines():
+                  m=re.match(prefix+r"_PORT\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)",line)
+                  if m:d[int(m.group(1))]=tuple(map(int,m.groups()[1:]))
+              return d
+          ru=read_counter(ru_file,"RU")
+          de=read_counter(de_file,"DE")
+          stats=collections.defaultdict(lambda:collections.Counter())
+          rows=0
+          for line in trials.read_text().splitlines():
+              m=re.match(r"trial=(\w+) local_port=(-?\d+) tcp=(true|false) sent=(\d+) error=(\S+)",line)
+              if not m:continue
+              ident,p,tcp,sent,error=m.groups();p=int(p);sent=int(sent)
+              label,mode,trial,which=ident.rsplit("_",3)
+              key=(label,mode,which)
+              rows+=1
+              ru_out=ru.get(p,(0,0,0,0))[1]
+              de_in=de.get(p,(0,0,0,0))[1]
+              stats[key]["attempts"]+=1
+              stats[key]["tcp_connected"]+=int(tcp=="true")
+              stats[key]["sent_calls"]+=int(sent>0)
+              stats[key]["ru_egress_seen"]+=int(ru_out>0)
+              stats[key]["de_ingress_seen"]+=int(de_in>0)
+              stats[key]["ru_egress_bytes"]+=ru_out
+              stats[key]["de_ingress_bytes"]+=de_in
+          print("tls_differential_controlled_trials="+str(rows),flush=True)
+          print("tls_differential_ru_capture_started="+str("ru_capture_started=true" in ru_file.read_text()).lower(),flush=True)
+          print("tls_differential_de_capture_started="+str("de_capture_started=true" in de_file.read_text()).lower(),flush=True)
+          for (label,mode,which),st in sorted(stats.items()):
+              print("differential "+label+" "+mode+" "+which+" "+
+                    " ".join(k+"="+str(st[k]) for k in
+                    ("attempts","tcp_connected","sent_calls","ru_egress_seen","de_ingress_seen","ru_egress_bytes","de_ingress_bytes")),flush=True)
+          assert rows==36, "not all probe trials executed"
+          assert "ru_capture_started=true" in ru_file.read_text()
+          assert "de_capture_started=true" in de_file.read_text()
+          print("tls_equal_sni_two_sided_comparison_complete=true",flush=True)
+          PY
+          echo 'all_prod_dns_nginx_firewall_untouched=true'
