@@ -29,6 +29,10 @@ owner = batch.owner
 LIVE_EXCLUSIONS = {
     "id.cisco.com": "PUBLIC_EDGE_TCP_TIMEOUT_43303272458",
     "codebrowser.dev": "INTERMITTENT_RU_TCP_TIMEOUT_43297171379",
+    # Independent bulk rollout also returned EDGE HTTPS failures, then
+    # successfully rolled back: run #43303737663.
+    "manus.im": "PUBLIC_EDGE_HTTPS_FAILED_43303737663",
+    "www.support.xerox.com": "PUBLIC_EDGE_HTTPS_FAILED_43303737663",
 }
 
 def sha(b: str) -> str:
