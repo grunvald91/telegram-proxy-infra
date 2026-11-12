@@ -33,7 +33,7 @@ batch=plan.batch
 owner=plan.owner
 renderer=plan.renderer
 
-RU_HTTPS=r'''import concurrent.futures,json,re,socket,ssl,sys
+RU_HTTPS=r'''import base64,concurrent.futures,json,re,socket,ssl,sys
 hosts=json.loads(base64.b64decode(sys.argv[1]))
 edge=sys.argv[2]
 def probe(host):
@@ -173,8 +173,6 @@ def stage_and_verify(selected, raw_summary):
              "mnebydns-bulk-compensate-20261112.sh")])
     if not owner.live_checkpoint_unchanged():
         raise RuntimeError("Checkpoint moved before guarded stage")
-    if batch.table()!=batch.table(): # any concurrent change is caught by the actual CAS
-        raise RuntimeError("Unexpected live queue change")
     stage_command="bash "+shlex.quote(work+"/mnebydns-bulk-stage-20261112.sh")+" "+shlex.quote(work)+" "+run
     out=owner.ssh("de",stage_command,180)
     if "MNEBYDNS_BULK_CANARY_LIVE="+run not in out:
@@ -251,8 +249,9 @@ def run_deploy():
     try:
         run,base,work=stage_and_verify(selected,summary)
         verify_live(selected)
-        if not all(batch.table().get(h,("","",""))[0]=="PENDING" and
-                   batch.table().get(h,("","",""))[1]==batch.PRODUCT for h,_ in selected):
+        current_rows=batch.table()
+        if not all(current_rows.get(h,("","",""))[0]=="PENDING" and
+                   current_rows.get(h,("","",""))[1]==batch.PRODUCT for h,_ in selected):
             raise RuntimeError("Bulk PENDING state changed during canary")
         output=owner.ssh("de","bash "+shlex.quote(base+"/confirm.sh")+" "+shlex.quote(base),80)
         if "owner_domain_confirmed_stable=true" not in output and (
