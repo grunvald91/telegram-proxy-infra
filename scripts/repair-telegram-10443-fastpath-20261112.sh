@@ -2,6 +2,7 @@
 # Narrow live RU repair: 10443 -> DE nginx 443 SNI -> 127.0.0.1:9470
 # Must be called only after foreign active SNI map and service preflight.
 set -Eeuo pipefail
+umask 077
 file=/etc/nginx/streams.d/02-user-fastpath.conf
 old='proxy_pass 10.66.77.1:9470;'
 new='proxy_pass 10.66.77.1:443;'
@@ -12,7 +13,10 @@ rollback() {
   status=$?
   trap - EXIT
   if [[ "$changed" == 1 && "$complete" != 1 && -f "$backup" ]]; then
-    cp -p "$backup" "$file"
+    if ! cp -p "$backup" "$file"; then
+      echo 'rollback=FAILED_CANNOT_RESTORE_BACKUP'
+      exit 70
+    fi
     if nginx -t >/dev/null 2>&1 && systemctl reload nginx; then
       echo 'rollback=restored_previous_fastpath_and_reloaded'
     else
@@ -22,6 +26,8 @@ rollback() {
   exit "$status"
 }
 trap rollback EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 test -f "$file" && test ! -L "$file"
 systemctl is-active --quiet nginx
 nginx -t >/dev/null 2>&1
@@ -50,6 +56,7 @@ mkdir -p /root/proxy-backups
 chmod 700 /root/proxy-backups
 backup="$(mktemp /root/proxy-backups/telegram-fastpath-20261112.XXXXXXXX.conf)"
 cp -p "$file" "$backup"
+chmod 600 "$backup"
 changed=1
 python3 - "$file" <<'PY'
 import os,pathlib,stat,sys,tempfile
