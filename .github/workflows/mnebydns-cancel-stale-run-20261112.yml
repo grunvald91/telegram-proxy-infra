@@ -1,0 +1,39 @@
+name: Cancel superseded stuck CoreDNS rollout #43095111990
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebydns-cancel-stale-run-20261112.yml'
+permissions:
+  contents: read
+  actions: write
+jobs:
+  cancel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Cancel only the known superseded workflow run
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          test "$GITHUB_REPOSITORY" = 'grunvald91/telegram-proxy-infra'
+          url="https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs/43095111990"
+          status="$(curl --fail-with-body --silent --show-error \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' "$url" | \
+            python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])')"
+          echo "stale_run_before=$status"
+          if [[ "$status" == queued || "$status" == in_progress || "$status" == waiting ]]; then
+            http="$(curl --silent --show-error -o "$RUNNER_TEMP/cancel.json" \
+              -w '%{http_code}' -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H 'Accept: application/vnd.github+json' "$url/cancel")"
+            echo "stale_run_cancel_http=$http"
+            test "$http" = 202
+          else
+            test "$status" = completed
+            echo 'stale_run_already_finished=true'
+          fi
+          echo 'stale_rollout_cleanup_requested=true' >> "$GITHUB_STEP_SUMMARY"
