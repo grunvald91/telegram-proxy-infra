@@ -1,0 +1,84 @@
+name: MNEBYDNS bulk 108 exact-host preparation (read-only)
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - ".github/workflows/mnebydns-108-bulk-prepare-20261112.yml"
+      - "scripts/mnebydns-108-bulk-prepare-20261112.py"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/mnebydns-108-bulk-prepare-20261112.yml"
+      - "scripts/mnebydns-108-bulk-prepare-20261112.py"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('mnebydns-bulk-108-offline-{0}', github.ref) || 'mnebydns-google-public-443-change' }}
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Inspect bulk route prep source, inventory and renderer offline
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-108-bulk-prepare-20261112.py
+          python3 scripts/mnebydns-108-bulk-prepare-20261112.py self-test
+          python3 scripts/mnebydns-owner-domain-render-20261110.py self-test
+          echo MNEBYDNS_BULK_PREP_OFFLINE=PASS
+  plan:
+    if: github.event_name != 'pull_request'
+    needs: offline
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install pinned SSH
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass >/dev/null
+      - name: Read-only LIVE queue and checkpoint audit
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/mnebydns-batch-108-live-status-20261112.py inspect
+      - name: Fresh 108-host RU vs DE scan
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/mnebydns-108-mass-readonly-20261112.py --run
+      - name: Render all eligible exact-host routes in memory (no live DNS updates)
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/mnebydns-108-bulk-prepare-20261112.py plan
+      - name: Surface readable report
+        if: always()
+        run: |
+          if [ -f bulk-108-work/report.md ]; then
+            cat bulk-108-work/report.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'No validated mass preparation plan was produced' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Archive only safe plan metadata, never full production configs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mnebydns-bulk-108-plan-${{ github.run_id }}
+          path: |
+            bulk-108-work/plan.json
+            bulk-108-work/report.md
+            mass-108-results/report.md
+            mnebydns-108-live-status/report.md
+          if-no-files-found: warn
+          retention-days: 30
