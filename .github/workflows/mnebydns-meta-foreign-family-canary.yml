@@ -1,0 +1,100 @@
+name: MNEBYDNS Meta all-family foreign 35-minute trial (guarded)
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebydns-meta-foreign-family-canary.yml'
+      - 'scripts/mnebydns-meta-foreign-family-render-20261112.py'
+      - 'scripts/mnebydns-meta-foreign-live-20261112.py'
+      - 'scripts/tests/test_mnebydns_meta_foreign_*.py'
+      - 'scripts/mnebydns-owner-domain-controller-20261110.py'
+  push:
+    branches: [main]
+    paths:
+      - 'data/mnebydns-meta-foreign-rollout-trigger-20261112.txt'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'review (offline only) or canary (owner approved 35-minute Meta test)'
+        type: choice
+        options: [review, canary]
+        default: review
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-google-public-443-change
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify pure renderer, independent rollback and preserved DNS controls
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-meta-foreign-family-render-20261112.py scripts/mnebydns-meta-foreign-live-20261112.py
+          python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_meta_foreign_*.py' -v
+          python3 scripts/mnebydns-owner-domain-controller-20261110.py self-test
+          python3 -m unittest discover -s scripts/tests -p 'test_owner_domain_*.py' -q
+          test "$(grep -c ' ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts)" -eq 2
+          ! grep -Eq 'StrictHostKeyChecking=no|accept-new|verify=False|ssl\._create_unverified_context' \
+            scripts/mnebydns-meta-foreign-live-20261112.py
+          echo 'Meta foreign preflight: OFFLINE VERIFIED; no DNS/proxy changed' >> "$GITHUB_STEP_SUMMARY"
+  trial:
+    needs: offline
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      MODE: ${{ inputs.mode }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Require independent Git release trigger or manually approved canary
+        id: approval
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          approved=no
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            if [[ "${MODE:-review}" == canary ]]; then approved=yes; fi
+          elif [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            marker=data/mnebydns-meta-foreign-rollout-trigger-20261112.txt
+            test "$(cat "$marker")" = "owner-approved-oneoff-35m-foreign-meta-20261112"
+            git cat-file -e HEAD^
+            if git diff --name-only HEAD^ HEAD -- | grep -Fxq "$marker"; then approved=yes; fi
+          fi
+          echo "approved=$approved" >> "$GITHUB_OUTPUT"
+          echo "meta_release_explicit_trigger=$approved" >> "$GITHUB_STEP_SUMMARY"
+      - name: One coordinated foreign-only trial with 35-minute persistent rollback
+        if: ${{ steps.approval.outputs.approved == 'yes' }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+          known="$PWD/ops/mnebydns-owner-ssh-known_hosts"
+          ssh_opts=(-o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519
+                    -o UserKnownHostsFile="$known" -o GlobalKnownHostsFile=/dev/null
+                    -o UpdateHostKeys=no -o ConnectTimeout=12 -o LogLevel=ERROR)
+          [[ "$GITHUB_RUN_ID" =~ ^[1-9][0-9]{8,12}$ ]]
+          work="/tmp/mnebydns-meta-foreign-$GITHUB_RUN_ID"
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh "${ssh_opts[@]}" root@89.125.90.101 "test ! -e '$work' && mkdir -m 700 '$work'"
+          for name in mnebydns-meta-foreign-family-render-20261112.py mnebydns-meta-foreign-live-20261112.py; do
+            sshpass -e scp "${ssh_opts[@]}" "scripts/$name" "root@89.125.90.101:$work/$name"
+          done
+          sshpass -e ssh "${ssh_opts[@]}" root@89.125.90.101 \
+            "MNEBY_META_ROUTE_APPROVED=EXPLICIT_OWNER_FOREIGN_META_FAMILY_CANARY python3 '$work/mnebydns-meta-foreign-live-20261112.py' deploy '$GITHUB_RUN_ID' --work '$work'" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+          echo 'Meta foreign DNS/SNI canary: success is transport-only, not app E2E' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Meta SNI fragmentation: NOT ENABLED' >> "$GITHUB_STEP_SUMMARY"
