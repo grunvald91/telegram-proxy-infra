@@ -20,6 +20,8 @@ import os
 from pathlib import Path
 import re
 import shlex
+import statistics
+import time
 
 ROOT=Path(__file__).resolve().parent.parent
 PREPARE=ROOT/"scripts/mnebydns-108-bulk-prepare-20261112.py"
@@ -130,6 +132,27 @@ def verify_dot(selected):
     if failed:raise RuntimeError("BULK_DOT_CANDIDATE_FAILURE")
     batch.capacity()
 
+def dot_latency_baseline():
+    """Bound latency regression on known-good routed services, same vantage."""
+    hosts=("gemini.google.com","claude.ai","grok.com","x.com","www.tiktok.com")
+    timings=[]
+    for _ in range(3):
+        for host in hosts:
+            start=time.perf_counter()
+            code,ips=owner.dns_q(host)
+            if code!=0 or ips!=[owner.EDGE]:
+                raise RuntimeError("BASELINE_DOT_CONTROL_FAILED_"+host)
+            timings.append((time.perf_counter()-start)*1000)
+    return round(statistics.median(timings),2)
+
+def verify_latency(before_ms):
+    after_ms=dot_latency_baseline()
+    threshold=max(300.0,before_ms*2.3)
+    event("BULK_DOT_LATENCY",before_median_ms=before_ms,
+          after_median_ms=after_ms,limit_median_ms=round(threshold,2))
+    if after_ms>threshold:
+        raise RuntimeError("BULK_DOT_LATENCY_REGRESSION")
+
 def bulk_sql(selected):
     # Inputs are ONLY fixed inventory hostnames and validated global IPv4
     # addresses. An SQL exception causes a transaction rollback (no partial
@@ -217,6 +240,10 @@ def deploy():
     if not states_are(selected,"PENDING"):
         raise RuntimeError("Research ownership changed since preparation")
     event("BEGIN",candidate_count=len(selected),excluded=len(plan["excluded"]))
+    # Capture latency before the route change, and require no material
+    # median DoT degradation after CoreDNS installs 5 templates per host.
+    initial_latency_ms=dot_latency_baseline()
+    event("BASELINE_DOT_LATENCY",median_ms=initial_latency_ms)
     staged=False
     confirmed=False
     db_committed=False
@@ -231,6 +258,7 @@ def deploy():
         staged=True
         event("STAGE_OK",rollback_expiry_utc=deadline)
         verify_dot(selected)
+        verify_latency(initial_latency_ms)
         verify_public_https(selected)
         # One more stable DNS regression before accepting a promoted checkpoint.
         owner.oracle_canary_check(selected[-1]["domain"],True)
