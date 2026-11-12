@@ -1,0 +1,88 @@
+name: MNEBYDNS owner-requested Oracle Cisco Code Browser exact-host routes
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - ".github/workflows/mnebydns-on-demand-three-20261113.yml"
+      - "scripts/mnebydns-on-demand-three-20261113.py"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/mnebydns-on-demand-three-20261113.yml"
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('mnebydns-three-offline-{0}',github.ref) || 'mnebydns-google-public-443-change' }}
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate immutable 3-domain allowlist and reviewed owner state machine
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-on-demand-three-20261113.py
+          python3 scripts/mnebydns-on-demand-three-20261113.py self-test
+          python3 scripts/mnebydns-owner-domain-render-20261110.py self-test
+          python3 scripts/mnebydns-owner-domain-controller-20261110.py self-test
+          python3 -m unittest discover -s scripts/tests -p 'test_owner_domain_*.py' -v
+          test "$(grep -c ' ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts)" -eq 2
+          ! grep -Eq 'StrictHostKeyChecking=no|accept-new|verify=False|check_hostname=False|systemctl restart|chown -R' scripts/mnebydns-on-demand-three-20261113.py
+          echo MNEBYDNS_THREE_OWNER_OFFLINE=PASS
+  deploy:
+    if: github.event_name == 'push'
+    needs: offline
+    runs-on: ubuntu-latest
+    timeout-minutes: 42
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Confirm pinned SSH transport and installed software
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+      - name: Preflight and sequential owner canaries for three exact hosts
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/mnebydns-on-demand-three-20261113.py deploy
+      - name: Verify live route state for full research inventory (read only)
+        if: success()
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/mnebydns-batch-108-live-status-20261112.py inspect
+      - name: Archive per-host outcome and rollback evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mnebydns-requested-three-${{ github.run_id }}
+          path: |
+            requested-three-results/
+            mnebydns-108-live-status/report.md
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Publish final status per requested domain
+        if: always()
+        shell: bash
+        run: |
+          if test -f requested-three-results/final-status.json; then
+            cat requested-three-results/final-status.json >> "$GITHUB_STEP_SUMMARY"
+          elif test -f requested-three-results/events.jsonl; then
+            tail -n 16 requested-three-results/events.jsonl >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'No production route was confirmed; see failed guard step.' >> "$GITHUB_STEP_SUMMARY"
+          fi
