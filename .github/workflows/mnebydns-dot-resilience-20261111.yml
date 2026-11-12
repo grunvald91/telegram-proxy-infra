@@ -23,8 +23,11 @@ on:
       - 'scripts/mnebydns-dot-resilience-rollback-20261111.sh'
 permissions:
   contents: read
+# Dedicated serialization: the shared Google/owner-route group left the
+# previous release queued without creating jobs. Server-side route lock
+# remains authoritative for coordination with independent owner deployments.
 concurrency:
-  group: mnebydns-google-public-443-change
+  group: mnebydns-core-resilience-v2-${{ github.ref }}
   cancel-in-progress: false
 jobs:
   offline:
