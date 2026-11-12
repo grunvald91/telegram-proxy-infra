@@ -78,9 +78,17 @@ class BulkContracts(unittest.TestCase):
         self.assertIn('systemctl enable --now "$name.timer"',stage)
         self.assertIn('trap abort EXIT',stage)
         self.assertIn('python3 "$work/mnebydns-bulk-remote-verify-20261112.py"',stage)
+        self.assertLess(stage.index('systemctl enable --now "$name.timer"'),
+                        stage.index('mv -f "$nginx.owner-stage-$id" "$nginx"'))
+        self.assertLess(stage.index('python3 "$work/mnebydns-bulk-remote-verify-20261112.py"'),
+                        stage.index('systemctl enable --now "$name.timer"'))
+        deploy_source=(ROOT/"scripts/mnebydns-bulk-deploy-20261112.py").read_text()
+        self.assertIn('committed or owner.is_confirmed(run)',deploy_source)
+        self.assertIn('status = status_class(selected)',deploy_source)
         compensator=(ROOT/"scripts/mnebydns-bulk-compensate-20261112.sh").read_text()
         self.assertIn('cmp -s "$base/dns.pilot" "$live_dns"',compensator)
         self.assertIn('cmp -s "$base/nginx.pilot" "$live_nginx"',compensator)
+        self.assertNotIn('test -f "$base/confirmed"',compensator)
 
 if __name__=="__main__":
     unittest.main()
