@@ -26,7 +26,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           t=data/mnebydns-meta-de-recover-once-20261113.txt
-          test "$(cat "$t")" = 'recover-after-v30-dot-refused-20261113'
+          test "$(cat "$t")" = 'recover-corefile-perms-v30-20261113'
           test "$(git diff --name-only HEAD^ HEAD --)" = "$t"
           test -n "$DE_PASS" && test -n "$RU_PASS"
           test "$(grep -c ' ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts)" -eq 2
@@ -83,6 +83,20 @@ jobs:
             echo "meta_recovery_${kind}_restored_from_stable=PASS"
           done
           cmp -s "$checkpoint/proxy.stable" "$proxy"
+          # Metadata is critical: the original Corefile is read by an
+          # unprivileged systemd service. Meta atomic writes lost these bits.
+          for kind in dns nginx; do
+            if [[ "$kind" == dns ]]; then live="$dns"; else live="$nginx"; fi
+            original="$checkpoint/$kind.stable"
+            [[ ! -L "$live" && ! -L "$original" ]]
+            cmp -s "$live" "$original"
+            echo "meta_recovery_${kind}_before_permissions=$(stat -c '%a:%u:%g' "$live")"
+            echo "meta_recovery_${kind}_reference_permissions=$(stat -c '%a:%u:%g' "$original")"
+            chown --reference="$original" "$live"
+            chmod --reference="$original" "$live"
+            test "$(stat -c '%a:%u:%g' "$live")" = "$(stat -c '%a:%u:%g' "$original")"
+          done
+          echo meta_recovery_stable_file_metadata_restored=PASS
           nginx -t >/dev/null
           if ! systemctl is-active --quiet nginx.service; then
             systemctl start nginx.service
