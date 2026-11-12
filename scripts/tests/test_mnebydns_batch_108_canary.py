@@ -24,6 +24,14 @@ class Batch108Inventory(TestCase):
     def test_git_switch_requires_explicit_value(self):
         self.assertIsInstance(batch.enabled(),bool)
 
+    def test_push_can_activate_only_when_switch_is_enabled(self):
+        self.assertTrue(batch.deploy_event_allowed("push",True))
+        self.assertFalse(batch.deploy_event_allowed("push",False))
+        self.assertTrue(batch.deploy_event_allowed("schedule",True))
+        self.assertFalse(batch.deploy_event_allowed("schedule",False))
+        self.assertTrue(batch.deploy_event_allowed("workflow_dispatch",False))
+        self.assertFalse(batch.deploy_event_allowed("pull_request",True))
+
     def test_canary_ids_are_per_hostname_and_bounded(self):
         with patch.dict(os.environ,{"GITHUB_RUN_ID":"43186450621"}):
             ids=[batch.phase_id(i) for i in range(1,6)]
