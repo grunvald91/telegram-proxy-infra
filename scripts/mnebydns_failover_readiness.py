@@ -120,14 +120,21 @@ def assess(data: object, *, max_latency_ratio: float = 1.25,
             reasons.append(f"{service}_latency_budget_unverified")
             latency_ok = False
 
-    common = (
-        independent_ingress and dns_distinct and proxy_distinct
-        and all(_passed(node, check) for node in (primary, standby) for check in CHECKS)
+    # DNS and proxy readiness are separate milestones. An independent DNS
+    # ingress may reuse the current proxy exit; that is not proxy HA.
+    dns_common = (
+        independent_ingress and dns_distinct
+        and all(_passed(node, "dot_tls") and _passed(node, "ordinary_web")
+                for node in (primary, standby))
         and all(_passed(node.get("client_vantages"), vantage)
                 for node in (primary, standby) for vantage in VANTAGES)
         and _passed(drills, "rollback")
     )
-    dns_ready = common and _passed(client, "dns_fallback_configured_and_tested") and _passed(drills, "dns_outage") and proxy_service_healthy and egress_unchanged and latency_ok
+    dns_ready = (
+        dns_common and _passed(client, "dns_fallback_configured_and_tested")
+        and _passed(drills, "dns_outage") and proxy_service_healthy
+        and egress_unchanged and latency_ok
+    )
 
     # Identical egress IP alone could mean a shared single point of failure.
     # Separate egress failure domains + proven movable/stable exit are mandatory.
@@ -144,7 +151,8 @@ def assess(data: object, *, max_latency_ratio: float = 1.25,
             "exit_continuity_drill_unverified")
 
     proxy_ready = (
-        dns_ready and independent_egress
+        dns_ready and proxy_distinct and independent_egress
+        and all(_passed(node, "proxy_tls") for node in (primary, standby))
         and _passed(drills, "proxy_outage")
         and _passed(client, "proxy_fallback_configured_and_tested")
         and _passed(drills, "stable_exit_after_proxy_outage")
