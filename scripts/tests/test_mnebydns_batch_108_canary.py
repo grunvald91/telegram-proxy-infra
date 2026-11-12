@@ -63,12 +63,14 @@ class Batch108Inventory(TestCase):
         rows["c.example.com"]=("ACTIVE",batch.PRODUCT,"")
         self.assertIsNone(batch.select_next(names,rows))
 
-    def test_other_owner_pending_causes_abort_not_overwrite(self):
-        with self.assertRaisesRegex(RuntimeError,"NON_RESEARCH_OWNER"):
-            batch.select_next(("a.example.com",),
-                 {"a.example.com":("PENDING","Custom domain","")})
-        self.assertIsNone(batch.select_next(("a.example.com",),
-                 {"a.example.com":("ACTIVE","Custom domain","")}))
+    def test_other_owner_pending_is_skipped_without_overwrite(self):
+        rows={"a.example.com":("PENDING","Custom domain",""),
+              "b.example.com":("PENDING",batch.PRODUCT,"")}
+        self.assertEqual(batch.select_next(("a.example.com","b.example.com"),rows),
+                         "b.example.com")
+        self.assertIsNone(batch.select_next(("a.example.com",),rows))
+        rows["a.example.com"]=("ACTIVE","Custom domain","")
+        self.assertIsNone(batch.select_next(("a.example.com",),rows))
 
     def test_incident_stops_future_waves(self):
         with self.assertRaisesRegex(RuntimeError,"BATCH_CIRCUIT_BREAKER"):
