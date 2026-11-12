@@ -1,6 +1,6 @@
 # MNEBYDNS reliability — P0, 12 November 2026
 
-Status: implementation proposed in isolated PR. No production routes, VPN, proxy or billing services are changed.
+Status: P0 read-only monitoring integrated into main via PR #103 and follow-up #104. This review corrects false alerts and DNS verification. No production routes, VPN, proxy or billing services were changed.
 
 ## Four customer outcomes and the safe delivery order
 
@@ -27,7 +27,7 @@ No edits to CoreDNS, nginx, Xray, WireGuard, MTProxy, firewall, OS, TLS keys, DN
 
 | Gate | Required external evidence | Status |
 |---|---|---|
-| P0-A | CI tests pass; read-only scheduled monitor runs successfully from main | UNVERIFIED until measured |
+| P0-A | CI tests pass; read-only run from main (without full client E2E) | CI and first two read-only production probes observed; client reliability NOT VERIFIED |
 | P0-B | Real Android and iPhone checks on Wi-Fi and cellular; p50/p95 baseline and no ordinary-web regression | UNVERIFIED |
 | P0-C | Correlated egress IP per service and actual traffic path, not only node direct IP | UNVERIFIED |
 | P0-D | Isolated DNS upstream vs full ingress vs proxy-outage tests; ordinary sites unaffected | UNVERIFIED |
@@ -43,3 +43,14 @@ Prepare an independent DNS ingress; prove failover from user-side networks witho
 The first merged workflow returned zero **DNS / direct-egress** regressions, but nine TLS SNI passthrough attempts timed out from the public GitHub runner. This must **not** be presented to customers as nine working services: a correct DNS answer does not establish a working TCP/443 connection. Instagram and Threads remained direct-mode DNS observations, not confirmed functional applications.
 
 The next monitor revision separately tests raw ingress TCP/443 and a control TCP/443 connection to an ordinary public site. It does not guess whether failures are caused by the exit server, access network, filtering, or origin policy. If the control host is reachable but ingress TCP is not, the GitHub Action fails as a **target-specific external path alarm**, not as proof that every phone/ISP is affected. When ingress TCP is unavailable, per-service TLS probes are skipped rather than repeatedly timing out and incorrectly marking individual applications as failed. Per-service application-level tests and independent client vantages remain required.
+
+## Review of PR #103/#104 — confirmed defects and corrections (12 November 2026)
+
+The initial monitoring logs are [first run #43162563424](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/43162563424) and [TCP-classification run #43163387426](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/43163387426).
+
+- **False red build:** PR #104 promoted a single GitHub-runner-to-foreign-node public TCP/443 timeout to a critical client-path outage. Actual customer transport can traverse another ingress/relay; this test does not establish a client outage. **Fix:** preserve external TCP warning/error class, but do not count it as confirmed customer-path failure. DNS route regressions and a confirmed change to the foreign node's direct egress IP still fail CI.
+- **False DNS PASS:** initial parser accepted an unrelated A/AAAA answer in the DNS answer section, without checking record owner or a valid CNAME chain. **Fix:** validate DNS reply opcode/truncation flags, associate A/AAAA with requested hostname or verified CNAME chain only, reject malformed/cyclic CNAME.
+- **False completeness:** DNS correct and direct node IP match could look like full product health despite every public SNI TLS test failing. **Fix:** publish explicit health_classification, client_end_to_end_verified=false, transport warnings, IPv6 bypass risk and incomplete/unknown states.
+- **Flaky observation:** public ingress used an IPv4 literal while the control hostname could prefer IPv6, and one lost SYN was reported as an outage. **Fix:** compare IPv4 to IPv4 with a bounded two-attempt TCP check. This is diagnostic only.
+
+**Remaining gate:** end-user availability, proper TCP/TLS passthrough through the actual RU/foreign data plane, geographic egress stability per application, and automatic failover are **not verified** by this workflow. No network change, restart, extra cron, or paid node.
