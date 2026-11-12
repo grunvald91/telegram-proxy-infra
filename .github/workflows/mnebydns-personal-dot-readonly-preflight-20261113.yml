@@ -162,6 +162,50 @@ jobs:
           out('NGINX_CONFIG_TEST',code==0)
           out('READONLY_NO_SERVER_MUTATIONS',True)
           PY
+      - name: Read-only RU staging feasibility, memory and disposable DB isolation
+        shell: bash
+        env:
+          RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" || { echo 'RU_SSH_SECRET_MISSING'; exit 2; }
+          export SSHPASS="$RU_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no
+            -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -' <<'PY'
+          import pathlib,os,subprocess,re
+          def run(*args):
+              try:
+                  p=subprocess.run(args,capture_output=True,text=True,timeout=5)
+                  return p.returncode,p.stdout.strip()
+              except Exception:return 255,''
+          def out(k,v):print('RU_'+k+'='+str(v),flush=True)
+          code,version=run('node','--version')
+          out('NODE_PRESENT',code==0)
+          if code==0:out('NODE_VERSION',version)
+          code,version=run('docker','version','--format','{{.Server.Version}}')
+          out('DOCKER_ENGINE',code==0)
+          if code==0:
+              out('DOCKER_VERSION',version)
+              code,lines=run('docker','ps','--format','{{.Names}}')
+              out('MNEBYVPN_RUNNING_CONTAINERS',
+                  ','.join(x for x in lines.splitlines() if x.startswith('mnebyvpn-'))[:350])
+          mem=pathlib.Path('/proc/meminfo').read_text()
+          items={k:int(v) for k,v in re.findall(r'^(MemTotal|MemAvailable):\s+(\d+)',mem,re.M)}
+          out('MEM_AVAILABLE_MIB',items.get('MemAvailable',0)//1024)
+          out('MEM_TOTAL_MIB',items.get('MemTotal',0)//1024)
+          st=os.statvfs('/')
+          out('DISK_FREE_MIB',st.f_bavail*st.f_frsize//1024//1024)
+          code,raw=run('ss','-lntH')
+          out('TCP_8853_LOCAL_IN_USE',any(line.split()[3].endswith(':8853')
+              for line in raw.splitlines() if len(line.split())>3))
+          code,raw=run('bash','-lc','test -d /opt/mnebyvpn && test -d /opt/mnebyvpn/staging')
+          out('CANARY_STAGING_PATH_PRESENT',code==0)
+          out('READONLY_NO_MUTATIONS',True)
+          PY
       - name: Summary
         if: always()
         run: |
