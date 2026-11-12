@@ -45,6 +45,8 @@ jobs:
       - name: Read-only foreign exit IP observation (failures remain unknown)
         if: github.event_name != 'pull_request'
         shell: bash
+        env:
+          RELAY_SSH_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
         run: |
           set -Eeuo pipefail
           state=unknown
