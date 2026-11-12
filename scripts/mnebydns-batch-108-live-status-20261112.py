@@ -115,16 +115,28 @@ def self_test():
 def inspect():
     names=batch.inventory()
     # SQL is static; neither DB mutators nor owner health functions are called.
+    # Restrict status parsing to exactly the 108 known research hosts:
+    # the shared DB also contains other product statuses outside this schema.
+    # Every name is already validated as lowercase DNS ASCII by inventory().
+    quoted=",".join("'"+owner._render.validate_domain(h)+"'" for h in names)
     query=("SELECT domain||'|'||status||'|'||coalesce(product,'')||'|'||"
            "coalesce(last_error_code,'')||'|'||"
-           "coalesce(verified_origin_ip::text,'') FROM dns_admin_domains ORDER BY domain")
+           "coalesce(verified_origin_ip::text,'') FROM dns_admin_domains "
+           "WHERE domain IN ("+quoted+") ORDER BY domain")
     raw=owner.sql(query)
     rows=checked_rows(raw)
     info=summarize(names,rows)
     info["auto_enabled"]=batch.enabled()
-    info["global_pending_owner_operations"]={
-        key:sum(r["status"]==key for r in rows.values()) for key in batch.BUSY
-    }
+    # Query all products separately for the global in-flight controller guard.
+    busy_query=("SELECT status||'|'||count(*) FROM dns_admin_domains WHERE status IN ("+
+                ",".join("'"+s+"'" for s in batch.BUSY)+") GROUP BY status")
+    busy_counts=dict.fromkeys(batch.BUSY,0)
+    for line in owner.sql(busy_query).splitlines():
+        parts=line.split("|")
+        if len(parts)!=2 or parts[0] not in busy_counts or not parts[1].isdigit():
+            raise RuntimeError("Unexpected global owner queue status")
+        busy_counts[parts[0]]=int(parts[1])
+    info["global_pending_owner_operations"]=busy_counts
     info["baseline_clean"]=owner.live_checkpoint_unchanged()
     if not info["baseline_clean"]:
         raise RuntimeError("DE stable checkpoint drift or read-only verification failed")
