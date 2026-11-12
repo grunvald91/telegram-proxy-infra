@@ -106,3 +106,63 @@ jobs:
           }
           audit_host RU 188.120.254.223 "$RU_PASS"
           audit_host DE 89.125.90.101 "$DE_PASS"
+
+      - name: Correlate proxy 9470 binding route and recent log categories read only
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass >/dev/null
+          inspect() {
+            local role="$1" host="$2" pwd="$3"
+            export SSHPASS="$pwd"
+            sshpass -e ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR "root@$host" "python3 - $role" <<'PY'
+          import subprocess, re, sys, collections, datetime
+          role=sys.argv[1]
+          def run(args,timeout=8):
+              try: return subprocess.run(args,capture_output=True,text=True,timeout=timeout).stdout
+              except Exception:return ''
+          ss=run(['ss','-lntH'])
+          for port in (443,9443,9470):
+              addresses=[]
+              for line in ss.splitlines():
+                  cols=line.split()
+                  if len(cols)>3 and cols[3].endswith(':'+str(port)): addresses.append(cols[3])
+              print(role+' BIND_'+str(port)+'='+','.join(sorted(addresses))[:250],flush=True)
+          active=run(['nginx','-T'],10)
+          for needle in ('10.66.77.1:9470','10.66.77.1:443','127.0.0.1:9470'):
+              print(role+' NGINX_EXACT_REFERENCES_'+needle+'='+str(active.count(needle)),flush=True)
+          print(role+' NGINX_9470_LINE_COUNT='+str(sum('9470' in x for x in active.splitlines())),flush=True)
+          patterns={
+              'timeout':r'timed? out|timeout',
+              'refused':r'connection refused|refused',
+              'reset':r'connection reset|reset by peer',
+              'closed':r'closed|eof',
+              'broken_pipe':r'broken pipe',
+              'upstream':r'upstream|gateway|middle.?proxy',
+              'tls':r'tls|handshake|certificate',
+              'dns':r'lookup|resolve|dns',
+              'auth':r'auth|secret|invalid key',
+              'rate_limit':r'flood.wait|rate.limit|too.many',
+              'resource':r'out.of.memory|too.many.open.files|no.space|oom|resource temporarily unavailable',
+              'error_level':r'(?i)\b(error|warn|fatal|panic)\b'
+          }
+          units=['telemt','telemt-yandex','telemt-gosuslugi','telegram-redsocks'] if role=='RU' else ['telemt-direct-sber','telemt-bandbook@edge','mtproxy','mtproxy-ru','xray','mtg']
+          for unit in units:
+              lines=run(['journalctl','-u',unit+'.service','--since','-45 minutes','-n','3000','--no-pager','-o','cat']).splitlines()
+              print(role+' LOG_'+unit+'_lines='+str(len(lines)),flush=True)
+              for name,pattern in patterns.items():
+                  count=sum(bool(re.search(pattern,line,re.I)) for line in lines)
+                  if count:print(role+' LOG_'+unit+'_'+name+'='+str(count),flush=True)
+              if lines:
+                  minute_bins=collections.Counter()
+                  stamps=run(['journalctl','-u',unit+'.service','--since','-45 minutes','-n','3000','--no-pager','-o','short-iso']).splitlines()
+                  for line in stamps:
+                      m=re.match(r'^\d{4}-\d\d-\d\dT(\d\d):(\d\d)',line)
+                      if m and re.search('error|warn|fail|timeout',line,re.I):
+                          minute_bins[m.group(1)+':'+str((int(m.group(2))//10)*10).zfill(2)]+=1
+                  if minute_bins:print(role+' LOG_'+unit+'_10min_error_buckets='+','.join(k+':'+str(v) for k,v in sorted(minute_bins.items())),flush=True)
+          print(role+' detailed_readonly_done=true',flush=True)
+          PY
+          }
+          inspect RU 188.120.254.223 "$RU_PASS"
+          inspect DE 89.125.90.101 "$DE_PASS"
