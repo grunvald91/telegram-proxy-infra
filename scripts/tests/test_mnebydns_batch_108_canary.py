@@ -176,7 +176,7 @@ class Batch108Transactions(TestCase):
                             for x in report.call_args_list))
         confirmed.assert_called_once()
 
-    def test_incorrect_ru_public_http_causes_rollback_and_incident(self):
+    def test_incorrect_ru_public_http_skips_only_candidate_after_safe_rollback(self):
         domain="a.example.com"
         with patch.object(batch,"ensure_quiet"),patch.object(batch,"capacity"), \
              patch.object(batch,"set_phase",return_value="431864506211"), \
@@ -193,13 +193,12 @@ class Batch108Transactions(TestCase):
              patch.object(batch.owner,"oracle_canary_check") as oracle, \
              patch.object(batch,"report"):
             batch.owner.RUNID="431864506211"
-            with self.assertRaisesRegex(RuntimeError,"PUBLIC_EDGE_HTTPS_NOT_SUCCESSFUL"):
-                batch.run_one(domain,1)
+            self.assertFalse(batch.run_one(domain,1))
         rollback.assert_called_once_with("431864506211")
         oracle.assert_called_once_with(domain,False)
         confirm.assert_not_called()
         self.assertEqual(sql.call_count,1)
-        self.assertIn("last_error_code='BATCH_INCIDENT_CANARY_ABORT'",db.call_args.args[0])
+        self.assertIn("last_error_code='BATCH_CANDIDATE_HTTPS_FAILED'",db.call_args.args[0])
 
     def test_transient_preflight_does_not_mark_domain_failed(self):
         with patch.object(batch,"ensure_quiet"),patch.object(batch,"capacity"), \
@@ -218,6 +217,27 @@ class Batch108Transactions(TestCase):
             self.assertFalse(batch.run_one("a.example.com",1))
         cas.assert_called_once_with("a.example.com","PENDING","FAILED",
                                     "last_error_code='BATCH_PREFLIGHT_UNVERIFIED'")
+
+    def test_system_regression_still_fails_closed_and_sets_incident_marker(self):
+        domain="a.example.com"
+        with patch.object(batch,"ensure_quiet"),patch.object(batch,"capacity"), \
+             patch.object(batch,"set_phase",return_value="431864506211"), \
+             patch.object(batch,"preflight",return_value=("93.184.215.14",200,403)), \
+             patch.object(batch.owner,"live_checkpoint_unchanged",return_value=True), \
+             patch.object(batch,"cas"), \
+             patch.object(batch,"select_own_task",return_value={"domain":domain,"status":"APPLY_REQUESTED"}), \
+             patch.object(batch.owner,"apply"), \
+             patch.object(batch,"status_of",side_effect=["CANARY","CANARY","CANARY"]), \
+             patch.object(batch,"db",side_effect=["93.184.215.14/32",domain]) as db, \
+             patch.object(batch,"http_probe",side_effect=[200,403,200]), \
+             patch.object(batch.owner,"oracle_canary_check",side_effect=[RuntimeError("stable dot broken"),None]), \
+             patch.object(batch.owner,"rollback_or_unchanged") as rollback, \
+             patch.object(batch,"report"):
+            batch.owner.RUNID="431864506211"
+            with self.assertRaisesRegex(RuntimeError,"stable dot broken"):
+                batch.run_one(domain,1)
+        rollback.assert_called_once_with("431864506211")
+        self.assertIn("last_error_code='BATCH_INCIDENT_CANARY_ABORT'",db.call_args.args[0])
 
     def test_uncertain_confirm_state_cannot_be_called_rolled_back(self):
         with patch.object(batch,"status_of",return_value="CONFIRMING"), \

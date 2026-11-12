@@ -36,6 +36,9 @@ PRODUCT = "Research 2026-11"
 BUSY = ("APPLY_REQUESTED", "PROBING", "CANARY", "CONFIRM_REQUESTED",
         "CONFIRMING", "ROLLBACK_REQUESTED", "REMOVAL_PENDING", "REMOVING")
 MAX_PER_RUN = 5
+
+class CandidateRouteRejected(RuntimeError):
+    """The chosen site is unavailable through this exact-host HTTPS path."""
 MIN_RAM_KB = 160000
 MIN_DISK_KB = 250000
 HOSTNAME = re.compile(r"^[a-z0-9.-]{4,253}$")
@@ -254,7 +257,7 @@ def fail_preflight(host,reason):
     report("PRECHECK_SKIP",domain=host,reason=reason[:160])
     cas(host,"PENDING","FAILED","last_error_code='BATCH_PREFLIGHT_UNVERIFIED'")
 
-def recover_failed_canary(host,run):
+def recover_failed_canary(host,run,candidate_only=False):
     state=status_of(host)
     # If promotion succeeded, a timer must NOT restore an older checkpoint.
     # Stop the automation for manual review rather than claim rollback.
@@ -267,8 +270,10 @@ def recover_failed_canary(host,run):
             raise RuntimeError("BATCH_INCIDENT_ROLLBACK_BASELINE_INVALID")
         owner.oracle_canary_check(host,False)
         host=owner._render.validate_domain(host)
+        reason=("BATCH_CANDIDATE_HTTPS_FAILED" if candidate_only
+                else "BATCH_INCIDENT_CANARY_ABORT")
         done=db("UPDATE dns_admin_domains SET status='FAILED',"
-           "last_error_code='BATCH_INCIDENT_CANARY_ABORT',"
+           "last_error_code='"+reason+"',"
            "canary_expires_at=NULL,updated_at=now() "
            "WHERE domain='"+host+"' AND product='"+PRODUCT+
            "' AND status IN ('CANARY','PROBING','APPLY_REQUESTED') RETURNING domain")
@@ -318,15 +323,18 @@ def run_one(host, index):
         pinned_de=http_probe("de",host,pinned)
         pinned_ru=http_probe("ru",host,pinned)
         if not (200<=pinned_de<400 and pinned_ru in (403,451)):
-            raise RuntimeError("PINNED_ORIGIN_ACCESS_DIFFERENCE_NOT_VERIFIED")
+            raise CandidateRouteRejected("PINNED_ORIGIN_ACCESS_DIFFERENCE_NOT_VERIFIED")
         if pinned!=origin:
             report("CDN_ORIGIN_ROTATED_REVALIDATED",domain=host,
                    initially_checked=origin,actually_pinned=pinned,
                    foreign_http=pinned_de,russian_http=pinned_ru)
         # Real public RU->DE SNI route, not foreign localhost; strict TLS CA.
-        through_edge=http_probe("ru",host,owner.EDGE)
+        try:
+            through_edge=http_probe("ru",host,owner.EDGE)
+        except RuntimeError as exc:
+            raise CandidateRouteRejected("PUBLIC_EDGE_HTTPS_TLS_OR_TCP_REJECTED") from exc
         if not 200<=through_edge<400:
-            raise RuntimeError("PUBLIC_EDGE_HTTPS_NOT_SUCCESSFUL status="+str(through_edge))
+            raise CandidateRouteRejected("PUBLIC_EDGE_HTTPS_NOT_SUCCESSFUL status="+str(through_edge))
         # Native tests include all five stable DoT products and excluded
         # Instagram / Telegram records; now check a second time.
         owner.oracle_canary_check(host,True)
@@ -336,8 +344,14 @@ def run_one(host, index):
         owner.confirm(select_own_task(host,"CONFIRM_REQUESTED"))
         if status_of(host)!="ACTIVE" or not owner.live_checkpoint_unchanged():
             raise RuntimeError("CONFIRMED_ROUTE_NOT_STABLE")
-        report("ACTIVE",domain=host,origin_ipv4=origin,ru_through_de_http=through_edge)
+        report("ACTIVE",domain=host,origin_ipv4=pinned,ru_through_de_http=through_edge)
         return True
+    except CandidateRouteRejected as ex:
+        report("CANDIDATE_UNROUTABLE",domain=host,reason=str(ex),state=status_of(host))
+        # No other candidate is penalized if the independent rollback and
+        # stable DoT validation succeed. A failed rollback still raises.
+        recover_failed_canary(host,owner.RUNID,candidate_only=True)
+        return False
     except Exception as ex:
         report("CANARY_ERROR",domain=host,error_type=type(ex).__name__,state=status_of(host))
         recover_failed_canary(host,owner.RUNID)
