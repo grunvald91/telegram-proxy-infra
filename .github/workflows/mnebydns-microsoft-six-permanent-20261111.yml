@@ -6,12 +6,23 @@ on:
     paths:
       - '.github/workflows/mnebydns-microsoft-six-permanent-20261111.yml'
       - 'scripts/mnebydns-microsoft-six-permanent-20261111.py'
+      - 'scripts/tests/test_mnebydns_microsoft_six_review.py'
   push:
     branches: [main]
     paths:
       - '.github/workflows/mnebydns-microsoft-six-permanent-20261111.yml'
       - 'scripts/mnebydns-microsoft-six-permanent-20261111.py'
+      - 'scripts/tests/test_mnebydns_microsoft_six_review.py'
+      # Only an independently reviewed trigger, not a code-review fix,
+      # may authorize a repeat permanent deployment of these six routes.
+      - 'data/mnebydns-microsoft-six-rollout-trigger-20261112.txt'
   workflow_dispatch:
+    inputs:
+      mode:
+        description: 'review: tests only; deploy: explicit guarded six-route retry'
+        type: choice
+        options: [review, deploy]
+        default: review
 permissions:
   contents: read
 concurrency:
@@ -31,6 +42,7 @@ jobs:
           set -Eeuo pipefail
           python3 -m py_compile scripts/mnebydns-microsoft-six-permanent-20261111.py
           python3 scripts/mnebydns-microsoft-six-permanent-20261111.py self-test
+          python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_microsoft_six_review.py' -v
           python3 scripts/mnebydns-owner-domain-controller-20261110.py self-test
           python3 scripts/mnebydns-owner-domain-render-20261110.py self-test
           python3 -m unittest discover -s scripts/tests -p 'test_owner_domain_*.py' -v
@@ -42,7 +54,11 @@ jobs:
             scripts/mnebydns-microsoft-six-permanent-20261111.py
           echo microsoft_six_offline_preflight=PASS
   release:
-    if: github.event_name != 'pull_request'
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.mode == 'deploy') ||
+      (github.event_name == 'push' &&
+       (contains(github.event.head_commit.added, 'data/mnebydns-microsoft-six-rollout-trigger-20261112.txt') ||
+        contains(github.event.head_commit.modified, 'data/mnebydns-microsoft-six-rollout-trigger-20261112.txt')))
     needs: offline
     runs-on: ubuntu-latest
     timeout-minutes: 29
