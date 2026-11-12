@@ -23,7 +23,7 @@ for pair in "dns:$dns" "nginx:$nginx" "proxy:$proxy"; do
 done
 test "$(systemctl show --value -p User "$service")" = mnebydns-dot
 test "$(systemctl show --value -p Group "$service")" = mnebydns-dot
-getent group mnebydns-dot >/dev/null
+getent passwd mnebydns-dot >/dev/null
 test "$(stat -c '%u' "$dns")" = 0
 before="$(sha256sum "$dns" | cut -d' ' -f1)"
 exec 9>/run/lock/mnebyvpn-public-route.lock
@@ -32,10 +32,19 @@ test "$(cat "$pointer")" = "$checkpoint"
 cmp -s "$checkpoint/dns.stable" "$dns"
 cmp -s "$checkpoint/nginx.stable" "$nginx"
 cmp -s "$checkpoint/proxy.stable" "$proxy"
+if ! getent group mnebydns-dot >/dev/null; then
+  # The unit explicitly names this service group. Recreate only that
+  # missing system group, preserving all existing users and routing files.
+  test "$(systemctl show --value -p Group "$service")" = mnebydns-dot
+  getent passwd mnebydns-dot >/dev/null
+  groupadd --system -- mnebydns-dot
+  echo 'MNEBYDNS_DOT_SYSTEM_GROUP_RECREATED=true'
+fi
+getent group mnebydns-dot >/dev/null
 chgrp mnebydns-dot "$dns"
 chmod 0640 "$dns"
 test "$(stat -c '%a:%U:%G' "$dns")" = '640:root:mnebydns-dot'
-runuser -u mnebydns-dot -- test -r "$dns"
+runuser -u mnebydns-dot -g mnebydns-dot -- test -r "$dns"
 test "$before" = "$(sha256sum "$dns" | cut -d' ' -f1)"
 cmp -s "$checkpoint/dns.stable" "$dns"
 systemctl reset-failed "$service"
