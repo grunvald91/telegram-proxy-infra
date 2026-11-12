@@ -1,4 +1,4 @@
-name: MNEBYDNS Instagram live SNI trial telemetry (read-only)
+name: MNEBYDNS Instagram TCP/SNI diagnostic (no false-green live result)
 on:
   push:
     branches: [main]
@@ -37,7 +37,7 @@ jobs:
           opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519
             -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
             -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
-          sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -' <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -' <<'PY' | tee "$RUNNER_TEMP/ru-live-evidence.txt" | tee -a "$GITHUB_STEP_SUMMARY"
           import datetime,json,pathlib,subprocess,time
           def command(*args,timeout=6):
               try:
@@ -104,7 +104,7 @@ jobs:
           opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519
             -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
             -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
-          sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -' <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -' <<'PY' | tee "$RUNNER_TEMP/phone-packets.txt" | tee -a "$GITHUB_STEP_SUMMARY"
           import collections,pathlib,socket,struct,time
           root=pathlib.Path('/var/lib/mneby-meta-v26-ru')
           pf=root/'peer'
@@ -183,4 +183,51 @@ jobs:
           print('de_scoped_client_dns_view_present='+str('view mneby_meta_phone' in core).lower())
           print('de_instagram_a_template_count='+str(core.count('template IN A i.instagram.com {')))
           print('de_google_template_still_present='+str('template IN A gemini.google.com {' in core).lower())
+          PY
+      - name: Gate active-trial verdict: zero confirmed SNI is not a successful test
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import json,os,sys
+          root=Path(os.environ["RUNNER_TEMP"])
+          def read(name):
+              path=root/name
+              if not path.is_file():
+                  raise RuntimeError("missing required telemetry: "+name)
+              items={}
+              for line in path.read_text().splitlines():
+                  key,sep,value=line.partition("=")
+                  if sep:items[key]=value
+              return items
+          ru=read("ru-live-evidence.txt")
+          packets=read("phone-packets.txt")
+          active=ru.get("ru_trial_nft_active")=="true" and ru.get("ru_test_listener_18443")=="true"
+          if not active:
+              print("SNI_DIAGNOSTIC=NO_ACTIVE_TRIAL; no segmentation result claimed")
+              print("::notice title=No live SNI trial::Read-only diagnostics succeeded; SNI was not tested.")
+              raise SystemExit(0)
+          incoming=int(packets.get("phone_packet_in_syn","0"))
+          outgoing=int(packets.get("phone_packet_out_synack","0"))
+          split=int(ru.get("ru_evidence_stat_sni_split","0"))
+          hello=int(ru.get("ru_evidence_stat_target_clienthello","0"))
+          verdict=json.loads(ru.get("ru_evidence_verdict",'null'))
+          final=json.loads(ru.get("ru_evidence_final",'false'))
+          print("SNI_DIAGNOSTIC_SYN="+str(incoming))
+          print("SNI_DIAGNOSTIC_SYNACK="+str(outgoing))
+          print("SNI_DIAGNOSTIC_TARGET_CLIENTHELLO="+str(hello))
+          print("SNI_DIAGNOSTIC_CONFIRMED_SPLITS="+str(split))
+          print("SNI_DIAGNOSTIC_FINAL="+str(final))
+          if incoming>0 and outgoing==0:
+              print("::error title=TCP handshake not completed::Phone SYN reached RU, but no SYN-ACK left RU during capture; SNI cannot yet be evaluated.")
+              raise SystemExit(1)
+          if split==0 or hello==0:
+              print("::error title=No confirmed SNI segmentation::A live experiment cannot pass with zero packet-confirmed SNI splits.")
+              raise SystemExit(1)
+          if not final or verdict!="SNI_SEGMENTATION_OBSERVED":
+              print("::error title=SNI not finally verified::Preliminary packet counts are not a final SNI success verdict.")
+              raise SystemExit(1)
+          print("SNI_DIAGNOSTIC=FINAL_PACKET_SEGMENTATION_CONFIRMED")
+          print("ANDROID_INSTAGRAM_E2E=NOT_TESTED_BY_TELEMETRY")
           PY
