@@ -26,7 +26,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           t=data/mnebydns-meta-de-recover-once-20261113.txt
-          test "$(cat "$t")" = 'recover-corefile-perms-v30-20261113'
+          test "$(cat "$t")" = 'recover-corefile-dedicated-group-v30-20261113'
           test "$(git diff --name-only HEAD^ HEAD --)" = "$t"
           test -n "$DE_PASS" && test -n "$RU_PASS"
           test "$(grep -c ' ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts)" -eq 2
@@ -97,6 +97,30 @@ jobs:
             test "$(stat -c '%a:%u:%g' "$live")" = "$(stat -c '%a:%u:%g' "$original")"
           done
           echo meta_recovery_stable_file_metadata_restored=PASS
+          # Keep DynamicUser isolation while letting CoreDNS read just the
+          # configuration, not the TLS private-key credentials.
+          test "$(systemctl show -P User mnebydns-dot.service)" = 'mnebydns-dot'
+          test "$(systemctl show -P DynamicUser mnebydns-dot.service)" = 'yes'
+          group=mnebydns-corefile-readers
+          if ! getent group "$group" >/dev/null; then
+            groupadd --system "$group"
+          fi
+          unit_dir=/etc/systemd/system/mnebydns-dot.service.d
+          install -d -m 755 "$unit_dir"
+          dropin="$unit_dir/50-corefile-readers.conf"
+          if [[ -e "$dropin" ]]; then
+            grep -Fxq "SupplementaryGroups=$group" "$dropin"
+          else
+            printf '[Service]\\nSupplementaryGroups=%s\\n' "$group" > "$dropin"
+            chmod 644 "$dropin"
+          fi
+          chown "root:$group" "$dns"
+          chmod 640 "$dns"
+          test "$(stat -c %a "$dns")" = 640
+          test "$(stat -c %G "$dns")" = "$group"
+          systemctl daemon-reload
+          test "$(systemctl show -P SupplementaryGroups mnebydns-dot.service)" = "$group"
+          echo meta_recovery_corefile_service_reader_group=PASS
           nginx -t >/dev/null
           if ! systemctl is-active --quiet nginx.service; then
             systemctl start nginx.service
