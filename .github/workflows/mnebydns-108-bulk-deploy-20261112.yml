@@ -49,6 +49,50 @@ jobs:
           test "$(grep -c ' ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts)" -eq 2
           test "$(cat data/mnebydns-bulk-108-mode-20261112.txt)" = plan || test "$(cat data/mnebydns-bulk-108-mode-20261112.txt)" = deploy-once-20261112
           echo MNEBYDNS_BULK_OFFLINE_TESTS=PASS
+      - name: Exercise atomic 99-host-style SQL CAS on disposable PostgreSQL
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          docker run -d --rm --name mnebydns-bulk-pg -e POSTGRES_PASSWORD=localtest -p 127.0.0.1:54329:5432 postgres:16-alpine >/dev/null
+          trap 'docker rm -f mnebydns-bulk-pg >/dev/null 2>&1 || true' EXIT
+          for attempt in $(seq 1 60); do
+            if docker exec mnebydns-bulk-pg pg_isready -U postgres -q; then break; fi
+            sleep .5
+          done
+          docker exec mnebydns-bulk-pg psql -Xq -v ON_ERROR_STOP=1 -U postgres <<'SQL'
+          CREATE TABLE dns_admin_domains (
+            domain text PRIMARY KEY, product text NOT NULL,
+            status text NOT NULL, revision bigint NOT NULL DEFAULT 1,
+            updated_at timestamptz, applied_at timestamptz,
+            confirmed_at timestamptz, verified_origin_ip inet,
+            last_error_code text, canary_run_id bigint,
+            canary_expires_at timestamptz
+          );
+          INSERT INTO dns_admin_domains(domain,product,status) VALUES
+            ('alpha.example.com','Research 2026-11','PENDING'),
+            ('beta.example.com','Research 2026-11','PENDING'),
+            ('oracle.example.com','Oracle','PENDING');
+          SQL
+          python3 - <<'PY' > /tmp/mnebydns-bulk-cas.sql
+          import importlib.util
+          p='scripts/mnebydns-108-bulk-deploy-20261112.py'
+          spec=importlib.util.spec_from_file_location('bulk',p)
+          module=importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          print(module.bulk_sql([
+            {'domain':'alpha.example.com','ip':'93.184.215.14'},
+            {'domain':'beta.example.com','ip':'104.18.0.1'}
+          ]))
+          PY
+          docker exec -i mnebydns-bulk-pg psql -Xq -v ON_ERROR_STOP=1 -U postgres < /tmp/mnebydns-bulk-cas.sql
+          result="$(docker exec mnebydns-bulk-pg psql -XqAt -v ON_ERROR_STOP=1 -U postgres -c "SELECT status||':'||count(*) FROM dns_admin_domains GROUP BY status ORDER BY status")"
+          grep -qx 'ACTIVE:2' <<< "$result"
+          grep -qx 'PENDING:1' <<< "$result"
+          if docker exec -i mnebydns-bulk-pg psql -Xq -v ON_ERROR_STOP=1 -U postgres < /tmp/mnebydns-bulk-cas.sql >/dev/null 2>&1; then
+            echo 'Second compare-and-swap unexpectedly succeeded' >&2
+            exit 1
+          fi
+          echo MNEBYDNS_BULK_ATOMIC_DB_CAS_TEST=PASS
   guarded:
     if: github.event_name != 'pull_request'
     needs: offline
