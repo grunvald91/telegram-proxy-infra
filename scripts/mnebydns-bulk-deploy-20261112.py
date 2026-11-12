@@ -280,25 +280,32 @@ def run_deploy():
     except Exception as exc:
         emit("BULK_ABORT",error_class=type(exc).__name__,reason=str(exc)[:400],
              confirmed_checkpoint=committed)
-        if run and not committed:
-            owner.rollback_or_unchanged(run)
-            if not owner.live_checkpoint_unchanged():
-                raise RuntimeError("CRITICAL_BULK_ROLLBACK_UNVERIFIED") from exc
-            emit("ROLLBACK_VERIFIED",count=len(selected))
-        elif run and committed:
-            # On a failed transaction with ALL_PENDING, revert the committed
-            # checkpoint to its original bytes and promote a new stable snapshot.
-            # Unknown/mixed DB state is a stop-the-world incident, NOT a revert.
-            state=status_class(selected)
-            if state=="ALL_PENDING":
-                command="bash "+shlex.quote(work+"/mnebydns-bulk-compensate-20261112.sh")+" "+shlex.quote(base)
-                out=owner.ssh("de",command,120)
-                if "MNEBYDNS_BULK_COMPENSATING_REVERT_VERIFIED=true" not in out or (
-                   not owner.live_checkpoint_unchanged()):
-                    raise RuntimeError("CRITICAL_BULK_COMPENSATION_UNVERIFIED") from exc
-                emit("COMPENSATION_VERIFIED",count=len(selected))
+        if run:
+            # The existing owner controller may promote the checkpoint before
+            # writing its confirmed sentinel or returning SSH output. Never
+            # describe that crash window as an ordinary verified rollback.
+            actually_confirmed = committed or owner.is_confirmed(run)
+            if actually_confirmed:
+                # An all-or-none SQL failure leaves all rows PENDING; compensate
+                # the committed checkpoint explicitly. Unknown/mixed states
+                # must not be overwritten automatically.
+                state = status_class(selected)
+                if state == "ALL_PENDING":
+                    command = ("bash " +
+                        shlex.quote(work+"/mnebydns-bulk-compensate-20261112.sh") +
+                        " " + shlex.quote(base))
+                    out = owner.ssh("de",command,120)
+                    if "MNEBYDNS_BULK_COMPENSATING_REVERT_VERIFIED=true" not in out or (
+                       not owner.live_checkpoint_unchanged()):
+                        raise RuntimeError("CRITICAL_BULK_COMPENSATION_UNVERIFIED") from exc
+                    emit("COMPENSATION_VERIFIED",count=len(selected))
+                else:
+                    emit("INCIDENT_MANUAL_RECONCILIATION",db_state=state)
             else:
-                emit("INCIDENT_MANUAL_RECONCILIATION",db_state=state)
+                owner.rollback_or_unchanged(run)
+                if not owner.live_checkpoint_unchanged():
+                    raise RuntimeError("CRITICAL_BULK_ROLLBACK_UNVERIFIED") from exc
+                emit("ROLLBACK_VERIFIED",count=len(selected))
         raise
 
 def offline_test():
