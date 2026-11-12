@@ -21,7 +21,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           p=data/mnebydns-dot-diagnose-oneoff-20261113.txt
-          test "$(cat "$p")" = 'diagnose-dot-inactive-after-v30-20261113'
+          test "$(cat "$p")" = 'diagnose-corefile-acl-owner-v30-20261113'
           test "$(git diff --name-only HEAD^ HEAD --)" = "$p"
           test -n "$DE_PASS"
       - name: Read DE CoreDNS service state and short journal only
@@ -41,6 +41,18 @@ jobs:
           set -u
           echo dns_service_state_begin
           systemctl show mnebydns-dot.service -p ActiveState -p SubState -p Result -p MainPID -p ExecMainCode -p ExecMainStatus -p NRestarts -p StartLimitBurst -p StartLimitIntervalUSec --no-pager
+          echo dns_service_identity_begin
+          systemctl show mnebydns-dot.service -p User -p Group -p DynamicUser -p SupplementaryGroups -p RootDirectory -p ProtectSystem --no-pager
+          echo dns_file_permission_chain_begin
+          namei -l /opt/mnebydns-dot/Corefile || true
+          stat -c 'LIVE_PERMS=%a:%u:%g' /opt/mnebydns-dot/Corefile
+          checkpoint="$(cat /opt/mnebydns-stable-checkpoints/current)"
+          stat -c 'STABLE_PERMS=%a:%u:%g' "$checkpoint/dns.stable"
+          if command -v getfacl >/dev/null; then
+            getfacl -cp /opt/mnebydns-dot/Corefile || true
+            echo stable_acl_begin
+            getfacl -cp "$checkpoint/dns.stable" || true
+          fi
           echo dns_listener_begin
           ss -H -lnt 'sport = :853' || true
           echo dns_service_recent_journal_begin
