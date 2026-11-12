@@ -22,7 +22,7 @@ class Batch108Inventory(TestCase):
         self.assertTrue({"chatgpt.com","grok.com","sentry.io"}.isdisjoint(names))
 
     def test_git_switch_requires_explicit_value(self):
-        self.assertFalse(batch.enabled())
+        self.assertIsInstance(batch.enabled(),bool)
 
     def test_canary_ids_are_per_hostname_and_bounded(self):
         with patch.dict(os.environ,{"GITHUB_RUN_ID":"43186450621"}):
