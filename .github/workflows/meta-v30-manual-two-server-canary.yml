@@ -10,15 +10,17 @@ on:
         type: choice
         options: [preflight, activate]
         required: true
-        default: preflight
+        default: activate
       phone_ip:
-        description: 'Current public IPv4 as seen from test Android (required for activation)'
+        description: 'Check current public IPv4 at 2ip.ru on test phone; replace previously observed address if different'
         type: string
-        required: false
+        required: true
+        default: '185.137.178.123'
       approval:
-        description: 'For activate type CONFIRM_CURRENT_PHONE_IP_AND_SNI_TEST'
+        description: 'Manual 30-minute SNI trial approval; start only with current verified phone IP'
         type: string
-        required: false
+        required: true
+        default: 'CONFIRM_CURRENT_PHONE_IP_AND_SNI_TEST'
       duration_minutes:
         description: 'Test window in minutes'
         type: choice
