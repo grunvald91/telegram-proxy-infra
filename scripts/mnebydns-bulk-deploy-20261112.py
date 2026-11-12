@@ -47,9 +47,9 @@ def probe(host):
    with ctx.wrap_socket(tcp,server_hostname=host) as tls:
     if not tls.getpeercert():raise RuntimeError("NO_CERT")
     stage="HTTP"
-    tls.sendall(("GET / HTTP/1.1\\r\\nHost: "+host+"\\r\\nUser-Agent: MNEBYDNS-ReadOnly-Research/1.0\\r\\nAccept: */*\\r\\nConnection: close\\r\\n\\r\\n").encode())
+    tls.sendall(("GET / HTTP/1.1\r\nHost: "+host+"\r\nUser-Agent: MNEBYDNS-ReadOnly-Research/1.0\r\nAccept: */*\r\nConnection: close\r\n\r\n").encode())
     data=tls.recv(1024)
-    m=re.match(rb"HTTP/1\\.[01] ([1-5][0-9]{2})",data)
+    m=re.match(rb"HTTP/1\.[01] ([1-5][0-9]{2})",data)
     if not m:raise RuntimeError("HTTP_STATUS_INVALID")
     return {"host":host,"status":int(m.group(1)),"error":None}
  except Exception as exc:
