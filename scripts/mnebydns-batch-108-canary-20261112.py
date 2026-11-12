@@ -361,7 +361,15 @@ def main():
     next_host=select_next(names,rows)
     report("PLAN",candidate_count=len(names),remaining=sum(
         rows.get(n,("", "", ""))[0]=="PENDING" for n in names),next=next_host)
-    if args.mode=="plan" or not next_host:
+    if args.mode=="plan":
+        # Real readiness gate even in dry run: must observe actual server state
+        # without writing a DNS route, touching a DB row, or changing canary.
+        ensure_quiet()
+        capacity()
+        report("READONLY_READINESS_OK",next=next_host)
+        return
+    if not next_host:
+        report("QUEUE_COMPLETE")
         return
     ensure_quiet()
     capacity()
