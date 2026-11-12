@@ -1,0 +1,76 @@
+name: MNEBYDNS one-off CDN pin rotation recovery and guarded first retry
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - ".github/workflows/mnebydns-batch-cdn-oneoff-recover-20261112.yml"
+      - "scripts/mnebydns-batch-108-canary-20261112.py"
+      - "scripts/mnebydns-batch-oneoff-cdn-rollback-recovery-20261112.py"
+      - "scripts/tests/test_mnebydns_batch_108_canary.py"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/mnebydns-batch-cdn-oneoff-recover-20261112.yml"
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('mnebydns-cdn-recover-offline-{0}', github.ref) || 'mnebydns-google-public-443-change' }}
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Test actual pinned IPv4 revalidation and strict single-row repair syntax
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-batch-108-canary-20261112.py scripts/mnebydns-batch-oneoff-cdn-rollback-recovery-20261112.py
+          python3 scripts/mnebydns-batch-108-canary-20261112.py self-test
+          python3 scripts/mnebydns-batch-oneoff-cdn-rollback-recovery-20261112.py self-test
+          python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_batch_108_canary.py' -v
+          python3 scripts/mnebydns-owner-domain-render-20261110.py self-test
+          python3 scripts/mnebydns-owner-domain-controller-20261110.py self-test
+          echo CDN_ROTATION_FIX_OFFLINE=PASS
+  recover_and_retry:
+    if: github.event_name == 'push'
+    needs: offline
+    runs-on: ubuntu-latest
+    timeout-minutes: 22
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install pinned authenticated transport prerequisites
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+      - name: Assert failed canary absent from live checkpoint and release exact blocked row
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/mnebydns-batch-oneoff-cdn-rollback-recovery-20261112.py recover
+      - name: Re-test selected candidate with actual pinned IP from both regions
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(cat data/mnebydns-batch-auto-enabled-20261112.txt)" = enabled
+          python3 scripts/mnebydns-batch-108-canary-20261112.py deploy --max 1
+      - name: Publish domain-by-domain evidence even if retry fails
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mnebydns-cdn-revalidated-first-canary-${{ github.run_id }}
+          path: batch-108-results/
+          if-no-files-found: warn
+          retention-days: 30
