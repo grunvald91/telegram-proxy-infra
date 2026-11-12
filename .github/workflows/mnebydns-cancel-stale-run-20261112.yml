@@ -31,7 +31,18 @@ jobs:
               -H "Authorization: Bearer $GH_TOKEN" \
               -H 'Accept: application/vnd.github+json' "$url/cancel")"
             echo "stale_run_cancel_http=$http"
-            test "$http" = 202
+            if [[ "$http" == 409 ]]; then
+              # GitHub can reject normal cancellation of a queued run with
+              # no jobs. Its separate force-cancel endpoint is explicit.
+              forced="$(curl --silent --show-error \
+                -o "$RUNNER_TEMP/force-cancel.json" -w '%{http_code}' \
+                -X POST -H "Authorization: Bearer $GH_TOKEN" \
+                -H 'Accept: application/vnd.github+json' "$url/force-cancel")"
+              echo "stale_run_force_cancel_http=$forced"
+              test "$forced" = 202
+            else
+              test "$http" = 202
+            fi
           else
             test "$status" = completed
             echo 'stale_run_already_finished=true'
