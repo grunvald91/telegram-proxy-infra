@@ -184,7 +184,7 @@ jobs:
           print('de_instagram_a_template_count='+str(core.count('template IN A i.instagram.com {')))
           print('de_google_template_still_present='+str('template IN A gemini.google.com {' in core).lower())
           PY
-      - name: Gate active-trial verdict: zero confirmed SNI is not a successful test
+      - name: "Gate active-trial verdict: zero confirmed SNI is not a successful test"
         shell: bash
         run: |
           set -Eeuo pipefail
