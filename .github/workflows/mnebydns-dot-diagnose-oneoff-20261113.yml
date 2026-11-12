@@ -1,0 +1,66 @@
+name: Emergency read-only CoreDNS service diagnostics after Meta v30
+on:
+  push:
+    branches: [fix/meta-routing-quic-sni-validation]
+    paths: ['data/mnebydns-dot-diagnose-oneoff-20261113.txt']
+permissions:
+  contents: read
+jobs:
+  de:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Require exact one-off read-only diagnostic marker
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          p=data/mnebydns-dot-diagnose-oneoff-20261113.txt
+          test "$(cat "$p")" = 'diagnose-dot-inactive-after-v30-20261113'
+          test "$(git diff --name-only HEAD^ HEAD --)" = "$p"
+          test -n "$DE_PASS"
+      - name: Read DE CoreDNS service state and short journal only
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if ! command -v sshpass >/dev/null; then
+            sudo apt-get update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+          fi
+          export SSHPASS="$DE_PASS"
+          opts=(-o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519
+                -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+                -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no
+                -o ConnectTimeout=12 -o LogLevel=ERROR)
+          sshpass -e ssh -T "${opts[@]}" root@89.125.90.101 'bash -s' <<'SERVER'
+          set -u
+          echo dns_service_state_begin
+          systemctl show mnebydns-dot.service -p ActiveState -p SubState -p Result -p MainPID -p ExecMainCode -p ExecMainStatus -p NRestarts -p StartLimitBurst -p StartLimitIntervalUSec --no-pager
+          echo dns_listener_begin
+          ss -H -lnt 'sport = :853' || true
+          echo dns_service_recent_journal_begin
+          journalctl -u mnebydns-dot.service --since '2026-11-12 21:08:00 UTC' --no-pager -n 55 -o short-iso | cut -c 1-280 || true
+          echo dns_config_checkpoint_comparison_begin
+          cpdir="$(cat /opt/mnebydns-stable-checkpoints/current)"
+          if (cd "$cpdir" && sha256sum -c stable-manifest.sha256 >/dev/null); then echo stable_manifest=PASS; else echo stable_manifest=FAIL; fi
+          for kind in dns nginx proxy; do
+            case "$kind" in
+              dns) path=/opt/mnebydns-dot/Corefile;;
+              nginx) path=/etc/nginx/nginx.conf;;
+              proxy) path=/etc/mnebydns-googlepilot/nginx.conf;;
+            esac
+            if cmp -s "$path" "$cpdir/$kind.stable"; then echo "live_${kind}_equals_stable=true"; else echo "live_${kind}_equals_stable=false"; fi
+          done
+          echo meta_stage_state_begin
+          test -d /var/lib/mneby-meta-v26-de && echo meta_stage_exists=true || echo meta_stage_exists=false
+          for path in dns.restore-pending nginx.restore-pending armed cleanup-started; do
+            test ! -e "/var/lib/mneby-meta-v26-de/$path" || echo "meta_marker_${path}=present"
+          done
+          systemctl list-timers --all --no-pager | grep -E 'mneby-meta-v26-de|mneby-meta-v26-ru' | cut -c 1-220 || true
+          echo dns_diagnostic_finished_no_changes=true
+          SERVER
