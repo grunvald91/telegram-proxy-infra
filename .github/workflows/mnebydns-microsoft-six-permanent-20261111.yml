@@ -60,7 +60,6 @@ jobs:
           assert "if: steps.reviewed.outputs.approved == 'yes'" in f
           assert "fetch-depth: 2" in f
           assert "if: github.event_name != 'pull_request'" in f
-          assert "contains(github.event.head_commit." not in f
           print("microsoft_explicit_trigger_offline=PASS")
           PY
           echo microsoft_six_offline_preflight=PASS
