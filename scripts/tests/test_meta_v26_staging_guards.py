@@ -312,12 +312,12 @@ class StagingRollbackTests(unittest.TestCase):
                 actions.append(tuple(argv))
                 if argv[:3]==["nft","delete","table"]:nft["on"]=False
                 if argv[:2]==["systemctl","show"]:
-                    return SimpleNamespace(returncode=0,stdout="MainPID=0\\nActiveState=inactive\\n")
+                    return SimpleNamespace(returncode=0,stdout="MainPID=0\nActiveState=inactive\n")
                 return SimpleNamespace(returncode=0,stdout="")
             def remove(peer):
                 actions.append(("remove",peer))
                 if fail["on"]:raise RuntimeError("simulated UFW delete failure")
-            with patch.object(ru,"ROOT",root),patch.object(ru,"table_exists",side_effect=lambda:nft["on"]),\\
+            with patch.object(ru,"ROOT",root),patch.object(ru,"table_exists",side_effect=lambda:nft["on"]),\
                  patch.object(ru,"cmd",side_effect=command),patch.object(ru,"firewall_remove",side_effect=remove):
                 with self.assertRaisesRegex(RuntimeError,"firewall_remove"):
                     ru._rollback_locked()
