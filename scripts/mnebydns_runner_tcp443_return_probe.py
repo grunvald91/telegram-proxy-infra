@@ -18,11 +18,11 @@ CONTROL = "example.org"
 
 def packet_event(frame: bytes, destinations: dict[bytes, str]):
     """Return (label, SYN|SYNACK|RST, source_port) for scoped IPv4 traffic."""
-    if len(frame) < 54:
+    # AF_PACKET/SOCK_DGRAM returns the IPv4 packet *without* an Ethernet
+    # header, even when the host interface uses a virtual link layer.
+    if len(frame) < 40:
         return None
-    if frame[12:14] != b"\x08\x00":
-        return None
-    ip = frame[14:]
+    ip = frame
     if ip[0] >> 4 != 4 or ip[9] != 6:
         return None
     hlen = (ip[0] & 0x0F) * 4
@@ -64,13 +64,14 @@ def observe() -> None:
         raise RuntimeError("control and target endpoint must differ")
 
     # Linux AF_PACKET, no BPF installation, no promiscuous mode, no packet files.
-    with socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x0800)) as sniffer:
+    with socket.socket(socket.AF_PACKET, socket.SOCK_DGRAM, socket.htons(0x0800)) as sniffer:
         sniffer.settimeout(0.25)
         observed: dict[str, dict[str, set[int]]] = {
             name: {"SYN": set(), "SYNACK": set(), "RST": set()}
             for name in destinations.values()
         }
         results: list[tuple[str, str]] = []
+        captured_ipv4_frames = 0
         completed = threading.Event()
 
         def client() -> None:
@@ -91,6 +92,8 @@ def observe() -> None:
                 raw = sniffer.recv(65535)
             except socket.timeout:
                 raw = b""
+            if raw:
+                captured_ipv4_frames += 1
             event = packet_event(raw, destinations) if raw else None
             if event:
                 name, kind, sport = event
@@ -105,6 +108,7 @@ def observe() -> None:
         if th.is_alive() or not completed.is_set():
             raise TimeoutError("local probe thread did not complete")
 
+    print(f"packet_socket_ipv4_frames={captured_ipv4_frames}", flush=True)
     for name in ("control443", "foreign443"):
         syn = observed[name]["SYN"]
         ack = observed[name]["SYNACK"] & syn
@@ -123,6 +127,13 @@ def observe() -> None:
         print(f"{name}_inbound_synack_flows={len(ack)}", flush=True)
         print(f"{name}_inbound_rst_flows={len(rst)}", flush=True)
         print(f"{name}_classification={classification}", flush=True)
+    # Without an observed SYN to a working control endpoint, this sniffer
+    # cannot distinguish real path loss from a broken capture implementation.
+    if not observed["control443"]["SYN"] or not any(
+        label == "control443" and result == "connected" for label, result in results
+    ):
+        raise RuntimeError("inconclusive_probe_control_not_captured")
+    print("control_capture_validated=true", flush=True)
     print("vantage=github_runner_only", flush=True)
     print("no_remote_server_access_or_changes=true", flush=True)
     print("packet_payload_ip_and_ports_not_logged=true", flush=True)
