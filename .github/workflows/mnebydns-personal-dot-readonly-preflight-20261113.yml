@@ -122,6 +122,42 @@ jobs:
           out('NODE_VERSION',ver if code==0 else 'NOT_INSTALLED')
           code,ver=call('psql','--version')
           out('PSQL_CLIENT_PRESENT',code==0)
+          code,ver=call('docker','version','--format','{{.Server.Version}}')
+          out('DOCKER_ENGINE_PRESENT',code==0)
+          if code==0:out('DOCKER_ENGINE_VERSION',ver)
+          mem=pathlib.Path('/proc/meminfo').read_text()
+          import re
+          items={k:int(v) for k,v in re.findall(r'^(MemTotal|MemAvailable):\s+(\d+)',mem,re.M)}
+          out('MEMORY_AVAILABLE_MIB',items.get('MemAvailable',0)//1024)
+          out('MEMORY_TOTAL_MIB',items.get('MemTotal',0)//1024)
+          st=os.statvfs('/')
+          out('DISK_FREE_MIB',st.f_bavail*st.f_frsize//1024//1024)
+          code,raw=call('ss','-lnuH')
+          out('UDP_53_LISTENER_PRESENT',any(':53 ' in (' '+line+' ') or
+             line.split()[4].endswith(':53') for line in raw.splitlines() if len(line.split())>4))
+          # Does locally reachable DoT:853 accept a normal verified TLS
+          # handshake for its current public name? No DNS query sent.
+          import ssl
+          try:
+              with socket.create_connection(('127.0.0.1',853),timeout=3) as raw:
+                  with ssl.create_default_context().wrap_socket(raw,server_hostname='dns.mnebyvpn.site') as tls:
+                      out('LOCAL_DOT_853_TLS_VALID',True)
+                      out('LOCAL_DOT_853_TLS_VERSION',tls.version())
+          except Exception as exc:
+              out('LOCAL_DOT_853_TLS_VALID',False)
+              out('LOCAL_DOT_853_TLS_FAILURE',type(exc).__name__)
+          for candidate,host,port in (
+              ('ORIGIN_TCP53','127.0.0.1',53),
+              ('ORIGIN_TCP5353','127.0.0.1',5353),
+              ('CLOUDFLARE_DOT','1.1.1.1',853)):
+              try:
+                  with socket.create_connection((host,port),timeout=3) as sock:
+                      if candidate=='CLOUDFLARE_DOT':
+                          with ssl.create_default_context().wrap_socket(sock,server_hostname='one.one.one.one') as tls:
+                              out(candidate+'_REACHABLE',True)
+                      else:out(candidate+'_REACHABLE',True)
+              except Exception as exc:
+                  out(candidate+'_REACHABLE',False)
           code,ver=call('nginx','-t')
           out('NGINX_CONFIG_TEST',code==0)
           out('READONLY_NO_SERVER_MUTATIONS',True)
