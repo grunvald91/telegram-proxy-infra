@@ -1,0 +1,61 @@
+name: MNEBYDNS Meta current server read-only diagnostic
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebydns-meta-current-readonly-20261112.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-meta-readonly-diagnostic
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Read-only foreign VPS Meta/Google TCP UDP DNS state
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+          known="$PWD/ops/mnebydns-owner-ssh-known_hosts"
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o UserKnownHostsFile="$known" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o ConnectTimeout=12 -o LogLevel=ERROR root@89.125.90.101 'bash -se' <<'REMOTE'
+          set -u
+          echo "diagnostic_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          for unit in nginx.service mnebydns-dot.service mnebydns-googlepilot.service; do
+            echo "service_${unit}=$(systemctl is-active "$unit" 2>/dev/null || echo unknown)"
+          done
+          echo "tcp443_listener_count=$(ss -H -ltn '( sport = :443 )' | wc -l)"
+          echo "udp443_listener_count=$(ss -H -lun '( sport = :443 )' | wc -l)"
+          if test -f /opt/mnebydns-meta-foreign/43260403812/pending; then echo meta_canary_pending=true; else echo meta_canary_pending=false; fi
+          if test -f /opt/mnebydns-meta-foreign/43260403812/restored; then echo meta_canary_restored=true; else echo meta_canary_restored=false; fi
+          systemctl list-timers --all --no-legend 2>/dev/null | grep 'mnebydns-meta-foreign-rollback-43260403812' | sed 's/^/meta_rollback_timer=/' || true
+          python3 - <<'PY'
+          import importlib.util
+          path='/opt/mnebydns-meta-foreign/43260403812/live.py'
+          spec=importlib.util.spec_from_file_location('meta_live_readonly',path)
+          if not spec or not spec.loader:
+              print('meta_live_module=missing');raise SystemExit(0)
+          mod=importlib.util.module_from_spec(spec);spec.loader.exec_module(mod)
+          for host in ('www.instagram.com','i.instagram.com','graph.instagram.com','scontent.cdninstagram.com','www.youtube.com','gemini.google.com','claude.ai'):
+              try:
+                  rcode,ips,count=mod.dns_query(host,1,server='89.125.90.101',port=853)
+                  print(f'dot_a host={host} rcode={rcode} answers={ips} count={count}',flush=True)
+              except Exception as e: print(f'dot_a host={host} error={type(e).__name__}: {str(e)[:110]}',flush=True)
+              try:
+                  mod.local_tls(host)
+                  print(f'tcp_tls_local host={host} valid_certificate=true',flush=True)
+              except Exception as e: print(f'tcp_tls_local host={host} error={type(e).__name__}: {str(e)[:110]}',flush=True)
+          PY
+          REMOTE
+          echo 'READ_ONLY: no server configuration or packet rules changed' >> "$GITHUB_STEP_SUMMARY"
