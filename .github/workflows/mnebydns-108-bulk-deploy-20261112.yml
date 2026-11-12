@@ -1,0 +1,137 @@
+name: MNEBYDNS one-time guarded 108 research bulk deployment
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - ".github/workflows/mnebydns-108-bulk-deploy-20261112.yml"
+      - "scripts/mnebydns-108-bulk-*.sh"
+      - "scripts/mnebydns-108-bulk-deploy-20261112.py"
+      - "data/mnebydns-bulk-108-mode-20261112.txt"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/mnebydns-108-bulk-deploy-20261112.yml"
+      - "scripts/mnebydns-108-bulk-*.sh"
+      - "scripts/mnebydns-108-bulk-deploy-20261112.py"
+      - "data/mnebydns-bulk-108-mode-20261112.txt"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "plan (read-only) or deploy (single guarded 60min rollback)"
+        type: choice
+        options: [plan, deploy]
+        default: plan
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('mnebydns-bulk-deploy-offline-{0}',github.ref) || 'mnebydns-google-public-443-change' }}
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Syntax, rollback, exact-host and atomic database smoke tests
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-108-bulk-prepare-20261112.py scripts/mnebydns-108-bulk-deploy-20261112.py
+          python3 scripts/mnebydns-108-bulk-prepare-20261112.py self-test
+          python3 scripts/mnebydns-108-bulk-deploy-20261112.py self-test
+          bash -n scripts/mnebydns-108-bulk-stage-20261112.sh
+          bash -n scripts/mnebydns-108-bulk-compensate-20261112.sh
+          python3 scripts/mnebydns-owner-domain-render-20261110.py self-test
+          python3 scripts/mnebydns-batch-108-canary-20261112.py self-test
+          test "$(grep -c ' ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts)" -eq 2
+          test "$(cat data/mnebydns-bulk-108-mode-20261112.txt)" = plan || test "$(cat data/mnebydns-bulk-108-mode-20261112.txt)" = deploy-once-20261112
+          echo MNEBYDNS_BULK_OFFLINE_TESTS=PASS
+  guarded:
+    if: github.event_name != 'pull_request'
+    needs: offline
+    runs-on: ubuntu-latest
+    timeout-minutes: 42
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      DISPATCH_MODE: ${{ github.event.inputs.mode }}
+      HEAD_COMMIT_TITLE: ${{ github.event.head_commit.message }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Resolve explicit one-time rollout gate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mode=plan
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && "${DISPATCH_MODE:-plan}" == deploy ]]; then
+            mode=deploy
+          elif [[ "$GITHUB_EVENT_NAME" == push &&
+                  "$HEAD_COMMIT_TITLE" == "deploy(MNEBYDNS): one-time 108 exact-host bulk" &&
+                  "$(cat data/mnebydns-bulk-108-mode-20261112.txt)" == deploy-once-20261112 ]]; then
+            mode=deploy
+          fi
+          [[ "$mode" =~ ^(plan|deploy)$ ]]
+          echo "BULK_MODE=$mode" >> "$GITHUB_ENV"
+          echo "MNEBYDNS_BULK_MODE=$mode"
+      - name: Verify authorized pinned SSH credentials and dependencies
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+      - name: LIVE preflight existing DoT and route checkpoint
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/mnebydns-batch-108-live-status-20261112.py inspect
+      - name: Fresh strict RU and DE 108 exact-host HTTP scan
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/mnebydns-108-mass-readonly-20261112.py --run
+      - name: Build complete additive DNS and Nginx pilot in memory
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/mnebydns-108-bulk-prepare-20261112.py plan
+      - name: Guarded staged mass apply and per-host verification, only on signed one-time gate
+        if: env.BULK_MODE == 'deploy'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/mnebydns-108-bulk-deploy-20261112.py deploy
+      - name: Confirm current live status after successful bulk apply
+        if: env.BULK_MODE == 'deploy' && success()
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/mnebydns-batch-108-live-status-20261112.py inspect
+      - name: Preserve exact audit result
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## MNEBYDNS one-time bulk routing"
+            echo "Mode: ${BULK_MODE:-unresolved}"
+            if [ -f bulk-108-work/report.md ]; then cat bulk-108-work/report.md; fi
+            if [ -f bulk-108-work/deploy-events.jsonl ]; then tail -n 40 bulk-108-work/deploy-events.jsonl; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload non-secret per-host plan and deployment statuses
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mnebydns-bulk-108-result-${{ github.run_id }}
+          path: |
+            bulk-108-work/plan.json
+            bulk-108-work/report.md
+            bulk-108-work/deploy-events.jsonl
+            mass-108-results/report.md
+            mnebydns-108-live-status/report.md
+          if-no-files-found: warn
+          retention-days: 30
