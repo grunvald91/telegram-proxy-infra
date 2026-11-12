@@ -89,7 +89,7 @@ def check_approval(phone_ip,approved,event):
     peer=checked_phone_ip(phone_ip)
     owner_oneoff=(event=="push" and
                   os.environ.get("MNEBY_META_V30_ONEOFF_RELEASE")==
-                      "run-15m-all-clients-sni-20261113")
+                      "run-15m-all-clients-sni-20261113-retry1")
     if approved!=APPROVAL or not (event=="workflow_dispatch" or owner_oneoff):
         raise PermissionError("manual dispatch or explicit Git-controlled one-off required")
     return peer

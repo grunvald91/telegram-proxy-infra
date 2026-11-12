@@ -19,7 +19,8 @@ class AdapterTests(unittest.TestCase):
                                ("push",m.APPROVAL),
                                ("workflow_dispatch",""),
                                ("workflow_dispatch","YES")):
-            with self.subTest(event=event,approval=approval):
+            with self.subTest(event=event,approval=approval), \
+                 patch.dict(os.environ,{"MNEBY_META_V30_ONEOFF_RELEASE":""}):
                 with self.assertRaises(PermissionError):
                     m.check_approval(peer,approval,event)
         for ip in ("0.0.0.0","10.0.0.1","127.0.0.1","::1",m.DE,m.RU):
@@ -28,11 +29,12 @@ class AdapterTests(unittest.TestCase):
 
     def test_manual_all_mode_is_supported_by_adapter(self):
         self.assertEqual(m.check_approval("all",m.APPROVAL,"workflow_dispatch"),"all")
-        with self.assertRaises(PermissionError):
-            m.check_approval("all",m.APPROVAL,"push")
+        with patch.dict(os.environ,{"MNEBY_META_V30_ONEOFF_RELEASE":""}):
+            with self.assertRaises(PermissionError):
+                m.check_approval("all",m.APPROVAL,"push")
 
     def test_reviewed_oneoff_push_requires_trusted_release_marker(self):
-        token={"MNEBY_META_V30_ONEOFF_RELEASE":"run-15m-all-clients-sni-20261113"}
+        token={"MNEBY_META_V30_ONEOFF_RELEASE":"run-15m-all-clients-sni-20261113-retry1"}
         with patch.dict(os.environ,token):
             self.assertEqual(m.check_approval("all",m.APPROVAL,"push"),"all")
             with self.assertRaises(PermissionError):
