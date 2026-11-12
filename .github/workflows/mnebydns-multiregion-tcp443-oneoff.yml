@@ -1,0 +1,61 @@
+name: MNEBYDNS one-off multi-region TCP/443 observation
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebydns-multiregion-tcp443-oneoff.yml'
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - name: Compare public 443 and 853 from independent Check-Host nodes
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, time, urllib.parse, urllib.request
+          checks = [('foreign_443', '89.125.90.101:443'),
+                    ('foreign_853', '89.125.90.101:853'),
+                    ('control_443', 'example.org:443')]
+          headers = {'Accept':'application/json', 'User-Agent':'MNEBYDNS-readonly-multiregion/1.0'}
+          def fetch(url):
+              req=urllib.request.Request(url,headers=headers)
+              with urllib.request.urlopen(req,timeout=15) as r:
+                  return json.load(r)
+          requests={}
+          for name,host in checks:
+              url='https://check-host.net/check-tcp?'+urllib.parse.urlencode({'host':host,'max_nodes':10})
+              try:
+                  info=fetch(url)
+                  if not info.get('ok') or not info.get('request_id'):
+                      print('START_ERROR',name,str(info)[:200],flush=True); continue
+                  requests[name]=info
+                  print('START',name,'nodes',len(info.get('nodes',{})),'report',info.get('permanent_link'),flush=True)
+              except Exception as e:
+                  print('START_ERROR',name,type(e).__name__,str(e)[:140],flush=True)
+          for attempt in range(5):
+              time.sleep(4)
+              for name, info in requests.items():
+                  try:
+                      results=fetch('https://check-host.net/check-result/'+urllib.parse.quote(str(info['request_id']),safe=''))
+                      if attempt < 4 and any(results.get(n) is None for n in info.get('nodes',{})):
+                          continue
+                      successes=0; failures=0; pending=0
+                      print('RESULT',name,'attempt',attempt+1,flush=True)
+                      for node,location in sorted(info.get('nodes',{}).items()):
+                          v=results.get(node)
+                          country=location[1] if len(location)>1 else '?'
+                          city=location[2] if len(location)>2 else '?'
+                          if v is None: status='pending'; pending+=1
+                          elif isinstance(v,list) and any(isinstance(x,dict) and 'time' in x for x in v): status='TCP_CONNECTED'; successes+=1
+                          elif isinstance(v,list): status='TCP_FAILED:'+str(v)[:130]; failures+=1
+                          else: status='UNKNOWN:'+str(v)[:130]
+                          print('NODE',name,country,city,node,status,flush=True)
+                      print('TOTAL',name,'success',successes,'failed',failures,'pending',pending,flush=True)
+                  except Exception as e:
+                      print('RESULT_ERROR',name,type(e).__name__,str(e)[:140],flush=True)
+              if attempt==4: break
+          print('NO_SSH_NO_SERVER_CHANGES=true',flush=True)
+          PY
