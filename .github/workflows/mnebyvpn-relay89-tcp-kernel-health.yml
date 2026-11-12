@@ -1,18 +1,47 @@
 name: MNEBYVPN diagnose foreign TLS SYN backlog and TCP kernel
 on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebyvpn-relay89-tcp-kernel-health.yml'
+      - 'scripts/mnebyvpn_foreign_tcp443_probe.py'
+      - 'scripts/tests/test_mnebyvpn_foreign_tcp443_probe.py'
   push:
-    paths: ['.github/workflows/mnebyvpn-relay89-tcp-kernel-health.yml']
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebyvpn-relay89-tcp-kernel-health.yml'
+      - 'scripts/mnebyvpn_foreign_tcp443_probe.py'
+      - 'scripts/tests/test_mnebyvpn_foreign_tcp443_probe.py'
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: mnebyvpn-foreign-tcp443-syn-readonly
+  cancel-in-progress: false
 jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify read-only packet parser without a real network
+        run: |
+          python3 -m unittest discover -s scripts/tests -p 'test_mnebyvpn_foreign_tcp443_probe.py' -v
+          python3 -m py_compile scripts/mnebyvpn_foreign_tcp443_probe.py
   test:
+    if: github.event_name != 'pull_request'
+    needs: offline
     runs-on: ubuntu-latest
     timeout-minutes: 7
     env:
       TARGET: '89.125.90.101'
       PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Measure kernel listen failures during external 443 probe
         shell: bash
         run: |
@@ -75,3 +104,55 @@ jobs:
           PY
           wait "$pid"
           cat "$RUNNER_TEMP/status.txt"
+
+      - name: Correlate one external TCP/443 test with remote SYN and SYN-ACK headers
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$PASSWORD"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          SRC="$(curl --noproxy '*' -fsS -4 --connect-timeout 4 --max-time 8 https://api.ipify.org)"
+          python3 - "$SRC" <<'PY'
+          import ipaddress,sys
+          ipaddress.IPv4Address(sys.argv[1])
+          PY
+          export SSHPASS="$PASSWORD"
+          opts=(-o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=1
+                -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519
+                -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+                -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          # Read-only AF_PACKET socket is bounded to 19s on one test runner source.
+          # No pcap, no nft/iptables changes and no packet payload in the logs.
+          timeout 28 sshpass -e ssh "${opts[@]}" "root@$TARGET" \
+            "python3 - '$SRC' '$TARGET'" \
+            < scripts/mnebyvpn_foreign_tcp443_probe.py \
+            > "$RUNNER_TEMP/tcp443-headers.txt" &
+          capture_pid=$!
+          ready=false
+          for _ in {1..30}; do
+            if grep -q '^capture_ready=true$' "$RUNNER_TEMP/tcp443-headers.txt" 2>/dev/null; then
+              ready=true
+              break
+            fi
+            if ! kill -0 "$capture_pid" 2>/dev/null; then break; fi
+            sleep 0.3
+          done
+          if [[ "$ready" != true ]]; then
+            wait "$capture_pid" || true
+            echo "capture_not_ready=true"
+            exit 1
+          fi
+          python3 - "$TARGET" <<'PY'
+          import socket,sys,time
+          target=sys.argv[1]
+          for attempt in range(3):
+              try:
+                  with socket.create_connection((target,443),timeout=4):
+                      print('external_tcp443_probe_'+str(attempt+1)+'=connected',flush=True)
+              except OSError as e:
+                  print('external_tcp443_probe_'+str(attempt+1)+'='+type(e).__name__,flush=True)
+              time.sleep(.2)
+          PY
+          wait "$capture_pid"
+          cat "$RUNNER_TEMP/tcp443-headers.txt"
+          echo "PROBE_IS_TEST_RUNNER_ONLY_NOT_END_USER=true"
