@@ -33,6 +33,20 @@ class MetaLiveTests(unittest.TestCase):
             self.assertIn("--no-legend",c.call_args[0])
             self.assertNotIn("--all",c.call_args[0])
 
+    def test_confirmed_owner_timer_is_inert(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d)
+            parent=root/"mnebydns-owner-domain"
+            owner=parent/"43260000001"
+            owner.mkdir(parents=True)
+            (owner/"confirmed").write_text("verified")
+            timers="Wed 2026 mnebydns-owner-rollback-43260000001.timer"
+            with patch.object(mod,"RUNROOT",root/"meta"),patch.object(mod,"cmd",return_value=timers):
+                original_path=mod.Path
+                # Substitute only the canonical owner base, keep filesystem paths safe.
+                with patch.object(mod,"Path",side_effect=lambda text: parent if text=="/opt/mnebydns-owner-domain" else original_path(text)):
+                    mod.owner_quiescent()
+
     def test_no_other_meta_release_pending(self):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d)
