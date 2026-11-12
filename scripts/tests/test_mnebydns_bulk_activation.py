@@ -84,7 +84,7 @@ class BulkContracts(unittest.TestCase):
                         stage.index('systemctl enable --now "$name.timer"'))
         deploy_source=(ROOT/"scripts/mnebydns-bulk-deploy-20261112.py").read_text()
         self.assertIn('committed or owner.is_confirmed(run)',deploy_source)
-        self.assertIn('status = status_class(selected)',deploy_source)
+        self.assertIn('state = status_class(selected)',deploy_source)
         compensator=(ROOT/"scripts/mnebydns-bulk-compensate-20261112.sh").read_text()
         self.assertIn('cmp -s "$base/dns.pilot" "$live_dns"',compensator)
         self.assertIn('cmp -s "$base/nginx.pilot" "$live_nginx"',compensator)
