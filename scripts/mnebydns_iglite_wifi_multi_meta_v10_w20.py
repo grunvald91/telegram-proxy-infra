@@ -74,6 +74,11 @@ def fsync_directory(directory):
     finally: os.close(fd)
 
 def atomic_replace(path, data):
+    # A service-specific group may be required to read the Corefile.
+    # copystat() alone restores mode/xattrs, but not owner or group.
+    if path.is_symlink() or not path.is_file():
+        raise RuntimeError("Refusing unsafe atomic-replace source")
+    source_stat = path.stat()
     target = path.with_name(path.name + ".mneby-iglite-temp")
     if target.exists() or target.is_symlink():
         raise RuntimeError("Prior staging file still present")
@@ -83,7 +88,9 @@ def atomic_replace(path, data):
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
-        shutil.copystat(path, target)
+        # Restore ownership before mode/xattrs, since chown may clear mode bits.
+        os.chown(target, source_stat.st_uid, source_stat.st_gid, follow_symlinks=False)
+        shutil.copystat(path, target, follow_symlinks=False)
         os.replace(target, path)
     finally:
         if target.exists():
