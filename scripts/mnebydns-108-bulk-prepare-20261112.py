@@ -21,6 +21,15 @@ assert spec is not None and spec.loader is not None
 batch = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(batch)
 owner = batch.owner
+# Actual live evidence, not a claim that these sites are universally blocked.
+# id.cisco.com: mass public-edge HTTPS TCP timeout, live rollback verified:
+# https://github.com/grunvald91/telegram-proxy-infra/actions/runs/43303272458
+# codebrowser.dev: RU direct TCP timeout in the 108-host mass differential:
+# https://github.com/grunvald91/telegram-proxy-infra/actions/runs/43297171379
+LIVE_EXCLUSIONS = {
+    "id.cisco.com": "PUBLIC_EDGE_TCP_TIMEOUT_43303272458",
+    "codebrowser.dev": "INTERMITTENT_RU_TCP_TIMEOUT_43297171379",
+}
 
 def sha(b: str) -> str:
     return hashlib.sha256(b.encode("utf-8")).hexdigest()
@@ -52,6 +61,9 @@ def qualify(names: list[str], rows: dict, observations: list[dict]):
             continue
         if state != "PENDING":
             raise RuntimeError("Unresolved research status on " + host + ": " + state)
+        if host in LIVE_EXCLUSIONS:
+            exclusions.append(dict(domain=host, reason=LIVE_EXCLUSIONS[host], state=state))
+            continue
         item = evidence[host]
         de, ru = item["de"], item["ru"]
         ip = de.get("origin_ipv4")
@@ -93,7 +105,7 @@ def self_test():
             ru=dict(origin_ipv4="93.184.215.14",certificate_verified=True,http_status=403)) for n in names]
     ev[2]["ru"]["certificate_verified"] = False
     selected, exclusions = qualify(names, fake, ev)
-    assert len(selected) == 105 and len(exclusions) == 3
+    assert len(selected) == 103 and len(exclusions) == 5
     base_dns = ("tls://.:853 {\n"
                 "    template IN A gemini.google.com { match ^gemini[.]google[.]com[.]$ }\n"
                 "    cache 30\n}\n")
