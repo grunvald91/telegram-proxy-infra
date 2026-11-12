@@ -76,6 +76,39 @@ class ForeignMetaTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             mod.render_shared_nginx(NGINX.replace("gemini.google.com","www.instagram.com"))
 
+    def test_resilient_coredns_cache_block_not_modified(self):
+        current=DNS.replace(
+            "    cache 30\n    forward . tls://9.9.9.9 {}\n",
+            "    cache 30 {\n"
+            "        success 10000 30\n"
+            "        denial 10000 5\n"
+            "        prefetch 10 1m 10%\n"
+            "        servfail 5s\n"
+            "    }\n"
+            "    reload 5s 1s\n"
+            "    forward . tls://9.9.9.9 tls://149.112.112.112 {}\n",
+        )
+        rendered=mod.render_coredns(current)
+        self.assertEqual(rendered.count("    cache 30 {\n"),1)
+        self.assertEqual(rendered.count("    reload 5s 1s\n"),1)
+        self.assertIn("    cache 30 {\n"
+                      "        success 10000 30\n"
+                      "        denial 10000 5\n"
+                      "        prefetch 10 1m 10%\n"
+                      "        servfail 5s\n"
+                      "    }\n"
+                      "    reload 5s 1s\n", rendered)
+        self.assertIn("20 IN A "+mod.FOREIGN,rendered)
+        self.assertEqual(rendered.replace(
+            rendered[rendered.index(mod.TAG)-5:rendered.index("    cache 30 {")],
+            "",1),current)
+
+    def test_ambiguous_cache_anchor_refused(self):
+        with self.assertRaisesRegex(ValueError, "cache stanza missing or ambiguous"):
+            mod.render_coredns(DNS.replace("    cache 30\n","    cache 99\n"))
+        with self.assertRaisesRegex(ValueError, "cache stanza missing or ambiguous"):
+            mod.render_coredns(DNS.replace("    cache 30\n","    cache 30\n    cache 30 {\n    }\n"))
+
     def test_no_duplicate_route_install(self):
         configs = mod.render(DNS,NGINX,PILOT)
         with self.assertRaises(ValueError):

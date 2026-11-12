@@ -68,7 +68,7 @@ jobs:
             if [[ "${MODE:-review}" == canary ]]; then approved=yes; fi
           elif [[ "$GITHUB_EVENT_NAME" == push ]]; then
             marker=data/mnebydns-meta-foreign-rollout-trigger-20261112.txt
-            test "$(cat "$marker")" = "owner-approved-oneoff-35m-foreign-meta-20261112"
+            test "$(cat "$marker")" = "owner-approved-oneoff-35m-foreign-meta-20261112-retry1"
             git cat-file -e HEAD^
             if git diff --name-only HEAD^ HEAD -- | grep -Fxq "$marker"; then approved=yes; fi
           fi
