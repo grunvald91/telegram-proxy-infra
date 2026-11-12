@@ -156,6 +156,14 @@ def verified_tls_handshake(ip: str, hostname: str, timeout: float = 5) -> float:
     return round((time.monotonic() - started) * 1000, 1)
 
 
+def tcp_reachable(host: str, *, timeout: float = 4) -> tuple[str, str | None]:
+    try:
+        with socket.create_connection((host, 443), timeout=timeout):
+            return "pass", None
+    except (OSError, ValueError) as exc:
+        return "fail", type(exc).__name__
+
+
 def evaluate_route(expected: Route, answer: DnsAnswer, ingress: str) -> str:
     if answer.rcode != 0 or not answer.addresses:
         return "fail" if expected != "observe" else "unknown"
@@ -175,8 +183,13 @@ def monitor(
     query: Callable[[str, int], DnsAnswer] | None = None,
     tls_probe: Callable[[str, str], float] | None = None,
     services: tuple[Service, ...] = SERVICES,
+    ingress_tcp: str = "unknown",
+    control_tcp: str = "unknown",
+    ingress_tcp_error: str | None = None,
 ) -> dict:
     ipaddress.ip_address(ingress_ip)
+    if ingress_tcp not in {"pass", "fail", "unknown"} or control_tcp not in {"pass", "fail", "unknown"}:
+        raise ValueError("invalid TCP probe state")
     if egress not in {"match", "mismatch", "unknown"}:
         raise ValueError("egress must be match, mismatch or unknown")
     query = query or (lambda host, qtype: dot_query(resolver_ip, resolver_sni, host, qtype))
@@ -220,7 +233,9 @@ def monitor(
         except (OSError, ValueError, EOFError, ssl.SSLError):
             record["ipv6"] = "unknown"
         # Only test SNI against ingress if DNS actually selects the ingress.
-        if service.tls_observe and route_observation == "ingress":
+        if service.tls_observe and route_observation == "ingress" and ingress_tcp == "fail":
+            record["tls"] = "skipped_ingress_tcp_unreachable"
+        elif service.tls_observe and route_observation == "ingress":
             try:
                 record["tls_ms"] = tls_probe(ingress_ip, service.hostname)
                 record["tls"] = "pass"
@@ -231,11 +246,23 @@ def monitor(
         records.append(record)
     if egress == "mismatch":
         failures += 1
+    # Probe TCP/443 from the same external runner to an ordinary control host.
+    # A control pass + ingress failure is a path-specific reachability alarm,
+    # not evidence that every user ISP has this problem.
+    if ingress_tcp == "fail" and control_tcp == "pass":
+        failures += 1
+    transport_warning_count = sum(
+        item["tls"] in {"fail", "skipped_ingress_tcp_unreachable"} for item in records
+    )
     return {
         "schema_version": 1,
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "vantage": "github_runner_external_not_end_user",
         "egress_ip": egress,
+        "tcp_ingress": ingress_tcp,
+        "tcp_control": control_tcp,
+        "tcp_error_class": ingress_tcp_error,
+        "transport_warning_count": transport_warning_count,
         "critical_failures": failures,
         "route_fallback_enabled": False,
         "services": records,
@@ -250,17 +277,29 @@ def main() -> int:
     p.add_argument("--egress", choices=("match", "mismatch", "unknown"), default="unknown")
     p.add_argument("--output", default="health.json")
     args = p.parse_args()
-    report = monitor(args.resolver_ip, args.resolver_sni, args.ingress_ip, args.egress)
+    ingress_state, ingress_error = tcp_reachable(args.ingress_ip)
+    control_state, _ = tcp_reachable("example.org")
+    report = monitor(args.resolver_ip, args.resolver_sni, args.ingress_ip, args.egress,
+                     ingress_tcp=ingress_state, control_tcp=control_state,
+                     ingress_tcp_error=ingress_error)
     path = Path(args.output)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n")
     for item in report["services"]:
         print(f"service={item['service']} dns={item['dns']} ipv6={item['ipv6']} tls={item['tls']} ms={item['dns_ms']}")
-    print(f"egress_stability={report['egress_ip']} critical_failures={report['critical_failures']}")
+    print(f"egress_stability={report['egress_ip']} tcp_ingress={report['tcp_ingress']} "
+          f"tcp_control={report['tcp_control']} tcp_error_class={report['tcp_error_class']} "
+          f"transport_warnings={report['transport_warning_count']} "
+          f"critical_failures={report['critical_failures']}")
+    if report["transport_warning_count"]:
+        print("::warning title=SmartDNS transport unverified::Public ingress TLS checks failed or "
+              "were skipped; a working DNS record does not prove a working app")
     if (summary := os.environ.get("GITHUB_STEP_SUMMARY")):
         with open(summary, "a", encoding="utf8") as f:
             f.write("### Read-only MNEBYDNS health\n\n")
-            f.write(f"DNS route regressions/egress mismatch: **{report['critical_failures']}**. "
+            f.write(f"DNS/egress/external-TCP regressions: **{report['critical_failures']}**. "
+                    f"Ingress TCP: **{report['tcp_ingress']}**, control TCP: **{report['tcp_control']}**, "
+                    f"TLS warning count: **{report['transport_warning_count']}**. "
                     "No automatic failover or route changes. TLS is observational.\n\n")
             f.write("| Service | DNS route | IPv6 | TLS | DNS ms |\n|---|---|---|---|---:|\n")
             for item in report["services"]:

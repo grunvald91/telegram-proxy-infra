@@ -71,6 +71,23 @@ class DnsTest(unittest.TestCase):
         self.assertEqual(report["critical_failures"], 2)
         self.assertEqual(report["services"][0]["dns"], "fail")
 
+    def test_failed_public_ingress_with_working_control_flags_target_only(self):
+        report = m.monitor("203.0.113.3", "dns.example.org", "203.0.113.2", "match",
+                           query=lambda *_: m.DnsAnswer(0, ("203.0.113.2",)),
+                           tls_probe=lambda *_: self.fail("TLS must be skipped"),
+                           services=(m.Service("claude", "claude.ai", "proxy", True),),
+                           ingress_tcp="fail", control_tcp="pass", ingress_tcp_error="TimeoutError")
+        self.assertEqual(report["critical_failures"], 1)
+        self.assertEqual(report["transport_warning_count"], 1)
+        self.assertEqual(report["services"][0]["tls"], "skipped_ingress_tcp_unreachable")
+
+    def test_failed_public_ingress_and_control_is_uncertain_not_server_down(self):
+        report = m.monitor("203.0.113.3", "dns.example.org", "203.0.113.2", "match",
+                           query=lambda *_: m.DnsAnswer(0, ("203.0.113.2",)),
+                           services=(m.Service("claude", "claude.ai", "proxy", False),),
+                           ingress_tcp="fail", control_tcp="fail")
+        self.assertEqual(report["critical_failures"], 0)
+
     def test_direct_control_route_skips_tls(self):
         calls = []
         report = m.monitor("203.0.113.3", "dns.example.org", "203.0.113.2", "unknown",
