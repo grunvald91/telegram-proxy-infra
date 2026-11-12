@@ -1,0 +1,206 @@
+name: MNEBYDNS IPv6 activation blockers (read-only; no reboot)
+on:
+  push:
+    branches: ['feat/mnebydns-ipv6-activation-preflight-84']
+    paths: ['.github/workflows/mnebydns-ipv6-activation-preflight.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect both existing VPS without touching interfaces or services
+        shell: bash
+        env:
+          RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+          FOREIGN_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          echo 'audit_kind=read_only'
+          echo 'server_mutations=false'
+          echo 'reboot=false'
+          echo 'network_routes_changed=false'
+          echo 'ipv6_allocation_not_attempted=true'
+          for site in ru foreign; do
+            case "$site" in
+              ru)
+                host="$(awk -F "'" '/^[[:space:]]*HOST: / {print $2; exit}' .github/workflows/mnebyvpn-current-deployment-audit.yml)"
+                password="$RU_PASSWORD"
+                ;;
+              foreign)
+                host="$(awk -F "'" '/^[[:space:]]*FOREIGN_HOST: / {print $2; exit}' .github/workflows/mnebyvpn-relay89-public-audit.yml)"
+                password="$FOREIGN_PASSWORD"
+                ;;
+            esac
+            echo "site=$site"
+            if ! [[ "$host" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || [[ -z "$password" ]]; then
+              echo 'preflight=BLOCKED_MISSING_EXISTING_HOST_OR_SECRET'
+              exit 2
+            fi
+            export SSHPASS="$password"
+            timeout 60 sshpass -e ssh \
+              -o StrictHostKeyChecking=accept-new \
+              -o ConnectTimeout=12 -o LogLevel=ERROR "root@$host" 'python3 -' <<'PY'
+          import ipaddress
+          import json
+          import pathlib
+          import socket
+          import subprocess
+
+          def run(*cmd):
+              try:
+                  p=subprocess.run(cmd,capture_output=True,text=True,timeout=8,check=False)
+                  return p.returncode,p.stdout
+              except (OSError,subprocess.TimeoutExpired):
+                  return 127,''
+
+          def ip_json(*cmd):
+              code,out=run('ip','-j',*cmd)
+              if code:
+                  raise RuntimeError('missing iproute2 JSON support')
+              value=json.loads(out)
+              if not isinstance(value,list):
+                  raise RuntimeError('unexpected iproute2 JSON')
+              return value
+
+          try:
+              interfaces=ip_json('link','show')
+              addr=ip_json('-6','addr','show')
+              routes=ip_json('-6','route','show','table','main')
+          except (RuntimeError,ValueError):
+              print('iproute2_json=UNAVAILABLE')
+              raise SystemExit(2)
+
+          ifnames=[i.get('ifname','') for i in interfaces]
+          devices=[x for x in ifnames if x and x!='lo' and
+                   not x.startswith(('veth','docker','br-','wg','tun','tap'))]
+          def read_bit(path):
+              try:
+                  raw=pathlib.Path(path).read_text().strip()
+                  return int(raw) if raw in ('0','1') else None
+              except (OSError,ValueError):
+                  return None
+          all_off=read_bit('/proc/sys/net/ipv6/conf/all/disable_ipv6')
+          default_off=read_bit('/proc/sys/net/ipv6/conf/default/disable_ipv6')
+          off_devices=sum(read_bit('/proc/sys/net/ipv6/conf/'+d+'/disable_ipv6')==1
+                          for d in devices)
+          global_assigned=0
+          linklocal_assigned=0
+          multi_address_interface=False
+          for iface in addr:
+              for item in iface.get('addr_info',[]):
+                  try:
+                      ipv6=ipaddress.IPv6Address(item['local'].split('%')[0])
+                      prefix=int(item['prefixlen'])
+                  except (ValueError,KeyError,TypeError):
+                      continue
+                  if ipv6.is_link_local:
+                      linklocal_assigned+=1
+                  elif ipv6.is_global and item.get('scope')=='global':
+                      global_assigned+=1
+                      if prefix<=64:
+                          multi_address_interface=True
+          global_routes=0
+          default_route=False
+          for item in routes:
+              dst=item.get('dst','')
+              if dst in ('default','::/0'):
+                  default_route=True
+                  continue
+              try:
+                  network=ipaddress.IPv6Network(dst,strict=False)
+              except (ValueError,TypeError):
+                  continue
+              if network.network_address.is_global:
+                  global_routes+=1
+          outgoing=run('ip','-6','route','get','2606:4700:4700::1111')[0]==0
+          code,output=run('ss','-H','-lnt6')
+          tls_443_listener=(code==0 and any(':443 ' in line for line in output.splitlines()))
+          host_suffix_fvds=False
+          try:
+              host_suffix_fvds=socket.gethostname().lower().endswith('.fvds.ru')
+          except OSError:
+              pass
+
+          print('iproute2_json=PASS')
+          print('kernel_ipv6_enabled='+str(all_off!=1).lower())
+          print('default_new_interfaces_ipv6_enabled='+str(default_off!=1).lower())
+          print('eligible_nonloopback_interfaces='+str(len(devices)))
+          print('ipv6_disabled_interfaces='+str(off_devices))
+          print('ipv6_linklocal_addresses='+str(linklocal_assigned))
+          print('public_ipv6_assigned_count='+str(global_assigned))
+          print('ipv6_main_default_route='+str(default_route).lower())
+          print('ipv6_main_global_route_count='+str(global_routes))
+          print('ipv6_route_to_public_resolver='+str(outgoing).lower())
+          print('interface_public_prefix_at_most_64='+str(multi_address_interface).lower())
+          print('ipv6_tcp_443_listener_present='+str(tls_443_listener).lower())
+          print('hostname_suffix_fvds_ru='+str(host_suffix_fvds).lower())
+          if all_off==1 or (devices and off_devices==len(devices)):
+              verdict='OS_IPV6_DISABLED'
+          elif global_assigned==0:
+              verdict='PUBLIC_IPV6_NOT_ASSIGNED'
+          elif not default_route:
+              verdict='NO_IPV6_DEFAULT_ROUTE'
+          elif not outgoing:
+              verdict='NO_PUBLIC_IPV6_ROUTE'
+          else:
+              verdict='HOST_IPV6_READINESS_CANDIDATE'
+          print('host_ipv6_preflight_verdict='+verdict)
+          import pathlib
+          import re
+          conf_paths=[pathlib.Path('/etc/sysctl.conf')]
+          conf_paths+=list(pathlib.Path('/etc/sysctl.d').glob('*.conf'))
+          conf_paths+=list(pathlib.Path('/usr/lib/sysctl.d').glob('*.conf'))
+          conf_paths+=list(pathlib.Path('/lib/sysctl.d').glob('*.conf'))
+          rules=[]
+          for conf in conf_paths:
+              try:
+                  content=conf.read_text(errors='replace')
+              except OSError:
+                  continue
+              for config_line in content.splitlines():
+                  clean=config_line.strip()
+                  if clean.startswith(('#',';')) or 'disable_ipv6' not in clean:
+                      continue
+                  fields=clean.split('=',1)
+                  if len(fields)==2 and fields[0].strip().startswith('net.ipv6.conf.'):
+                      flag=fields[1].split('#')[0].strip()
+                      if flag in ('0','1'):
+                          rules.append((conf.name,fields[0].strip(),flag))
+          print('persistent_ipv6_disable_entries='+str(len(rules)))
+          for name,key,value in rules[:12]:
+              if key.endswith('.disable_ipv6'):
+                  print('ipv6_disable_source='+name+':'+key.rsplit('.',2)[-2]+':'+value)
+          try:
+              boot=pathlib.Path('/proc/cmdline').read_text(errors='replace')
+          except OSError:
+              boot=''
+          print('kernel_boot_ipv6_disabled='+str('ipv6.disable=1' in boot.split()).lower())
+          netplans=list(pathlib.Path('/etc/netplan').glob('*.yaml'))
+          netplans+=list(pathlib.Path('/etc/netplan').glob('*.yml'))
+          print('netplan_file_count='+str(len(netplans)))
+          for key in ('dhcp6:','accept-ra:','link-local:'):
+              found=False
+              for p in netplans:
+                  try:
+                      found=found or key in p.read_text(errors='replace')
+                  except OSError:
+                      pass
+              print('netplan_has_'+key[:-1].replace('-','_')+'='+str(found).lower())
+          print('systemd_networkd_active='+str(run('systemctl','is-active','--quiet','systemd-networkd')[0]==0).lower())
+          print('networkmanager_active='+str(run('systemctl','is-active','--quiet','NetworkManager')[0]==0).lower())
+          print('provider_prefix_allocation_unverified=true')
+          print('remote_inbound_443_unverified=true')
+          print('client_ipv4_only_fallback_unverified=true')
+          print('nothing_modified=true')
+          PY
+            unset SSHPASS
+          done
+          echo 'preflight=READ_ONLY_COMPLETE'
