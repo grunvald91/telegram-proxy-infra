@@ -78,11 +78,13 @@ docker run --detach --rm --name "$pg" --network "$net" \
 own_pg=true
 
 ready=false
-for i in $(seq 1 50); do
-  if docker exec "$pg" pg_isready -U canary -d mnebyvpn_canary >/dev/null 2>&1; then
+for i in $(seq 1 90); do
+  # pg_isready alone can report READY during entrypoint initialization,
+  # before POSTGRES_DB has actually been created. Use a real SQL connection.
+  if [[ "$(docker exec "$pg" psql -AtX -U canary -d mnebyvpn_canary -c 'SELECT 1' 2>/dev/null || true)" == 1 ]]; then
     ready=true;break
   fi
-  sleep 0.2
+  sleep 0.25
 done
 [[ "$ready" == true ]] || { echo 'CANARY_DISPOSABLE_POSTGRES_NOT_READY';exit 2; }
 count=0
