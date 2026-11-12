@@ -30,7 +30,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
-      RELAY_SSH_PASSWORD: ${ secrets.RELAY89_SSH_PASSWORD }}
       INGRESS_IP: '89.125.90.101'
       RESOLVER_SNI: 'dns.mnebyvpn.site'
     steps:
