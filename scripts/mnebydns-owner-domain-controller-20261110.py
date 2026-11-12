@@ -220,7 +220,10 @@ def oracle_canary_check(domain:str,expect_rewrite:bool)->None:
         rc,ips=dns_q(host)
         if rc!=0 or ips!=[EDGE]:
             raise RuntimeError("STABLE_SERVICE_DOT_REGRESSION_"+host)
-    for host in ("i.instagram.com","graph.instagram.com","api.telegram.org"):
+    # Meta was originally a direct-only control. The owner may enable Meta
+    # SmartDNS as a separate product policy, so never hard-code it as excluded.
+    # Keep ordinary-web and Telegram as stable direct-only controls.
+    for host in ("example.org","api.telegram.org","t.me"):
         rc,ips=dns_q(host)
         if rc!=0 or EDGE in ips or RU in ips:
             raise RuntimeError("EXCLUDED_DOMAIN_REWRITTEN_"+host)

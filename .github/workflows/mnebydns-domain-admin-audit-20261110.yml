@@ -44,6 +44,40 @@ jobs:
                   if re.search(r'\b(?:proxy_pass|password|secret|token|private)\b',line,re.I):continue
                   print('sni_map_line='+line[:155])
           print('nginx_map_count='+str(src.count('map $ssl_preread_server_name')))
+          # Classify FULL regex paths without leaking complete live configs.
+          pilot_path=Path('/etc/mnebydns-googlepilot/nginx.conf')
+          pilot=pilot_path.read_text() if pilot_path.is_file() else ''
+          def route_of(config,var,host):
+              pattern=(r'map\s+\$ssl_preread_server_name\s+\$'
+                       +re.escape(var)+r'\s*\{([^{}]*)\}')
+              m=re.search(pattern,config,re.S)
+              if not m:return 'MAP_UNVERIFIED'
+              pairs=[]
+              for raw in m.group(1).splitlines():
+                  line=raw.split('#',1)[0].strip()
+                  if line.endswith(';'):
+                      fields=line[:-1].rsplit(None,1)
+                      if len(fields)==2:pairs.append(tuple(fields))
+              chosen=''
+              for key,dest in pairs:
+                  if key.lower()==host.lower():chosen=dest;break
+              if not chosen:
+                  for key,dest in pairs:
+                      if key.startswith('~'):
+                          pat=key[2:] if key.startswith('~*') else key[1:]
+                          try:matched=bool(re.search(pat,host,re.I if key.startswith('~*') else 0))
+                          except re.error:return 'REGEX_UNVERIFIED'
+                          if matched:chosen=dest;break
+              if not chosen:return 'DEFAULT_ONLY'
+              if chosen=='127.0.0.1:15449':return 'GOOGLEPILOT'
+              if chosen=='$ssl_preread_server_name:443':return 'ORIGIN_DYNAMIC'
+              return 'OTHER_BACKEND'
+          for host in ('www.youtube.com','i.instagram.com','graph.instagram.com','scontent.cdninstagram.com','z-m-gateway.facebook.com','iglite-z.instagram.com'):
+              label=host.replace('.','_').replace('-','_')
+              print('shared_sni_'+label+'='+route_of(src,'direct_mtproxy_backend',host))
+              print('pilot_sni_'+label+'='+route_of(pilot,'experimental_origin',host))
+          print('googlepilot_config_present='+str(bool(pilot)).lower())
+          print('meta_live_audit_readonly=true')
           PY
           echo 'dns_admin_de_nginx_stream_map_end'
           echo 'dns_admin_de_permissions_begin'
