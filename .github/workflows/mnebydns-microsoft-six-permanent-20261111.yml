@@ -52,6 +52,17 @@ jobs:
           test "$(grep -c ' ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts)" -eq 2
           ! grep -Eq 'StrictHostKeyChecking=no|accept-new|verify=False|ssl\._create_unverified_context' \
             scripts/mnebydns-microsoft-six-permanent-20261111.py
+          python3 - <<'PY'
+          from pathlib import Path
+          f=Path('.github/workflows/mnebydns-microsoft-six-permanent-20261111.yml').read_text()
+          assert "git diff --name-only HEAD^ HEAD --" in f
+          assert "grep -Fxq \"$target\"" in f
+          assert "if: steps.reviewed.outputs.approved == 'yes'" in f
+          assert "fetch-depth: 2" in f
+          assert "if: github.event_name != 'pull_request'" in f
+          assert "contains(github.event.head_commit." not in f
+          print("microsoft_explicit_trigger_offline=PASS")
+          PY
           echo microsoft_six_offline_preflight=PASS
   release:
     if: github.event_name != 'pull_request'
