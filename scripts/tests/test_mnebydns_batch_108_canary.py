@@ -122,7 +122,7 @@ class Batch108Transactions(TestCase):
              patch.object(batch.owner,"confirm") as confirm, \
              patch.object(batch,"status_of",side_effect=status), \
              patch.object(batch,"db",return_value="93.184.215.14"), \
-             patch.object(batch,"http_probe",return_value=302) as http, \
+             patch.object(batch,"http_probe",side_effect=[200,403,302]) as http, \
              patch.object(batch.owner,"oracle_canary_check") as oracle, \
              patch.object(batch,"report"):
             self.assertTrue(batch.run_one(domain,1))
@@ -133,8 +133,38 @@ class Batch108Transactions(TestCase):
                          (domain,"CANARY","CONFIRM_REQUESTED"))
         apply.assert_called_once()
         confirm.assert_called_once()
-        http.assert_called_once_with("ru",domain,batch.owner.EDGE)
+        self.assertEqual(http.call_args_list,[
+            call("de",domain,"93.184.215.14"),
+            call("ru",domain,"93.184.215.14"),
+            call("ru",domain,batch.owner.EDGE)])
         oracle.assert_called_once_with(domain,True)
+
+    def test_rotating_cdn_ip_is_not_rejected_when_actual_pin_revalidates(self):
+        domain="a.example.com"
+        previous="93.184.215.14"
+        rotated="13.227.192.109"
+        tasks=[{"domain":domain,"status":"APPLY_REQUESTED"},
+               {"domain":domain,"status":"CONFIRM_REQUESTED"}]
+        with patch.object(batch,"ensure_quiet"),patch.object(batch,"capacity"), \
+             patch.object(batch,"set_phase"), \
+             patch.object(batch,"preflight",return_value=(previous,200,403)), \
+             patch.object(batch.owner,"live_checkpoint_unchanged",return_value=True), \
+             patch.object(batch,"cas"), \
+             patch.object(batch,"select_own_task",side_effect=tasks), \
+             patch.object(batch.owner,"apply"), \
+             patch.object(batch.owner,"confirm") as confirmed, \
+             patch.object(batch,"status_of",side_effect=["CANARY","ACTIVE"]), \
+             patch.object(batch,"db",return_value=rotated), \
+             patch.object(batch,"http_probe",side_effect=[200,403,200]) as http, \
+             patch.object(batch.owner,"oracle_canary_check"), \
+             patch.object(batch,"report") as report:
+            self.assertTrue(batch.run_one(domain,1))
+        self.assertEqual(http.call_args_list,[
+            call("de",domain,rotated),call("ru",domain,rotated),
+            call("ru",domain,batch.owner.EDGE)])
+        self.assertTrue(any(x.args[0]=="CDN_ORIGIN_ROTATED_REVALIDATED"
+                            for x in report.call_args_list))
+        confirmed.assert_called_once()
 
     def test_incorrect_ru_public_http_causes_rollback_and_incident(self):
         domain="a.example.com"
@@ -148,7 +178,7 @@ class Batch108Transactions(TestCase):
              patch.object(batch.owner,"confirm") as confirm, \
              patch.object(batch,"status_of",side_effect=["CANARY","CANARY","CANARY"]), \
              patch.object(batch,"db",side_effect=["93.184.215.14",domain]) as db, \
-             patch.object(batch,"http_probe",return_value=403), \
+             patch.object(batch,"http_probe",side_effect=[200,403,403]), \
              patch.object(batch.owner,"rollback_or_unchanged") as rollback, \
              patch.object(batch.owner,"oracle_canary_check") as oracle, \
              patch.object(batch,"report"):
