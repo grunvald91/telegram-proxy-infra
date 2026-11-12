@@ -1,13 +1,6 @@
 name: Meta v12 read-only RU DE WireGuard and DoT path check
 
 on:
-  push:
-    branches: [fix/meta-routing-quic-sni-validation]
-    paths:
-      - '.github/workflows/meta-v12-ru-de-readonly-path.yml'
-      - 'scripts/meta_v12_ru_de_readonly.py'
-      - 'scripts/meta_v12_routing_gate.py'
-      - 'scripts/tests/test_meta_v12_routing_gate.py'
   workflow_dispatch:
 
 permissions:

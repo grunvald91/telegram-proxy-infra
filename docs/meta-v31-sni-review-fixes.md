@@ -67,3 +67,21 @@ An observed split at the RU interface is evidence about those packets, not a
 guarantee about every ISP middlebox. GRO/coalescing or retransmissions can make
 capture evidence indeterminate. TLS remains end-to-end; Android login/feed,
 unrouted/cached domains, IPv6 ingress and UDP/QUIC need their own observations.
+
+## Shared-client trial / cost review (2026-11-13)
+
+- Owner permits using mode `all` for this experimental window, and accepts
+  the fact that the RU :443 NAT rule temporarily handles unrelated HTTPS too.
+- The reviewed manual workflow allowed `phone_ip=all`, but the RU UFW rule
+  rejected it before activating the route. Corrected: an all-mode UFW accept
+  is restricted to connections conntracked as DNAT from the owned RU public
+  TCP/443 address/port. Direct unsolicited TCP/18443 remains excluded.
+- Removed `push` auto-triggers from 12 historical diagnostic workflows,
+  retaining explicit `workflow_dispatch`. This prevents a PR code change
+  from launching expensive SSH/remote tests automatically.
+- No evidence of actual Android Instagram success is claimed. The receiver
+  still requires real client traffic and validated packet capture to prove
+  the ClientHello crossed RU ingress with SNI fragmented.
+- Important: this experiment is the RU ingress/window-clamp path, not the
+  currently deployed direct-foreign YouTube ingress. The two designs cannot
+  be assumed equivalent for filtering.

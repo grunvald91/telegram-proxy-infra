@@ -1,8 +1,6 @@
 name: Meta v17 separate-edge inventory READ ONLY
 on:
-  push:
-    branches: [fix/meta-routing-quic-sni-validation]
-    paths: ['.github/workflows/meta-v17-isolation-inventory-readonly.yml']
+  workflow_dispatch:
 permissions:
   contents: read
 concurrency:

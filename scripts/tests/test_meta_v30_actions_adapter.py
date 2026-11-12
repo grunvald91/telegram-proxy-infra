@@ -26,6 +26,11 @@ class AdapterTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 m.check_approval(ip,m.APPROVAL,"workflow_dispatch")
 
+    def test_manual_all_mode_is_supported_by_adapter(self):
+        self.assertEqual(m.check_approval("all",m.APPROVAL,"workflow_dispatch"),"all")
+        with self.assertRaises(PermissionError):
+            m.check_approval("all",m.APPROVAL,"push")
+
     def test_bundle_has_only_flat_explicit_regular_source_files(self):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d)

@@ -1,8 +1,6 @@
 name: Meta v18 30-minute TCP SYN postmortem read-only
 on:
-  push:
-    branches: [fix/meta-routing-quic-sni-validation]
-    paths: ['.github/workflows/meta-v18-postmortem-readonly.yml']
+  workflow_dispatch:
 permissions:
   contents: read
 concurrency:

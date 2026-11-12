@@ -1,8 +1,6 @@
 name: Meta v16 read-only diagnose two-phone HTTPS failure
 on:
-  push:
-    branches: [fix/meta-routing-quic-sni-validation]
-    paths: ['.github/workflows/meta-v16-live-failure-readonly.yml']
+  workflow_dispatch:
 permissions:
   contents: read
 concurrency:

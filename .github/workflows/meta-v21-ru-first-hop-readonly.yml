@@ -1,8 +1,6 @@
 name: Meta v21 Russian first-hop and private WireGuard feasibility READ ONLY
 on:
-  push:
-    branches: [fix/meta-routing-quic-sni-validation]
-    paths: ['.github/workflows/meta-v21-ru-first-hop-readonly.yml']
+  workflow_dispatch:
 permissions:
   contents: read
 concurrency:

@@ -1,8 +1,6 @@
 name: Meta v22 RU first-hop SNI router and nft receive-window readiness READ ONLY
 on:
-  push:
-    branches: [fix/meta-routing-quic-sni-validation]
-    paths: ['.github/workflows/meta-v22-ru-stream-nft-readonly.yml']
+  workflow_dispatch:
 permissions:
   contents: read
 concurrency:

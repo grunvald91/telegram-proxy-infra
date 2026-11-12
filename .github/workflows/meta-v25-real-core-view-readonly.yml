@@ -1,8 +1,6 @@
 name: Meta v25 check actual DE CoreDNS view config without writes
 on:
-  push:
-    branches: [fix/meta-routing-quic-sni-validation]
-    paths: ['.github/workflows/meta-v25-real-core-view-readonly.yml']
+  workflow_dispatch:
 permissions:
   contents: read
 concurrency:

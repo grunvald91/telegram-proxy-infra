@@ -1,12 +1,6 @@
 name: Meta v13 isolated DE TLS route preview (no live changes)
 
 on:
-  push:
-    branches: [fix/meta-routing-quic-sni-validation]
-    paths:
-      - '.github/workflows/meta-v13-de-isolated-tls-preview.yml'
-      - 'scripts/meta_v13_isolated_de.py'
-      - 'scripts/mnebydns-owner-domain-render-20261110.py'
   workflow_dispatch:
 
 permissions:

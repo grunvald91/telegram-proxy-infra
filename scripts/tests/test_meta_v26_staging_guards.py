@@ -272,10 +272,22 @@ class StagingRollbackTests(unittest.TestCase):
         self.assertEqual(args[args.index("--dport")+1],"18443")
         self.assertEqual(args[-2:],["-j","ACCEPT"])
         self.assertEqual(args[args.index("--comment")+1],ru.FIREWALL_COMMENT)
-        for unsafe in ("all","0.0.0.0","127.0.0.1","192.168.1.3",
+        for unsafe in ("0.0.0.0","127.0.0.1","192.168.1.3",
                        "185.137.178.123/0",ru.RU_EDGE):
             with self.subTest(unsafe=unsafe), self.assertRaises(ValueError):
                 ru.firewall_args(unsafe)
+
+
+    def test_ru_shared_firewall_accepts_only_owned_dnat_from_public_443(self):
+        args=ru.firewall_args("all")
+        self.assertIn("conntrack",args)
+        self.assertEqual(args[args.index("--ctstate")+1],"DNAT")
+        self.assertEqual(args[args.index("--ctorigdst")+1],ru.RU_EDGE)
+        self.assertEqual(args[args.index("--ctorigdstport")+1],"443")
+        self.assertEqual(args[args.index("--dport")+1],"18443")
+        self.assertNotIn("-s",args)
+        self.assertNotIn("0.0.0.0/0",args)
+        self.assertEqual(args[-2:],["-j","ACCEPT"])
 
     def test_ru_scoped_firewall_install_and_idempotent_remove(self):
         commands=[]

@@ -1,8 +1,6 @@
 name: Meta v19 server marked SYNACK route and kernel path READ ONLY
 on:
-  push:
-    branches: [fix/meta-routing-quic-sni-validation]
-    paths: ['.github/workflows/meta-v19-marked-route-readonly.yml']
+  workflow_dispatch:
 permissions:
   contents: read
 concurrency:

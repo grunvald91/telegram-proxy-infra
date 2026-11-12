@@ -1,13 +1,6 @@
 name: MNEBYDNS Meta v14 read-only DoT stability comparison
 
 on:
-  push:
-    branches: [fix/meta-routing-quic-sni-validation]
-    paths:
-      - 'scripts/meta_v14_dot_stability.py'
-      - 'scripts/tests/test_meta_v14_dot_stability.py'
-      - 'scripts/meta_v12_ru_de_readonly.py'
-      - '.github/workflows/meta-v14-dot-stability-readonly.yml'
   workflow_dispatch:
 
 permissions:

@@ -63,13 +63,15 @@ def table_exists():
                for v in rules.get("nftables",[]))
 
 def firewall_args(peer):
-    # This trial never opens TCP 18443 for arbitrary sources.
-    if peer=="all":
-        raise ValueError("temporary firewall rule requires one exact phone IPv4")
+    # Even for shared mode, only traffic DNATed from our own HTTPS 443 may
+    # enter the experimental listener. Unrelated direct TCP/18443 is denied.
     peer=checked_peer(peer)
-    return ["-s",peer+"/32","-d",RU_EDGE+"/32","-p","tcp",
-            "--dport",str(TEST_PORT),"-m","comment","--comment",FIREWALL_COMMENT,
-            "-j","ACCEPT"]
+    selector=(["-m","conntrack","--ctstate","DNAT",
+               "--ctorigdst",RU_EDGE,"--ctorigdstport","443"]
+              if peer=="all" else ["-s",peer+"/32"])
+    return selector+["-d",RU_EDGE+"/32","-p","tcp",
+                    "--dport",str(TEST_PORT),"-m","comment",
+                    "--comment",FIREWALL_COMMENT,"-j","ACCEPT"]
 
 def firewall_present(peer):
     result=cmd(["iptables","-w","5","-C",FIREWALL_CHAIN,*firewall_args(peer)],

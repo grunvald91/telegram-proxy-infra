@@ -1,8 +1,6 @@
 name: Meta v24 DE DoT per-client DNS view support read-only review
 on:
-  push:
-    branches: [fix/meta-routing-quic-sni-validation]
-    paths: ['.github/workflows/meta-v24-dns-view-readonly-review.yml']
+  workflow_dispatch:
 permissions:
   contents: read
 concurrency:

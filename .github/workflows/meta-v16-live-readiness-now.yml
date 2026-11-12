@@ -1,10 +1,7 @@
 name: Meta v16 read-only live READY confirmation
 
 on:
-  push:
-    branches: [fix/meta-routing-quic-sni-validation]
-    paths: ['.github/workflows/meta-v16-live-readiness-now.yml']
-
+  workflow_dispatch:
 permissions:
   contents: read
 
