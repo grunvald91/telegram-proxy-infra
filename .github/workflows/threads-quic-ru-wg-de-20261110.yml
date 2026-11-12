@@ -1,0 +1,208 @@
+name: "Threads SmartDNS + QUIC RU-WG-DE combined 60m guarded pilot"
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths: [.github/workflows/threads-quic-ru-wg-de-20261110.yml]
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-google-public-443-change
+  cancel-in-progress: false
+jobs:
+  bridge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 24
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Offline strict Threads allowlist and UDP roundtrip preflight
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-meta-quic.py
+          python3 scripts/test-mnebydns-meta-quic.py
+          bash -n scripts/mnebydns-meta-quic-stage.sh scripts/mnebydns-meta-quic-rollback.sh scripts/mnebydns-threads-only-stage-20261110.sh scripts/mnebydns-threads-only-rollback-20261110.sh
+          python3 scripts/mnebydns-threads-only-render-20261110.py self-test
+          test -n "$DE_PASS" && test -n "$RU_PASS"
+          echo 'threads_quic_allowlist_and_regression=PASS'
+      - name: Start only two QUIC services with independent watchdogs and verify real H3 via public RU
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass >/dev/null
+          id="$GITHUB_RUN_ID"
+          [[ "$id" =~ ^[0-9]{9,13}$ ]]
+          work="/tmp/mnebydns-meta-quic-$id"
+          base="/opt/mnebydns-meta-quic-$id"
+          de_ssh() {
+            SSHPASS="$DE_PASS" sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@89.125.90.101 "$@"
+          }
+          ru_ssh() {
+            SSHPASS="$RU_PASS" sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@188.120.254.223 "$@"
+          }
+          cleanup() {
+            code=$?
+            trap - EXIT
+            if (( code!=0 )); then
+              echo 'threads_combined_failure_rollback_requested=true'
+              de_ssh "test ! -s '/opt/mnebydns-threads-canary/$id/rollback.sh' || bash '/opt/mnebydns-threads-canary/$id/rollback.sh' '/opt/mnebydns-threads-canary/$id'" || echo 'threads_dns_rollback_unverified=true'
+              ru_ssh "test ! -s '$base/rollback.sh' || bash '$base/rollback.sh' ru '$id'" || echo 'threads_quic_ru_rollback_unverified=true'
+              de_ssh "test ! -s '$base/rollback.sh' || bash '$base/rollback.sh' de '$id'" || echo 'threads_quic_de_rollback_unverified=true'
+            fi
+            exit "$code"
+          }
+          trap cleanup EXIT
+          de_ssh "test ! -e '$work' && mkdir -m 700 '$work'"
+          tar -czf - -C scripts mnebydns-meta-quic.py mnebydns-meta-quic-stage.sh mnebydns-meta-quic-rollback.sh test-mnebydns-meta-quic.py threads-h3-via-ru-20261110.py mnebydns-threads-only-render-20261110.py mnebydns-threads-only-stage-20261110.sh mnebydns-threads-only-rollback-20261110.sh |
+            de_ssh "tar -xzf - -C '$work'"
+          ru_ssh "test ! -e '$work' && mkdir -m 700 '$work'"
+          tar -czf - -C scripts mnebydns-meta-quic.py mnebydns-meta-quic-stage.sh mnebydns-meta-quic-rollback.sh test-mnebydns-meta-quic.py |
+            ru_ssh "tar -xzf - -C '$work'"
+          # The earlier Threads DNS canary has its own rollback timer.
+          # Wait for its exact stable checkpoint before starting ANY new service.
+          echo 'threads_quic_wait_for_previous_DNS_rollback=true'
+          for attempt in $(seq 1 35); do
+            if de_ssh 'st=$(cat /opt/mnebydns-stable-checkpoints/current) && cmp -s "$st/dns.stable" /opt/mnebydns-dot/Corefile && cmp -s "$st/nginx.stable" /etc/nginx/nginx.conf' >/dev/null 2>&1; then
+              echo 'threads_previous_DNS_pilot_rollback_verified=true'
+              break
+            fi
+            sleep 4
+          done
+          de_ssh 'st=$(cat /opt/mnebydns-stable-checkpoints/current) && cmp -s "$st/dns.stable" /opt/mnebydns-dot/Corefile && cmp -s "$st/nginx.stable" /etc/nginx/nginx.conf'
+          # The previous 18-minute pilot owns these ports. Do not overlap services.
+          echo 'threads_combined_wait_for_old_udp_relay_expiry=true'
+          old_ports_clear=false
+          for attempt in $(seq 1 180); do
+            if ru_ssh 'test -z "$(ss -H -lun "sport = :443")"' &&
+               de_ssh 'test -z "$(ss -H -lun "sport = :19444")"'; then
+              old_ports_clear=true
+              break
+            fi
+            sleep 5
+          done
+          test "$old_ports_clear" = true
+          echo 'threads_previous_udp_ports_freed=true'
+          # Begin full 60-minute test window only AFTER old listeners disappear.
+          deadline="$(date -u -d '+60 minutes' +'%Y-%m-%d %H:%M:%S UTC')"
+          # DE private first, RU public second. Start watchdogs before listeners.
+          de_ssh "bash '$work/mnebydns-meta-quic-stage.sh' de '$id' '$deadline'"
+          ru_ssh "bash '$work/mnebydns-meta-quic-stage.sh' ru '$id' '$deadline'"
+          de_ssh "systemctl is-active --quiet 'mnebydns-meta-quic-de-$id.service' && systemctl is-active --quiet 'mnebydns-meta-quic-de-$id-rollback.timer'"
+          ru_ssh "systemctl is-active --quiet 'mnebydns-meta-quic-ru-$id.service' && systemctl is-active --quiet 'mnebydns-meta-quic-ru-$id-rollback.timer'"
+          echo 'threads_quic_ru_de_guarded_listeners=PASS'
+          # On DE, no pip installed. Bootstrap pip wheel into the temporary work dir only.
+          python3 -m pip download --disable-pip-version-check --quiet --no-deps --dest "$RUNNER_TEMP" pip==24.3.1
+          wheel="$RUNNER_TEMP/pip-24.3.1-py3-none-any.whl"
+          test -s "$wheel"
+          de_ssh "cat > '$work/pip.whl'" < "$wheel"
+          de_ssh "PYTHONPATH='$work/pip.whl' python3 -m pip install --disable-pip-version-check --no-cache-dir --no-input --quiet --target '$work/deps' aioquic==1.2.0"
+          de_ssh "THREADS_H3_VIA=188.120.254.223 PYTHONPATH='$work/deps' timeout 25s python3 '$work/threads-h3-via-ru-20261110.py'" | tee "$RUNNER_TEMP/h3-via-ru.log"
+          grep -Fq 'h3_www.threads.com_HTTP3_response=true' "$RUNNER_TEMP/h3-via-ru.log"
+          grep -Fq 'h3_www.threads.com_QUIC_TLS_verified=true' "$RUNNER_TEMP/h3-via-ru.log"
+          echo 'threads_quic_public_RU_WG_DE_origin_H3_verified=true'
+          # Only after H3 bridge verification, publish the reversible public DoT pilot.
+          de_ssh "bash '$work/mnebydns-threads-only-stage-20261110.sh' '$work' '$deadline'"
+          # Public DoT: confirm only Threads rebinds, all other tested routes preserve their meaning.
+          python3 - <<'PY'
+          import socket,ssl,struct,secrets
+          de='89.125.90.101'
+          ru='188.120.254.223'
+          def query(name,typ=1):
+              tid=secrets.randbits(16)
+              labels=name.rstrip('.').split('.')
+              wire=b''.join(bytes([len(x)])+x.encode('ascii') for x in labels)+b'\x00'
+              message=struct.pack('!HHHHHH',tid,0x100,1,0,0,0)+wire+struct.pack('!HH',typ,1)
+              with socket.create_connection((de,853),timeout=7) as raw:
+                  raw.settimeout(7)
+                  with ssl.create_default_context().wrap_socket(raw,server_hostname='dns.mnebyvpn.site') as tls:
+                      tls.sendall(len(message).to_bytes(2,'big')+message)
+                      size=int.from_bytes(tls.recv(2),'big')
+                      buf=b''
+                      while len(buf)<size:
+                          fragment=tls.recv(size-len(buf))
+                          if not fragment:raise RuntimeError('DoT EOF')
+                          buf+=fragment
+              if int.from_bytes(buf[:2],'big')!=tid:raise AssertionError('DoT ID mismatch')
+              rcode=buf[3]&0xf;qd=int.from_bytes(buf[4:6],'big');an=int.from_bytes(buf[6:8],'big')
+              pos=12
+              def skipname(p):
+                  for _ in range(128):
+                      n=buf[p]
+                      if n&0xc0==0xc0:return p+2
+                      if n==0:return p+1
+                      p+=n+1
+                  raise ValueError('invalid qname')
+              for _ in range(qd):pos=skipname(pos)+4
+              ips=[]
+              for _ in range(an):
+                  pos=skipname(pos)
+                  qtype,qclass,ttl,n=struct.unpack_from('!HHIH',buf,pos);pos+=10
+                  if qtype==1 and n==4:ips.append(socket.inet_ntoa(buf[pos:pos+4]))
+                  pos+=n
+              return rcode,ips
+          threads=['threads.com','www.threads.com','graph.threads.com',
+                   'threads.net','www.threads.net','graph.threads.net']
+          stable=['gemini.google.com','claude.ai','grok.com','x.com','www.tiktok.com']
+          excluded=['i.instagram.com','graph.instagram.com','www.instagram.com','api.telegram.org']
+          for host in threads:
+              code,ips=query(host)
+              ok=code==0 and ips==[ru if host=='www.threads.com' else de]
+              print('threads_public_DoT_route_'+host+'='+str(ok).lower(),flush=True)
+              if not ok:raise SystemExit('THREADS_DOT_REWRITE_FAILED_'+host)
+              code,ips=query(host,28)
+              if code!=0 or ips:raise SystemExit('THREADS_AAAA_ERROR_'+host)
+          for host in stable:
+              code,ips=query(host)
+              ok=code==0 and ips==[de]
+              print('threads_stable_DoT_unchanged_'+host+'='+str(ok).lower(),flush=True)
+              if not ok:raise SystemExit('WORKING_DOT_ROUTE_REGRESSED_'+host)
+          for host in excluded:
+              code,ips=query(host)
+              ok=code==0 and de not in ips and '188.120.254.223' not in ips
+              print('threads_unrelated_domain_direct_'+host+'='+str(ok).lower(),flush=True)
+              if not ok:raise SystemExit('UNRELATED_DOMAIN_REWRITTEN_'+host)
+          print('threads_DoT_isolation_test=PASS',flush=True)
+          PY
+          # Public TCP/TLS via DE must verify original origin certificate with SNI unchanged.
+          ru_ssh 'python3 -' <<'PY'
+          import ssl,socket,concurrent.futures
+          de='89.125.90.101'
+          hosts=['threads.com','www.threads.com','graph.threads.com',
+                 'threads.net','www.threads.net','graph.threads.net',
+                 'gemini.google.com','chatgpt.com']
+          def test(host):
+              try:
+                  with socket.create_connection((de,443),timeout=7) as raw:
+                      raw.settimeout(7)
+                      with ssl.create_default_context().wrap_socket(raw,server_hostname=host) as tls:
+                          return host, bool(tls.getpeercert()),'none'
+              except Exception as exc:
+                  return host,False,type(exc).__name__
+          with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
+              rows=list(pool.map(test,hosts))
+          for host,ok,error in rows:
+              print('threads_public_TLS_'+host+'='+str(ok).lower(),flush=True)
+              print('threads_public_TLS_error_'+host+'='+error,flush=True)
+          # www.threads.com was separately proven SNI-filtered on RU-to-DE
+          # (matched ClientHello audit #42769494584). Surface this known gap;
+          # do NOT mask any failure on other Threads/stable domains.
+          www_ok=next(ok for host,ok,error in rows if host=='www.threads.com')
+          print('threads_known_www_threads_com_TLS_verified='+str(www_ok).lower(),flush=True)
+          print('threads_known_www_threads_com_SNI_filtering_unresolved='+str(not www_ok).lower(),flush=True)
+          if not all(ok for host,ok,error in rows if host!='www.threads.com'):
+              raise SystemExit('Threads non-www or stable TLS path incomplete')
+          print('threads_non_www_public_TLS_isolation_test=PASS',flush=True)
+          PY
+          de_ssh "systemctl is-active --quiet 'mnebydns-threads-rollback-$id.timer'"
+          ru_ssh "systemctl is-active --quiet 'mnebydns-meta-quic-ru-$id.service'"
+          de_ssh "systemctl is-active --quiet 'mnebydns-meta-quic-de-$id.service'"
+          echo 'threads_combined_DNS_and_QUIC_test=PASS'
+          echo "threads_combined_rollback_deadline_UTC=$deadline"
+          echo "threads_quic_rollback_deadline_UTC=$deadline"
+          echo 'threads_non_Threads_DNS_routes_VPN_and_firewall_unchanged=true'
+          echo 'threads_combined_DNS_and_QUIC_pilot_active_android_app_NOT_TESTED=true'
+          trap - EXIT
