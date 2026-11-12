@@ -1,0 +1,83 @@
+name: MNEBYDNS exact active SNI map local reproduction
+on:
+  push:
+    branches: ['feature/mnebydns-vpn-google-readonly-20261108']
+    paths: ['.github/workflows/mnebydns-sni-isolated-realmap.yml']
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Test production map on isolated local TCP15445 without modifying live nginx
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PASS"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          export SSHPASS="$PASS"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@89.125.90.101 'bash -se' <<'REMOTE'
+          set -Eeuo pipefail
+          dir="$(mktemp -d /tmp/mnebydns-map-XXXXXXXX)"
+          pid=""
+          cleanup() {
+            code="$?"
+            trap - EXIT
+            [[ -z "$pid" ]] || { kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; }
+            rm -rf -- "$dir"
+            exit "$code"
+          }
+          trap cleanup EXIT
+          test -z "$(ss -H -lnt 'sport = :15445')"
+          python3 - "$dir" <<'PY'
+          import pathlib,re,sys
+          directory=pathlib.Path(sys.argv[1])
+          content=pathlib.Path('/etc/nginx/nginx.conf').read_text()
+          matches=list(re.finditer(r'map\s+\$ssl_preread_server_name\s+\$direct_mtproxy_backend\s*\{([^{}]*)\}',content,re.S))
+          if len(matches)!=1:raise SystemExit('unexpected map count')
+          body=matches[0].group(0)
+          if 'gemini.google.com' in body:raise SystemExit('live map already modified')
+          body=body.replace('{','{\n    gemini.google.com 127.0.0.1:15443;',1)
+          config='''load_module /usr/lib/nginx/modules/ngx_stream_module.so;
+          worker_processes 1;
+          pid %s/nginx.pid;
+          error_log %s/error.log warn;
+          events { worker_connections 80; }
+          stream { %s
+            server {
+              listen 127.0.0.1:15445;
+              ssl_preread on;
+              proxy_pass $direct_mtproxy_backend;
+              proxy_connect_timeout 4s;
+              proxy_timeout 25s;
+            }
+          }
+          '''%(directory,directory,body)
+          (directory/'nginx.conf').write_text(config)
+          print('existing_sni_map_reproduced=yes')
+          PY
+          nginx -t -c "$dir/nginx.conf" >/dev/null 2>&1
+          rm -f -- "$dir/error.log" "$dir/nginx.pid"
+          chown -R 65532:65532 "$dir"
+          chmod 700 "$dir"
+          timeout --signal=TERM --kill-after=3s 95s \
+            setpriv --reuid 65532 --regid 65532 --clear-groups --no-new-privs \
+            nginx -c "$dir/nginx.conf" -g 'daemon off;' > "$dir/stdout.log" 2>&1 &
+          pid="$!"
+          for i in $(seq 1 45); do
+            [[ "$(ss -H -lnt 'sport = :15445' | awk '{print $4}')" == 127.0.0.1:15445 ]] && break
+            sleep 0.2
+          done
+          test "$(ss -H -lnt 'sport = :15445' | awk '{print $4}')" = 127.0.0.1:15445
+          for localport in 15443 15445; do
+            code="$(curl -4 --noproxy '*' -sS --connect-timeout 5 --max-time 15 \
+              --connect-to "gemini.google.com:443:127.0.0.1:$localport" \
+              -o /dev/null -w '%{http_code}' https://gemini.google.com/ || true)"
+            echo "local_map_test_port=$localport http_code=$code"
+          done
+          echo "local_map_test_completed=yes"
+          REMOTE

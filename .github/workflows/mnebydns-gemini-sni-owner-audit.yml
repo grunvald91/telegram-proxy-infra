@@ -1,0 +1,44 @@
+name: MNEBYDNS shared SNI owner read-only path audit
+on:
+  push:
+    branches: ['feature/mnebydns-vpn-google-readonly-20261108']
+    paths: ['.github/workflows/mnebydns-gemini-sni-owner-audit.yml']
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Find actual Nginx shared map file without logging credentials or routes
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PASSWORD"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass
+          export SSHPASS="$PASSWORD"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@89.125.90.101 'python3 -' <<'PY'
+          import re,subprocess,pathlib
+          p=subprocess.run(['nginx','-T'],capture_output=True,text=True,timeout=14)
+          if p.returncode: raise SystemExit('nginx configuration invalid')
+          s=p.stdout
+          parts=re.split(r'(?m)^# configuration file (.+?):\n',s)
+          pattern=re.compile(r'map\s+\$ssl_preread_server_name\s+\$direct_mtproxy_backend\s*\{')
+          total=0
+          for idx in range(1,len(parts),2):
+              name,body=parts[idx],parts[idx+1]
+              if pattern.search(body):
+                  total+=1
+                  f=pathlib.Path(name)
+                  print('map_file='+name)
+                  print('map_exists='+str(f.exists()).lower())
+                  print('map_symlink='+str(f.is_symlink()).lower())
+                  print('map_regular='+str(f.is_file()).lower())
+                  print('map_parent_in_streams_d='+str('/streams.d/' in name).lower())
+                  print('map_file_suffix='+f.suffix)
+          print('map_count='+str(total))
+          print('read_only=yes')
+          PY

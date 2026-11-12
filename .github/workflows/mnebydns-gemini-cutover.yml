@@ -1,0 +1,102 @@
+name: MNEBYDNS Gemini-only public SmartDNS canary cutover
+on:
+  push:
+    branches: ['feature/mnebydns-vpn-google-readonly-20261108']
+    paths: ['.github/workflows/mnebydns-gemini-cutover.yml']
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-gemini-foreign-change
+  cancel-in-progress: false
+jobs:
+  cutover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      SSH_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: grunvald91/Mnebyvpn
+          ref: 6c45d5a042480e85073df87ba340337fddf52ad1
+          path: mnebyvpn
+          persist-credentials: false
+      - name: Transactional Gemini-only DoT and HTTPS cutover, verify externally
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$SSH_PASSWORD" || { echo 'existing_SSH_secret_unavailable'; exit 2; }
+          [[ "$GITHUB_RUN_ID" =~ ^[0-9]+$ ]] || exit 2
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass
+          export SSHPASS="$SSH_PASSWORD"
+          server="root@89.125.90.101"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          work="/tmp/mnebydns-ci-$GITHUB_RUN_ID"
+          backup="/opt/mnebydns-gemini-backups/$GITHUB_RUN_ID"
+          watchdog="mnebydns-gemini-watchdog-$GITHUB_RUN_ID"
+          installed=false
+          cleanup() {
+            original=$?
+            trap - EXIT
+            if [[ "$installed" == true && "$original" -ne 0 ]]; then
+              echo "Gemini_cutover_failed_rollback_attempt=yes"
+              sshpass -e ssh "${opts[@]}" "$server" \
+                "if test -f '$backup/rollback.sh'; then bash '$backup/rollback.sh' '$backup'; fi" \
+                || echo "Gemini_rollback_unconfirmed=yes"
+            fi
+            sshpass -e ssh "${opts[@]}" "$server" \
+              "rm -rf -- '$work'" >/dev/null 2>&1 || echo "temporary_stage_cleanup_unconfirmed=yes"
+            exit "$original"
+          }
+          trap cleanup EXIT
+          bash -n mnebyvpn/ops/smart-dns-poc/deploy-gemini-smartdns.sh
+          bash -n mnebyvpn/ops/smart-dns-poc/rollback-gemini-smartdns.sh
+          python3 mnebyvpn/ops/smart-dns-poc/test-patch-gemini-sni.py
+          python3 -m py_compile mnebyvpn/ops/smart-dns-poc/probe-gemini-canary.py
+          sshpass -e ssh "${opts[@]}" "$server" \
+            "test ! -e '$work' && mkdir -m 700 -- '$work'"
+          tar -C mnebyvpn/ops/smart-dns-poc -czf - \
+            Corefile.gemini-canary patch-gemini-sni.py probe-gemini-canary.py \
+            deploy-gemini-smartdns.sh rollback-gemini-smartdns.sh |
+            sshpass -e ssh "${opts[@]}" "$server" "tar -xzf - -C '$work'"
+          installed=true
+          sshpass -e ssh "${opts[@]}" "$server" \
+            "bash '$work/deploy-gemini-smartdns.sh' '$work'"
+          # Validate live public DoT with trusted CA + exact hostname from external runner.
+          python3 mnebyvpn/ops/smart-dns-poc/probe-gemini-canary.py \
+            --ip 89.125.90.101 --port 853 --hostname dns.mnebyvpn.site
+          # The runner cannot reach foreign TCP443; RU VPS can, as verified
+          # by independent source-network preflight. Run TLS E2E from RU.
+          test -n "$RU_PASS" || { echo "RU_probe_secret_missing"; exit 2; }
+          SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 'bash -se' <<'RUSSIAN'
+          set -Eeuo pipefail
+          code="$(curl --noproxy '*' -4 -sS -o /dev/null \
+            --connect-timeout 6 --max-time 20 \
+            --resolve gemini.google.com:443:89.125.90.101 \
+            -w '%{http_code}' https://gemini.google.com/)"
+          [[ "$code" = 200 || "$code" = 302 ]] || { echo "ru_Gemini_HTTPS_failed"; exit 1; }
+          echo "ru_to_foreign_Gemini_TLS=verified"
+          for host in cdn.servgo.ru tg.servgo.ru; do
+            status="$(curl --noproxy '*' -4 -sS -o /dev/null \
+              --connect-timeout 5 --max-time 12 \
+              --resolve "$host:443:89.125.90.101" \
+              -w '%{http_code}' "https://$host/" || true)"
+            [[ -n "$status" && "$status" != 000 ]] ||
+              { echo "ru_existing_443_vhost_unhealthy"; exit 1; }
+            echo "ru_existing_443_vhost_tls=$host"
+          done
+          RUSSIAN
+          sshpass -e ssh "${opts[@]}" "$server" \
+            "systemctl stop '$watchdog.timer' >/dev/null 2>&1 || true; \
+             systemctl is-active --quiet nginx && \
+             systemctl is-active --quiet mnebydns-dot.service && \
+             systemctl is-active --quiet mnebydns-gemini.service && \
+             nginx -t >/dev/null 2>&1"
+          installed=false
+          echo "gemini_live_dns_canary=pass"
+          echo "gemini_public_https_origin_tls=pass"
+          echo "existing_vpn_443_sni_services=pass"
+          echo "automatic_rollback_watchdog_disarmed=yes"
+          echo "android_gemini_login_and_ui_still_require_on_device_test=yes"

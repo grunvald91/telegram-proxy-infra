@@ -1,0 +1,42 @@
+name: MNEBYDNS precise port 443 listener ownership audit
+on:
+  push:
+    branches: ['feature/mnebydns-vpn-google-readonly-20261108']
+    paths: ['.github/workflows/mnebydns-443-ownership.yml']
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Identify actual bound addresses and 443 process owners without exposing secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PASSWORD"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          export SSHPASS="$PASSWORD"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@89.125.90.101 'python3 -' <<'PY'
+          import subprocess,re
+          def out(args):
+              r=subprocess.run(args,capture_output=True,text=True,timeout=12)
+              return r.stdout if r.returncode==0 else ''
+          sock=out(['ss','-H','-lntp','sport = :443'])
+          for line in sock.splitlines():
+              parts=line.split()
+              print('socket_443_bound='+parts[3] if len(parts)>3 else 'unknown')
+              names=sorted(set(re.findall(r'"([A-Za-z0-9_.-]+)",pid=',line)))
+              print('socket_443_process_names='+','.join(names))
+          nginx=out(['nginx','-T'])
+          blocks=re.findall(r'server\s*\{([^{}]*)\}',nginx,re.S)
+          for b in blocks:
+              if 'ssl_preread on;' not in b:continue
+              for match in re.findall(r'(?m)^\s*listen\s+([^;]+);',b):
+                  print('stream_sni_listen='+match)
+              print('stream_sni_pass_variable='+','.join(re.findall(r'proxy_pass\s+(\$[A-Za-z0-9_]+)',b)))
+          print('public_listener_read_only=true')
+          PY
