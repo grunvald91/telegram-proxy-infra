@@ -80,6 +80,12 @@ class ReceiveWindowTests(unittest.TestCase):
         self.assertIn("tcp window set 8",rules)
         self.assertIn("tcp window > 8",rules)
         self.assertIn("dnat ip to 89.125.90.101:18443",rules)
+        self.assertIn("postrouting priority 100",rules)
+        self.assertIn("ct direction reply ct status dnat",rules)
+        self.assertIn("ct original ip saddr 8.8.8.8",rules)
+        self.assertIn("ct original ip daddr 89.125.90.101",rules)
+        self.assertIn("ct original proto-dst 443 ct reply proto-src 18443",rules)
+        self.assertIn("counter meta mark set meta mark | 0x40000000",rules)
         self.assertNotIn("sysctl",rules)
         self.assertNotIn("tcp option",rules)
 
@@ -99,6 +105,17 @@ class ReceiveWindowTests(unittest.TestCase):
                 m.verify_queue_exemption(rules([{"match":wrong},{"queue":{"num":210}}]))
         with self.assertRaises(ValueError):
             m.verify_queue_exemption(rules([{"queue":{"num":210}},{"match":match}]))
+
+    def test_listener_never_marks_synack_notrack_before_reverse_dnat(self):
+        # The real RU OUTPUT/predefrag chain untracks packets carrying BYPASS.
+        # A new listening socket must not inherit BYPASS on its SYN-ACKs.
+        proxy=m.WindowProxy("127.0.0.1","8.8.8.8",port=0)
+        try:
+            proxy.start()
+            mark=proxy.listener.getsockopt(socket.SOL_SOCKET,socket.SO_MARK)
+            self.assertEqual(mark & m.BYPASS,0)
+        finally:
+            proxy.close()
 
     def test_per_listener_clamp_negotiates_zero_without_sysctl_change(self):
         original=Path("/proc/sys/net/ipv4/tcp_window_scaling").read_bytes()
