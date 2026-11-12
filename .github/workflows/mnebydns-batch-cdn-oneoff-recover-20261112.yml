@@ -12,6 +12,7 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/mnebydns-batch-cdn-oneoff-recover-20261112.yml"
+      - "data/mnebydns-batch-inet32-retry-trigger-20261112.txt"
 permissions:
   contents: read
 concurrency:
@@ -33,6 +34,7 @@ jobs:
           python3 scripts/mnebydns-batch-108-canary-20261112.py self-test
           python3 scripts/mnebydns-batch-oneoff-cdn-rollback-recovery-20261112.py self-test
           python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_batch_108_canary.py' -v
+          python3 -m unittest discover -s scripts/tests -p 'test_owner_domain_*.py' -v
           python3 scripts/mnebydns-owner-domain-render-20261110.py self-test
           python3 scripts/mnebydns-owner-domain-controller-20261110.py self-test
           echo CDN_ROTATION_FIX_OFFLINE=PASS
