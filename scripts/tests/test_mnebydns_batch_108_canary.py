@@ -153,6 +153,24 @@ class Batch108Transactions(TestCase):
         self.assertEqual(sql.call_count,1)
         self.assertIn("last_error_code='BATCH_INCIDENT_CANARY_ABORT'",db.call_args.args[0])
 
+    def test_transient_preflight_does_not_mark_domain_failed(self):
+        with patch.object(batch,"ensure_quiet"),patch.object(batch,"capacity"), \
+             patch.object(batch,"set_phase"), \
+             patch.object(batch,"preflight",side_effect=RuntimeError("SSH_NETWORK_DOWN")), \
+             patch.object(batch,"cas") as cas,patch.object(batch,"report"):
+            with self.assertRaisesRegex(RuntimeError,"SSH_NETWORK_DOWN"):
+                batch.run_one("a.example.com",1)
+        cas.assert_not_called()
+
+    def test_confirmed_stale_preflight_is_recorded_without_live_route(self):
+        with patch.object(batch,"ensure_quiet"),patch.object(batch,"capacity"), \
+             patch.object(batch,"set_phase"), \
+             patch.object(batch,"preflight",side_effect=RuntimeError("STALE_DIFFERENTIAL")), \
+             patch.object(batch,"cas") as cas,patch.object(batch,"report"):
+            self.assertFalse(batch.run_one("a.example.com",1))
+        cas.assert_called_once_with("a.example.com","PENDING","FAILED",
+                                    "last_error_code='BATCH_PREFLIGHT_UNVERIFIED'")
+
     def test_uncertain_confirm_state_cannot_be_called_rolled_back(self):
         with patch.object(batch,"status_of",return_value="CONFIRMING"), \
              patch.object(batch.owner,"rollback_or_unchanged") as rollback, \
