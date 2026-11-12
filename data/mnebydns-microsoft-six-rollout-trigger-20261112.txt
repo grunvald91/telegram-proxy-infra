@@ -17,3 +17,8 @@ wildcard_microsoft_routes=false
 # Follow-up: previous push workflow 43239292903 skipped release despite reviewed trigger.
 # Explicit second reviewed activation after fixing diff-based gate.
 retry_round=2
+
+# Reviewed exact-host microsoft.com retry after owner stage DNS rotation fix.
+# Six inventory entries, five currently ACTIVE; recheck them, then attempt only failed microsoft.com.
+# Existing pinned origin IP still must pass direct trusted SNI TLS at stage before any config mutation.
+retry_round=3

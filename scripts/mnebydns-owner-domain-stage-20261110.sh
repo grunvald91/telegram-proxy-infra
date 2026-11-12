@@ -25,22 +25,35 @@ checkpoint="$(cat /opt/mnebydns-stable-checkpoints/current)"
 for pair in "dns:$dns" "nginx:$nginx" "proxy:/etc/mnebydns-googlepilot/nginx.conf"; do
   IFS=: read -r kind live <<< "$pair"
   cmp -s "$checkpoint/$kind.stable" "$live" || {
-    echo 'owner_domain_checkpoint_drift_denied=true'
+    echo 'owner_domain_checkpoint_drift_denied=true' >&2
     exit 3
   }
 done
 for service in nginx mnebydns-dot.service mnebydns-googlepilot.service xray.service; do
-  systemctl is-active --quiet "$service"
+  systemctl is-active --quiet "$service" || {
+    echo "owner_domain_preflight_service_unhealthy=$service" >&2
+    exit 3
+  }
 done
 test -s "$work/mnebydns-owner-domain-render-20261110.py"
 test -s "$work/mnebydns-owner-domain-rollback-20261110.sh"
 test -s "$work/mnebydns-dot-config-change-20261111.sh"
 python3 "$work/mnebydns-owner-domain-render-20261110.py" self-test
-validated="$(python3 "$work/mnebydns-owner-domain-render-20261110.py" probe --domain "$domain")"
-[[ "$origin" == "$validated" ]] || { echo 'owner_domain_origin_changed_denied=true'; exit 3; }
+# DNS answers can change on Microsoft and other CDNs. Validate the exact
+# already selected public pinned origin with original-host SNI and trusted TLS;
+# do NOT compare it with a separate resolver result from a later point in time.
+verified="$(python3 "$work/mnebydns-owner-domain-render-20261110.py" verify-origin   --domain "$domain" --ip "$origin")" || {
+  echo 'owner_domain_selected_origin_tls_failed=true' >&2
+  exit 3
+}
+[[ "$verified" == "$origin" ]] || {
+  echo 'owner_domain_pinned_ip_mismatch_denied=true' >&2
+  exit 3
+}
+echo 'owner_domain_same_pinned_origin_tls_verified=true'
 
 exec 9>/run/lock/mnebyvpn-public-route.lock
-flock -w 30 9 || exit 3
+flock -w 30 9 || { echo 'owner_domain_stage_lock_busy=true' >&2; exit 3; }
 test ! -e "$base"
 for suffix in service timer; do test ! -e "/etc/systemd/system/$name.$suffix"; done
 install -d -m 700 /opt/mnebydns-owner-domain "$base"
