@@ -7,12 +7,16 @@ on:
       - '.github/workflows/mnebydns-stable-five-public-health.yml'
       - 'scripts/mnebydns_reliability_monitor.py'
       - 'scripts/tests/test_mnebydns_reliability_monitor.py'
+      - 'scripts/mnebydns_onnode_service_probe.py'
+      - 'scripts/tests/test_mnebydns_onnode_service_probe.py'
   push:
     branches: [main]
     paths:
       - '.github/workflows/mnebydns-stable-five-public-health.yml'
       - 'scripts/mnebydns_reliability_monitor.py'
       - 'scripts/tests/test_mnebydns_reliability_monitor.py'
+      - 'scripts/mnebydns_onnode_service_probe.py'
+      - 'scripts/tests/test_mnebydns_onnode_service_probe.py'
   workflow_dispatch:
   # Preserve the existing 4x/day cadence: no extra scheduled Actions.
   schedule:
@@ -41,6 +45,8 @@ jobs:
           set -Eeuo pipefail
           python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_reliability_monitor.py' -v
           python3 -m py_compile scripts/mnebydns_reliability_monitor.py
+          python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_onnode_service_probe.py' -v
+          python3 -m py_compile scripts/mnebydns_onnode_service_probe.py
       - name: Read-only foreign exit IP observation (failures remain unknown)
         if: github.event_name != 'pull_request'
         shell: bash
@@ -73,6 +79,74 @@ jobs:
           fi
           echo "EGRESS_STATE=$state" >> "$GITHUB_ENV"
           echo "foreign_egress_ip_comparison=$state"
+      - name: Read-only synthetic SNI and HTTP status line from existing foreign VPS
+        if: github.event_name != 'pull_request'
+        shell: bash
+        env:
+          RELAY_SSH_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+        run: |
+          set -Eeuo pipefail
+          # Only the already configured foreign VPS. No other host, SSH write,
+          # service restart, route change, or extra Actions schedule.
+          state=unknown
+          if [[ -n "$RELAY_SSH_PASSWORD" && -s ops/mnebydns-owner-ssh-known_hosts ]]; then
+            export SSHPASS="$RELAY_SSH_PASSWORD"
+            if timeout 100 sshpass -e ssh \
+              -o ConnectTimeout=8 -o ServerAliveInterval=5 -o ServerAliveCountMax=1 \
+              -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 \
+              -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" \
+              -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR \
+              "root@$INGRESS_IP" "python3 -" \
+              < scripts/mnebydns_onnode_service_probe.py > onnode-health.json 2>/dev/null; then
+              state=attempted
+            fi
+          fi
+          python3 - "$state" <<'PY'
+          import json,os,sys,pathlib
+          path=pathlib.Path('onnode-health.json')
+          state=sys.argv[1]
+          try:
+              if state != "attempted":
+                  raise ValueError("remote unavailable")
+              evidence=json.loads(path.read_text())
+              if (evidence.get("schema_version")!=1
+                      or evidence.get("vantage")!="foreign_vps_loopback_443_not_end_user"
+                      or evidence.get("client_end_to_end_verified") is not False
+                      or evidence.get("automatic_failover_enabled") is not False
+                      or evidence.get("total")!=len(evidence.get("services",[]))
+                      or evidence.get("total")!=9):
+                  raise ValueError("invalid remote observation")
+          except (OSError,ValueError,TypeError,AttributeError):
+              evidence={
+                  "schema_version":1,"vantage":"foreign_vps_loopback_443_not_end_user",
+                  "state":"unverified","client_end_to_end_verified":False,
+                  "automatic_failover_enabled":False,
+                  "per_service_egress_verified":False,"services":[],
+              }
+              print("::warning title=MNEBYDNS one-node health::On-node synthetic SNI/HTTP observation unavailable or invalid; not marked as working.")
+          else:
+              evidence["state"]="observed"
+              print("mnebydns_onnode_tls_verified="+str(evidence["tls_verified"])+"/"+str(evidence["total"]))
+              print("mnebydns_onnode_http_2xx_3xx="+str(evidence["http_2xx_3xx"])+"/"+str(evidence["total"]))
+              for item in evidence["services"]:
+                  print("onnode_service="+str(item["service"])+" tls="+str(item["tls"])+
+                        " http="+str(item["http"])+
+                        " status="+str(item["http_status"])+
+                        " error_class="+str(item["error_class"]))
+          path.write_text(json.dumps(evidence,ensure_ascii=False,indent=2)+"\n")
+          summary=os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary:
+              with open(summary,"a") as f:
+                  f.write("### Single foreign VPS: synthetic on-node TLS/HTTP (read-only)\n\n")
+                  f.write("Observation: **"+evidence["state"]+"**. "
+                          "Client E2E and per-service egress: **NOT VERIFIED**. "
+                          "HTTP 403/404/451/429 alone do not prove a client outage. "
+                          "No failover or routing changes.\n\n")
+                  f.write("| Service | TLS cert | HTTP category | Status |\n|---|---|---|---:|\n")
+                  for item in evidence.get("services",[]):
+                      f.write("| "+str(item["service"])+" | "+str(item["tls"])+
+                              " | "+str(item["http"])+" | "+str(item["http_status"])+" |\n")
+          PY
       - name: Probe public DNS-over-TLS, route regression, and passthrough TLS
         if: github.event_name != 'pull_request'
         shell: bash
@@ -89,6 +163,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: mnebydns-readonly-health
-          path: health.json
+          path: |
+            health.json
+            onnode-health.json
           retention-days: 7
           if-no-files-found: ignore
