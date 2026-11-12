@@ -49,13 +49,6 @@ def locked():
         try:yield
         finally:fcntl.flock(fh,fcntl.LOCK_UN)
 
-def checkpoint() -> Path:
-    p=Path(CURRENT.read_text().strip())
-    if not re.fullmatch(r"/opt/mnebydns-stable-checkpoints/[0-9]+",str(p)):
-        raise RuntimeError("Invalid stable checkpoint pointer")
-    cmd("sha256sum","-c","stable-manifest.sha256",timeout=10)
-    return p
-
 def verify_checkpoint() -> Path:
     p=Path(CURRENT.read_text().strip())
     if not re.fullmatch(r"/opt/mnebydns-stable-checkpoints/[0-9]+",str(p)):
@@ -80,7 +73,7 @@ def check_services() -> None:
 def owner_quiescent() -> None:
     # Another exact-host canary can change the three shared configs;
     # block instead of fighting concurrent owner/108-domain operations.
-    timers=cmd("systemctl","list-timers","--all","--no-legend",output=True)
+    timers=cmd("systemctl","list-timers","--no-legend",output=True)
     for line in timers.splitlines():
         if OWNER_TIMER_PATTERN in line:
             raise RuntimeError("Owner DNS timer present: defer Meta canary")
@@ -294,7 +287,6 @@ def deploy(runid:str,work:Path) -> None:
             except Exception as exc:
                 raise RuntimeError("Meta direct origin TLS failed before deploy: "+host) from exc
         # Recovery timer is persistent and independent of Actions connection.
-        shutil.copy2(base/"live.py",base/"live.py") if False else None
         write_timer(base,runid)
         (base/"pending").write_text("timed canary\n")
         try:
