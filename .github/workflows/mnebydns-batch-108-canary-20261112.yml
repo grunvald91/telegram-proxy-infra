@@ -14,6 +14,7 @@ on:
     branches: [main]
     paths:
       - "data/mnebydns-batch-auto-enabled-20261112.txt"
+      - "data/mnebydns-batch-first-canary-trigger-20261112.txt"
   workflow_dispatch:
     inputs:
       mode:
