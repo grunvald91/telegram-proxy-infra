@@ -101,7 +101,8 @@ docker exec -i "$pg" psql -X -v ON_ERROR_STOP=1 -U canary -d mnebyvpn_canary \
   < "$work/config/fixture.sql" >/dev/null
 
 policy_hash="$(sha256sum "$work/config/routes.json" | cut -d' ' -f1)"
-docker run --detach --rm --name "$node" --network "$net" \
+docker run --detach --name "$node" --network "$net" \
+  --user 0:0 \
   --memory 320m --memory-swap 320m --cpus 0.75 --pids-limit 80 \
   --read-only --cap-drop ALL --security-opt no-new-privileges:true \
   --tmpfs /tmp:rw,nosuid,size=32m \
@@ -139,7 +140,8 @@ for i in $(seq 1 80); do
 done
 if [[ "$ready" != true ]]; then
   echo 'CANARY_TLS_LISTENER_FAILED'
-  docker logs --tail 12 "$node" 2>&1 | sed -E \
+  docker inspect --format 'CANARY_NODE_EXIT_CODE={{.State.ExitCode}}' "$node" 2>/dev/null || true
+  docker logs --tail 20 "$node" 2>&1 | sed -E \
     's#postgresql://[^ ]+#<redacted-dsn>#g' || true
   exit 2
 fi
