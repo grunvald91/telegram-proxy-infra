@@ -55,7 +55,7 @@ chmod 0640 "$dns"
 test "$(stat -c '%a:%U:%G' "$dns")" = '640:root:mnebydns-config-read'
 systemctl daemon-reload
 test "$(systemctl show --value -p DynamicUser "$service")" = yes
-systemctl show --value -p SupplementaryGroups "$service" | grep -Fxq "$reader"
+systemctl cat "$service" | grep -Fxq "SupplementaryGroups=$reader"
 test "$before" = "$(sha256sum "$dns" | cut -d' ' -f1)"
 cmp -s "$checkpoint/dns.stable" "$dns"
 systemctl reset-failed "$service"

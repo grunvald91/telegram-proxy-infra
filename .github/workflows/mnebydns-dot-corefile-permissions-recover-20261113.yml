@@ -23,7 +23,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Verify DynamicUser static supplementary group and guarded Corefile repair
+      - name: Verify DynamicUser reader group loaded from systemd unit and guarded repair
         shell: bash
         run: |
           set -Eeuo pipefail
