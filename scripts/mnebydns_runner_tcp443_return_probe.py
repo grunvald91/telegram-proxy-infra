@@ -78,7 +78,11 @@ def observe() -> None:
         results: list[tuple[str, str]] = []
         captured_ipv4_frames = 0
         capture_format = {"l3_ipv4": 0, "ethernet_ipv4": 0, "other": 0}
-        scope_counts = {"ip_tcp": 0, "target_ip_match": 0, "control_ip_match": 0}
+        scope_counts = {"ip_tcp": 0, "target_ip_match": 0, "control_ip_match": 0,
+                        "target_dport443": 0, "target_sport443": 0,
+                        "control_dport443": 0, "control_sport443": 0,
+                        "matching_syn_flag": 0, "matching_synack_flag": 0,
+                        "valid_tcp_header_offset": 0, "fragment_offset_nonzero": 0}
         completed = threading.Event()
 
         def client() -> None:
@@ -116,6 +120,28 @@ def observe() -> None:
                         scope_counts["target_ip_match"] += 1
                     if destinations.get(ip[12:16]) == "control443" or destinations.get(ip[16:20]) == "control443":
                         scope_counts["control_ip_match"] += 1
+                    frag = int.from_bytes(ip[6:8], "big")
+                    if frag & 0x1FFF:
+                        scope_counts["fragment_offset_nonzero"] += 1
+                    hlen = (ip[0] & 0x0F) * 4
+                    if hlen >= 20 and len(ip) >= hlen + 20:
+                        scope_counts["valid_tcp_header_offset"] += 1
+                        sport, dport = struct.unpack_from("!HH", ip, hlen)
+                        flags = ip[hlen + 13]
+                        outgoing = destinations.get(ip[16:20])
+                        incoming = destinations.get(ip[12:16])
+                        if outgoing == "foreign443" and dport == 443:
+                            scope_counts["target_dport443"] += 1
+                        if incoming == "foreign443" and sport == 443:
+                            scope_counts["target_sport443"] += 1
+                        if outgoing == "control443" and dport == 443:
+                            scope_counts["control_dport443"] += 1
+                        if incoming == "control443" and sport == 443:
+                            scope_counts["control_sport443"] += 1
+                        if outgoing and dport == 443 and flags & 2 and not flags & 16:
+                            scope_counts["matching_syn_flag"] += 1
+                        if incoming and sport == 443 and flags & 18 == 18:
+                            scope_counts["matching_synack_flag"] += 1
             event = packet_event(raw, destinations) if raw else None
             if event:
                 name, kind, sport = event
