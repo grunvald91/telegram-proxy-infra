@@ -104,6 +104,24 @@ def rollback_live_canary(name):
     if not owner.live_checkpoint_unchanged():
         raise RuntimeError("Rollback changed or failed stable baseline")
 
+def verify_failed_transition(name):
+    """Fail closed unless the failed attempt is in a terminal DB state.
+
+    An absent/stale rollback script is not proof that a live route was removed.
+    A lingering PROBING, CONFIRMING, or CANARY must stop this batch; only the
+    existing owner reconciler may finish or roll it back.
+    """
+    current=row(name)
+    if current["status"]=="CANARY":
+        rollback_live_canary(name)
+        current=row(name)
+    if not owner.live_checkpoint_unchanged():
+        raise RuntimeError("MICROSOFT_SHARED_CHECKPOINT_DRIFT")
+    if current["status"] in ACTIVE_TRANSITIONS:
+        raise RuntimeError("MICROSOFT_UNRESOLVED_OWNER_TRANSITION_"+current["status"])
+    return current["status"]
+
+
 def commit_canary(name):
     current=row(name)
     if current["status"]!="CANARY":
@@ -218,7 +236,8 @@ def main():
             current=row(name)
             if current["status"]!="CANARY":
                 print("microsoft_canary_NOT_ESTABLISHED="+name+":"+current["status"],flush=True)
-                failed.append(name+"|"+current["status"])
+                terminal=verify_failed_transition(name)
+                failed.append(name+"|"+terminal)
                 continue
             if current["run"]!=owner.RUNID:
                 raise RuntimeError("Mismatch between staged and committed canary identifier")
@@ -228,15 +247,12 @@ def main():
             print("microsoft_route_error="+name+":"+type(exc).__name__+
                   ":"+str(exc)[:200].replace("\n"," "),flush=True)
             try:
-                latest=row(name)
-                if latest["status"]=="CANARY":
-                    rollback_live_canary(name)
-                if not owner.live_checkpoint_unchanged():
-                    raise RuntimeError("STOP_SHARED_CHECKPOINT_NOT_VERIFIED")
-            except Exception:
-                print("microsoft_CRITICAL_ROLLBACK_NOT_VERIFIED="+name,flush=True)
+                terminal=verify_failed_transition(name)
+            except Exception as err:
+                print("microsoft_CRITICAL_UNRESOLVED_OWNER_STATE="+name+":"+
+                      type(err).__name__,flush=True)
                 raise
-            failed.append(name+"|"+row(name)["status"])
+            failed.append(name+"|"+terminal)
     print("microsoft_results_begin",flush=True)
     for name in TARGETS:
         status=row(name)["status"]
