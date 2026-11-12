@@ -333,6 +333,15 @@ def run_one(host, index):
         recover_failed_canary(host,owner.RUNID)
         raise
 
+def deploy_event_allowed(event, switch_enabled):
+    # Only the explicitly controlled GitHub workflow push paths can start a
+    # one-off canary. A scheduled wave additionally needs the Git switch.
+    if event=="workflow_dispatch":
+        return True
+    if event in ("schedule","push"):
+        return switch_enabled
+    return False
+
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument("mode",choices=("self-test","plan","deploy"))
@@ -354,8 +363,9 @@ def main():
     if args.mode=="deploy" and os.environ.get("GITHUB_EVENT_NAME")=="schedule" and not enabled():
         report("AUTOMATION_DISABLED")
         return
-    if args.mode=="deploy" and os.environ.get("GITHUB_EVENT_NAME") not in ("workflow_dispatch","schedule"):
-        raise RuntimeError("Deployment must be explicitly dispatched or scheduled after enable")
+    if args.mode=="deploy" and not deploy_event_allowed(
+            os.environ.get("GITHUB_EVENT_NAME"),enabled()):
+        raise RuntimeError("Deployment requires workflow_dispatch, or Git-enabled schedule/push")
     rows=table()
     preexisting_failure(rows,names)
     next_host=select_next(names,rows)
