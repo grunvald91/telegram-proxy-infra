@@ -264,4 +264,73 @@ class StagingRollbackTests(unittest.TestCase):
             self.assertIn(("systemctl","stop",ru.WORKER+".service"),calls)
             self.assertFalse(state["present"])
 
+
+    def test_ru_firewall_is_one_phone_exact_18443_and_never_all(self):
+        args=ru.firewall_args("185.137.178.123")
+        self.assertEqual(args[:4],["-s","185.137.178.123/32","-d",ru.RU_EDGE+"/32"])
+        self.assertIn("--dport",args)
+        self.assertEqual(args[args.index("--dport")+1],"18443")
+        self.assertEqual(args[-2:],["-j","ACCEPT"])
+        self.assertEqual(args[args.index("--comment")+1],ru.FIREWALL_COMMENT)
+        for unsafe in ("all","0.0.0.0","127.0.0.1","192.168.1.3",
+                       "185.137.178.123/0",ru.RU_EDGE):
+            with self.subTest(unsafe=unsafe), self.assertRaises(ValueError):
+                ru.firewall_args(unsafe)
+
+    def test_ru_scoped_firewall_install_and_idempotent_remove(self):
+        commands=[]
+        state={"rule":False}
+        def fake_cmd(argv,**kwargs):
+            commands.append(tuple(argv))
+            if "-C" in argv:
+                return SimpleNamespace(returncode=0 if state["rule"] else 1,stdout="")
+            if "-I" in argv:
+                state["rule"]=True
+            elif "-D" in argv:
+                state["rule"]=False
+            return SimpleNamespace(returncode=0,stdout="")
+        peer="185.137.178.123"
+        with patch.object(ru,"cmd",side_effect=fake_cmd):
+            ru.firewall_install(peer)
+            self.assertTrue(state["rule"])
+            ru.firewall_remove(peer)
+            ru.firewall_remove(peer)
+            self.assertFalse(state["rule"])
+        mutating=[x for x in commands if "-I" in x or "-D" in x]
+        self.assertEqual(len(mutating),2)
+        self.assertEqual(mutating[0][:6],("iptables","-w","5","-I",ru.FIREWALL_CHAIN,"1"))
+        self.assertEqual(mutating[1][:5],("iptables","-w","5","-D",ru.FIREWALL_CHAIN))
+        self.assertTrue(all(ru.FIREWALL_COMMENT in x for x in mutating))
+
+    def test_ru_rollback_removes_ufw_exception_after_nft_and_preserves_marker_on_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);(root/"armed").write_text("armed")
+            (root/"peer").write_text("185.137.178.123")
+            marker=root/"firewall-pending";marker.write_text("185.137.178.123")
+            nft={"on":True};actions=[];fail={"on":True}
+            def command(argv,**kw):
+                actions.append(tuple(argv))
+                if argv[:3]==["nft","delete","table"]:nft["on"]=False
+                if argv[:2]==["systemctl","show"]:
+                    return SimpleNamespace(returncode=0,stdout="MainPID=0\\nActiveState=inactive\\n")
+                return SimpleNamespace(returncode=0,stdout="")
+            def remove(peer):
+                actions.append(("remove",peer))
+                if fail["on"]:raise RuntimeError("simulated UFW delete failure")
+            with patch.object(ru,"ROOT",root),patch.object(ru,"table_exists",side_effect=lambda:nft["on"]),\\
+                 patch.object(ru,"cmd",side_effect=command),patch.object(ru,"firewall_remove",side_effect=remove):
+                with self.assertRaisesRegex(RuntimeError,"firewall_remove"):
+                    ru._rollback_locked()
+                self.assertTrue(marker.exists(),"failed cleanup must retain recovery intent")
+                self.assertEqual(actions[0][:3],("nft","delete","table"))
+                fail["on"]=False
+                ru._rollback_locked()
+                self.assertFalse(marker.exists())
+                self.assertIn(("remove","185.137.178.123"),actions)
+
+    def test_ru_firewall_check_fails_closed_on_iptables_errors(self):
+        with patch.object(ru,"cmd",return_value=SimpleNamespace(returncode=4,stdout="")):
+            with self.assertRaisesRegex(RuntimeError,"inspect scoped firewall"):
+                ru.firewall_present("185.137.178.123")
+
 if __name__=="__main__":unittest.main()
