@@ -311,8 +311,18 @@ def run_one(host, index):
             raise RuntimeError("CANDIDATE_NOT_CANARY")
         pinned=db("SELECT coalesce(verified_origin_ip::text,'') FROM dns_admin_domains "
                   "WHERE domain='"+host+"' AND product='"+PRODUCT+"' AND status='CANARY'")
+        # CDN DNS can rotate between the initial preflight and owner.apply().
+        # Do not accept or reject an IP merely because it differs: independently
+        # re-test the exact IPv4 *actually pinned* by the existing controller.
+        pinned=owner._render.validated_public_ip(pinned)
+        pinned_de=http_probe("de",host,pinned)
+        pinned_ru=http_probe("ru",host,pinned)
+        if not (200<=pinned_de<400 and pinned_ru in (403,451)):
+            raise RuntimeError("PINNED_ORIGIN_ACCESS_DIFFERENCE_NOT_VERIFIED")
         if pinned!=origin:
-            raise RuntimeError("CANDIDATE_CHANGED_ORIGIN_IP")
+            report("CDN_ORIGIN_ROTATED_REVALIDATED",domain=host,
+                   initially_checked=origin,actually_pinned=pinned,
+                   foreign_http=pinned_de,russian_http=pinned_ru)
         # Real public RU->DE SNI route, not foreign localhost; strict TLS CA.
         through_edge=http_probe("ru",host,owner.EDGE)
         if not 200<=through_edge<400:
