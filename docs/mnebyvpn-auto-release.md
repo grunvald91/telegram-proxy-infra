@@ -76,3 +76,17 @@ was confirmed in [infrastructure intake run 43069532717](https://github.com/grun
 Trigger the existing isolated Telegram bot canary/promote action (not website, DNS,
 Nginx, VPN, Xray or payment changes); require current green main and verified webhook
 health before claiming the release is live.
+
+## 2026-11-12 · Smart DNS owner panel metadata warning fix
+
+Release source: [Mnebyvpn PR #115](https://github.com/grunvald91/Mnebyvpn/pull/115), main commit
+`3e8f6f2c97be53f9ecf7c5eca75b4b5df9e8a655`,
+[main CI 43223955403](https://github.com/grunvald91/Mnebyvpn/actions/runs/43223955403)
+SUCCESS. Existing Microsoft admin mistakenly displayed "Маршрут подтверждён" when
+`status='ACTIVE'` with `last_error_code='ACTIVE_ROUTE_METADATA_INVALID'`.
+The owner-only list and card now flag ANY nonempty ACTIVE health error, and do
+not claim that an active exact-host route establishes full Microsoft app
+functionality. Two new Telegram contract tests are green.
+Request only the existing guarded isolated Telegram bot canary/promote
+mechanism on 188, with preserved webhook secret and rollback. **No DNS,
+CoreDNS, Nginx, Xray, VPN, PostgreSQL or other network route changes.**
