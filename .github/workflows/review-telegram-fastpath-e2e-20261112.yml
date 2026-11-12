@@ -1,0 +1,120 @@
+name: Review live MTProxy fastpath SNI and active redirect read only
+on:
+  push:
+    branches: [fix/telegram-fastpath-wg443-20261112]
+    paths: ['.github/workflows/review-telegram-fastpath-e2e-20261112.yml']
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Read-only route config and redirection check (no client addresses printed)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass >/dev/null
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=1 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@188.120.254.223 'python3 -' <<'PY'
+          import pathlib,subprocess,re,socket
+          def call(args):
+              try:
+                  p=subprocess.run(args,timeout=9,capture_output=True,text=True)
+                  return p.returncode,p.stdout
+              except Exception: return 255,''
+          path=pathlib.Path('/etc/nginx/streams.d/02-user-fastpath.conf')
+          s=path.read_text()
+          conf=call(['nginx','-T'])
+          assert conf[0]==0
+          print('ru_file_new_target_once='+str(s.count('proxy_pass 10.66.77.1:443;')),flush=True)
+          print('ru_file_old_target_count='+str(s.count('proxy_pass 10.66.77.1:9470;')),flush=True)
+          print('ru_10443_listeners='+str(s.count('listen 10443 ')),flush=True)
+          print('ru_nginx_T_expected_fastpath_count='+str(conf[1].count('proxy_pass 10.66.77.1:443;')),flush=True)
+          for t in [('10.66.77.1',443),('127.0.0.1',10443)]:
+              try:
+                  with socket.create_connection(t,timeout=3): status='open'
+              except Exception as e: status=type(e).__name__
+              print('ru_tcp_'+str(t[1])+'='+status,flush=True)
+          for name,args in [('iptables-nat',['iptables-save','-t','nat']),('iptables-mangle',['iptables-save','-t','mangle']),('nft',['nft','-a','list','ruleset'])]:
+              rc,out=call(args)
+              matching=[line for line in out.splitlines() if '10443' in line]
+              print('ru_'+name+'_read='+str(rc==0)+' 10443_rules='+str(len(matching))+' redirect='+str(any(re.search(r'REDIRECT|DNAT|redirect to|dnat to',line,re.I) for line in matching))+' tproxy='+str(any('TPROXY' in line for line in matching)),flush=True)
+          print('ru_readonly_complete=true')
+          PY
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=1 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@89.125.90.101 'python3 -' <<'PY'
+          import subprocess,re
+          p=subprocess.run(['nginx','-T'],capture_output=True,text=True,timeout=9)
+          assert p.returncode==0
+          print('de_media_sni_exact_map_count='+str(len(re.findall(r'(?m)^\s*media\.bandbook\.site\s+127\.0\.0\.1:9470\s*;',p.stdout))),flush=True)
+          print('de_foreign_443_ssl_preread='+str('ssl_preread on;' in p.stdout),flush=True)
+          print('de_readonly_complete=true',flush=True)
+          PY
+      - name: Probe real SNI forwarding through RU localhost 10443 and observe DE loopback 9470 without MTProxy secret
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ssh_opts=(-o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=1 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh "${ssh_opts[@]}" root@89.125.90.101 'python3 -' > "$RUNNER_TEMP/foreign-witness.txt" <<'PY' &
+          import pathlib,time
+          def list_ports(port):
+              ids=set()
+              for file in ('/proc/net/tcp',):
+                  try: lines=pathlib.Path(file).read_text().splitlines()[1:]
+                  except OSError: continue
+                  for line in lines:
+                      cols=line.split()
+                      if len(cols)<4:continue
+                      if cols[1].endswith(':'+format(port,'04X')) and cols[3] in ('01','08'):
+                          ids.add(cols[2])
+              return ids
+          baseline9470=list_ports(9470)
+          baseline9443=list_ports(9443)
+          new9470=set()
+          new9443=set()
+          start=time.monotonic()
+          while time.monotonic()-start<5.0:
+              new9470.update(list_ports(9470)-baseline9470)
+              new9443.update(list_ports(9443)-baseline9443)
+              time.sleep(.01)
+          print('foreign_new_established_to_9470='+str(len(new9470)),flush=True)
+          print('foreign_new_established_to_9443='+str(len(new9443)),flush=True)
+          print('witness_scope=synthetic_client_approximation_not_authenticated_telegram',flush=True)
+          PY
+          watcher_pid=$!
+          sleep 0.75
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh "${ssh_opts[@]}" root@188.120.254.223 'python3 -' <<'PY'
+          import ssl,socket,time
+          ctx=ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+          ctx.check_hostname=False
+          ctx.verify_mode=ssl.CERT_NONE
+          inp=ssl.MemoryBIO()
+          out=ssl.MemoryBIO()
+          sock=ctx.wrap_bio(inp,out,server_hostname='media.bandbook.site')
+          try: sock.do_handshake()
+          except ssl.SSLWantReadError:pass
+          client_hello=out.read()
+          assert client_hello.startswith(b'\x16\x03') and b'media.bandbook.site' in client_hello
+          with socket.create_connection(('127.0.0.1',10443),timeout=3) as t:
+              t.settimeout(3)
+              t.sendall(client_hello)
+              try: response=t.recv(512)
+              except socket.timeout: response=b''
+              print('ru_synthetic_clienthello_sent=true',flush=True)
+              print('ru_synthetic_hello_response_bytes='+str(len(response)),flush=True)
+              time.sleep(.5)
+          PY
+          wait "$watcher_pid"
+          cat "$RUNNER_TEMP/foreign-witness.txt"
+          echo 'NOTE: unauthed TLS ClientHello cannot prove real MTProxy login or media transfer'
