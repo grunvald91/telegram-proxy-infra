@@ -233,6 +233,19 @@ jobs:
               except Exception as exc:
                   out(label+'_TLS_OK',False)
                   out(label+'_ERROR',type(exc).__name__)
+          code,all_containers=run('docker','ps','-a','--format','{{.Names}}')
+          remaining=[x for x in all_containers.splitlines()
+                     if x.startswith('mnebydns-canary-')] if code==0 else ['UNKNOWN']
+          out('CANARY_REMAINING_CONTAINERS',len(remaining))
+          code,all_networks=run('docker','network','ls','--format','{{.Name}}')
+          leftover_networks=[x for x in all_networks.splitlines()
+                             if x.startswith('mnebydns-canary-')] if code==0 else ['UNKNOWN']
+          out('CANARY_REMAINING_NETWORKS',len(leftover_networks))
+          out('CANARY_PREVIOUS_TEST_DIR_PRESENT',
+              pathlib.Path('/tmp/mnebydns-personal-dot-43317119912').exists())
+          if remaining or leftover_networks or pathlib.Path(
+                  '/tmp/mnebydns-personal-dot-43317119912').exists():
+              raise SystemExit('Residual disposable canary resources detected')
           out('READONLY_NO_MUTATIONS',True)
           PY
       - name: Summary
