@@ -209,6 +209,17 @@ jobs:
               relevant=[x for x in images.splitlines() if any(
                   word in x.lower() for word in ('node','postgres','mnebyvpn'))]
               out('RELEVANT_DOCKER_IMAGES',','.join(relevant[:25])[:650])
+          code,pg_image=run('docker','inspect','-f','{{.Config.Image}}','mnebyvpn-stage-postgres')
+          out('PG_CONTAINER_IMAGE',pg_image if code==0 else 'UNKNOWN')
+          code,web_image=run('docker','inspect','-f','{{.Config.Image}}','mnebyvpn-stage-web')
+          out('WEB_CONTAINER_IMAGE',web_image if code==0 else 'UNKNOWN')
+          code,web_workdir=run('docker','inspect','-f','{{.Config.WorkingDir}}','mnebyvpn-stage-web')
+          out('WEB_CONTAINER_WORKDIR',web_workdir if code==0 else 'UNKNOWN')
+          code,web_node=run('docker','exec','mnebyvpn-stage-web','node','--version')
+          out('WEB_CONTAINER_NODE',web_node if code==0 else 'MISSING')
+          code,web_pg=run('docker','exec','mnebyvpn-stage-web','node','-e',
+              "console.log(require.resolve('pg'))")
+          out('WEB_CONTAINER_PG_AVAILABLE',code==0)
           import socket,ssl,time
           for label,ip,name in (
               ('FOREIGN_DOT','89.125.90.101','dns.mnebyvpn.site'),
