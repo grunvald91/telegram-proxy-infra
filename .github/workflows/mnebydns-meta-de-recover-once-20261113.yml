@@ -97,10 +97,15 @@ jobs:
             test "$(stat -c '%a:%u:%g' "$live")" = "$(stat -c '%a:%u:%g' "$original")"
           done
           echo meta_recovery_stable_file_metadata_restored=PASS
+          trap 'rc=$?; echo "meta_recovery_error_line=$LINENO exit=$rc" >&2' ERR
           # Keep DynamicUser isolation while letting CoreDNS read just the
           # configuration, not the TLS private-key credentials.
-          test "$(systemctl show -P User mnebydns-dot.service)" = 'mnebydns-dot'
-          test "$(systemctl show -P DynamicUser mnebydns-dot.service)" = 'yes'
+          user=$(systemctl show -P User mnebydns-dot.service)
+          dynamic=$(systemctl show -P DynamicUser mnebydns-dot.service)
+          echo "meta_recovery_service_user=$user dynamic=$dynamic"
+          test "$user" = 'mnebydns-dot'
+          test "$dynamic" = 'yes'
+          echo meta_recovery_reader_group_setup_begin=true
           group=mnebydns-corefile-readers
           if ! getent group "$group" >/dev/null; then
             groupadd --system "$group"
@@ -109,7 +114,7 @@ jobs:
           install -d -m 755 "$unit_dir"
           dropin="$unit_dir/50-corefile-readers.conf"
           if [[ -e "$dropin" ]]; then
-            grep -Fxq "SupplementaryGroups=$group" "$dropin"
+            grep -Fxq "SupplementaryGroups=$group" "$dropin" || { echo 'meta_recovery_existing_dropin_mismatch=true' >&2; exit 7; }
           else
             printf '[Service]\\nSupplementaryGroups=%s\\n' "$group" > "$dropin"
             chmod 644 "$dropin"
@@ -119,7 +124,9 @@ jobs:
           test "$(stat -c %a "$dns")" = 640
           test "$(stat -c %G "$dns")" = "$group"
           systemctl daemon-reload
-          test "$(systemctl show -P SupplementaryGroups mnebydns-dot.service)" = "$group"
+          actual_groups=$(systemctl show -P SupplementaryGroups mnebydns-dot.service)
+          echo "meta_recovery_service_supplementary_groups=$actual_groups"
+          test "$actual_groups" = "$group"
           echo meta_recovery_corefile_service_reader_group=PASS
           nginx -t >/dev/null
           if ! systemctl is-active --quiet nginx.service; then
