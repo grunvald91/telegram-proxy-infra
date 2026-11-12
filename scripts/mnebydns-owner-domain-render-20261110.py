@@ -40,6 +40,24 @@ def validated_public_ip(ip: str) -> str:
     return str(parsed)
 
 
+def verify_pinned_origin(host: str, ip: str) -> str:
+    """Verify the immutable public origin by ORIGINAL hostname SNI, not DNS re-resolution.
+
+    CDN A records can legitimately rotate between the initial probe and the
+    guarded stage. Checking a new resolver answer for byte-equality would
+    reject a valid pinned origin; requiring trusted end-to-end TLS to this
+    *same* IP instead preserves the original security invariant.
+    """
+    validate_domain(host)
+    ip=validated_public_ip(ip)
+    with socket.create_connection((ip, 443), timeout=6) as tcp:
+        tcp.settimeout(6)
+        with ssl.create_default_context().wrap_socket(tcp, server_hostname=host) as tls:
+            if not tls.getpeercert():
+                raise RuntimeError("PINNED_ORIGIN_TLS_CERT_NOT_VERIFIED")
+    return ip
+
+
 def origin_ip(host: str) -> str:
     validate_domain(host)
     candidates = sorted({
@@ -276,7 +294,7 @@ def self_test() -> None:
 
 def main() -> None:
     p=argparse.ArgumentParser()
-    p.add_argument("command",choices=("self-test","probe","render-add","render-remove"))
+    p.add_argument("command",choices=("self-test","probe","verify-origin","render-add","render-remove"))
     p.add_argument("--domain")
     p.add_argument("--ip")
     p.add_argument("--core")
@@ -291,6 +309,10 @@ def main() -> None:
     domain=validate_domain(args.domain)
     if args.command=="probe":
         print(origin_ip(domain),flush=True)
+        return
+    if args.command=="verify-origin":
+        if not args.ip:p.error("ip required for verified origin")
+        print(verify_pinned_origin(domain,args.ip),flush=True)
         return
     if not args.core or not args.nginx or not args.out:
         p.error("core, nginx and out required")
