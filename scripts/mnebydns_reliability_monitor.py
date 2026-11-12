@@ -106,7 +106,11 @@ def decode_dns_response(packet: bytes, qname: str, qtype: int, transaction: int)
     if len(packet) < 12:
         raise ValueError("short DNS response")
     txid, flags, qd, an, _, _ = struct.unpack_from("!HHHHHH", packet)
-    if txid != transaction or not flags & 0x8000 or qd != 1:
+    # TCP DNS responses must not be truncated, must be standard replies
+    # and must contain precisely the question we issued. Never interpret a
+    # copied or unrelated A/AAAA RR as proof that a route is correct.
+    if (txid != transaction or not flags & 0x8000 or flags & 0x7A00
+            or qd != 1):
         raise ValueError("invalid DNS response header")
     name, offset = _read_name(packet, 12)
     if offset + 4 > len(packet):
@@ -115,19 +119,40 @@ def decode_dns_response(packet: bytes, qname: str, qtype: int, transaction: int)
     if name != qname.rstrip(".").lower() or requested_type != qtype or qclass != 1:
         raise ValueError("DNS question mismatch")
     offset += 4
-    ips: list[str] = []
+    aliases: dict[str, str] = {}
+    candidates: list[tuple[str, str]] = []
     for _ in range(an):
-        _, offset = _read_name(packet, offset)
+        owner, offset = _read_name(packet, offset)
         if offset + 10 > len(packet):
             raise ValueError("truncated DNS record")
         typ, cls, _, n = struct.unpack_from("!HHIH", packet, offset)
         offset += 10
         if offset + n > len(packet):
             raise ValueError("truncated DNS RDATA")
-        if cls == 1 and typ == qtype and n == (4 if qtype == 1 else 16):
-            ips.append(str(ipaddress.ip_address(packet[offset:offset+n])))
+        if cls == 1 and typ == 5:
+            target, end = _read_name(packet, offset)
+            if end != offset + n or not target:
+                raise ValueError("invalid CNAME RDATA")
+            if owner in aliases and aliases[owner] != target:
+                raise ValueError("conflicting CNAME aliases")
+            aliases[owner] = target
+        elif cls == 1 and typ == qtype and n == (4 if qtype == 1 else 16):
+            candidates.append((owner, str(ipaddress.ip_address(packet[offset:offset+n]))))
         offset += n
-    return DnsAnswer(flags & 0x0F, tuple(ips))
+
+    valid_owners = {name}
+    cursor = name
+    for _ in range(16):
+        target = aliases.get(cursor)
+        if target is None:
+            break
+        if target in valid_owners:
+            raise ValueError("CNAME cycle in DNS response")
+        valid_owners.add(target)
+        cursor = target
+    else:
+        raise ValueError("CNAME chain exceeded limit")
+    return DnsAnswer(flags & 0x0F, tuple(ip for owner, ip in candidates if owner in valid_owners))
 
 
 def dot_query(resolver_ip: str, tls_name: str, host: str, qtype: int, timeout: float = 5) -> DnsAnswer:
@@ -156,12 +181,27 @@ def verified_tls_handshake(ip: str, hostname: str, timeout: float = 5) -> float:
     return round((time.monotonic() - started) * 1000, 1)
 
 
-def tcp_reachable(host: str, *, timeout: float = 4) -> tuple[str, str | None]:
-    try:
-        with socket.create_connection((host, 443), timeout=timeout):
+def tcp_reachable(host: str, *, timeout: float = 4, attempts: int = 2) -> tuple[str, str | None]:
+    """External TCP/443 evidence via IPv4, with a bounded retry.
+
+    One GitHub runner probe is not a client reachability SLA. Probe only;
+    never change a server, firewall, DNS or VPN route in response.
+    """
+    if not 1 <= attempts <= 3:
+        raise ValueError("attempts out of range")
+    last_error = None
+    for index in range(attempts):
+        try:
+            # Restrict both targets to AF_INET for a comparable control.
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as conn:
+                conn.settimeout(timeout)
+                conn.connect((host, 443))
             return "pass", None
-    except (OSError, ValueError) as exc:
-        return "fail", type(exc).__name__
+        except (OSError, ValueError) as exc:
+            last_error = type(exc).__name__
+            if index + 1 < attempts:
+                time.sleep(0.15)
+    return "fail", last_error
 
 
 def evaluate_route(expected: Route, answer: DnsAnswer, ingress: str) -> str:
@@ -247,12 +287,27 @@ def monitor(
     if egress == "mismatch":
         failures += 1
     # Probe TCP/443 from the same external runner to an ordinary control host.
-    # A control pass + ingress failure is a path-specific reachability alarm,
-    # not evidence that every user ISP has this problem.
-    if ingress_tcp == "fail" and control_tcp == "pass":
-        failures += 1
+    # Public 443 on the foreign host is a separate, unverified route:
+    # actual customers may use RU/WG/private paths. A GitHub-runner timeout
+    # cannot be promoted to a confirmed client outage or a hard CI failure.
+    external_tcp_path_warning = ingress_tcp == "fail" and control_tcp == "pass"
     transport_warning_count = sum(
         item["tls"] in {"fail", "skipped_ingress_tcp_unreachable"} for item in records
+    )
+    ipv6_possible_bypass_count = sum(
+        item["ipv6"] == "possible_direct_bypass" for item in records
+    )
+    diagnostics_incomplete = (
+        bool(transport_warning_count) or ingress_tcp != "pass"
+        or control_tcp != "pass" or egress == "unknown"
+        or bool(ipv6_possible_bypass_count)
+        or any(item["dns"] == "unknown" or item["ipv6"] in {"unknown", "dns_error"}
+               for item in records)
+    )
+    health_classification = (
+        "dns_or_node_egress_regression" if failures
+        else "dns_routes_observed_transport_unverified" if diagnostics_incomplete
+        else "dns_routes_and_public_transport_observed"
     )
     return {
         "schema_version": 1,
@@ -262,7 +317,11 @@ def monitor(
         "tcp_ingress": ingress_tcp,
         "tcp_control": control_tcp,
         "tcp_error_class": ingress_tcp_error,
+        "external_tcp_path_warning": external_tcp_path_warning,
         "transport_warning_count": transport_warning_count,
+        "ipv6_possible_bypass_count": ipv6_possible_bypass_count,
+        "health_classification": health_classification,
+        "client_end_to_end_verified": False,
         "critical_failures": failures,
         "route_fallback_enabled": False,
         "services": records,
@@ -290,17 +349,26 @@ def main() -> int:
     print(f"egress_stability={report['egress_ip']} tcp_ingress={report['tcp_ingress']} "
           f"tcp_control={report['tcp_control']} tcp_error_class={report['tcp_error_class']} "
           f"transport_warnings={report['transport_warning_count']} "
+          f"external_path_warning={report['external_tcp_path_warning']} "
+          f"health={report['health_classification']} "
           f"critical_failures={report['critical_failures']}")
-    if report["transport_warning_count"]:
-        print("::warning title=SmartDNS transport unverified::Public ingress TLS checks failed or "
-              "were skipped; a working DNS record does not prove a working app")
+    if report["transport_warning_count"] or report["external_tcp_path_warning"]:
+        print("::warning title=SmartDNS transport unverified::Public ingress TCP/TLS checks failed "
+              "or were skipped; this does not prove an outage on the client data path")
+    if report["ipv6_possible_bypass_count"]:
+        print("::warning title=SmartDNS IPv6 route risk::Some proxied hosts return AAAA records "
+              "that could bypass IPv4-only routing; real-client validation is required")
+    if report["egress_ip"] == "unknown":
+        print("::warning title=SmartDNS direct egress unknown::Node public IPv4 was not verified")
     if (summary := os.environ.get("GITHUB_STEP_SUMMARY")):
         with open(summary, "a", encoding="utf8") as f:
             f.write("### Read-only MNEBYDNS health\n\n")
-            f.write(f"DNS/egress/external-TCP regressions: **{report['critical_failures']}**. "
-                    f"Ingress TCP: **{report['tcp_ingress']}**, control TCP: **{report['tcp_control']}**, "
-                    f"TLS warning count: **{report['transport_warning_count']}**. "
-                    "No automatic failover or route changes. TLS is observational.\n\n")
+            f.write(f"DNS and node direct-egress regressions: **{report['critical_failures']}**. "
+                    f"Public ingress TCP: **{report['tcp_ingress']}**, control TCP: **{report['tcp_control']}**, "
+                    f"TLS warnings: **{report['transport_warning_count']}**. "
+                    f"Classification: **{report['health_classification']}**. "
+                    "Real-client E2E: **NOT VERIFIED**. "
+                    "No automatic failover or route changes.\n\n")
             f.write("| Service | DNS route | IPv6 | TLS | DNS ms |\n|---|---|---|---|---:|\n")
             for item in report["services"]:
                 f.write(f"| {item['service']} | {item['dns']} | {item['ipv6']} | {item['tls']} | {item['dns_ms']} |\n")
