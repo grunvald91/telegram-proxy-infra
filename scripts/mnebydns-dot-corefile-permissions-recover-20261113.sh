@@ -47,7 +47,7 @@ if test -e "$dropin"; then
   test "$(cat "$dropin")" = "[Service]
 SupplementaryGroups=mnebydns-config-read"
 else
-  printf '[Service]\\nSupplementaryGroups=mnebydns-config-read\\n' > "$dropin"
+  printf '[Service]\nSupplementaryGroups=mnebydns-config-read\n' > "$dropin"
   chmod 0644 "$dropin"
 fi
 chgrp "$reader" "$dns"
