@@ -53,6 +53,12 @@ def nft_rules(edge, peer, *, port=18443, interface="eth0", table="mneby_meta_v15
         raise ValueError("invalid table")
     if not re.fullmatch(r"[a-zA-Z0-9_.-]{1,15}", interface):
         raise ValueError("invalid interface")
+    # IMPORTANT: the RU telegram_nfqws OUTPUT/predefrag rule applies notrack to
+    # packets marked BYPASS.  A mark inherited from the TCP listener therefore
+    # prevents conntrack from reversing 443 -> 18443 DNAT for SYN-ACK replies.
+    # Only mark these reply packets at postrouting priority 100: after conntrack
+    # has already run, but before telegram_nfqws NFQUEUE at priority 101.
+    ct_source="" if shared else f"ct original ip saddr {peer} "
     return (f"add table inet {table}\n"
         f"add chain inet {table} pre {{ type nat hook prerouting priority -101; policy accept; }}\n"
         f'add rule inet {table} pre iifname "{interface}" {source}ip daddr {edge} '
@@ -60,7 +66,12 @@ def nft_rules(edge, peer, *, port=18443, interface="eth0", table="mneby_meta_v15
         f"add chain inet {table} out {{ type filter hook output priority -149; policy accept; }}\n"
         f"add rule inet {table} out ip saddr {edge} {destination}tcp sport {port} "
         f"meta mark & {RELEASED:#x} == 0 tcp flags & ack == ack tcp window > {WINDOW} "
-        f"counter tcp window set {WINDOW}\n")
+        f"counter tcp window set {WINDOW}\n"
+        f"add chain inet {table} post {{ type filter hook postrouting priority 100; policy accept; }}\n"
+        f'add rule inet {table} post oifname "{interface}" ip saddr {edge} {destination}'
+        f'ct direction reply ct status dnat {ct_source}ct original ip daddr {edge} '
+        f'ct original proto-dst 443 ct reply proto-src {port} '
+        f'counter meta mark set meta mark | {BYPASS:#x}\n')
 
 
 def verify_queue_exemption(ruleset):
@@ -191,9 +202,9 @@ class WindowProxy:
         try:
             listener.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
             listener.setsockopt(socket.IPPROTO_TCP,socket.TCP_WINDOW_CLAMP,CLAMP)
-            # Inherited by SYNACK and accepted sockets; bypass existing server
-            # synack_split only for this dedicated listener's replies.
-            listener.setsockopt(socket.SOL_SOCKET,socket.SO_MARK,BYPASS)
+            # Do not mark the listener: BYPASS on SYN-ACK would trigger the
+            # existing OUTPUT notrack rule before reverse DNAT can take place.
+            # The peer-scoped postrouting rule marks replies only after conntrack.
             listener.bind((self.edge,self.port))
             listener.listen(64)
             listener.settimeout(.25)
@@ -245,7 +256,9 @@ class WindowProxy:
             # Linux still believes its original advertised window. Because
             # scale zero was negotiated by the kernel itself, restoring the
             # unmodified window needs no translation or changed TCP options.
-            conn.setsockopt(socket.SOL_SOCKET,socket.SO_MARK,BYPASS|RELEASED)
+            # RELEASED alone prevents the small-window clamp without
+            # triggering the unrelated pre-conntrack BYPASS/notrack rule.
+            conn.setsockopt(socket.SOL_SOCKET,socket.SO_MARK,RELEASED)
             conn.setsockopt(socket.IPPROTO_TCP,socket.TCP_QUICKACK,1)
             self.count("window_released")
             # The RU shared :443 ingress also handles non-Meta connections.
