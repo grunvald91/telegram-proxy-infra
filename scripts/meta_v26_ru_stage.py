@@ -29,6 +29,8 @@ STAGE=Path("/usr/local/libexec/mneby-meta-v26")
 UNIT="mneby-meta-v26-ru-watchdog"
 WORKER="mneby-meta-v26-ru-window"
 TABLE="mneby_meta_v26_ru"
+FIREWALL_CHAIN="ufw-user-input"
+FIREWALL_COMMENT="mneby-meta-v26-scoped-tcp18443"
 CLEANUP_SECONDS=2400
 WORKER_SECONDS=2700
 
@@ -59,6 +61,35 @@ def table_exists():
     return any(v.get("table",{}).get("family")=="inet" and
                v.get("table",{}).get("name")==TABLE
                for v in rules.get("nftables",[]))
+
+def firewall_args(peer):
+    # This trial never opens TCP 18443 for arbitrary sources.
+    if peer=="all":
+        raise ValueError("temporary firewall rule requires one exact phone IPv4")
+    peer=checked_peer(peer)
+    return ["-s",peer+"/32","-d",RU_EDGE+"/32","-p","tcp",
+            "--dport",str(TEST_PORT),"-m","comment","--comment",FIREWALL_COMMENT,
+            "-j","ACCEPT"]
+
+def firewall_present(peer):
+    result=cmd(["iptables","-w","5","-C",FIREWALL_CHAIN,*firewall_args(peer)],
+               timeout=10,check=False)
+    if result.returncode not in (0,1):
+        raise RuntimeError("unable to inspect scoped firewall rule")
+    return result.returncode==0
+
+def firewall_install(peer):
+    if firewall_present(peer):
+        raise RuntimeError("owned firewall rule already present before start")
+    cmd(["iptables","-w","5","-I",FIREWALL_CHAIN,"1",*firewall_args(peer)],timeout=12)
+    if not firewall_present(peer):
+        raise RuntimeError("scoped TCP18443 firewall rule installation not verified")
+
+def firewall_remove(peer):
+    if firewall_present(peer):
+        cmd(["iptables","-w","5","-D",FIREWALL_CHAIN,*firewall_args(peer)],timeout=12)
+    if firewall_present(peer):
+        raise RuntimeError("scoped TCP18443 firewall rule remains after rollback")
 
 @contextmanager
 def locked():
@@ -158,6 +189,11 @@ def baseline(peer):
                  "mneby-meta-v15-proxy.service","mneby-meta-v15-cleanup.timer"):
         if active(name):raise RuntimeError("prior experimental service active")
     verify_queue_exemption(json.loads(cmd(["nft","-j","list","ruleset"]).stdout))
+    # The DNAT target port, not public 443, is seen by UFW's input chain.
+    # Verify the chain exists and our exact owned rule is not orphaned.
+    cmd(["iptables","-w","5","-S",FIREWALL_CHAIN],timeout=10)
+    if firewall_present(peer):
+        raise RuntimeError("previous scoped firewall rule was not cleaned up")
     rules=nft_rules(RU_EDGE,peer,port=TEST_PORT,interface=RU_INTERFACE,table=TABLE)
     # Check parsing/chain collisions without mutating nftables.
     p=cmd(["nft","--check","-f","-"],input=rules)
@@ -171,6 +207,15 @@ def _rollback_locked():
     try:
         if table_exists():cmd(["nft","delete","table","inet",TABLE])
     except Exception:errors.append("nft_remove")
+    # Revoke test ingress even if worker shutdown later fails. A pending
+    # marker is persisted before adding the UFW exception, so a crash cannot
+    # orphan the allow rule without the independent same-boot cleanup timer.
+    try:
+        marker=ROOT/"firewall-pending"
+        if marker.is_file():
+            firewall_remove((ROOT/"peer").read_text().strip())
+            marker.unlink()
+    except Exception:errors.append("firewall_remove")
     try:cmd(["systemctl","stop",WORKER+".service"],timeout=15,check=False)
     except Exception:errors.append("worker_stop")
     try:
@@ -227,6 +272,12 @@ def start(peer):
                 if ready_worker() and evidence_ready():break
                 time.sleep(.1)
             else:raise RuntimeError("owned RU receiver did not listen")
+            # Persist recovery intent before making the UFW exception. The
+            # 2400-second independent watchdog was armed before this point.
+            fd=os.open(ROOT/"firewall-pending",os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+            with os.fdopen(fd,"w") as f:
+                f.write(peer+"\n");f.flush();os.fsync(f.fileno())
+            firewall_install(peer)
             # This one-peer rule also catches other HTTPS to the same RU IP:
             # fallback routing happens after the first ClientHello arrives.
             cmd(["nft","-f","-"],input=rules)
@@ -241,6 +292,7 @@ def start(peer):
     print("meta_v26_ru_wg_backend_fixed=true",flush=True)
     print("meta_v26_ru_other_https_fallback_fixed=true",flush=True)
     print("meta_v26_ru_same_boot_cleanup_armed=true",flush=True)
+    print("meta_v26_ru_firewall_scoped=true",flush=True)
     print("meta_v26_ru_wg_tls_verified_hosts="+str(verified),flush=True)
 
 def reset():
@@ -251,7 +303,7 @@ def reset():
         _rollback_locked()
         if active(UNIT+".timer"):
             cmd(["systemctl","stop",UNIT+".timer"],timeout=12)
-        if active(UNIT+".timer") or table_exists() or ready_worker():
+        if active(UNIT+".timer") or table_exists() or ready_worker() or (ROOT/"firewall-pending").exists():
             raise RuntimeError("RU reset rejected: experimental route still active")
     shutil.rmtree(ROOT)
     print("meta_v26_ru_state_reset=VERIFIED",flush=True)
@@ -263,6 +315,9 @@ def status():
         print("meta_v26_ru_table_present="+str(table_exists()).lower(),flush=True)
         print("meta_v26_ru_worker_ready="+str(ready_worker()).lower(),flush=True)
         print("meta_v26_ru_timer_active="+str(active(UNIT+".timer")).lower(),flush=True)
+        print("meta_v26_ru_firewall_scoped="+str(
+            (ROOT/"firewall-pending").is_file() and
+            firewall_present((ROOT/"peer").read_text().strip())).lower(),flush=True)
         print("meta_v26_ru_evidence_ready="+str(evidence_ready()).lower(),flush=True)
         verify_tls_path(("i.instagram.com","iglite-z.instagram.com"))
         print("meta_v26_ru_wg_tls=PASS",flush=True)
