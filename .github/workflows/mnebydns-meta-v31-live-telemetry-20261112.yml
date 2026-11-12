@@ -84,6 +84,62 @@ jobs:
               try:print('ru_wg_route_dev='+str(json.loads(data)[0].get('dev')),flush=True)
               except Exception:pass
           PY
+      - name: Observe exact phone TCP443 SYN, SYNACK and TLS packet directions for 20 seconds (read-only)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -' <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import collections,pathlib,socket,struct,time
+          root=pathlib.Path('/var/lib/mneby-meta-v26-ru')
+          pf=root/'peer'
+          if not pf.is_file():print('phone_packet_probe=NO_ACTIVE_TRIAL');raise SystemExit(0)
+          peer=pf.read_text().strip()
+          if peer!='all':
+              peer=socket.inet_aton(peer)
+          ru=socket.inet_aton('188.120.254.223')
+          stats=collections.Counter();windows=[]
+          sock=socket.socket(socket.AF_PACKET,socket.SOCK_RAW,socket.htons(0x0800))
+          sock.bind(('ens3',0));sock.settimeout(.4)
+          end=time.monotonic()+20
+          try:
+              while time.monotonic()<end:
+                  try:frame=sock.recv(2048)
+                  except socket.timeout:continue
+                  if len(frame)<54 or frame[12:14]!=b'\\x08\\x00':continue
+                  ip=frame[14:]
+                  n=(ip[0]&15)*4
+                  if ip[0]>>4!=4 or ip[9]!=6 or n<20 or len(ip)<n+20:continue
+                  src,dst=ip[12:16],ip[16:20]
+                  if peer!='all' and src!=peer and dst!=peer:continue
+                  direction='in' if dst==ru else ('out' if src==ru else None)
+                  if not direction:continue
+                  tcp=ip[n:]
+                  sport,dport=struct.unpack_from('!HH',tcp)
+                  # Observe both pre/post-DNAT locally, and on-wire 443.
+                  if direction=='in' and dport not in (443,18443):continue
+                  if direction=='out' and sport not in (443,18443):continue
+                  flags=tcp[13];header=(tcp[12]>>4)*4
+                  if len(tcp)<header or header<20:continue
+                  payload=tcp[header:]
+                  stats[direction+'_total']+=1
+                  if (flags&0x12)==0x02:stats[direction+'_syn']+=1
+                  if (flags&0x12)==0x12:stats[direction+'_synack']+=1
+                  if (flags&0x10) and not(flags&0x02):stats[direction+'_ack']+=1
+                  if flags&0x04:stats[direction+'_rst']+=1
+                  if payload:stats[direction+'_payload']+=1
+                  if payload[:1]==b'\\x16':stats[direction+'_tls_record_start']+=1
+                  if direction=='out' and (flags&0x12)==0x12 and len(windows)<20:
+                      windows.append(struct.unpack_from('!H',tcp,14)[0])
+          finally:sock.close()
+          print('phone_packet_monitor_seconds=20',flush=True)
+          print('phone_peer_scope='+('all' if peer=='all' else 'configured_phone_ip'),flush=True)
+          for k,v in sorted(stats.items()):print('phone_packet_'+k+'='+str(v),flush=True)
+          if windows:print('phone_synack_advertised_windows='+str(windows[:20]),flush=True)
+          PY
       - name: Read current foreign DNS and Nginx Meta route status
         shell: bash
         run: |
