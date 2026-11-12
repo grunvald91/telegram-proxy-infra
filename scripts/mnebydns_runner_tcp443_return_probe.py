@@ -22,7 +22,12 @@ def packet_event(frame: bytes, destinations: dict[bytes, str]):
     # header, even when the host interface uses a virtual link layer.
     if len(frame) < 40:
         return None
-    ip = frame
+    if frame[0] >> 4 == 4:
+        ip = frame  # Linux cooked AF_PACKET
+    elif len(frame) >= 54 and frame[12:14] == b"\x08\x00":
+        ip = frame[14:]  # Some virtual NICs expose an Ethernet header
+    else:
+        return None
     if ip[0] >> 4 != 4 or ip[9] != 6:
         return None
     hlen = (ip[0] & 0x0F) * 4
@@ -72,6 +77,8 @@ def observe() -> None:
         }
         results: list[tuple[str, str]] = []
         captured_ipv4_frames = 0
+        capture_format = {"l3_ipv4": 0, "ethernet_ipv4": 0, "other": 0}
+        scope_counts = {"ip_tcp": 0, "target_ip_match": 0, "control_ip_match": 0}
         completed = threading.Event()
 
         def client() -> None:
@@ -94,6 +101,21 @@ def observe() -> None:
                 raw = b""
             if raw:
                 captured_ipv4_frames += 1
+                if raw[0] >> 4 == 4:
+                    ip = raw
+                    capture_format["l3_ipv4"] += 1
+                elif len(raw) >= 54 and raw[12:14] == b"\x08\x00":
+                    ip = raw[14:]
+                    capture_format["ethernet_ipv4"] += 1
+                else:
+                    ip = b""
+                    capture_format["other"] += 1
+                if len(ip) >= 40 and ip[0] >> 4 == 4 and ip[9] == 6:
+                    scope_counts["ip_tcp"] += 1
+                    if destinations.get(ip[12:16]) == "foreign443" or destinations.get(ip[16:20]) == "foreign443":
+                        scope_counts["target_ip_match"] += 1
+                    if destinations.get(ip[12:16]) == "control443" or destinations.get(ip[16:20]) == "control443":
+                        scope_counts["control_ip_match"] += 1
             event = packet_event(raw, destinations) if raw else None
             if event:
                 name, kind, sport = event
@@ -109,6 +131,10 @@ def observe() -> None:
             raise TimeoutError("local probe thread did not complete")
 
     print(f"packet_socket_ipv4_frames={captured_ipv4_frames}", flush=True)
+    for key, count in capture_format.items():
+        print(f"capture_format_{key}={count}", flush=True)
+    for key, count in scope_counts.items():
+        print(f"capture_scope_{key}={count}", flush=True)
     for name in ("control443", "foreign443"):
         syn = observed[name]["SYN"]
         ack = observed[name]["SYNACK"] & syn
