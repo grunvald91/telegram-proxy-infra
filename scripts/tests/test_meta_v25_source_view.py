@@ -34,7 +34,7 @@ class ScopedDNSViewTests(unittest.TestCase):
         self.assertIn("gemini.google.com",ungated)
 
     def test_resilient_cache_baseline_supported(self):
-        resilient=CORE.replace("    cache 30\\n", "    cache 30 {\\n        success 2048\\n    }\\n")
+        resilient=CORE.replace("    cache 30\n", "    cache 30 {\n        success 2048\n    }\n")
         plan=render(corefile=resilient,phone_ip="8.8.8.8",compiled_plugins=PLUGINS)
         plan.verify_rollback()
         self.assertTrue(plan.candidate.endswith(resilient))
