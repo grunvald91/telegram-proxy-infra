@@ -3,7 +3,7 @@
 
 Never clears a general incident. This only re-queues the exact 2026-11-12
 3dwarehouse canary whose route was demonstrably restored and whose failure
-was a known CDN pin mismatch. No arbitrary hostnames or run IDs accepted.
+was a verified PostgreSQL INET /32 parsing mismatch. No arbitrary hostnames or run IDs accepted.
 """
 from __future__ import annotations
 import importlib.util
@@ -21,7 +21,7 @@ if spec is None or spec.loader is None:
 owner=importlib.util.module_from_spec(spec)
 spec.loader.exec_module(owner)
 HOST="3dwarehouse.sketchup.com"
-OLD_RUN_ID="432170810631"
+OLD_RUN_ID="432181801921"
 PRODUCT="Research 2026-11"
 REASON="BATCH_INCIDENT_CANARY_ABORT"
 
