@@ -82,4 +82,17 @@ jobs:
           if code==0:
               print('iptables_input_policy='+str(raw.splitlines()[0] if raw else 'none'),flush=True)
               print('iptables_input_rule_count='+str(len(raw.splitlines())-1),flush=True)
+          # Read actual UFW acceptance rules for the experimental DNAT destination.
+          code,raw=cmd('ufw','status','numbered',timeout=12)
+          print('ufw_numbered_read='+('PASS' if code==0 else 'FAIL'),flush=True)
+          if code==0:
+              for line in raw.splitlines():
+                  if '18443' in line or '443/tcp' in line or line.startswith('Status:'):
+                      print('ufw_relevant='+line,flush=True)
+          code,raw=cmd('iptables','-S','ufw-user-input',timeout=12)
+          print('ufw_user_input_read='+('PASS' if code==0 else 'FAIL'),flush=True)
+          if code==0:
+              matches=[line for line in raw.splitlines() if '--dport 18443' in line or '--dport 443' in line]
+              print('ufw_user_input_port_matches='+str(len(matches)),flush=True)
+              for line in matches:print('ufw_port_rule='+line,flush=True)
           PY
