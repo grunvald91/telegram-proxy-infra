@@ -22,9 +22,14 @@ test ! -e "$base"
 mkdir -m 700 "$base"
 armed=0
 completed=0
+preflight_pid=""
 abort() {
   code=$?
   trap - EXIT
+  if [[ -n "$preflight_pid" ]]; then
+    kill "$preflight_pid" >/dev/null 2>&1 || true
+    wait "$preflight_pid" >/dev/null 2>&1 || true
+  fi
   if (( completed == 0 && armed == 1 )); then
     flock -u 9 || true
     bash "$base/rollback.sh" "$base" ||
@@ -63,7 +68,69 @@ python3 "$stagedir/mnebydns-dot-resilience-20261111.py" render \
    --input "$base/dns.before" --output "$base/dns.candidate"
 chmod --reference="$dns" "$base/dns.candidate"
 chown --reference="$dns" "$base/dns.candidate"
-/opt/mnebydns-dot/coredns -conf "$base/dns.candidate" -validate >/dev/null
+# The installed CoreDNS 1.15.0 binary has no -validate option.
+# Parse and serve the complete candidate in a private loopback-only DoT
+# instance. Neither the public listener nor any live file is touched.
+python3 - "$base/dns.candidate" "$base/dns.preflight" <<'PY'
+import pathlib,sys
+original=pathlib.Path(sys.argv[1]).read_text()
+port="tls://.:853 {"
+bind="    bind 89.125.90.101"
+if original.count(port)!=1 or original.count(bind)!=1:
+    raise SystemExit("MNEBYDNS_PREFLIGHT_UNEXPECTED_LISTENER")
+replacement=original.replace(port,"tls://.:18553 {",1).replace(
+    bind,"    bind 127.0.0.1",1)
+if "tls://.:853 {" in replacement or "    bind 89.125.90.101" in replacement:
+    raise SystemExit("MNEBYDNS_PREFLIGHT_PUBLIC_BIND_FORBIDDEN")
+path=pathlib.Path(sys.argv[2])
+path.write_text(replacement)
+path.chmod(0o600)
+print("mnebydns_candidate_loopback_rewrite=PASS",flush=True)
+PY
+/opt/mnebydns-dot/coredns -conf "$base/dns.preflight" >"$base/preflight.log" 2>&1 &
+preflight_pid=$!
+for attempt in $(seq 1 35); do
+  if ! kill -0 "$preflight_pid" 2>/dev/null; then
+    tail -n 20 "$base/preflight.log" >&2
+    echo 'mnebydns_candidate_validation_start_failed=true' >&2
+    exit 3
+  fi
+  if ss -H -lnt 'sport = :18553' | grep -Fq '127.0.0.1:18553'; then
+    break
+  fi
+  sleep .2
+done
+ss -H -lnt 'sport = :18553' | grep -Fq '127.0.0.1:18553'
+python3 - <<'PY'
+import socket,ssl,struct
+def recv(s,n):
+    data=b''
+    while len(data)<n:
+        chunk=s.recv(n-len(data))
+        if not chunk: raise EOFError("loopback DoT truncated")
+        data+=chunk
+    return data
+def query(host):
+    qname=b''.join(bytes([len(label)])+label.encode() for label in host.split('.'))+b'\0'
+    payload=struct.pack('!HHHHHH',0x7b32,0x0100,1,0,0,0)+qname+struct.pack('!HH',1,1)
+    with socket.create_connection(('127.0.0.1',18553),timeout=5) as plain:
+        plain.settimeout(6)
+        with ssl.create_default_context().wrap_socket(
+                plain,server_hostname='dns.mnebyvpn.site') as tls:
+            tls.sendall(struct.pack('!H',len(payload))+payload)
+            response=recv(tls,struct.unpack('!H',recv(tls,2))[0])
+    if response[:2]!=payload[:2] or len(response)<12:
+        raise RuntimeError('invalid preflight DNS response')
+    return response[3]&15
+for hostname in ('example.org','claude.ai','api.telegram.org'):
+    code=query(hostname)
+    print('PREFLIGHT_DOT='+hostname+' rcode='+str(code),flush=True)
+    if code!=0:raise RuntimeError('preflight resolution failed: '+hostname)
+print('mnebydns_candidate_isolated_tls_diagnostic=PASS',flush=True)
+PY
+kill "$preflight_pid" >/dev/null 2>&1 || true
+wait "$preflight_pid" >/dev/null 2>&1 || true
+preflight_pid=""
 install -m 700 "$stagedir/mnebydns-dot-resilience-rollback-20261111.sh" "$base/rollback.sh"
 
 # On runner disconnect or crash this independent timer restores ONLY the
