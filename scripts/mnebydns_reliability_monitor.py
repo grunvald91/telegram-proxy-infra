@@ -301,6 +301,8 @@ def monitor(
         bool(transport_warning_count) or ingress_tcp != "pass"
         or control_tcp != "pass" or egress == "unknown"
         or bool(ipv6_possible_bypass_count)
+        or any(item["dns"] == "unknown" or item["ipv6"] in {"unknown", "dns_error"}
+               for item in records)
     )
     health_classification = (
         "dns_or_node_egress_regression" if failures
