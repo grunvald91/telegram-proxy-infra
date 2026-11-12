@@ -314,7 +314,7 @@ def run_one(host, index):
         # CDN DNS can rotate between the initial preflight and owner.apply().
         # Do not accept or reject an IP merely because it differs: independently
         # re-test the exact IPv4 *actually pinned* by the existing controller.
-        pinned=owner._render.validated_public_ip(pinned)
+        pinned=owner.pg_inet_host(pinned)
         pinned_de=http_probe("de",host,pinned)
         pinned_ru=http_probe("ru",host,pinned)
         if not (200<=pinned_de<400 and pinned_ru in (403,451)):
