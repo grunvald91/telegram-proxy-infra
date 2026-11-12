@@ -1,0 +1,15 @@
+# Explicit one-shot Microsoft/Bing owner route retry after read-only two-server origin preflight.
+# PR source and root evidence: https://github.com/grunvald91/telegram-proxy-infra/actions/runs/43238575525
+# DE: bing.com IPv4 verified TLS HTTP 301; microsoft.com IPv4 verified TLS HTTP 301.
+# RU: bing.com IPv4 verified TLS HTTP 301; microsoft.com IPv4 verified TLS HTTP 301.
+# Canonical RU database: bing.com FAILED/INTERRUPTED_OWNER_DEPLOY; microsoft.com FAILED/CANARY_PREFLIGHT_OR_DEPLOY_FAILED.
+# Neither has a live exact CoreDNS/Nginx owner route. Stable DNS/Nginx/proxy checkpoint matches.
+# No live owner transition was present during audit; preflight must re-check before changing anything.
+# This file is an explicit reviewed Git trigger for an existing six-host exact-route orchestrator.
+# That orchestrator preserves four already ACTIVE records, and attempts ONLY the two missing
+# exact host routes via time-bounded server-side guarded canaries and verified confirmation.
+# On unresolved rollback or state drift, no further hostname may be attempted.
+retry_exact_hosts=bing.com,microsoft.com
+requested_at_utc=2026-11-12T14:35:00Z
+manual_approval_required=false
+wildcard_microsoft_routes=false
