@@ -1,0 +1,46 @@
+name: MNEBYDNS Instagram PR87 current two-node compatibility (read-only)
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebydns-meta-pr87-current-compat-20261112.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-meta-pr87-current-readonly
+  cancel-in-progress: false
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      RELAY89_SSH_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      SERVER188_SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Checkout reviewed PR87 code, no release
+        uses: actions/checkout@v4
+        with:
+          ref: bbcded501941c1809baaea104236af2438436590
+          persist-credentials: false
+      - name: Validate reviewed source and offline contracts
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(git rev-parse HEAD)" = "bbcded501941c1809baaea104236af2438436590"
+          python3 -m py_compile scripts/meta_v30_actions_adapter.py scripts/meta_v29_two_server_sequence.py scripts/meta_v15_receive_window.py scripts/meta_v31_sni_evidence.py
+          python3 scripts/meta_v30_actions_adapter.py --mode validate
+          python3 -m unittest discover -s scripts/tests -p 'test_meta_v30_actions_adapter.py' -q
+          python3 -m unittest discover -s scripts/tests -p 'test_meta_v31_runtime_evidence.py' -q
+          echo 'Reviewed SHA = bbcded501941c1809baaea104236af2438436590' >> "$GITHUB_STEP_SUMMARY"
+      - name: Check current RU and DE using reviewed read-only preflight
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RELAY89_SSH_PASSWORD" && test -n "$SERVER188_SSH_PASSWORD"
+          if ! command -v sshpass >/dev/null; then
+            sudo apt-get update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+          fi
+          python3 -u scripts/meta_v30_actions_adapter.py --mode preflight | tee -a "$GITHUB_STEP_SUMMARY"
+          echo 'READ-ONLY: no nginx, DNS, nft, sysctl or route changes; no phone traffic test' >> "$GITHUB_STEP_SUMMARY"
