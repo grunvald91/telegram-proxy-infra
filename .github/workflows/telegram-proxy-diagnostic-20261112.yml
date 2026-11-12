@@ -1,0 +1,108 @@
+name: Telegram MTProxy live read-only investigation 2026-11-12
+on:
+  push:
+    branches: [diag/telegram-proxy-readonly-20261112]
+    paths: ['.github/workflows/telegram-proxy-diagnostic-20261112.yml']
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Public TCP samples from independent runner
+        run: |
+          python3 - <<'PY'
+          import socket,time
+          for addr,ports in [('1.1.1.1',(443,)),('188.120.254.223',(443,8443,2052,2086,8089)),('89.125.90.101',(443,853,8443,9446))]:
+              for port in ports:
+                  attempts=[]
+                  for i in range(2):
+                      start=time.monotonic()
+                      try:
+                          with socket.create_connection((addr,port),timeout=3): pass
+                          attempts.append('open:'+str(round((time.monotonic()-start)*1000)))
+                      except Exception as exc: attempts.append(type(exc).__name__)
+                  print('PUBLIC addr='+addr+' port='+str(port)+' samples='+','.join(attempts),flush=True)
+          PY
+      - name: Inspect RU and foreign Telegram proxy without server writes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass >/dev/null
+          audit_host() {
+            local role="$1" host="$2" pwd="$3"
+            export SSHPASS="$pwd"
+            sshpass -e ssh -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=1 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR "root@$host" "python3 - $role" <<'PY'
+          import sys, subprocess, time, re, pathlib, socket, shutil
+          role=sys.argv[1]
+          def run(args,timeout=5):
+              try:
+                  p=subprocess.run(args,capture_output=True,text=True,timeout=timeout)
+                  return p.returncode,p.stdout
+              except Exception:return 255,''
+          def out(name,value): print(role+' '+name+'='+str(value),flush=True)
+          out('utc',time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()))
+          out('disk_used_pct',round(100*(1-shutil.disk_usage('/').free/shutil.disk_usage('/').total),1))
+          mem=pathlib.Path('/proc/meminfo').read_text()
+          memvalues={k:int(v) for k,v in re.findall(r'^(MemTotal|MemAvailable):\s+(\d+)',mem,re.M)}
+          out('memory_available_pct',round(100*memvalues.get('MemAvailable',0)/max(1,memvalues.get('MemTotal',1)),1))
+          rc,units=run(['systemctl','list-units','--all','--type=service','--no-legend','--plain'])
+          names=[]
+          for line in units.splitlines():
+              name=line.split()[0] if line.split() else ''
+              if name.endswith('.service') and name.startswith(('telemt','mtg','mtproxy','nginx','xray','telegram','redsocks')):
+                  names.append(name)
+          for unit in sorted(set(names))[:55]:
+              rc,result=run(['systemctl','show',unit,'-p','ActiveState','-p','SubState','-p','NRestarts','-p','Result'])
+              m=dict(x.split('=',1) for x in result.splitlines() if '=' in x)
+              out('unit_'+unit,','.join(m.get(k,'?') for k in ('ActiveState','SubState','NRestarts','Result')))
+          out('nginx_syntax_ok',run(['nginx','-t'])[0]==0)
+          rc,listeners=run(['ss','-lntH'])
+          for port in [443,853,8443,2052,2086,8089,9443,9444,9445,9446,9447,9448,9449,9450,9451,9470]:
+              out('listen_'+str(port),bool(re.search(':'+str(port)+'\\s',listeners)))
+          rc,wg=run(['wg','show','all','latest-handshakes'])
+          ages=[]
+          if rc==0:
+              for line in wg.splitlines():
+                  fields=line.split()
+                  if fields and fields[-1].isdigit() and int(fields[-1])>0:
+                      ages.append(int(time.time())-int(fields[-1]))
+          out('wireguard_peers_seen',len(ages))
+          out('wireguard_newest_age_sec',min(ages) if ages else 'none')
+          p=pathlib.Path('/proc/sys/net/netfilter/nf_conntrack_count')
+          q=pathlib.Path('/proc/sys/net/netfilter/nf_conntrack_max')
+          if p.exists() and q.exists():out('conntrack',p.read_text().strip()+'/'+q.read_text().strip())
+          for addr,port in (([('10.66.77.1',443),('10.66.77.1',9470)] if role=='RU' else [('10.66.77.2',443)])):
+              results=[]
+              for i in range(3):
+                  start=time.monotonic()
+                  try:
+                      with socket.create_connection((addr,port),timeout=2): pass
+                      results.append('open:'+str(round(1000*(time.monotonic()-start))))
+                  except Exception as ex: results.append(type(ex).__name__)
+              out('wg_tcp_'+addr+':'+str(port),','.join(results))
+          for port in ([9443,9444,9445,443] if role=='RU' else [9443,9444,9445,9447,9448,9449,9450,9451,9470,443]):
+              try:
+                  with socket.create_connection(('127.0.0.1',port),timeout=1): result='open'
+              except Exception as ex:result=type(ex).__name__
+              out('local_tcp_'+str(port),result)
+          logunits=[u for u in names if u.startswith(('telemt','mtg','mtproxy','nginx','xray','telegram'))]
+          for unit in sorted(set(logunits))[:40]:
+              rc,logs=run(['journalctl','-u',unit,'--since','-45 minutes','-n','500','--no-pager','-o','cat'],7)
+              if rc==0:
+                  out('journal_'+unit+'_lines',len(logs.splitlines()))
+                  out('journal_'+unit+'_warning_count',len(re.findall(r'error|panic|timeout|refused|upstream|restart|fail|closed',logs,re.I)))
+          out('read_only_complete',True)
+          PY
+          }
+          audit_host RU 188.120.254.223 "$RU_PASS"
+          audit_host DE 89.125.90.101 "$DE_PASS"
