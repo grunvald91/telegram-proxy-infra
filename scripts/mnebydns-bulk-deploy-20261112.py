@@ -93,7 +93,7 @@ def atomic_update_sql(selected):
         "WHERE d.product='Research 2026-11' AND d.status='PENDING'; "
         "IF matched<>"+str(n)+" THEN RAISE EXCEPTION 'BULK_DB_STALE_BEFORE_UPDATE'; END IF; "
         "UPDATE dns_admin_domains d SET status='ACTIVE', revision=revision+1,"
-        "verified_origin_ip=inputs.ip::inet,confirmed_at=now(),updated_at=now(),"
+        "verified_origin_ip=inputs.ip::inet,applied_at=now(),confirmed_at=now(),updated_at=now(),"
         "last_error_code=NULL,canary_expires_at=NULL,canary_run_id=NULL "
         "FROM (VALUES "+values+") AS inputs(domain,ip) "
         "WHERE d.domain=inputs.domain AND d.product='Research 2026-11' "
