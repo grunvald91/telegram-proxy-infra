@@ -1,3 +1,4 @@
+# 2026-11-13 read-only post-release verification for MNEBYVPN core safety fix 96220f2 (website backend 200, outside Github Runner TCP443 timed out). No production config writes.
 name: MNEBYVPN diagnose external HTTPS timeout (read only)
 on:
   push:
