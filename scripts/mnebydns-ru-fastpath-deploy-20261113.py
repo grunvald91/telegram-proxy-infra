@@ -177,7 +177,7 @@ def deploy():
         raise
 
 def self_test():
-    assert len(set(planmod.CANDIDATES))==13
+    assert len(set(planmod.CANDIDATES))==11
     assert planmod.PUBLIC_DE!=planmod.PUBLIC_RU
     assert "check_hostname=False" not in REMOTE_HTTPS
     print("FASTPATH_GUARDED_DEPLOY_OFFLINE=PASS",flush=True)
