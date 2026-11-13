@@ -1,4 +1,4 @@
-name: MNEBYDNS guarded RU ingress for 13 verified exact A hostnames
+name: MNEBYDNS guarded RU ingress for 11 verified exact A hostnames
 on:
   pull_request:
     types: [opened, synchronize, reopened]
@@ -61,7 +61,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           mode=plan
-          if [[ "$HEAD_COMMIT_TITLE" == "deploy(MNEBYDNS): activate 13 RU fastpath exact A" &&
+          if [[ "$HEAD_COMMIT_TITLE" == "deploy(MNEBYDNS): activate 11 RU fastpath exact A" &&
                 "$(cat data/mnebydns-fastpath-ru-mode-20261113.txt)" == activate-once-20261113-r2 ]]; then
             mode=deploy
           fi
