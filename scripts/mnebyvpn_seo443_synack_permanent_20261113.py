@@ -179,6 +179,9 @@ def commit(runid):
 
 def rollback(runid):
     folder=directory(runid)
+    # Explicit manual rollback remains available after commit. Timed watchdog
+    # respects the confirmed marker, but an operator can request a restore.
+    (folder/"confirmed").unlink(missing_ok=True)
     cmd("/usr/bin/python3",str(folder/"rollback.py"),str(folder))
     assert not listed()
     print("SYNACK_MANUAL_ROLLBACK_VERIFIED=true",flush=True)
