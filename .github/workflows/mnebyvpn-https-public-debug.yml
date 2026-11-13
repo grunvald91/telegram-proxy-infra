@@ -52,6 +52,12 @@ jobs:
             -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR \
             root@89.125.90.101 'python3 -' <<'PY'
           import socket,ssl
+          for port in [853]:
+              try:
+                  with socket.create_connection(('188.120.254.223',port),timeout=5):
+                      print('DE_TO_RU_TCP_'+str(port)+'=CONNECTED')
+              except OSError as exc:
+                  print('DE_TO_RU_TCP_'+str(port)+'='+type(exc).__name__)
           target=('188.120.254.223',443)
           try:
               with socket.create_connection(target,timeout=6) as raw:
