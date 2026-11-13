@@ -59,7 +59,7 @@ jobs:
             --mount "type=bind,source=$target,target=/run/mnebydns-personal,readonly" \
             --entrypoint node "$image" \
             --experimental-strip-types --input-type=module -e \
-            "import('./apps/service/src/personal-dot-production.ts').then(m=>m.runPersonalDotProduction()).catch(e=>{const code=String(e?.code??'NONE');const msg=String(e?.message??'UNKNOWN').replace(/postgres(?:ql)?:\\/\\/[^ ]+/gi,'[REDACTED]');console.error('PERSONAL_DOT_CAUSE_CODE='+code.slice(0,45));console.error('PERSONAL_DOT_CAUSE='+msg.slice(0,160));process.exit(2)})"
+            "import('./apps/service/src/personal-dot-production.ts').then(m=>m.runPersonalDotProduction()).catch(e=>{const code=String(e?.code??'NONE');const raw=String(e?.message??'UNKNOWN');const msg=raw.includes('postgresql:')||raw.includes('postgres:')?'DB_URL_ERROR':raw;console.error('PERSONAL_DOT_CAUSE_CODE='+code.slice(0,45));console.error('PERSONAL_DOT_CAUSE='+msg.slice(0,160));process.exit(2)})"
           status=$?
           set -e
           echo "DISPOSABLE_DIAG_EXIT=$status"
