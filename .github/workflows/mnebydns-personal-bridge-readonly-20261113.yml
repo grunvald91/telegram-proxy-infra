@@ -1,0 +1,87 @@
+name: Personal DoT DE ingress to RU billing private route inventory (read-only)
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/mnebydns-personal-bridge-readonly-20261113.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Inspect existing network only, no iptables, firewall or systemd writes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS" && test -n "$RU_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY'
+          import subprocess,pathlib,re
+          def run(args):
+              try:
+                  r=subprocess.run(args,capture_output=True,text=True,timeout=8)
+                  return r.stdout.strip()
+              except Exception:return ''
+          for ifname in run(['wg','show','interfaces']).split():
+              match=run(['ip','-o','-4','addr','show','dev',ifname])
+              ips=re.findall(r'inet\s+(\d+\.\d+\.\d+\.\d+/\d+)',match)
+              print('DE_WG_'+ifname+'='+','.join(ips))
+          workdir=pathlib.Path('/opt/mnebydns-dot')
+          for name in ['Corefile','corefile','config/Corefile']:
+              f=workdir/name
+              if f.is_file():
+                  headers=[line.strip().split('{',1)[0].strip()[:95] for line in f.read_text(errors='replace').splitlines()
+                      if line.strip().endswith('{') and not line.lstrip().startswith('#')]
+                  print('DE_DOT_CONFIG='+str(f))
+                  print('DE_DOT_SERVER_HEADERS='+','.join(headers[:8]))
+          print('DE_DOT_UNIT_ACTIVE='+run(['systemctl','is-active','mnebydns-dot']))
+          ss=run(['ss','-Hlntp'])
+          print('DE_853_OWNER='+('coredns' if any(':853 ' in line and 'coredns' in line.lower()
+               for line in ss.splitlines()) else 'not-coredns'))
+          print('DE_READ_ONLY=true')
+          PY
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -' <<'PY'
+          import subprocess,pathlib,re,urllib.parse
+          def run(args):
+              try:
+                  r=subprocess.run(args,capture_output=True,text=True,timeout=8)
+                  return r.stdout.strip()
+              except Exception:return ''
+          for ifname in run(['wg','show','interfaces']).split():
+              match=run(['ip','-o','-4','addr','show','dev',ifname])
+              ips=re.findall(r'inet\s+(\d+\.\d+\.\d+\.\d+/\d+)',match)
+              print('RU_WG_'+ifname+'='+','.join(ips))
+          env=pathlib.Path('/opt/mnebyvpn/bot/web.env')
+          for candidate in ['/opt/mnebyvpn/bot/web.env','/opt/mnebyvpn-bot/web.env',
+                            '/opt/mnebyvpn/telegram/web.env']:
+              p=pathlib.Path(candidate)
+              if p.exists():env=p;break
+          if env.is_file():
+              line=next((x for x in env.read_text(errors='replace').splitlines()
+                if x.startswith('DATABASE_URL=')), '')
+              if line:
+                  d=urllib.parse.urlsplit(line.partition('=')[2])
+                  print('RU_BOT_DB_HOST='+str(d.hostname or 'none'))
+                  print('RU_BOT_DB_PORT='+str(d.port or 'default'))
+          for port in [8853,8855,55433]:
+              ss=run(['ss','-Hlnt'])
+              print('RU_TCP_'+str(port)+'_LISTENING='+str(any(
+                ':'+str(port)+' ' in line for line in ss.splitlines())))
+          print('RU_DOCKER_PRESENT='+str(bool(run(['command','-v','docker']) or
+            pathlib.Path('/usr/bin/docker').exists())))
+          print('RU_READ_ONLY=true')
+          PY
