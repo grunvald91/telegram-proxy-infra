@@ -1,0 +1,75 @@
+name: MNEBYDNS full 106 host RU ingress coverage versus pinned DE TLS
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - ".github/workflows/mnebydns-ru-ingress-all-readonly-20261113.yml"
+      - "scripts/mnebydns-ru-ingress-all-readonly-20261113.py"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/mnebydns-ru-ingress-all-readonly-20261113.yml"
+      - "scripts/mnebydns-ru-ingress-all-readonly-20261113.py"
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('mnebydns-ru-all-offline-{0}',github.ref) || 'mnebydns-ru-coverage-readonly' }}
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check exact active-marker inventory and no-mutation
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-ru-ingress-all-readonly-20261113.py
+          python3 scripts/mnebydns-ru-ingress-all-readonly-20261113.py --self-test
+          test "$(grep -c ' ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts)" -eq 2
+          ! grep -Eq 'systemctl (restart|reload)|nft (add|delete|flush)|chown|chmod|StrictHostKeyChecking=no|verify=False' scripts/mnebydns-ru-ingress-all-readonly-20261113.py
+          echo RU_INGRESS_ALL_READONLY_OFFLINE=PASS
+  check:
+    if: github.event_name == 'push'
+    needs: offline
+    runs-on: ubuntu-latest
+    timeout-minutes: 13
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prepare pinned SSH
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -qq -y sshpass >/dev/null
+      - name: Test all existing exact hosts original SNI via RU public 443 and pinned DE origin
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/mnebydns-ru-ingress-all-readonly-20261113.py --run
+      - name: Include complete route report
+        if: always()
+        run: |
+          if [ -s ru-106-safe-route/report.md ]; then
+            cat ru-106-safe-route/report.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'RU full coverage not verified' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Preserve all host statuses with anonymized probes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mnebydns-ru-all-readonly-${{ github.run_id }}
+          path: ru-106-safe-route/
+          if-no-files-found: warn
+          retention-days: 30
