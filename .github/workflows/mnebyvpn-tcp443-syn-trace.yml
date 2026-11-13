@@ -90,6 +90,35 @@ jobs:
               print('rule_'+table+'_'+str(i)+'_has_connmark_match='+str('--mark' in chunks or '--ctmark' in chunks).lower(),flush=True)
           iprules=output(['ip','-4','rule','show'])
           print('ip4_policy_fwmark_rules='+str(len([line for line in iprules.splitlines() if 'fwmark ' in line])),flush=True)
+          import ipaddress,pathlib
+          runner_ip=ipaddress.ip_address(sys.argv[1])
+          source_mark_rules=0
+          source_mark_rules_matching_runner=0
+          for rule in classified_rules('mangle'):
+            tokens=rule.split()
+            if '-A' not in tokens or '-p' not in tokens:continue
+            if tokens[tokens.index('-A')+1]!='PREROUTING':continue
+            if tokens[tokens.index('-p')+1]!='tcp':continue
+            source_mark_rules+=1
+            subnet=tokens[tokens.index('-s')+1] if '-s' in tokens else '0.0.0.0/0'
+            try:
+              if runner_ip in ipaddress.ip_network(subnet,strict=False):
+                source_mark_rules_matching_runner+=1
+            except ValueError:pass
+          print('inbound_tcp443_mark_rules='+str(source_mark_rules),flush=True)
+          print('inbound_tcp443_mark_rules_matching_runner='+str(source_mark_rules_matching_runner),flush=True)
+          for point in ('all','default'):
+            p=pathlib.Path('/proc/sys/net/ipv4/conf/'+point+'/rp_filter')
+            print('rp_filter_'+point+'='+(p.read_text().strip() if p.is_file() else 'unknown'),flush=True)
+          p=pathlib.Path('/proc/sys/net/ipv4/conf/all/src_valid_mark')
+          print('src_valid_mark_all='+(p.read_text().strip() if p.is_file() else 'unknown'),flush=True)
+          routes=output(['ip','-4','route','get',sys.argv[1],'from','188.120.254.223'])
+          route_iface=re.search(r'\bdev (\S+)',routes)
+          print('reverse_route_valid='+str(bool(route_iface)).lower(),flush=True)
+          print('reverse_route_type='+('wg' if route_iface and route_iface.group(1).startswith('wg') else 'ethernet' if route_iface and route_iface.group(1).startswith(('en','eth')) else 'other'),flush=True)
+          for chain in ('INPUT','OUTPUT'):
+            policy=re.search(r'(?m)^-P '+chain+r'\s+(ACCEPT|DROP|REJECT)',output(['iptables','-S',chain]))
+            print('iptables_'+chain.lower()+'_policy='+(policy.group(1) if policy else 'unknown'),flush=True)
           print('read_only_preflight_complete=true',flush=True)
           source=socket.inet_aton(sys.argv[1])
           s=socket.socket(socket.AF_PACKET,socket.SOCK_RAW,socket.htons(3))
