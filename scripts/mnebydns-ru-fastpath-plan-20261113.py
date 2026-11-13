@@ -109,9 +109,9 @@ def render(core):
 def remote_file(role,filename):
     # SSH strips surrounding whitespace, so read exact bytes via lowercase
     # hex without any decoded text normalization or accidental log exposure.
-    query="python3 -c "+shlex.quote(
+    query=("python3 -c "+shlex.quote(
         "import sys;sys.stdout.write(open(sys.argv[1],'rb').read().hex())")+
-        " "+shlex.quote(filename)
+        " "+shlex.quote(filename))
     raw=owner.ssh(role,query,55)
     return bytes.fromhex(raw).decode("utf-8")
 
