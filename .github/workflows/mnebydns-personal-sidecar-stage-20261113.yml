@@ -1,3 +1,4 @@
+# Retry after automatic private canary rollback: report sanitized startup error classification from installer; original DE CoreDNS remains unchanged.
 name: Stage personal DoT over private WireGuard with public cert (preserve public 853)
 on:
   push:
