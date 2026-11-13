@@ -67,6 +67,29 @@ jobs:
           print('nft_443_explicit_count='+str(len(nft443)),flush=True)
           for action in ('drop','reject','accept','tproxy','redirect'):
             print('nft_443_'+action+'_count='+str(sum(bool(re.search(r'\b'+action+r'\b',line)) for line in nft443)),flush=True)
+          def classified_rules(table):
+            args=['iptables']+(['-t',table] if table!='filter' else [])+['-S']
+            lines=output(args).splitlines()
+            return [line for line in lines if re.search(r'--dport\s+443\b|--dports\s+[^\s]*443\b',line)]
+          for table in ('nat','mangle','filter'):
+            for i,rule in enumerate(classified_rules(table)[:12]):
+              chunks=rule.split()
+              def next_token(flag):
+                return chunks[chunks.index(flag)+1] if flag in chunks and chunks.index(flag)+1<len(chunks) else ''
+              proto=next_token('-p') or 'any'
+              chain=next_token('-A')
+              location=chain if chain in ('PREROUTING','INPUT','OUTPUT','POSTROUTING','FORWARD') else 'custom'
+              verdict=next_token('-j') or 'none'
+              toport=next_token('--to-ports') or 'none'
+              print('rule_'+table+'_'+str(i)+'_protocol='+proto,flush=True)
+              print('rule_'+table+'_'+str(i)+'_chain_class='+location,flush=True)
+              print('rule_'+table+'_'+str(i)+'_verdict='+verdict,flush=True)
+              print('rule_'+table+'_'+str(i)+'_redirect_to_port='+toport,flush=True)
+              print('rule_'+table+'_'+str(i)+'_source_restricted='+str('-s' in chunks).lower(),flush=True)
+              print('rule_'+table+'_'+str(i)+'_has_interface_match='+str('-i' in chunks or '-o' in chunks).lower(),flush=True)
+              print('rule_'+table+'_'+str(i)+'_has_connmark_match='+str('--mark' in chunks or '--ctmark' in chunks).lower(),flush=True)
+          iprules=output(['ip','-4','rule','show'])
+          print('ip4_policy_fwmark_rules='+str(len([line for line in iprules.splitlines() if 'fwmark ' in line])),flush=True)
           print('read_only_preflight_complete=true',flush=True)
           source=socket.inet_aton(sys.argv[1])
           s=socket.socket(socket.AF_PACKET,socket.SOCK_RAW,socket.htons(3))
