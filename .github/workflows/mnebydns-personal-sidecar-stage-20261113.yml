@@ -35,6 +35,7 @@ jobs:
           path: reviewed-gateway
           persist-credentials: false
       - name: Verify pinned source, signed wildcard cert and route policy
+        id: install
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -115,3 +116,16 @@ jobs:
                   assert bool(tls.getpeercert())
           print('LEGACY_DE_PUBLIC_853_TLS=PASS')
           PY
+
+      - name: Roll back only newly staged private sidecar if subsequent connectivity check fails
+        if: ${{ failure() && steps.install.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASSWORD"
+          export SSHPASS="$RU_PASSWORD"
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass >/dev/null
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR \
+            root@188.120.254.223 'docker rm -f mnebydns-personal-dot >/dev/null 2>&1 || true; echo "PERSONAL_DOT_AFTERCHECK_ROLLBACK=true"'
