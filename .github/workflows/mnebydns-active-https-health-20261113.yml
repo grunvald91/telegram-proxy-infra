@@ -1,0 +1,77 @@
+name: MNEBYDNS inspect all active exact routes, strict TLS RU to DE (read-only)
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - ".github/workflows/mnebydns-active-https-health-20261113.yml"
+      - "scripts/mnebydns-active-https-health-20261113.py"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/mnebydns-active-https-health-20261113.yml"
+      - "scripts/mnebydns-active-https-health-20261113.py"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('mnebydns-active-health-offline-{0}',github.ref) || 'mnebydns-active-route-readonly' }}
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check no-mutation and exact-domain tests
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-active-https-health-20261113.py
+          python3 scripts/mnebydns-active-https-health-20261113.py --self-test
+          test "$(grep -c ' ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts)" -eq 2
+          ! grep -Eq 'systemctl (restart|reload|start|stop)|check_hostname=False|verify=False|StrictHostKeyChecking=no|chown|chmod|iptables|nft (add|delete|flush)' scripts/mnebydns-active-https-health-20261113.py
+          echo ALL_ACTIVE_HEALTH_OFFLINE=PASS
+  inspect:
+    if: github.event_name != 'pull_request'
+    needs: offline
+    runs-on: ubuntu-latest
+    timeout-minutes: 13
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Set up strict SSH credentials
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -qq -y sshpass >/dev/null
+      - name: Probe every committed owner domain from RU and DE with verified TLS
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/mnebydns-active-https-health-20261113.py --run
+      - name: Publish verified per-host results
+        if: always()
+        shell: bash
+        run: |
+          if [ -s active-route-health/report.md ]; then
+            cat active-route-health/report.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'No complete route health result; do not claim success' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Archive complete read-only per-host HTTPS evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mnebydns-active-route-health-${{ github.run_id }}
+          path: active-route-health/
+          if-no-files-found: warn
+          retention-days: 30
