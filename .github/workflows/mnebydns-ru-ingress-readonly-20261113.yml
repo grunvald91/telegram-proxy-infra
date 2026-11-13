@@ -1,0 +1,75 @@
+name: MNEBYDNS compare RU public 443 SNI proxy with DE direct (read only)
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - ".github/workflows/mnebydns-ru-ingress-readonly-20261113.yml"
+      - "scripts/mnebydns-ru-ingress-readonly-20261113.py"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/mnebydns-ru-ingress-readonly-20261113.yml"
+      - "scripts/mnebydns-ru-ingress-readonly-20261113.py"
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('mnebydns-ru-ingress-offline-{0}',github.ref) || 'mnebydns-ru-ingress-readonly' }}
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify no-mutation script and fixed exact host candidates
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-ru-ingress-readonly-20261113.py
+          python3 scripts/mnebydns-ru-ingress-readonly-20261113.py --self-test
+          test "$(grep -c ' ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts)" -eq 2
+          ! grep -Eq 'systemctl (restart|stop|reload)|nft (add|delete|flush)|iptables (-A|-I|-D|-F)|StrictHostKeyChecking=no|verify=False|check_hostname=False|chmod|chown' scripts/mnebydns-ru-ingress-readonly-20261113.py
+          echo RU_INGRESS_OFFLINE=PASS
+  inspect:
+    if: github.event_name == 'push'
+    needs: offline
+    runs-on: ubuntu-latest
+    timeout-minutes: 11
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install pinned SSH
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -qq -y sshpass >/dev/null
+      - name: Verify RU TLS and HTTP 443 coverage, original SNI and Nginx stream map
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/mnebydns-ru-ingress-readonly-20261113.py --run
+      - name: Publish observations
+        if: always()
+        shell: bash
+        run: |
+          if [ -s ru-ingress-coverage/report.md ]; then
+            cat ru-ingress-coverage/report.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'RU ingress coverage not verified' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Archive read-only comparative results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mnebydns-ru-ingress-readonly-${{ github.run_id }}
+          path: ru-ingress-coverage/
+          if-no-files-found: warn
+          retention-days: 30
