@@ -13,6 +13,7 @@ jobs:
     env:
       HOST: '188.120.254.223'
       PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      FOREIGN_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
     steps:
       - name: Probe external TCP and TLS path
         shell: bash
@@ -34,6 +35,33 @@ jobs:
             print('external_https_'+name+'_exit='+str(p.returncode))
             print('external_https_'+name+'_metrics='+p.stdout.strip())
             print('external_https_'+name+'_error='+p.stderr.strip()[:100])
+          PY
+      - name: Verify site HTTPS from independent foreign VPS egress (read-only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$FOREIGN_PASSWORD"
+          export SSHPASS="$FOREIGN_PASSWORD"
+          sshpass -e ssh -T -o ConnectTimeout=9 -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR \
+            root@89.125.90.101 'python3 -' <<'PY'
+          import socket,ssl
+          target=('188.120.254.223',443)
+          try:
+              with socket.create_connection(target,timeout=6) as raw:
+                  raw.settimeout(7)
+                  ctx=ssl.create_default_context()
+                  with ctx.wrap_socket(raw,server_hostname='mnebyvpn.site') as tls:
+                      tls.sendall(b'HEAD / HTTP/1.1\r\nHost: mnebyvpn.site\r\nConnection: close\r\n\r\n')
+                      line=tls.recv(256).split(b'\r\n',1)[0]
+                      print('DE_TO_RU_HTTPS_TLS=PASS')
+                      print('DE_TO_RU_HTTPS_HTTP_STATUS='+line.decode('ascii','replace')[:90])
+                      if not line.startswith(b'HTTP/1.1 200') and not line.startswith(b'HTTP/1.0 200'):
+                          raise ValueError('Unexpected response status')
+          except Exception as exc:
+              print('DE_TO_RU_HTTPS_TLS=FAIL '+type(exc).__name__)
+              raise
           PY
       - name: Check local TLS, port ownership and certificate status
         shell: bash
