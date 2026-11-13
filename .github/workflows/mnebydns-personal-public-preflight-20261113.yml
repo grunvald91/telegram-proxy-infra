@@ -1,0 +1,47 @@
+name: Personal Smart DNS public 853 and wildcard preflight (read-only)
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/mnebydns-personal-public-preflight-20261113.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Probe both server public DoT ports, wildcard DNS and strict TLS
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import socket, ssl, concurrent.futures, subprocess
+          domain='aaaaaaaaaaaa.dns.mnebyvpn.site'
+          for name in ['dns.mnebyvpn.site',domain]:
+              try:
+                  ips=sorted(set(x[4][0] for x in socket.getaddrinfo(name,853,type=socket.SOCK_STREAM)))
+                  print('PUBLIC_A_'+name.replace('.','_')+'='+','.join(ips))
+              except Exception as exc:
+                  print('PUBLIC_A_'+name.replace('.','_')+'='+type(exc).__name__)
+          def probe(label,ip,sni):
+              try:
+                  raw=socket.create_connection((ip,853),timeout=5)
+                  raw.settimeout(5)
+                  ctx=ssl.create_default_context()
+                  try:
+                      with ctx.wrap_socket(raw,server_hostname=sni) as tls:
+                          return f'{label}_{sni.replace(".","_")}=STRICT_TLS_PASS'
+                  except ssl.SSLCertVerificationError as exc:
+                      return f'{label}_{sni.replace(".","_")}=CERT_ERROR:{exc.verify_code}'
+                  except Exception as exc:
+                      return f'{label}_{sni.replace(".","_")}='+type(exc).__name__
+              except Exception as exc:
+                  return f'{label}_{sni.replace(".","_")}='+type(exc).__name__
+          jobs=[('RU','188.120.254.223','dns.mnebyvpn.site'),
+            ('DE','89.125.90.101','dns.mnebyvpn.site'),
+            ('DE','89.125.90.101',domain)]
+          with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+              for line in pool.map(lambda a:probe(*a),jobs):print(line)
+          print('READ_ONLY=true')
+          PY
