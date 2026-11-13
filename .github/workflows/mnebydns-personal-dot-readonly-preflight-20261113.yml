@@ -220,6 +220,23 @@ jobs:
               for line in raw.splitlines() if len(line.split())>3))
           out('TCP_853_LISTENER_PRESENT',any(line.split()[3].endswith(':853')
               for line in raw.splitlines() if len(line.split())>3))
+          # Report only local binding class; do not print unrelated processes
+          # or user-controlled command arguments / sensitive environment.
+          addresses=[line.split()[3] for line in raw.splitlines()
+                     if len(line.split())>3 and line.split()[3].endswith(':853')]
+          out('TCP_853_BIND_CLASSES',','.join(sorted({
+              'LOOPBACK' if x.startswith(('127.','[::1]')) else
+              'ALL_INTERFACES' if x.startswith(('0.0.0.0:','[::]:','*:')) else
+              'EXPLICIT_ADDRESS' for x in addresses
+          })) or 'NONE')
+          # Only names of systemd units listening on 853, never full command
+          # lines or secrets. Existing upstream may already own this port.
+          code,sockets=run('ss','-lntpH')
+          descriptors=[line for line in sockets.splitlines()
+                       if len(line.split())>3 and line.split()[3].endswith(':853')]
+          names=sorted(set(re.findall(r'users:\(\("([a-zA-Z0-9_.+-]{1,40})"','
+                                    '.join(descriptors))))
+          out('TCP_853_PROCESS_NAMES',','.join(names[:8]) or 'UNAVAILABLE')
           code,raw=run('bash','-lc','test -d /opt/mnebyvpn && test -d /opt/mnebyvpn/staging')
           out('CANARY_STAGING_PATH_PRESENT',code==0)
           code,images=run('docker','image','ls','--format','{{.Repository}}:{{.Tag}}')
