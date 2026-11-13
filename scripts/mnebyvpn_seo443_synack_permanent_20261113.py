@@ -67,6 +67,9 @@ def directory(runid):
 ROLLBACK_CODE="""
 import hashlib,json,os,pathlib,shutil,subprocess,sys,tempfile
 folder=pathlib.Path(sys.argv[1])
+if (folder/'confirmed').exists():
+    print('SYNACK_ROLLBACK_SKIPPED_CONFIRMED=true',flush=True)
+    raise SystemExit(0)
 meta=json.loads((folder/'state.json').read_text())
 target=pathlib.Path('/usr/local/sbin/telegram-nfqws-rules')
 def digest(x):return hashlib.sha256(x).hexdigest()
@@ -167,9 +170,9 @@ def commit(runid):
         assert cmd("systemctl","is-active","--quiet",svc,ok=False).returncode==0
     unit="mnebyvpn-seo443-rollback-"+runid
     assert cmd("systemctl","is-active","--quiet",unit+".timer",ok=False).returncode==0
+    (folder/"confirmed").touch()
     cmd("systemctl","stop",unit+".timer")
     assert cmd("systemctl","is-active","--quiet",unit+".timer",ok=False).returncode!=0
-    (folder/"confirmed").touch()
     print("SYNACK_PERMANENT_FIX_COMMITTED=true",flush=True)
     print("SYNACK_PERSISTENCE_SCRIPT_CHECKED=true",flush=True)
     print("SYNACK_ROLLBACK_BACKUP_PRESERVED=true",flush=True)
