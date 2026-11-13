@@ -234,8 +234,7 @@ jobs:
           code,sockets=run('ss','-lntpH')
           descriptors=[line for line in sockets.splitlines()
                        if len(line.split())>3 and line.split()[3].endswith(':853')]
-          names=sorted(set(re.findall(r'users:\(\("([a-zA-Z0-9_.+-]{1,40})"','
-                                    '.join(descriptors))))
+          names=sorted(set(re.findall(r'"([a-zA-Z0-9_.+-]{1,40})",pid=', ' '.join(descriptors))))
           out('TCP_853_PROCESS_NAMES',','.join(names[:8]) or 'UNAVAILABLE')
           code,raw=run('bash','-lc','test -d /opt/mnebyvpn && test -d /opt/mnebyvpn/staging')
           out('CANARY_STAGING_PATH_PRESENT',code==0)
