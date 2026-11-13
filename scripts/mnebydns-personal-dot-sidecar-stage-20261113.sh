@@ -25,6 +25,18 @@ test "$(ip -o -4 addr show dev tg-relay | grep -c '10.66.77.2/24')" -eq 1
 test -s "$STAGED/privkey.pem"
 test -s "$STAGED/fullchain.pem"
 test -s "$STAGED/policy.json"
+test -s "$STAGED/personal-dot-production.ts"
+# Confirm the exact Git blob from reviewed application commit 88d0a157.
+# This overrides only the private DoT gateway source in the pinned stage
+# image; the live site, Telegram bot and CoreDNS are never replaced.
+python3 - "$STAGED/personal-dot-production.ts" <<'PY'
+import hashlib,pathlib,sys
+data=pathlib.Path(sys.argv[1]).read_bytes()
+digest=hashlib.sha1(b'blob '+str(len(data)).encode()+b'\0'+data).hexdigest()
+assert digest=='88a1f0d617c3d462c862af184157a0c6375dde8d', 'Unreviewed gateway source'
+assert b"const portNumber=port('MNEBYDNS_PERSONAL_'+prefix+'_DOT_PORT',853,1);" in data
+print('PERSONAL_DOT_REVIEWED_PORT_FIX=VERIFIED')
+PY
 # Never destroy/replace an existing service.
 if docker ps -a --format '{{.Names}}' | grep -qx "$NAME"; then
   echo 'PERSONAL_DOT_CONTAINER_ALREADY_EXISTS=REFUSE_OVERWRITE'
@@ -57,6 +69,7 @@ install -d -m 700 "$TARGET"
 install -m 600 "$STAGED/fullchain.pem" "$TARGET/fullchain.pem"
 install -m 600 "$STAGED/privkey.pem" "$TARGET/privkey.pem"
 install -m 600 "$STAGED/policy.json" "$TARGET/policy.json"
+install -m 600 "$STAGED/personal-dot-production.ts" "$TARGET/personal-dot-production.ts"
 chown -R 1001:1001 "$TARGET"
 cleanup(){
   local code=$?
@@ -90,6 +103,7 @@ docker run -d --name "$NAME" --network host \
   -e MNEBYDNS_PERSONAL_DIRECT_DOT_NAME=one.one.one.one \
   -e MNEBYDNS_PERSONAL_DIRECT_DOT_PORT=853 \
   --mount "type=bind,source=$TARGET,target=/run/mnebydns-personal,readonly" \
+  --mount "type=bind,source=$TARGET/personal-dot-production.ts,target=/srv/mnebyvpn/apps/service/src/personal-dot-production.ts,readonly" \
   --entrypoint node "$IMAGE" \
   --experimental-strip-types apps/service/src/personal-dot-production.ts >/dev/null
 ready=0
