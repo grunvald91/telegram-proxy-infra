@@ -65,6 +65,53 @@ jobs:
           if p.exists():
               stat=p.stat()
               print('DOT_CORE_FILE_READABLE_BY_GROUP='+str(bool(stat.st_mode & 0o040)))
+              core=p.read_text(encoding='utf-8',errors='replace')
+              print('DOT_RELOAD_DIRECTIVE='+str(bool(re.search(r'(?m)^\s*reload\s+5s\s+1s\s*
+          listening=command(['ss','-Hlntp'])
+          print('DOT_853_LISTEN='+str(any(':853 ' in line and 'coredns' in line.lower() for line in listening.splitlines())))
+          journal=command(['journalctl','-u','mnebydns-dot.service',
+                           '--since','-6 hours','--no-pager','-o','cat'],timeout=15)
+          patterns={'servfail':r'servfail', 'timeout':r'timeout|timed out',
+                    'permission':r'permission denied','restart':r'started|stopping|failed',
+                    'upstream_error':r'plugin/errors|read udp|dial tcp'}
+          for name,pat in patterns.items():
+              count=sum(bool(re.search(pat,ln,re.I)) for ln in journal.splitlines())
+              print('DOT_JOURNAL_6H_'+name.upper()+'='+str(count))
+          print('DOT_JOURNAL_RAW_CONTENT_NOT_EXPORTED=true')
+          PY
+      - name: Store synthetic no-client-data stability report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mnebydns-oneoff-dot-stability
+          path: speed-readonly-results/
+          if-no-files-found: ignore
+          retention-days: 3
+,core))))
+              print('DOT_QUAD9_PRIMARY='+str('tls://9.9.9.9' in core))
+              print('DOT_QUAD9_SECONDARY='+str('tls://149.112.112.112' in core))
+              print('DOT_SERVFAIL_CACHE_DISABLED='+str(bool(re.search(r'(?m)^\s*servfail\s+0\s*
+          listening=command(['ss','-Hlntp'])
+          print('DOT_853_LISTEN='+str(any(':853 ' in line and 'coredns' in line.lower() for line in listening.splitlines())))
+          journal=command(['journalctl','-u','mnebydns-dot.service',
+                           '--since','-6 hours','--no-pager','-o','cat'],timeout=15)
+          patterns={'servfail':r'servfail', 'timeout':r'timeout|timed out',
+                    'permission':r'permission denied','restart':r'started|stopping|failed',
+                    'upstream_error':r'plugin/errors|read udp|dial tcp'}
+          for name,pat in patterns.items():
+              count=sum(bool(re.search(pat,ln,re.I)) for ln in journal.splitlines())
+              print('DOT_JOURNAL_6H_'+name.upper()+'='+str(count))
+          print('DOT_JOURNAL_RAW_CONTENT_NOT_EXPORTED=true')
+          PY
+      - name: Store synthetic no-client-data stability report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mnebydns-oneoff-dot-stability
+          path: speed-readonly-results/
+          if-no-files-found: ignore
+          retention-days: 3
+,core))))
           listening=command(['ss','-Hlntp'])
           print('DOT_853_LISTEN='+str(any(':853 ' in line and 'coredns' in line.lower() for line in listening.splitlines())))
           journal=command(['journalctl','-u','mnebydns-dot.service',
