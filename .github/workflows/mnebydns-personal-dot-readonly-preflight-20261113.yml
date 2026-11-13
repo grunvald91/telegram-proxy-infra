@@ -86,6 +86,72 @@ jobs:
               print('RU_PUBLIC_TCP_853_REACHABLE=False class='+type(exc).__name__,flush=True)
           print('PUBLIC_BASELINE_READONLY=true',flush=True)
           PY
+      - name: Compare actual foreign mapped DNS A record with independent origin DNS
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import socket,ssl,struct,ipaddress
+          def recv(s,n):
+              b=b''
+              while len(b)<n:
+                  c=s.recv(n-len(b))
+                  if not c:raise EOFError('DNS/TLS closed')
+                  b+=c
+              return b
+          def skip_name(p,pos):
+              for _ in range(130):
+                  if pos>=len(p):raise ValueError('Truncated DNS RR name')
+                  n=p[pos];pos+=1
+                  if n==0:return pos
+                  if n>=192:
+                      if pos>=len(p):raise ValueError('Bad DNS compression')
+                      return pos+1
+                  if n>63 or pos+n>len(p):raise ValueError('Invalid DNS label')
+                  pos+=n
+              raise ValueError('DNS name too long')
+          def resolve(ip,tls_name,dns_name):
+              ident=0x5656
+              q=struct.pack('!HHHHHH',ident,0x0100,1,0,0,0)
+              q+=b''.join(bytes([len(x)])+x.encode('ascii') for x in dns_name.split('.'))
+              q+=b'\x00'+struct.pack('!HH',1,1)
+              with socket.create_connection((ip,853),timeout=8) as raw:
+                  raw.settimeout(8)
+                  with ssl.create_default_context().wrap_socket(raw,server_hostname=tls_name) as tls:
+                      tls.sendall(struct.pack('!H',len(q))+q)
+                      n=struct.unpack('!H',recv(tls,2))[0]
+                      if not 12<=n<=16384:raise ValueError('Unexpected response length')
+                      p=recv(tls,n)
+              response_id,flags,qd,an=struct.unpack('!HHHH',p[:8])
+              if response_id!=ident or not flags&0x8000 or qd!=1:
+                  raise ValueError('DNS response mismatch')
+              pos=12
+              for _ in range(qd):
+                  pos=skip_name(p,pos)+4
+              ips=[]
+              for _ in range(an):
+                  pos=skip_name(p,pos)
+                  if pos+10>len(p):raise ValueError('Malformed DNS RR')
+                  rtype,rclass,ttl,rdlen=struct.unpack_from('!HHIH',p,pos)
+                  pos+=10
+                  if pos+rdlen>len(p):raise ValueError('Malformed DNS RDATA')
+                  if rtype==1 and rclass==1 and rdlen==4:
+                      ips.append(str(ipaddress.IPv4Address(p[pos:pos+4])))
+                  pos+=rdlen
+              return sorted(set(ips)),flags&15
+          name='claude.ai'
+          try:
+              mapped,rcode=resolve('89.125.90.101','dns.mnebyvpn.site',name)
+              original,origin_code=resolve('1.1.1.1','one.one.one.one',name)
+              print('CLAUDE_FOREIGN_DOT_A_RECORDS='+','.join(mapped))
+              print('CLAUDE_ORIGIN_DOT_A_RECORDS='+','.join(original))
+              print('CLAUDE_FOREIGN_DOT_RCODE='+str(rcode))
+              print('CLAUDE_ORIGIN_DOT_RCODE='+str(origin_code))
+              print('CLAUDE_A_RECORD_MAPPING_DISTINCT='+str(bool(mapped and original and set(mapped).isdisjoint(original))))
+          except Exception as exc:
+              print('CLAUDE_A_RECORD_PROBE_ERROR='+type(exc).__name__)
+              raise
+          PY
       - name: Pinned read-only foreign VPS inventory, no secrets/config dump
         shell: bash
         run: |
