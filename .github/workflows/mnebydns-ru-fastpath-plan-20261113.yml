@@ -1,0 +1,77 @@
+name: MNEBYDNS RU faster path exact A-only preparation (read-only)
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - ".github/workflows/mnebydns-ru-fastpath-plan-20261113.yml"
+      - "scripts/mnebydns-ru-fastpath-plan-20261113.py"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/mnebydns-ru-fastpath-plan-20261113.yml"
+      - "scripts/mnebydns-ru-fastpath-plan-20261113.py"
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('mnebydns-fastplan-offline-{0}',github.ref) || 'mnebydns-fastpath-readonly' }}
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile and validate precise A template switching without changing RR types
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-ru-fastpath-plan-20261113.py
+          python3 scripts/mnebydns-ru-fastpath-plan-20261113.py --self-test
+          test "$(grep -c ' ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts)" -eq 2
+          ! grep -Eq 'systemctl (restart|reload)|nft (add|delete|flush)|iptables (-A|-I|-D|-F)|StrictHostKeyChecking=no|verify=False' scripts/mnebydns-ru-fastpath-plan-20261113.py
+          echo FASTPATH_A_ONLY_OFFLINE=PASS
+  preview:
+    if: github.event_name == 'push'
+    needs: offline
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install pinned SSH client
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+      - name: Compare live stable Corefile with strict only-A fast path candidate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/mnebydns-ru-fastpath-plan-20261113.py --plan
+      - name: Report which exact A hostname templates can switch safely
+        if: always()
+        run: |
+          if [ -s fastpath-ru-plan/report.md ]; then
+            cat fastpath-ru-plan/report.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'No safe exact-A candidate produced' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Archive ONLY sanitized metadata, never raw live DNS
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mnebydns-ru-fastpath-plan-${{ github.run_id }}
+          path: |
+            fastpath-ru-plan/plan.json
+            fastpath-ru-plan/report.md
+          if-no-files-found: warn
+          retention-days: 30
