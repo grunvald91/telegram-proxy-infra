@@ -1,73 +1,53 @@
-# Probe public HTTPS readiness for immediate unrestricted VPN purchases on 2026-11-07.
-name: MNEBYVPN diagnose missing external 443 SYN packets (read-only)
+name: MNEBYVPN SEO P0 narrow SYNACK NFQUEUE bypass canary
 on:
   push:
     paths: ['.github/workflows/mnebyvpn-tcp443-syn-trace.yml']
-  workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: mnebyvpn-seo443-global-synack-canary
+  cancel-in-progress: false
 jobs:
-  inspect:
+  verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 6
+    timeout-minutes: 7
     env:
-      HOST: '188.120.254.223'
       PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
     steps:
-      - name: Count only TCP SYNs from this runner, never capture user payloads
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate scripts and baseline website and Telegram
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/mnebyvpn_seo443_synack_canary_20261113.py scripts/mnebyvpn_seo443_synack_probe_20261113.py
+          python3 scripts/mnebyvpn_seo443_synack_probe_20261113.py before | tee "$RUNNER_TEMP/before.log"
+          grep -Fq 'BEFORE_ru8443=connected' "$RUNNER_TEMP/before.log"
+          grep -Fq 'BEFORE_de8443=connected' "$RUNNER_TEMP/before.log"
+          ! grep -Fq 'BEFORE_ru443=HTTP200' "$RUNNER_TEMP/before.log"
+      - name: Test ONLY SYNACK exception with rollback timer
         shell: bash
         run: |
           set -euo pipefail
           test -n "$PASSWORD"
-          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
-          MY_IP="$(curl -4 -fsS --max-time 8 https://api.ipify.org)"
-          [[ "$MY_IP" =~ ^[0-9.]+$ ]] || exit 2
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
           export SSHPASS="$PASSWORD"
-          opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o LogLevel=ERROR)
-          sshpass -e ssh "${opts[@]}" "root@$HOST" "python3 - '$MY_IP'" > "$RUNNER_TEMP/syn-count.txt" <<'PY' &
-          import socket,sys,time
-          source=socket.inet_aton(sys.argv[1])
-          s=socket.socket(socket.AF_PACKET,socket.SOCK_RAW,socket.htons(3))
-          s.settimeout(2)
-          end=time.monotonic()+20
-          inbound=outbound=reset=0
-          while time.monotonic()<end:
-            try:packet=s.recv(2048)
-            except socket.timeout:continue
-            if len(packet)<54 or packet[12:14]!=b'\x08\x00':continue
-            ip=packet[14:]
-            if ip[9]!=6:continue
-            ihl=(ip[0]&15)*4
-            tcp=ip[ihl:]
-            if len(tcp)<14:continue
-            sport=int.from_bytes(tcp[:2],'big')
-            dport=int.from_bytes(tcp[2:4],'big')
-            flags=tcp[13]
-            if ip[12:16]==source and dport==443 and flags&2:
-              inbound+=1
-            if ip[16:20]==source and sport==443:
-              if flags&18==18:outbound+=1
-              if flags&4:reset+=1
-          import subprocess,re
-          route=subprocess.run(['ip','-4','route','get',sys.argv[1]],
-            capture_output=True,text=True)
-          dev=re.search(r'\bdev\s+(\S+)',route.stdout)
-          print('public_syn_received='+str(inbound))
-          print('public_synack_sent='+str(outbound))
-          print('public_rst_sent='+str(reset))
-          print('reply_route_device_type='+('wg' if dev and dev.group(1).startswith('wg') else
-            'ethernet' if dev and dev.group(1).startswith(('en','eth')) else 'other'))
-          PY
-          PID=$!
-          sleep 3
-          python3 - <<'PY'
-          import socket
-          for n in range(3):
-            try:
-              with socket.create_connection(('188.120.254.223',443),timeout=3):
-                print('external_443_connect=success')
-            except Exception as e:
-              print('external_443_connect='+type(e).__name__)
-          PY
-          wait "$PID"
-          cat "$RUNNER_TEMP/syn-count.txt"
+          sshpass -e ssh -T -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o LogLevel=ERROR root@188.120.254.223 \
+            "python3 - '$GITHUB_RUN_ID'" < scripts/mnebyvpn_seo443_synack_canary_20261113.py > "$RUNNER_TEMP/server.log" &
+          pid=$!
+          sleep 8
+          python3 scripts/mnebyvpn_seo443_synack_probe_20261113.py during | tee "$RUNNER_TEMP/during.log"
+          set +e
+          wait "$pid"
+          remote_status=$?
+          set -e
+          cat "$RUNNER_TEMP/server.log"
+          test "$remote_status" -eq 0
+          grep -Fq 'SYNACK_ONLY_CANARY_REMOVED=true' "$RUNNER_TEMP/server.log"
+          grep -Fq 'DURING_ru443=HTTP200' "$RUNNER_TEMP/during.log"
+          grep -Fq 'DURING_www443=HTTP3XX' "$RUNNER_TEMP/during.log"
+          grep -Fq 'DURING_ru8443=connected' "$RUNNER_TEMP/during.log"
+          grep -Fq 'DURING_de8443=connected' "$RUNNER_TEMP/during.log"
+          python3 scripts/mnebyvpn_seo443_synack_probe_20261113.py after
+          echo 'CANARY_TEMPORARY_EXCEPTION_CLEANED=true'
