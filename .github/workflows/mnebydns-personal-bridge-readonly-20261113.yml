@@ -47,6 +47,25 @@ jobs:
                       if line.strip().endswith('{') and not line.lstrip().startswith('#')]
                   print('DE_DOT_CONFIG='+str(f))
                   print('DE_DOT_SERVER_HEADERS='+','.join(headers[:8]))
+          corefile=workdir/'Corefile'
+          if corefile.is_file():
+              raw=corefile.read_text(errors='replace')
+              templates=re.findall(r'(?m)^\\s*template\\s+IN\\s+(?:A|AAAA|HTTPS|SVCB)\\s+([^\\s{]+)',raw)
+              names=sorted(set(x.lower().rstrip('.') for x in templates))
+              valid=[x for x in names if re.fullmatch(r'(?:\\*\\.)?[a-z0-9-]+(?:\\.[a-z0-9-]+)+',x)]
+              print('DE_CORE_DOMAIN_RULES='+str(len(names)))
+              print('DE_CORE_LITERAL_DOMAIN_RULES='+str(len(valid)))
+              print('DE_CORE_RULE_EXAMPLES='+','.join(valid[:12]))
+              print('DE_CORE_RULE_HAS_CLAUDE='+str('claude.ai' in valid))
+              print('DE_CORE_RULE_OTHER_LINES='+str(len(names)-len(valid)))
+          import socket
+          for ip,pt,name in [('10.66.77.2',22,'DE_TO_RU_WG_SSH'),
+                             ('10.66.77.2',8853,'DE_TO_RU_WG_8853'),
+                             ('10.66.77.1',853,'DE_WG_LOCAL_DOT')]:
+              try:
+                  with socket.create_connection((ip,pt),timeout=2):
+                      print(name+'=CONNECTED')
+              except Exception as exc:print(name+'='+type(exc).__name__)
           print('DE_DOT_UNIT_ACTIVE='+run(['systemctl','is-active','mnebydns-dot']))
           ss=run(['ss','-Hlntp'])
           print('DE_853_OWNER='+('coredns' if any(':853 ' in line and 'coredns' in line.lower()
