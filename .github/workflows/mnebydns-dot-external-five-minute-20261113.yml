@@ -1,0 +1,55 @@
+name: MNEBYDNS external read-only DoT availability guard
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebydns-dot-external-five-minute-20261113.yml'
+  workflow_dispatch:
+  # GitHub Actions scheduling has a minimum five-minute cadence and can drift.
+  # The separate on-node systemd timer is responsible for minute-resolution data.
+  schedule:
+    - cron: '*/5 * * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mnebydns-external-dot-5min
+  cancel-in-progress: true
+
+jobs:
+  public-dot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Static code and synthetic DNS parser checks
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-dot-minute-probe-20261113.py
+          python3 scripts/mnebydns-dot-minute-probe-20261113.py --self-test
+          bash -n scripts/mnebydns-dot-minute-install-20261113.sh
+          bash -n scripts/mnebydns-dot-config-change-20261111.sh
+      - name: TLS-verified public DoT query (no SSH, no production changes)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if python3 scripts/mnebydns-dot-minute-probe-20261113.py > dot-result.json; then
+            echo 'MNEBYDNS external DoT synthetic: PASS' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo '::error title=MNEBYDNS DoT availability::Public TCP/TLS/DNS synthetic request failed. See phase and error class.'
+            echo 'MNEBYDNS external DoT synthetic: FAIL' >> "$GITHUB_STEP_SUMMARY"
+            cat dot-result.json
+            exit 1
+          fi
+          cat dot-result.json
+      - name: Save bounded synthetic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mnebydns-dot-external-synthetic
+          path: dot-result.json
+          retention-days: 3
+          if-no-files-found: ignore
