@@ -1,0 +1,77 @@
+name: MNEBYDNS compare RU ingress and DE public WG TLS routes read-only
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - ".github/workflows/mnebydns-route-choice-readonly-20261113.yml"
+      - "scripts/mnebydns-route-choice-readonly-20261113.py"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/mnebydns-route-choice-readonly-20261113.yml"
+      - "scripts/mnebydns-route-choice-readonly-20261113.py"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('route-choice-offline-{0}', github.ref) || 'mnebydns-route-choice-readonly' }}
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: No server writes and exact route path test
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-route-choice-readonly-20261113.py
+          python3 scripts/mnebydns-route-choice-readonly-20261113.py --self-test
+          test "$(grep -c ' ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts)" -eq 2
+          ! grep -Eq 'systemctl (restart|reload|stop|start)|nft (add|delete|flush)|iptables (-A|-D|-F|-I)|StrictHostKeyChecking=no|chmod|chown' scripts/mnebydns-route-choice-readonly-20261113.py
+          echo ROUTE_CHOICE_OFFLINE=PASS
+  probe:
+    if: github.event_name != 'pull_request'
+    needs: offline
+    runs-on: ubuntu-latest
+    timeout-minutes: 13
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install pinned SSH
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -qq -y sshpass >/dev/null
+      - name: Compare public versus WG routes, TLS and listener ownership without mutation
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/mnebydns-route-choice-readonly-20261113.py --run
+      - name: Report route choice
+        if: always()
+        shell: bash
+        run: |
+          if [ -s route-choice-results/report.md ]; then
+            cat route-choice-results/report.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'No verified route choice data available' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Archive metrics (no user traffic or secrets)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mnebydns-route-choice-${{ github.run_id }}
+          path: route-choice-results/
+          if-no-files-found: warn
+          retention-days: 30
