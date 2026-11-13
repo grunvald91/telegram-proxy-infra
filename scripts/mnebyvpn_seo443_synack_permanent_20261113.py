@@ -186,6 +186,7 @@ def rollback(runid):
 def selftest():
     example=pathlib.Path("legacy-mtproxy/live-snapshot/server188/usr/local/sbin/telegram-nfqws-rules").read_text()
     target=render(example)
+    compile(ROLLBACK_CODE, '<server-rollback>', 'exec')
     assert target.count(MARKER)==1
     assert target.index(MARKER)<target.index(ANCHOR)
     assert subprocess.run(["sh","-n"],input=target,text=True,capture_output=True).returncode==0
