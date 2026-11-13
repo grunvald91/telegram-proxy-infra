@@ -30,8 +30,7 @@ CANDIDATES=(
     "claude.ai","api.anthropic.com","gemini.google.com",
     "www.youtube.com","grok.com","x.com","www.tiktok.com",
     "cloud.oracle.com","id.cisco.com","codebrowser.dev",
-    "copilot.microsoft.com","account.wbgames.com",
-    "3dwarehouse.sketchup.com",
+    "copilot.microsoft.com",
 )
 HEADER=re.compile(r"(?m)^[ \t]*template[ \t]+IN[ \t]+A[ \t]+([^ \t\r\n{}]+)[ \t]*\{")
 ANSWER=re.compile(r'(?m)^(?P<indent>[ \t]*)answer[ \t]+"\{\{ \.Name \}\}[ \t]+(?P<ttl>[0-9]+)[ \t]+IN[ \t]+A[ \t]+89\.125\.90\.101"[ \t]*$')
