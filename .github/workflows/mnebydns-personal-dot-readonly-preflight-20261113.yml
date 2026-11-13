@@ -1,0 +1,374 @@
+# Guarded, read-only preflight for the next personal DoT canary.
+# This branch must NOT deploy services or modify existing DNS/proxy config.
+name: MNEBYDNS personal DoT preflight — read only 2026-11-13
+
+on:
+  push:
+    branches:
+      - feat/personal-dot-safe-readonly-preflight-20261113
+    paths:
+      - '.github/workflows/mnebydns-personal-dot-readonly-preflight-20261113.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: personal-dot-readonly-preflight-20261113
+  cancel-in-progress: false
+
+jobs:
+  baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: External DoT TLS + DNS response baseline (read only)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import socket,ssl,struct,time,statistics
+          host='89.125.90.101'
+          def recv_exact(s,n):
+              b=bytearray()
+              while len(b)<n:
+                  chunk=s.recv(n-len(b))
+                  if not chunk:raise EOFError('DNS/TLS closed early')
+                  b.extend(chunk)
+              return bytes(b)
+          def message(name):
+              q=b''.join(bytes((len(label),))+label.encode('ascii') for label in name.split('.'))
+              return struct.pack('!HHHHHH',0x7f31,0x0100,1,0,0,0)+q+b'\x00'+struct.pack('!HH',1,1)
+          def check(name):
+              start=time.monotonic()
+              wire=message(name)
+              with socket.create_connection((host,853),timeout=5) as raw:
+                  raw.settimeout(5)
+                  with ssl.create_default_context().wrap_socket(raw,server_hostname='dns.mnebyvpn.site') as tls:
+                      tls.sendall(struct.pack('!H',len(wire))+wire)
+                      n=struct.unpack('!H',recv_exact(tls,2))[0]
+                      if not 12<=n<=16384:raise ValueError('DNS response size invalid')
+                      answer=recv_exact(tls,n)
+              ident,flags,qd=struct.unpack('!HHH',answer[:6])
+              if ident!=0x7f31 or not (flags&0x8000) or qd!=1:
+                  raise ValueError('DNS response transaction mismatch')
+              return round((time.monotonic()-start)*1000,1),flags&15
+          for name in ('example.org','claude.ai','www.youtube.com'):
+              try:
+                  duration,rcode=check(name)
+                  print('PUBLIC_DOT_{}=PASS rcode={} rtt_ms={}'.format(name,rcode,duration),flush=True)
+              except Exception as exc:
+                  print('PUBLIC_DOT_{}=FAIL class={}'.format(name,type(exc).__name__),flush=True)
+          try:
+              with socket.create_connection((host,8853),timeout=2):pass
+              print('PUBLIC_CANARY_PORT_8853=OPEN_WARN_VERIFY_OWNERSHIP',flush=True)
+          except OSError:
+              print('PUBLIC_CANARY_PORT_8853=NOT_REACHABLE_EXPECTED',flush=True)
+          # Probe a deliberately non-issued sample hostname; this tests
+          # wildcard DNS readiness but cannot authorize a paid subscriber.
+          import socket
+          sample='aaaaaaaaaaaa.dns.mnebyvpn.site'
+          try:
+              answers=socket.getaddrinfo(sample,853,type=socket.SOCK_STREAM)
+              resolved=sorted({a[4][0] for a in answers})
+              print('PERSONAL_WILDCARD_RESOLVES='+str(bool(resolved)),flush=True)
+              print('PERSONAL_WILDCARD_IP_COUNT='+str(len(resolved)),flush=True)
+          except OSError as exc:
+              print('PERSONAL_WILDCARD_RESOLVES=False class='+type(exc).__name__,flush=True)
+          try:
+              with socket.create_connection(('188.120.254.223',853),timeout=3):
+                  print('RU_PUBLIC_TCP_853_REACHABLE=True',flush=True)
+          except OSError as exc:
+              print('RU_PUBLIC_TCP_853_REACHABLE=False class='+type(exc).__name__,flush=True)
+          print('PUBLIC_BASELINE_READONLY=true',flush=True)
+          PY
+      - name: Compare actual foreign mapped DNS A record with independent origin DNS
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import socket,ssl,struct,ipaddress
+          def recv(s,n):
+              b=b''
+              while len(b)<n:
+                  c=s.recv(n-len(b))
+                  if not c:raise EOFError('DNS/TLS closed')
+                  b+=c
+              return b
+          def skip_name(p,pos):
+              for _ in range(130):
+                  if pos>=len(p):raise ValueError('Truncated DNS RR name')
+                  n=p[pos];pos+=1
+                  if n==0:return pos
+                  if n>=192:
+                      if pos>=len(p):raise ValueError('Bad DNS compression')
+                      return pos+1
+                  if n>63 or pos+n>len(p):raise ValueError('Invalid DNS label')
+                  pos+=n
+              raise ValueError('DNS name too long')
+          def resolve(ip,tls_name,dns_name):
+              ident=0x5656
+              q=struct.pack('!HHHHHH',ident,0x0100,1,0,0,0)
+              q+=b''.join(bytes([len(x)])+x.encode('ascii') for x in dns_name.split('.'))
+              q+=b'\x00'+struct.pack('!HH',1,1)
+              with socket.create_connection((ip,853),timeout=8) as raw:
+                  raw.settimeout(8)
+                  with ssl.create_default_context().wrap_socket(raw,server_hostname=tls_name) as tls:
+                      tls.sendall(struct.pack('!H',len(q))+q)
+                      n=struct.unpack('!H',recv(tls,2))[0]
+                      if not 12<=n<=16384:raise ValueError('Unexpected response length')
+                      p=recv(tls,n)
+              response_id,flags,qd,an=struct.unpack('!HHHH',p[:8])
+              if response_id!=ident or not flags&0x8000 or qd!=1:
+                  raise ValueError('DNS response mismatch')
+              pos=12
+              for _ in range(qd):
+                  pos=skip_name(p,pos)+4
+              ips=[]
+              for _ in range(an):
+                  pos=skip_name(p,pos)
+                  if pos+10>len(p):raise ValueError('Malformed DNS RR')
+                  rtype,rclass,ttl,rdlen=struct.unpack_from('!HHIH',p,pos)
+                  pos+=10
+                  if pos+rdlen>len(p):raise ValueError('Malformed DNS RDATA')
+                  if rtype==1 and rclass==1 and rdlen==4:
+                      ips.append(str(ipaddress.IPv4Address(p[pos:pos+4])))
+                  pos+=rdlen
+              return sorted(set(ips)),flags&15
+          name='claude.ai'
+          try:
+              mapped,rcode=resolve('89.125.90.101','dns.mnebyvpn.site',name)
+              original,origin_code=resolve('1.1.1.1','one.one.one.one',name)
+              print('CLAUDE_FOREIGN_DOT_A_RECORDS='+','.join(mapped))
+              print('CLAUDE_ORIGIN_DOT_A_RECORDS='+','.join(original))
+              print('CLAUDE_FOREIGN_DOT_RCODE='+str(rcode))
+              print('CLAUDE_ORIGIN_DOT_RCODE='+str(origin_code))
+              print('CLAUDE_A_RECORD_MAPPING_DISTINCT='+str(bool(mapped and original and set(mapped).isdisjoint(original))))
+          except Exception as exc:
+              print('CLAUDE_A_RECORD_PROBE_ERROR='+type(exc).__name__)
+              raise
+          PY
+      - name: Pinned read-only foreign VPS inventory, no secrets/config dump
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS" || { echo 'PINNED_SSH_SECRET=UNAVAILABLE'; exit 2; }
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          test "$(grep -c ' ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts)" -eq 2
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -qq -y sshpass >/dev/null
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no
+            -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY'
+          import pathlib,subprocess,socket,os,hashlib
+          def call(*argv):
+              try:
+                  p=subprocess.run(argv,capture_output=True,text=True,timeout=6)
+                  return p.returncode,p.stdout.strip()
+              except Exception:return 255,''
+          def out(label,value):print('DE_'+label+'='+str(value),flush=True)
+          for service in ('mnebydns-dot.service','nginx.service'):
+              code,raw=call('systemctl','show',service,
+                  '-p','ActiveState','-p','SubState','-p','NRestarts','--no-pager')
+              values=dict(x.split('=',1) for x in raw.splitlines() if '=' in x)
+              out(service.replace('.service','').replace('-','_')+'_STATE',
+                  ':'.join(values.get(k,'unknown') for k in ('ActiveState','SubState')))
+          for name,path in (
+              ('COREDNS_CONFIG','/opt/mnebydns-dot/Corefile'),
+              ('NGINX_CONFIG','/etc/nginx/nginx.conf'),
+              ('STABLE_CHECKPOINT','/opt/mnebydns-stable-checkpoints/current')):
+              p=pathlib.Path(path)
+              out(name+'_PRESENT',p.is_file())
+              if p.is_file():out(name+'_SHA256',hashlib.sha256(p.read_bytes()).hexdigest())
+          code,raw=call('ss','-lntH')
+          listens=set()
+          for line in raw.splitlines():
+              parts=line.split()
+              if len(parts)>3:
+                  addr=parts[3]
+                  for target in (53,443,853,8853):
+                      if addr.endswith(':'+str(target)):
+                          listens.add((target,'LOOPBACK' if
+                              addr.startswith(('127.','[::1]')) else 'NON_LOOPBACK'))
+          for target in (53,443,853,8853):
+              out('TCP_'+str(target)+'_LISTENERS',','.join(x[1] for x in sorted(listens) if x[0]==target) or 'NONE')
+          code,ver=call('node','--version')
+          out('NODE_VERSION',ver if code==0 else 'NOT_INSTALLED')
+          code,ver=call('psql','--version')
+          out('PSQL_CLIENT_PRESENT',code==0)
+          code,ver=call('docker','version','--format','{{.Server.Version}}')
+          out('DOCKER_ENGINE_PRESENT',code==0)
+          if code==0:out('DOCKER_ENGINE_VERSION',ver)
+          mem=pathlib.Path('/proc/meminfo').read_text()
+          import re
+          items={k:int(v) for k,v in re.findall(r'^(MemTotal|MemAvailable):\s+(\d+)',mem,re.M)}
+          out('MEMORY_AVAILABLE_MIB',items.get('MemAvailable',0)//1024)
+          out('MEMORY_TOTAL_MIB',items.get('MemTotal',0)//1024)
+          st=os.statvfs('/')
+          out('DISK_FREE_MIB',st.f_bavail*st.f_frsize//1024//1024)
+          code,raw=call('ss','-lnuH')
+          out('UDP_53_LISTENER_PRESENT',any(':53 ' in (' '+line+' ') or
+             line.split()[4].endswith(':53') for line in raw.splitlines() if len(line.split())>4))
+          # Does locally reachable DoT:853 accept a normal verified TLS
+          # handshake for its current public name? No DNS query sent.
+          import ssl
+          try:
+              with socket.create_connection(('127.0.0.1',853),timeout=3) as raw:
+                  with ssl.create_default_context().wrap_socket(raw,server_hostname='dns.mnebyvpn.site') as tls:
+                      out('LOCAL_DOT_853_TLS_VALID',True)
+                      out('LOCAL_DOT_853_TLS_VERSION',tls.version())
+          except Exception as exc:
+              out('LOCAL_DOT_853_TLS_VALID',False)
+              out('LOCAL_DOT_853_TLS_FAILURE',type(exc).__name__)
+          for candidate,host,port in (
+              ('ORIGIN_TCP53','127.0.0.1',53),
+              ('ORIGIN_TCP5353','127.0.0.1',5353),
+              ('CLOUDFLARE_DOT','1.1.1.1',853)):
+              try:
+                  with socket.create_connection((host,port),timeout=3) as sock:
+                      if candidate=='CLOUDFLARE_DOT':
+                          with ssl.create_default_context().wrap_socket(sock,server_hostname='one.one.one.one') as tls:
+                              out(candidate+'_REACHABLE',True)
+                      else:out(candidate+'_REACHABLE',True)
+              except Exception as exc:
+                  out(candidate+'_REACHABLE',False)
+          code,ver=call('nginx','-t')
+          out('NGINX_CONFIG_TEST',code==0)
+          out('READONLY_NO_SERVER_MUTATIONS',True)
+          PY
+      - name: Read-only RU staging feasibility, memory and disposable DB isolation
+        shell: bash
+        env:
+          RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" || { echo 'RU_SSH_SECRET_MISSING'; exit 2; }
+          export SSHPASS="$RU_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no
+            -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -' <<'PY'
+          import pathlib,os,subprocess,re
+          def run(*args):
+              try:
+                  p=subprocess.run(args,capture_output=True,text=True,timeout=5)
+                  return p.returncode,p.stdout.strip()
+              except Exception:return 255,''
+          def out(k,v):print('RU_'+k+'='+str(v),flush=True)
+          code,version=run('node','--version')
+          out('NODE_PRESENT',code==0)
+          if code==0:out('NODE_VERSION',version)
+          code,version=run('docker','version','--format','{{.Server.Version}}')
+          out('DOCKER_ENGINE',code==0)
+          if code==0:
+              out('DOCKER_VERSION',version)
+              code,lines=run('docker','ps','--format','{{.Names}}')
+              out('MNEBYVPN_RUNNING_CONTAINERS',
+                  ','.join(x for x in lines.splitlines() if x.startswith('mnebyvpn-'))[:350])
+          mem=pathlib.Path('/proc/meminfo').read_text()
+          items={k:int(v) for k,v in re.findall(r'^(MemTotal|MemAvailable):\s+(\d+)',mem,re.M)}
+          out('MEM_AVAILABLE_MIB',items.get('MemAvailable',0)//1024)
+          out('MEM_TOTAL_MIB',items.get('MemTotal',0)//1024)
+          st=os.statvfs('/')
+          out('DISK_FREE_MIB',st.f_bavail*st.f_frsize//1024//1024)
+          code,raw=run('ss','-lntH')
+          out('TCP_8853_LOCAL_IN_USE',any(line.split()[3].endswith(':8853')
+              for line in raw.splitlines() if len(line.split())>3))
+          out('TCP_853_LISTENER_PRESENT',any(line.split()[3].endswith(':853')
+              for line in raw.splitlines() if len(line.split())>3))
+          # Report only local binding class; do not print unrelated processes
+          # or user-controlled command arguments / sensitive environment.
+          addresses=[line.split()[3] for line in raw.splitlines()
+                     if len(line.split())>3 and line.split()[3].endswith(':853')]
+          out('TCP_853_BIND_CLASSES',','.join(sorted({
+              'LOOPBACK' if x.startswith(('127.','[::1]')) else
+              'ALL_INTERFACES' if x.startswith(('0.0.0.0:','[::]:','*:')) else
+              'EXPLICIT_ADDRESS' for x in addresses
+          })) or 'NONE')
+          # Only names of systemd units listening on 853, never full command
+          # lines or secrets. Existing upstream may already own this port.
+          code,sockets=run('ss','-lntpH')
+          descriptors=[line for line in sockets.splitlines()
+                       if len(line.split())>3 and line.split()[3].endswith(':853')]
+          names=sorted(set(re.findall(r'"([a-zA-Z0-9_.+-]{1,40})",pid=', ' '.join(descriptors))))
+          out('TCP_853_PROCESS_NAMES',','.join(names[:8]) or 'UNAVAILABLE')
+          code,raw=run('bash','-lc','test -d /opt/mnebyvpn && test -d /opt/mnebyvpn/staging')
+          out('CANARY_STAGING_PATH_PRESENT',code==0)
+          code,images=run('docker','image','ls','--format','{{.Repository}}:{{.Tag}}')
+          if code==0:
+              relevant=[x for x in images.splitlines() if any(
+                  word in x.lower() for word in ('node','postgres','mnebyvpn'))]
+              out('RELEVANT_DOCKER_IMAGES',','.join(relevant[:25])[:650])
+          code,pg_image=run('docker','inspect','-f','{{.Config.Image}}','mnebyvpn-stage-postgres')
+          out('PG_CONTAINER_IMAGE',pg_image if code==0 else 'UNKNOWN')
+          code,web_image=run('docker','inspect','-f','{{.Config.Image}}','mnebyvpn-stage-web')
+          out('WEB_CONTAINER_IMAGE',web_image if code==0 else 'UNKNOWN')
+          code,web_workdir=run('docker','inspect','-f','{{.Config.WorkingDir}}','mnebyvpn-stage-web')
+          out('WEB_CONTAINER_WORKDIR',web_workdir if code==0 else 'UNKNOWN')
+          code,web_node=run('docker','exec','mnebyvpn-stage-web','node','--version')
+          out('WEB_CONTAINER_NODE',web_node if code==0 else 'MISSING')
+          code,web_pg=run('docker','exec','mnebyvpn-stage-web','node','-e',
+              "console.log(require.resolve('pg'))")
+          out('WEB_CONTAINER_PG_AVAILABLE',code==0)
+          import socket,ssl,time
+          for label,ip,name in (
+              ('FOREIGN_DOT','89.125.90.101','dns.mnebyvpn.site'),
+              ('INDEPENDENT_DOT','1.1.1.1','one.one.one.one')):
+              start=time.monotonic()
+              try:
+                  with socket.create_connection((ip,853),timeout=5) as raw:
+                      with ssl.create_default_context().wrap_socket(raw,server_hostname=name) as tls:
+                          out(label+'_TLS_OK',True)
+                          out(label+'_TLS_HANDSHAKE_MS',round((time.monotonic()-start)*1000,1))
+              except Exception as exc:
+                  out(label+'_TLS_OK',False)
+                  out(label+'_ERROR',type(exc).__name__)
+          code,all_containers=run('docker','ps','-a','--format','{{.Names}}')
+          remaining=[x for x in all_containers.splitlines()
+                     if x.startswith('mnebydns-canary-')] if code==0 else ['UNKNOWN']
+          out('CANARY_REMAINING_CONTAINERS',len(remaining))
+          code,all_networks=run('docker','network','ls','--format','{{.Name}}')
+          leftover_networks=[x for x in all_networks.splitlines()
+                             if x.startswith('mnebydns-canary-')] if code==0 else ['UNKNOWN']
+          out('CANARY_REMAINING_NETWORKS',len(leftover_networks))
+          out('CANARY_PREVIOUS_TEST_DIR_PRESENT',
+              pathlib.Path('/tmp/mnebydns-personal-dot-43317119912').exists())
+          if remaining or leftover_networks or pathlib.Path(
+                  '/tmp/mnebydns-personal-dot-43317119912').exists():
+              raise SystemExit('Residual disposable canary resources detected')
+          # Independently verify that the reviewed, *inactive* core arrived
+          # in the existing public website container without changing DNS.
+          expected_sha='f20c43d6b690b74bca0bfc70f60138b8d3500d77'
+          active_file=pathlib.Path('/opt/mnebyvpn/public/active_sha')
+          observed=active_file.read_text().strip() if active_file.is_file() else ''
+          out('PUBLIC_RELEASE_MATCHES_REVIEWED_CORE',observed==expected_sha)
+          code,reply=run('curl','--noproxy','*','-s','-o','/dev/null',
+             '-w','%{http_code}','--max-time','5','http://127.0.0.1:8792/healthz')
+          out('PUBLIC_WEB_HEALTH',reply if code==0 else 'UNREACHABLE')
+          code,reply=run('curl','--noproxy','*','-s','-o','/dev/null',
+             '-w','%{http_code}','--max-time','5','http://127.0.0.1:8792/readyz')
+          out('PERSONAL_DNS_STILL_NOT_RELEASED',reply=='503' if code==0 else False)
+          code,reply=run('curl','--noproxy','*','-s','-o','/dev/null',
+             '-w','%{http_code}','--max-time','6','--resolve',
+             'mnebyvpn.site:443:127.0.0.1','https://mnebyvpn.site/')
+          out('WEBSITE_LOCAL_SNI_HTTPS',reply if code==0 else 'UNREACHABLE')
+          if observed!=expected_sha or not (
+              reply in ('200','301','302') and code==0):
+              raise SystemExit('Reviewed production release or localhost SNI unverified')
+          out('READONLY_NO_MUTATIONS',True)
+          PY
+      - name: Summary
+        if: always()
+        run: |
+          echo 'Only public DNS/TLS requests and read-only SSH inventory ran.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'No customer DNS gateway process, port, proxy, configuration, database, or payment was modified.' >> "$GITHUB_STEP_SUMMARY"
