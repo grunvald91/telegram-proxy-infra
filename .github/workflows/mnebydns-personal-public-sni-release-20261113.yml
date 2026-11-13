@@ -1,3 +1,4 @@
+# Re-run after verified local CoreDNS TLS listener fix: default 89.125.90.101:853; CI 43492306022 green.
 name: MNEBYDNS guarded public personal SNI cutover - preserve CoreDNS
 on:
   push:
