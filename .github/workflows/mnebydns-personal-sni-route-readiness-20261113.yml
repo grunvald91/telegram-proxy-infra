@@ -64,6 +64,9 @@ jobs:
                     'ssl_preread on; proxy_pass 127.0.0.1:1853; } }\\n')
                   r=run(['nginx','-t','-c',str(conf)],timeout=10)
                   print('NGINX_STREAM_SSL_PREREAD_TEST='+('PASS' if r and r.returncode==0 else 'FAILED'))
+                  if r and r.returncode!=0:
+                      for line in r.stderr.splitlines()[:3]:
+                          print('NGINX_STREAM_TEST_ERROR='+line[:200])
               break
           print('AUDIT_NO_PRODUCTION_CHANGES=true')
           PY
