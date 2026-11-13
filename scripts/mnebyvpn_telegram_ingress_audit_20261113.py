@@ -65,4 +65,36 @@ if code==0:
 print("nfqueue_chain_exists="+str(code==0).lower(),flush=True)
 print("nfqueue_210_rule_count="+str(sum(any("queue" in e and e["queue"].get("num")==210
     for e in r.get("expr",[])) for r in rules)),flush=True)
+# Inspect exact stream server blocks and infer backend class without logging addresses.
+# Nginx -T includes HTTP vhosts; restrict to stream-related configuration file names
+# on RU and inspect any matching server blocks on DE by checking proxy_pass.
+def classify(target):
+    if not target:return "missing"
+    if target.startswith("$"):return "variable"
+    if target.startswith("127."):return "loopback"
+    if target.startswith("10."):return "private"
+    return "other"
+for port in (443,8443,10443):
+    classes=[]
+    for match in re.finditer(r"server\s*\{([^{}]*)\}",config,re.S):
+        block=match.group(1)
+        if not re.search(r"(?m)^\s*listen\s+(?:[^\s;]*:)?"+str(port)+r"(?:\s|;)",block):
+            continue
+        target=re.search(r"\bproxy_pass\s+([^;\s]+)",block)
+        classes.append(classify(target.group(1) if target else ""))
+        if target:
+            port_match=re.search(r":(\d+)$",target.group(1))
+            print("backend_"+str(port)+"_port="+(port_match.group(1) if port_match else "variable"),flush=True)
+    print("backend_"+str(port)+"_class="+(",".join(classes) if classes else "unknown"),flush=True)
+try:
+    addresses=json.loads(run("ip","-j","-4","address","show")[1])
+    import ipaddress
+    ip_list=[ipaddress.ip_address(item.get("local"))
+             for dev in addresses for item in dev.get("addr_info",[])
+             if item.get("family")=="inet" and item.get("local")]
+    public=[ip for ip in ip_list if ip.is_global]
+    print("global_ipv4_address_count="+str(len(public)),flush=True)
+    print("has_dedicated_additional_public_ipv4="+str(len(public)>1).lower(),flush=True)
+except Exception:
+    print("global_ipv4_address_count=unknown",flush=True)
 print("audit_read_only=true",flush=True)
