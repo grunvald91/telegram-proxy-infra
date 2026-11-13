@@ -1,0 +1,67 @@
+name: Diagnose personal DoT private startup failure without persistent containers
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/mnebydns-personal-sidecar-diagnose-20261113.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Start exact private gateway as 8-second disposable diagnostic
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass >/dev/null
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR \
+            root@188.120.254.223 'bash -se' <<'REMOTE'
+          set -Eeuo pipefail
+          source_sha='becf3db987e340dccbe6a21d0c1cabbbe47c3899'
+          image="mnebyvpn-stage-web:$source_sha"
+          target=/etc/mnebydns/personal-dot
+          test -s "$target/fullchain.pem"
+          test -s "$target/privkey.pem"
+          test -s "$target/policy.json"
+          test "$(cat /opt/mnebyvpn/staging/active_sha)" = "$source_sha"
+          sha="$(sha256sum "$target/policy.json" | cut -d' ' -f1)"
+          # No stdout secrets and no persistent container; no existing port.
+          set +e
+          timeout --signal=TERM --kill-after=2s 11s \
+            docker run --rm --network host --user 1001:1001 --read-only \
+            --cap-drop ALL --security-opt no-new-privileges \
+            --tmpfs /tmp:rw,nosuid,nodev,size=8m \
+            --env-file /opt/mnebyvpn/bot/web.env \
+            -e MNEBYVPN_ENV=production \
+            -e MNEBYDNS_PERSONAL_DOT_ENABLED=yes \
+            -e MNEBYDNS_PERSONAL_DOT_BIND_IP=10.66.77.2 \
+            -e MNEBYDNS_PERSONAL_DOT_PORT=18853 \
+            -e MNEBYDNS_PERSONAL_DOT_HEALTH_PORT=18855 \
+            -e MNEBYDNS_PERSONAL_DOT_TLS_KEY_FILE=/run/mnebydns-personal/privkey.pem \
+            -e MNEBYDNS_PERSONAL_DOT_TLS_CERT_FILE=/run/mnebydns-personal/fullchain.pem \
+            -e MNEBYDNS_PERSONAL_DOT_ROUTE_POLICY_FILE=/run/mnebydns-personal/policy.json \
+            -e "MNEBYDNS_PERSONAL_DOT_ROUTE_POLICY_SHA256=$sha" \
+            -e MNEBYDNS_PERSONAL_MAPPED_DOT_IP=89.125.90.101 \
+            -e MNEBYDNS_PERSONAL_MAPPED_DOT_NAME=dns.mnebyvpn.site \
+            -e MNEBYDNS_PERSONAL_DIRECT_DOT_IP=1.1.1.1 \
+            -e MNEBYDNS_PERSONAL_DIRECT_DOT_NAME=one.one.one.one \
+            --mount "type=bind,source=$target,target=/run/mnebydns-personal,readonly" \
+            --entrypoint node "$image" \
+            --experimental-strip-types --input-type=module -e \
+            "import('./apps/service/src/personal-dot-production.ts').then(m=>m.runPersonalDotProduction()).catch(e=>{const code=String(e?.code??'NONE');const msg=String(e?.message??'UNKNOWN').replace(/postgres(?:ql)?:\\/\\/[^ ]+/gi,'[REDACTED]');console.error('PERSONAL_DOT_CAUSE_CODE='+code.slice(0,45));console.error('PERSONAL_DOT_CAUSE='+msg.slice(0,160));process.exit(2)})"
+          status=$?
+          set -e
+          echo "DISPOSABLE_DIAG_EXIT=$status"
+          echo 'EXISTING_PUBLIC_DOT_UNCHANGED=true'
+          REMOTE
