@@ -50,9 +50,9 @@ jobs:
           corefile=workdir/'Corefile'
           if corefile.is_file():
               raw=corefile.read_text(errors='replace')
-              templates=re.findall(r'(?m)^\\s*template\\s+IN\\s+(?:A|AAAA|HTTPS|SVCB)\\s+([^\\s{]+)',raw)
+              templates=re.findall(r'(?m)^\s*template\s+IN\s+(?:A|AAAA|HTTPS|SVCB)\s+([^\s{]+)',raw)
               names=sorted(set(x.lower().rstrip('.') for x in templates))
-              valid=[x for x in names if re.fullmatch(r'(?:\\*\\.)?[a-z0-9-]+(?:\\.[a-z0-9-]+)+',x)]
+              valid=[x for x in names if re.fullmatch(r'(?:\*\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+',x)]
               print('DE_CORE_DOMAIN_RULES='+str(len(names)))
               print('DE_CORE_LITERAL_DOMAIN_RULES='+str(len(valid)))
               print('DE_CORE_RULE_EXAMPLES='+','.join(valid[:12]))
