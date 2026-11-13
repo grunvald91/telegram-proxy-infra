@@ -1,0 +1,62 @@
+name: MNEBYVPN SEO ingress 401 vs backend 404 differential read only
+on:
+  push:
+    paths: ['.github/workflows/mnebyvpn-seo-ingress-diagnosis.yml']
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      SERVER_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Audit application and Nginx status codes without changing servers
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SERVER_PASS"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          export SSHPASS="$SERVER_PASS"
+          sshpass -e ssh -T -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o LogLevel=ERROR \
+            root@188.120.254.223 'python3 -' <<'PY'
+          import subprocess,json,urllib.request,urllib.error,ssl
+          paths=['/','/robots.txt','/sitemap.xml','/seo-nonexistent-20261113','/payment/success']
+          for path in paths:
+            for host,base in [('backend','http://127.0.0.1:8792'),('nginx_local','https://mnebyvpn.site')]:
+              if host=='nginx_local':
+                cmd=['curl','--noproxy','*','--resolve','mnebyvpn.site:443:127.0.0.1','-sS','--connect-timeout','4','--max-time','8','-o','/dev/null','-w','%{http_code}']
+                p=subprocess.run(cmd+[base+path],capture_output=True,text=True,timeout=11)
+                code=p.stdout.strip() if p.returncode==0 else 'transport_error'
+                print(host+' '+path+'='+code,flush=True)
+              else:
+                try:
+                  r=urllib.request.urlopen(base+path,timeout=7)
+                except urllib.error.HTTPError as e:
+                  r=e
+                except Exception as e:
+                  print(host+' '+path+'='+type(e).__name__,flush=True)
+                  continue
+                with r:
+                  content=r.read(4096)
+                  try:body=json.loads(content)
+                  except Exception:body={}
+                  reason=body.get('code','') if isinstance(body,dict) else ''
+                  if not isinstance(reason,str):reason='invalid'
+                  print(host+' '+path+'='+str(r.status)+' code='+reason[:42],flush=True)
+          print('app_web_runtime_unchanged=true')
+          PY
+      - name: Public outside TCP443 comparison
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import urllib.request,urllib.error,ssl
+          opener=urllib.request.build_opener(urllib.request.ProxyHandler({}),urllib.request.HTTPSHandler(context=ssl.create_default_context()))
+          for path in ['/','/robots.txt','/sitemap.xml','/seo-nonexistent-20261113','/payment/success']:
+            try:r=opener.open('https://mnebyvpn.site'+path,timeout=9)
+            except urllib.error.HTTPError as e:r=e
+            except Exception as e:
+              print('public '+path+'='+type(e).__name__,flush=True)
+              continue
+            with r:print('public '+path+'='+str(r.status),flush=True)
+          PY
