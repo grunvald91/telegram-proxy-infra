@@ -1,5 +1,4 @@
-# Probe public HTTPS readiness for immediate unrestricted VPN purchases on 2026-11-07.
-name: MNEBYVPN diagnose missing external 443 SYN packets (read-only)
+name: MNEBYVPN P0 active nfqws SYNACK configuration check (read-only)
 on:
   push:
     paths: ['.github/workflows/mnebyvpn-tcp443-syn-trace.yml']
@@ -9,65 +8,58 @@ permissions:
 jobs:
   inspect:
     runs-on: ubuntu-latest
-    timeout-minutes: 6
+    timeout-minutes: 5
     env:
       HOST: '188.120.254.223'
       PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
     steps:
-      - name: Count only TCP SYNs from this runner, never capture user payloads
+      - name: Verify active RU NFQUEUE config and listener before a source-only canary
         shell: bash
         run: |
           set -euo pipefail
           test -n "$PASSWORD"
-          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
-          MY_IP="$(curl -4 -fsS --max-time 8 https://api.ipify.org)"
-          [[ "$MY_IP" =~ ^[0-9.]+$ ]] || exit 2
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass >/dev/null
           export SSHPASS="$PASSWORD"
-          opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o LogLevel=ERROR)
-          sshpass -e ssh "${opts[@]}" "root@$HOST" "python3 - '$MY_IP'" > "$RUNNER_TEMP/syn-count.txt" <<'PY' &
-          import socket,sys,time
-          source=socket.inet_aton(sys.argv[1])
-          s=socket.socket(socket.AF_PACKET,socket.SOCK_RAW,socket.htons(3))
-          s.settimeout(2)
-          end=time.monotonic()+20
-          inbound=outbound=reset=0
-          while time.monotonic()<end:
-            try:packet=s.recv(2048)
-            except socket.timeout:continue
-            if len(packet)<54 or packet[12:14]!=b'\x08\x00':continue
-            ip=packet[14:]
-            if ip[9]!=6:continue
-            ihl=(ip[0]&15)*4
-            tcp=ip[ihl:]
-            if len(tcp)<14:continue
-            sport=int.from_bytes(tcp[:2],'big')
-            dport=int.from_bytes(tcp[2:4],'big')
-            flags=tcp[13]
-            if ip[12:16]==source and dport==443 and flags&2:
-              inbound+=1
-            if ip[16:20]==source and sport==443:
-              if flags&18==18:outbound+=1
-              if flags&4:reset+=1
-          import subprocess,re
-          route=subprocess.run(['ip','-4','route','get',sys.argv[1]],
-            capture_output=True,text=True)
-          dev=re.search(r'\bdev\s+(\S+)',route.stdout)
-          print('public_syn_received='+str(inbound))
-          print('public_synack_sent='+str(outbound))
-          print('public_rst_sent='+str(reset))
-          print('reply_route_device_type='+('wg' if dev and dev.group(1).startswith('wg') else
-            'ethernet' if dev and dev.group(1).startswith(('en','eth')) else 'other'))
+          sshpass -e ssh -T -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o LogLevel=ERROR \
+            "root@$HOST" 'python3 -' <<'PY'
+          import subprocess, pathlib, re, json
+          def get(*args):
+              try:
+                  p=subprocess.run(args,text=True,capture_output=True,timeout=12)
+                  return p.returncode,p.stdout
+              except Exception:return 255,''
+          cfg=pathlib.Path('/etc/zapret2/telegram-nfqws.conf')
+          raw=cfg.read_text() if cfg.is_file() else ''
+          print('active_ru_config_exists='+str(bool(raw)).lower())
+          print('active_ru_synack_split='+str('synack_split' in raw).lower())
+          print('active_ru_queue_210='+str(bool(re.search(r'--qnum\s*=?\s*210\b',raw))).lower())
+          print('active_ru_server_mode='+str(bool(re.search(r'--server\b',raw))).lower())
+          for name in ('telegram-nfqws.service','nginx.service'):
+              code,_=get('systemctl','is-active','--quiet',name)
+              print('active_'+name.split('.')[0]+'='+str(code==0).lower())
+          code,ps=get('ps','-eo','comm=')
+          print('nfqws_process_running='+str(code==0 and bool(re.search(r'nfqws',ps))).lower())
+          q=pathlib.Path('/proc/net/netfilter/nfnetlink_queue')
+          queues=q.read_text().splitlines() if q.is_file() else []
+          print('kernel_queue_210_registered='+str(any(z.split() and z.split()[0]=='210' for z in queues)).lower())
+          code,raw_nft=get('nft','-j','list','chain','inet','telegram_nfqws','post')
+          print('telegram_post_chain_available='+str(code==0).lower())
+          matching=[]
+          if code==0:
+              for item in json.loads(raw_nft).get('nftables',[]):
+                  rule=item.get('rule')
+                  if not rule:continue
+                  expr=rule.get('expr',[])
+                  queues=[e['queue'] for e in expr if isinstance(e,dict) and 'queue' in e]
+                  if any(q.get('num')==210 for q in queues):matching.append(expr)
+          print('telegram_queue_210_rules='+str(len(matching)))
+          for expr in matching[:2]:
+              t=json.dumps(expr,sort_keys=True)
+              print('queue_443_sourceport_match='+str('"sport"' in t and '"443"' in t or '"sport"' in t and '"right": 443' in t).lower())
+              print('queue_bypass_enabled='+str('"bypass"' in t).lower())
+              print('queue_ens3_egress_match='+str('"ens3"' in t).lower())
+              print('queue_reply_packets_match='+str('"reply"' in t and '"packets"' in t).lower())
+          code,lines=get('ss','-H','-lntp','sport','=',':443')
+          print('tcp443_owned_by_nginx='+str(code==0 and 'nginx' in lines).lower())
+          print('no_changes_to_server=true')
           PY
-          PID=$!
-          sleep 3
-          python3 - <<'PY'
-          import socket
-          for n in range(3):
-            try:
-              with socket.create_connection(('188.120.254.223',443),timeout=3):
-                print('external_443_connect=success')
-            except Exception as e:
-              print('external_443_connect='+type(e).__name__)
-          PY
-          wait "$PID"
-          cat "$RUNNER_TEMP/syn-count.txt"
