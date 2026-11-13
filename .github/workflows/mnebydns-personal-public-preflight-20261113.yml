@@ -47,6 +47,47 @@ jobs:
               print('DE_NGINX_853_CONFIGURED='+str(any('listen ' in line and '853' in line for line in n.stdout.splitlines())))
               print('DE_NGINX_SSL_PREREAD='+str(bool(re.search(r'\\bssl_preread\\s+on\\s*;',n.stdout))))
           else:print('DE_NGINX_CONFIG_READ=FAILED')
+          # Inspect whether existing CoreDNS can be kept on :853 while
+          # PREROUTING redirects external TCP/853 to a separate SSL-preread
+          # stream proxy port. This diagnostic does not change live services.
+          import pathlib,subprocess
+          def call(argv):
+              try:
+                  p=subprocess.run(argv,capture_output=True,text=True,timeout=7)
+                  return p.stdout.strip() if p.returncode==0 else ''
+              except Exception:
+                  return ''
+          print('DE_PUBLIC_NETWORK_INTERFACES='+','.join(
+              x.split()[1] for x in call(['ip','-o','-4','addr','show','scope','global']).splitlines()))
+          for key,argv in [
+            ('NAT_PREROUTING',['iptables','-t','nat','-S','PREROUTING']),
+            ('FILTER_INPUT',['iptables','-S','INPUT']),
+            ('UFW_STATUS',['ufw','status','verbose'])
+          ]:
+              selected=[x.strip()[:200] for x in call(argv).splitlines() if any(
+                s in x.lower() for s in ('853','8854','1853','policy','drop','default:','status:'))]
+              print('DE_'+key+'_MATCH_COUNT='+str(len(selected)))
+              for line in selected[:20]:print('DE_'+key+'_RULE='+line)
+          for port in [853,8854,1853]:
+              lines=[x.strip() for x in call(['ss','-Hlntp']).splitlines()
+                     if ':'+str(port)+' ' in x]
+              print('DE_TCP_'+str(port)+'_LISTENER='+(
+                ','.join('coredns' if 'coredns' in x.lower() else
+                'nginx' if 'nginx' in x.lower() else 'other' for x in lines)
+                if lines else 'none'))
+          core=pathlib.Path('/opt/mnebydns-dot/Corefile')
+          if core.is_file():
+              lines=core.read_text(errors='replace').splitlines()
+              heads=[x.strip()[:150] for x in lines
+                     if x.strip().endswith('{') and not x.lstrip().startswith('#')]
+              print('DE_COREFILE_SERVER_HEADERS='+','.join(heads[:4]))
+              print('DE_COREFILE_BINDS_LOCALHOST='+str(any('bind 127.0.0.1' in x for x in lines)))
+          for d in ['/usr/lib/nginx/modules/ngx_stream_module.so',
+                    '/usr/share/nginx/modules/ngx_stream_module.so']:
+              if pathlib.Path(d).is_file():
+                  print('DE_NGINX_STREAM_MODULE='+d)
+                  break
+          print('DE_EXISTING_DOT_HEALTH='+call(['systemctl','is-active','mnebydns-dot']))
           print('READ_ONLY=true')
           PY
       - name: Probe both server public DoT ports, wildcard DNS and strict TLS
