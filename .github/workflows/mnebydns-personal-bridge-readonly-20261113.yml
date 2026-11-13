@@ -102,5 +102,25 @@ jobs:
                 ':'+str(port)+' ' in line for line in ss.splitlines())))
           print('RU_DOCKER_PRESENT='+str(bool(run(['command','-v','docker']) or
             pathlib.Path('/usr/bin/docker').exists())))
+          stage=pathlib.Path('/opt/mnebyvpn/staging/active_sha')
+          if stage.is_file():
+              sha=stage.read_text(errors='replace').strip()
+              if re.fullmatch(r'[0-9a-f]{40}',sha):
+                  print('RU_STAGE_ACTIVE_SHA='+sha)
+                  release=pathlib.Path('/opt/mnebyvpn/releases')/sha/'apps/service/src/personal-dot-production.ts'
+                  if release.is_file():
+                      source=release.read_text(errors='replace')
+                      marker="const portNumber=port('MNEBYDNS_PERSONAL_'+prefix+'_DOT_PORT',853,1);"
+                      print('RU_STAGE_SOURCE_UPSTREAM_853_FIXED='+str(marker in source))
+                  else:
+                      print('RU_STAGE_SOURCE_PRESENT=false')
+                  try:
+                      image=subprocess.run(['docker','image','inspect','mnebyvpn-stage-web:'+sha],
+                        capture_output=True,text=True,timeout=8)
+                      print('RU_STAGE_IMAGE_PRESENT='+str(image.returncode==0))
+                  except Exception:
+                      print('RU_STAGE_IMAGE_PRESENT=unknown')
+              else: print('RU_STAGE_ACTIVE_SHA_FORMAT=invalid')
+          else: print('RU_STAGE_ACTIVE_SHA=missing')
           print('RU_READ_ONLY=true')
           PY
