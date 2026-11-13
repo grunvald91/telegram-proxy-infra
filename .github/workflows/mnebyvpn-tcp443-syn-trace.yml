@@ -1,5 +1,5 @@
-# Probe public HTTPS readiness for immediate unrestricted VPN purchases on 2026-11-07.
-name: MNEBYVPN diagnose missing external 443 SYN packets (read-only)
+# Read-only public web vs Telegram proxy diagnostic; no config changes or payload capture.
+name: MNEBYVPN compare public web 443 with Telegram proxy ingress (read-only)
 on:
   push:
     paths: ['.github/workflows/mnebyvpn-tcp443-syn-trace.yml']
@@ -9,12 +9,12 @@ permissions:
 jobs:
   inspect:
     runs-on: ubuntu-latest
-    timeout-minutes: 6
+    timeout-minutes: 8
     env:
       HOST: '188.120.254.223'
       PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
     steps:
-      - name: Count only TCP SYNs from this runner, never capture user payloads
+      - name: Compare SNI, listeners, proxy processes, netfilter and SYN/SYN-ACK without writes
         shell: bash
         run: |
           set -euo pipefail
@@ -26,6 +26,48 @@ jobs:
           opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o LogLevel=ERROR)
           sshpass -e ssh "${opts[@]}" "root@$HOST" "python3 - '$MY_IP'" > "$RUNNER_TEMP/syn-count.txt" <<'PY' &
           import socket,sys,time
+          import subprocess,re
+          def output(args,timeout=15):
+            try:
+              p=subprocess.run(args,text=True,capture_output=True,timeout=timeout)
+              return p.stdout if p.returncode==0 else ''
+            except Exception:return ''
+          nginx=output(['nginx','-T'],timeout=18)
+          print('nginx_config_valid='+str(bool(nginx)).lower(),flush=True)
+          m=re.search(r'map\s+\$ssl_preread_server_name\s+\$stream_443_backend\s*\{([^{}]*)\}',nginx,re.S)
+          routing=m.group(1) if m else ''
+          def destination(name):
+            m=re.search(r'(?m)^\s*'+re.escape(name)+r'\s+([^\s;]+);',routing)
+            return m.group(1) if m else ''
+          print('sni_dispatcher_present='+str(bool(m)).lower(),flush=True)
+          print('site_sni_correct='+str(destination('mnebyvpn.site')=='127.0.0.1:18449').lower(),flush=True)
+          print('www_sni_correct='+str(destination('www.mnebyvpn.site')=='127.0.0.1:18449').lower(),flush=True)
+          print('default_sni_backend_present='+str(bool(destination('default'))).lower(),flush=True)
+          print('other_sni_routes_count='+str(max(0,len(re.findall(r'(?m)^\s*\S+\s+[^\s;]+;',routing))-3)),flush=True)
+          listener=output(['ss','-H','-lntp'])
+          for port in (80,443,8443,18449,8792):
+            rows=[line for line in listener.splitlines() if re.search(':'+str(port)+r'\s',line)]
+            print('listen_'+str(port)+'_count='+str(len(rows)),flush=True)
+            print('listen_'+str(port)+'_nginx='+str(any('nginx' in row for row in rows)).lower(),flush=True)
+            print('listen_'+str(port)+'_telegram_proxy='+str(any(re.search(r'mtproxy|mtproto|tgproxy',row,re.I) for row in rows)).lower(),flush=True)
+          processes=output(['ps','-eo','comm=']).splitlines()
+          for key,pattern in [('telegram','mtproxy|mtproto|tgproxy'),('nginx','nginx'),('xray','xray|v2ray'),('other_proxy','haproxy|gost|3proxy')]:
+            print('process_'+key+'_count='+str(sum(bool(re.search(pattern,p,re.I)) for p in processes)),flush=True)
+          containers=output(['docker','ps','--format','{{.Names}} {{.Image}}'])
+          print('docker_telegram_proxy_present='+str(bool(re.search(r'mtproxy|mtproto|telegram.?proxy|tgproxy',containers,re.I))).lower(),flush=True)
+          for table in ('filter','nat','mangle','raw'):
+            args=['iptables']+(['-t',table] if table!='filter' else [])+['-S']
+            rules=output(args)
+            port443=[line for line in rules.splitlines() if re.search(r'--dport\s+443\b|--dports\s+[^\s]*443\b',line)]
+            print('iptables_'+table+'_443_count='+str(len(port443)),flush=True)
+            for action in ('DROP','REJECT','ACCEPT','TPROXY','REDIRECT','DNAT','MARK'):
+              print('iptables_'+table+'_443_'+action.lower()+'='+str(sum(bool(re.search(r'-j\s+'+action+r'\b',line)) for line in port443)),flush=True)
+          nft=output(['nft','list','ruleset'])
+          nft443=[line for line in nft.splitlines() if re.search(r'\bdport\s+(?:\{[^}]*\b443\b[^}]*\}|\b443\b)',line)]
+          print('nft_443_explicit_count='+str(len(nft443)),flush=True)
+          for action in ('drop','reject','accept','tproxy','redirect'):
+            print('nft_443_'+action+'_count='+str(sum(bool(re.search(r'\b'+action+r'\b',line)) for line in nft443)),flush=True)
+          print('read_only_preflight_complete=true',flush=True)
           source=socket.inet_aton(sys.argv[1])
           s=socket.socket(socket.AF_PACKET,socket.SOCK_RAW,socket.htons(3))
           s.settimeout(2)
@@ -62,12 +104,13 @@ jobs:
           sleep 3
           python3 - <<'PY'
           import socket
-          for n in range(3):
-            try:
-              with socket.create_connection(('188.120.254.223',443),timeout=3):
-                print('external_443_connect=success')
-            except Exception as e:
-              print('external_443_connect='+type(e).__name__)
+          for port in (443,8443,80):
+            for attempt in range(2):
+              try:
+                with socket.create_connection(('188.120.254.223',port),timeout=3):
+                  print('external_'+str(port)+'_connect=success')
+              except Exception as e:
+                print('external_'+str(port)+'_connect='+type(e).__name__)
           PY
           wait "$PID"
           cat "$RUNNER_TEMP/syn-count.txt"
