@@ -56,6 +56,19 @@ jobs:
           python3 - <<'PY'
           import socket, ssl, concurrent.futures, subprocess
           domain='aaaaaaaaaaaa.dns.mnebyvpn.site'
+          # Authoritative sources bypass recursive negative caches after user
+          # added wildcard. A and AAAA are shown separately; no writes.
+          import subprocess
+          for ns in ('ns1.jino.ru','ns2.jino.ru','ns3.jino.ru','ns4.jino.ru'):
+              cmd=['dig','+time=3','+tries=1','+short','@'+ns,domain,'A']
+              run=subprocess.run(cmd,capture_output=True,text=True,timeout=6)
+              print('JINO_'+ns.replace('.','_')+'_WILDCARD_A='+
+                    (' '.join(run.stdout.split()) if run.returncode==0 and run.stdout.strip() else 'MISSING'))
+          for host in ('1.1.1.1','8.8.8.8'):
+              run=subprocess.run(['dig','+time=3','+tries=1','+short','@'+host,domain,'A'],
+                capture_output=True,text=True,timeout=6)
+              print('RESOLVER_'+host.replace('.','_')+'_WILDCARD_A='+
+                    (' '.join(run.stdout.split()) if run.returncode==0 and run.stdout.strip() else 'MISSING'))
           for name in ['dns.mnebyvpn.site',domain]:
               try:
                   ips=sorted(set(x[4][0] for x in socket.getaddrinfo(name,853,type=socket.SOCK_STREAM)))
