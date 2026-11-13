@@ -1,0 +1,99 @@
+name: MNEBYVPN controlled SYNACK HTTPS 443 production repair
+on:
+  push:
+    branches: [fix/seo443-persistent-synack-20261113]
+    paths: ['.github/workflows/mnebyvpn-seo443-apply-20261113.yml']
+permissions:
+  contents: read
+concurrency:
+  group: mnebyvpn-seo443-controlled-live-repair
+  cancel-in-progress: false
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify exact patch offline
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/mnebyvpn_seo443_synack_permanent_20261113.py
+          python3 scripts/mnebyvpn_seo443_synack_permanent_20261113.py self-test
+          test -n "$RU_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+      - name: Stage minimal SYNACK repair with independent six-minute rollback
+        id: stage
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -qq -y sshpass >/dev/null
+          export SSHPASS="$RU_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 \
+            "python3 - stage '$GITHUB_RUN_ID'" \
+            < scripts/mnebyvpn_seo443_synack_permanent_20261113.py \
+            | tee "$RUNNER_TEMP/stage.log"
+          grep -Fq 'SYNACK_PERMANENT_STAGE_APPLIED=true' "$RUNNER_TEMP/stage.log"
+          grep -Fq 'SYNACK_ROLLBACK_TIMER_ARMED=true' "$RUNNER_TEMP/stage.log"
+          echo 'active=true' >> "$GITHUB_OUTPUT"
+      - name: Verify public HTTPS and current 8443 listener reachability
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import socket,ssl
+          for name,host,port in [('ru8443','188.120.254.223',8443),('de8443','89.125.90.101',8443)]:
+            with socket.create_connection((host,port),timeout=5):
+              print(name+'=connected')
+          for name,expected in [('mnebyvpn.site',200),('www.mnebyvpn.site',301)]:
+            with socket.create_connection(('188.120.254.223',443),timeout=5) as raw:
+              with ssl.create_default_context().wrap_socket(raw,server_hostname=name) as tls:
+                tls.settimeout(5)
+                tls.sendall(('GET / HTTP/1.1\r\nHost: '+name+'\r\nConnection: close\r\n\r\n').encode())
+                line=tls.recv(150).split(b'\r\n',1)[0]
+                status=int(line.split()[1])
+                print(name+'_status='+str(status))
+                if name=='www.mnebyvpn.site': assert status in (301,308)
+                else: assert status==expected
+          PY
+          code="$(curl --noproxy '*' --resolve mnebyvpn.site:443:188.120.254.223 -sS -o /dev/null \
+            --connect-timeout 6 --max-time 12 -w '%{http_code};%{ssl_verify_result}' https://mnebyvpn.site/)"
+          test "$code" = '200;0'
+          echo 'EXTERNAL_TLS_HTTPS_443=PASS'
+      - name: Commit only after public checks pass
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$RU_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 \
+            "python3 - commit '$GITHUB_RUN_ID'" \
+            < scripts/mnebyvpn_seo443_synack_permanent_20261113.py \
+            | tee "$RUNNER_TEMP/commit.log"
+          grep -Fq 'SYNACK_PERMANENT_FIX_COMMITTED=true' "$RUNNER_TEMP/commit.log"
+          echo 'SYNACK_HTTPS_443_PATCH_DEPLOYED=true'
+      - name: Roll back staged patch on failed validation
+        if: failure() && steps.stage.outputs.active == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes \
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR
+            root@188.120.254.223 "python3 - rollback '$GITHUB_RUN_ID'"
+            < scripts/mnebyvpn_seo443_synack_permanent_20261113.py
+          echo 'SYNACK_STAGE_FAILURE_ROLLBACK_REQUESTED=true'
