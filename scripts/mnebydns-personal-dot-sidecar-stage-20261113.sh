@@ -99,7 +99,15 @@ for i in $(seq 1 25); do
   if [[ "$code" == 200 ]]; then ready=1; break; fi
   sleep 1
 done
-[[ "$ready" == 1 ]] || { echo 'PERSONAL_DOT_PRIVATE_READY=FAILED'; exit 2; }
+if [[ "$ready" != 1 ]]; then
+  echo 'PERSONAL_DOT_PRIVATE_READY=FAILED'
+  docker inspect --format 'PERSONAL_DOT_CONTAINER_STATE={{.State.Status}} EXIT={{.State.ExitCode}}' "$NAME" || true
+  # Bounded startup errors only; do not log environment or TLS private key.
+  docker logs --tail 18 "$NAME" 2>&1 |
+    grep -Ei 'Personal DoT|Error|Failed|Module|TypeError|ReferenceError|certificate|unsupported|Warning' |
+    cut -c 1-180 | tail -n 12 || true
+  exit 2
+fi
 docker ps --format '{{.Names}}' | grep -qx "$NAME"
 echo 'PERSONAL_DOT_PRIVATE_READY=PASS'
 echo 'PERSONAL_DOT_SOURCE_SHA_VERIFIED=true'
