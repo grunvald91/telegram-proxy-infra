@@ -1,0 +1,57 @@
+name: CI validate isolated personal DoT SNI router (no production access)
+on:
+  push:
+    branches: [feat/mnebydns-personal-public-sni-guarded-cutover-20261113]
+    paths:
+      - 'scripts/mnebydns-personal-public-sni-guarded-20261113.sh'
+      - '.github/workflows/mnebydns-personal-public-sni-ci-20261113.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate script syntax and static invariants without infrastructure changes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          bash -n scripts/mnebydns-personal-public-sni-guarded-20261113.sh
+          python3 - <<'PY'
+          import pathlib
+          s=pathlib.Path('scripts/mnebydns-personal-public-sni-guarded-20261113.sh').read_text()
+          required=['default 89.125.90.101:853;', '10.66.77.2:8853;',
+              'ssl_preread on;', '--dport 853 -j REDIRECT --to-ports 8854',
+              'systemd-run --quiet', 'rollback(){', 'PERSONAL_SNI_LOCAL_LEGACY_DNS=PASS',
+              'PERSONAL_SNI_LOCAL_WILDCARD_TLS=PASS']
+          for item in required:assert item in s, item
+          assert 'systemctl stop mnebydns-dot' not in s
+          assert 'systemctl restart mnebydns-dot' not in s
+          assert 'listen 0.0.0.0:853;' not in s
+          start=s.index('begin(){')
+          assert '--dport 853 -j REDIRECT --to-ports 8854' in s[start:]
+          print('PERSONAL_DOT_PUBLIC_SNI_STATIC_GUARDS=PASS')
+          PY
+      - name: Validate isolated Nginx stream configuration without starting Nginx
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq nginx libnginx-mod-stream >/dev/null
+          python3 - <<'PY'
+          import pathlib
+          script=pathlib.Path('scripts/mnebydns-personal-public-sni-guarded-20261113.sh').read_text()
+          start=script.index("cat > \"$ROOT/nginx.conf\" <<'NGINX'\n")+len("cat > \"$ROOT/nginx.conf\" <<'NGINX'\n")
+          end=script.index('\nNGINX',start)
+          conf=script[start:end].replace('listen 0.0.0.0:8854;', 'listen 127.0.0.1:18854;')
+          conf=conf.replace('pid /run/mnebydns-personal-sni.pid;', 'pid /tmp/mnebydns-personal-sni-test.pid;')
+          pathlib.Path('/tmp/mnebydns-personal-sni-test.conf').write_text(conf)
+          assert '89.125.90.101:853' in conf and '10.66.77.2:8853' in conf
+          print('PERSONAL_DOT_PUBLIC_SNI_CONFIG_EXTRACT=PASS')
+          PY
+          sudo nginx -t -c /tmp/mnebydns-personal-sni-test.conf
+          echo 'PERSONAL_DOT_PUBLIC_SNI_NGINX_SYNTAX=PASS'

@@ -1,0 +1,62 @@
+name: MNEBYDNS read-only TLS upstream diagnostics after guarded canary rollback
+on:
+  push:
+    branches: [feat/mnebydns-personal-public-sni-guarded-cutover-20261113]
+    paths: ['.github/workflows/mnebydns-personal-sni-upstream-diagnostic-20261113.yml']
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify external legacy DoT without modifications
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import socket,ssl
+          try:
+              with socket.create_connection(('89.125.90.101',853),timeout=7) as raw:
+                  raw.settimeout(7)
+                  with ssl.create_default_context().wrap_socket(raw,server_hostname='dns.mnebyvpn.site') as tls:
+                      print('LEGACY_DOT_EXTERNAL=PASS')
+          except Exception as exc:
+              print('LEGACY_DOT_EXTERNAL='+type(exc).__name__)
+              raise
+          PY
+      - name: Inspect existing CoreDNS IPv4 loopback TLS and classified Nginx errors read-only
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          test -n "$DE_PASS"
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass >/dev/null
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR \
+            root@89.125.90.101 'python3 -' <<'PY'
+          import socket,ssl,subprocess,re
+          for addr in ('127.0.0.1','89.125.90.101','10.66.77.1'):
+              try:
+                  with socket.create_connection((addr,853),timeout=5) as raw:
+                      raw.settimeout(5)
+                      with ssl.create_default_context().wrap_socket(
+                          raw,server_hostname='dns.mnebyvpn.site') as tls:
+                          print('CORE_DIRECT_'+addr.replace('.','_')+'=TLS_PASS')
+              except Exception as exc:
+                  print('CORE_DIRECT_'+addr.replace('.','_')+'='+type(exc).__name__)
+          r=subprocess.run(['journalctl','-u','mnebydns-personal-sni-stream.service',
+              '--since','-45 minutes','--no-pager','-o','cat'],capture_output=True,text=True,timeout=12)
+          lines=[l[:200] for l in r.stdout.splitlines() if re.search(
+              r'upstream|connect\(\)|refused|error|permission denied|failed',l,re.I)]
+          print('SNI_STREAM_ERROR_COUNT='+str(len(lines)))
+          for line in lines[-10:]:print('SNI_STREAM_ERROR='+line)
+          print('DIAGNOSTIC_READ_ONLY=true')
+          PY
