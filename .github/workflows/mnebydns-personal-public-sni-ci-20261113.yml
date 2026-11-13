@@ -24,7 +24,7 @@ jobs:
           python3 - <<'PY'
           import pathlib
           s=pathlib.Path('scripts/mnebydns-personal-public-sni-guarded-20261113.sh').read_text()
-          required=['default 127.0.0.1:853;', '10.66.77.2:8853;',
+          required=['default 89.125.90.101:853;', '10.66.77.2:8853;',
               'ssl_preread on;', '--dport 853 -j REDIRECT --to-ports 8854',
               'systemd-run --quiet', 'rollback(){', 'PERSONAL_SNI_LOCAL_LEGACY_DNS=PASS',
               'PERSONAL_SNI_LOCAL_WILDCARD_TLS=PASS']
@@ -50,7 +50,7 @@ jobs:
           conf=script[start:end].replace('listen 0.0.0.0:8854;', 'listen 127.0.0.1:18854;')
           conf=conf.replace('pid /run/mnebydns-personal-sni.pid;', 'pid /tmp/mnebydns-personal-sni-test.pid;')
           pathlib.Path('/tmp/mnebydns-personal-sni-test.conf').write_text(conf)
-          assert '127.0.0.1:853' in conf and '10.66.77.2:8853' in conf
+          assert '89.125.90.101:853' in conf and '10.66.77.2:8853' in conf
           print('PERSONAL_DOT_PUBLIC_SNI_CONFIG_EXTRACT=PASS')
           PY
           sudo nginx -t -c /tmp/mnebydns-personal-sni-test.conf
