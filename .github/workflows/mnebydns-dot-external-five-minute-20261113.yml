@@ -32,6 +32,9 @@ jobs:
           python3 scripts/mnebydns-dot-minute-probe-20261113.py --self-test
           bash -n scripts/mnebydns-dot-minute-install-20261113.sh
           bash -n scripts/mnebydns-dot-config-change-20261111.sh
+          bash -n scripts/mnebydns-owner-domain-stage-20261110.sh scripts/mnebydns-owner-domain-remove-20261110.sh
+          grep -Fq 'owner_domain_requires_non_disruptive_dot_reload=true' scripts/mnebydns-owner-domain-stage-20261110.sh
+          grep -Fq 'owner_domain_requires_non_disruptive_dot_reload=true' scripts/mnebydns-owner-domain-remove-20261110.sh
       - name: TLS-verified public DoT query (no SSH, no production changes)
         shell: bash
         run: |
