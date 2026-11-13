@@ -70,6 +70,7 @@ jobs:
           ss=run(['ss','-Hlntp'])
           print('DE_853_OWNER='+('coredns' if any(':853 ' in line and 'coredns' in line.lower()
                for line in ss.splitlines()) else 'not-coredns'))
+          print('DE_ROUTE_TO_RU='+run(['ip','-4','route','get','10.66.77.2']))
           print('DE_READ_ONLY=true')
           PY
           export SSHPASS="$RU_PASS"
@@ -122,5 +123,20 @@ jobs:
                       print('RU_STAGE_IMAGE_PRESENT=unknown')
               else: print('RU_STAGE_ACTIVE_SHA_FORMAT=invalid')
           else: print('RU_STAGE_ACTIVE_SHA=missing')
+          print('RU_ROUTE_TO_DE='+run(['ip','-4','route','get','10.66.77.1']))
+          for label,args in [
+            ('RU_UFW_STATUS',['ufw','status','verbose']),
+            ('RU_IPTABLES_INPUT',['iptables','-S','INPUT']),
+            ('RU_NFT_RULESET',['nft','-n','list','ruleset']),
+          ]:
+              raw=run(args)
+              selected=[line.strip()[:180] for line in raw.splitlines()
+                if any(key in line.lower() for key in
+                  ('policy','drop','reject','8853','tg-relay','10.66.77','iif','ufw status','status:'))]
+              print(label+'_MATCHING_RULES='+str(len(selected)))
+              for line in selected[:35]:
+                  print(label+'_RULE='+line)
+          for key in ['all','tg-relay']:
+              print('RU_RPF_'+key+'='+run(['sysctl','-n','net.ipv4.conf.'+key+'.rp_filter']))
           print('RU_READ_ONLY=true')
           PY
