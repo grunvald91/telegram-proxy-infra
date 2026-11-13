@@ -1,3 +1,4 @@
+# 2026-11-13 approved bot rollout: tested Mnebyvpn main 2837e76c06439369a900728fcdb3cb8d15d4dab4, CI 43414844054 (252 unit, 66 PG integration). Native 200-Star query DNS catalog stays unpublished; ensure PostgreSQL 0120-0122 before promotion, canary + rollback, preserve VPN Stars.
 # 2026-11-08 review fixes: deploy vetted Telegram pending state bd4930ada4833601b3012c5672e6abd31b12282c after source CI 42458907376 and site deploy 42458991642.
 # 2026-11-08: deploy Telegram auto-free-trial onboarding from green MNEBYVPN 53c350894fbaec1b0b71120c6634e0ab2dc7d812, site/migration 0106 already published in 42456839787.
 # Review fix 2026-11-07: publish MNEBYVPN source 0b37346f5bad5d3b83298ed0516f52808fa0a43c after green CI 42386143675 and successful matching site canary 42386269238.
