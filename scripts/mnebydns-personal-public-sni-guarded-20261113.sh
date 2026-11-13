@@ -66,7 +66,7 @@ events { worker_connections 4096; }
 stream {
   map $ssl_preread_server_name $personal_dot_target {
     "~*^[a-z0-9]{12}[.]dns[.]mnebyvpn[.]site$" 10.66.77.2:8853;
-    default 127.0.0.1:853;
+    default 89.125.90.101:853;
   }
   server {
     listen 0.0.0.0:8854;
@@ -90,6 +90,7 @@ ExecStart=/usr/sbin/nginx -c /etc/mnebydns/personal-sni/nginx.conf -g 'daemon of
 KillSignal=SIGQUIT
 Restart=on-failure
 RestartSec=2s
+LimitNOFILE=16384
 NoNewPrivileges=true
 PrivateTmp=true
 [Install]
