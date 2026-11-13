@@ -41,7 +41,7 @@ jobs:
           done
           test "$(grep -c ' ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts)" -eq 2
           test "$(cat data/mnebydns-fastpath-ru-mode-20261113.txt)" = plan ||
-            test "$(cat data/mnebydns-fastpath-ru-mode-20261113.txt)" = activate-once-20261113
+            test "$(cat data/mnebydns-fastpath-ru-mode-20261113.txt)" = activate-once-20261113-r2
           echo MNEBYDNS_RU_FASTPATH_OFFLINE=PASS
   guarded:
     if: github.event_name == 'push'
@@ -62,7 +62,7 @@ jobs:
           set -Eeuo pipefail
           mode=plan
           if [[ "$HEAD_COMMIT_TITLE" == "deploy(MNEBYDNS): activate 13 RU fastpath exact A" &&
-                "$(cat data/mnebydns-fastpath-ru-mode-20261113.txt)" == activate-once-20261113 ]]; then
+                "$(cat data/mnebydns-fastpath-ru-mode-20261113.txt)" == activate-once-20261113-r2 ]]; then
             mode=deploy
           fi
           echo "FASTPATH_MODE=$mode" >> "$GITHUB_ENV"
