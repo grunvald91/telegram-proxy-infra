@@ -68,6 +68,22 @@ jobs:
               print('PUBLIC_CANARY_PORT_8853=OPEN_WARN_VERIFY_OWNERSHIP',flush=True)
           except OSError:
               print('PUBLIC_CANARY_PORT_8853=NOT_REACHABLE_EXPECTED',flush=True)
+          # Probe a deliberately non-issued sample hostname; this tests
+          # wildcard DNS readiness but cannot authorize a paid subscriber.
+          import socket
+          sample='aaaaaaaaaaaa.dns.mnebyvpn.site'
+          try:
+              answers=socket.getaddrinfo(sample,853,type=socket.SOCK_STREAM)
+              resolved=sorted({a[4][0] for a in answers})
+              print('PERSONAL_WILDCARD_RESOLVES='+str(bool(resolved)),flush=True)
+              print('PERSONAL_WILDCARD_IP_COUNT='+str(len(resolved)),flush=True)
+          except OSError as exc:
+              print('PERSONAL_WILDCARD_RESOLVES=False class='+type(exc).__name__,flush=True)
+          try:
+              with socket.create_connection(('188.120.254.223',853),timeout=3):
+                  print('RU_PUBLIC_TCP_853_REACHABLE=True',flush=True)
+          except OSError as exc:
+              print('RU_PUBLIC_TCP_853_REACHABLE=False class='+type(exc).__name__,flush=True)
           print('PUBLIC_BASELINE_READONLY=true',flush=True)
           PY
       - name: Pinned read-only foreign VPS inventory, no secrets/config dump
@@ -201,6 +217,8 @@ jobs:
           out('DISK_FREE_MIB',st.f_bavail*st.f_frsize//1024//1024)
           code,raw=run('ss','-lntH')
           out('TCP_8853_LOCAL_IN_USE',any(line.split()[3].endswith(':8853')
+              for line in raw.splitlines() if len(line.split())>3))
+          out('TCP_853_LISTENER_PRESENT',any(line.split()[3].endswith(':853')
               for line in raw.splitlines() if len(line.split())>3))
           code,raw=run('bash','-lc','test -d /opt/mnebyvpn && test -d /opt/mnebyvpn/staging')
           out('CANARY_STAGING_PATH_PRESENT',code==0)
