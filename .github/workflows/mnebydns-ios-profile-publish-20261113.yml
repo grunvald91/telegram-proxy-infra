@@ -83,10 +83,15 @@ jobs:
               changed = True
               subprocess.run(['nginx', '-t'], check=True)
               subprocess.run(['systemctl', 'reload', 'nginx'], check=True)
-              downloaded, headers = fetch(URL)
-              assert downloaded == data, 'Downloaded profile differs'
-              assert headers.get_content_type() == 'application/x-apple-aspen-config'
-              assert 'mnebyvpn-dns.mobileconfig' in headers['Content-Disposition']
+              # nginx reload signals the master asynchronously; wait for new workers.
+              for attempt in range(10):
+                  downloaded, headers = fetch(URL)
+                  if downloaded == data and headers.get_content_type() == 'application/x-apple-aspen-config' and 'mnebyvpn-dns.mobileconfig' in headers.get('Content-Disposition', ''):
+                      break
+                  print('RELOAD_WAIT_MIME=' + headers.get_content_type(), flush=True)
+                  time.sleep(0.5)
+              else:
+                  raise AssertionError('Profile response incorrect: MIME=' + headers.get_content_type() + '; disposition=' + headers.get('Content-Disposition', 'missing'))
               root_after, _ = fetch('https://cdn.servgo.ru/')
               assert root_after == root_before, 'CDN homepage changed'
               subprocess.run(['systemctl', 'is-active', '--quiet', 'nginx'], check=True)
