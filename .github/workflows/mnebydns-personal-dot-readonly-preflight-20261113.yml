@@ -346,6 +346,25 @@ jobs:
           if remaining or leftover_networks or pathlib.Path(
                   '/tmp/mnebydns-personal-dot-43317119912').exists():
               raise SystemExit('Residual disposable canary resources detected')
+          # Independently verify that the reviewed, *inactive* core arrived
+          # in the existing public website container without changing DNS.
+          expected_sha='f20c43d6b690b74bca0bfc70f60138b8d3500d77'
+          active_file=pathlib.Path('/opt/mnebyvpn/public/active_sha')
+          observed=active_file.read_text().strip() if active_file.is_file() else ''
+          out('PUBLIC_RELEASE_MATCHES_REVIEWED_CORE',observed==expected_sha)
+          code,reply=run('curl','--noproxy','*','-s','-o','/dev/null',
+             '-w','%{http_code}','--max-time','5','http://127.0.0.1:8792/healthz')
+          out('PUBLIC_WEB_HEALTH',reply if code==0 else 'UNREACHABLE')
+          code,reply=run('curl','--noproxy','*','-s','-o','/dev/null',
+             '-w','%{http_code}','--max-time','5','http://127.0.0.1:8792/readyz')
+          out('PERSONAL_DNS_STILL_NOT_RELEASED',reply=='503' if code==0 else False)
+          code,reply=run('curl','--noproxy','*','-s','-o','/dev/null',
+             '-w','%{http_code}','--max-time','6','--resolve',
+             'mnebyvpn.site:443:127.0.0.1','https://mnebyvpn.site/')
+          out('WEBSITE_LOCAL_SNI_HTTPS',reply if code==0 else 'UNREACHABLE')
+          if observed!=expected_sha or not (
+              reply in ('200','301','302') and code==0):
+              raise SystemExit('Reviewed production release or localhost SNI unverified')
           out('READONLY_NO_MUTATIONS',True)
           PY
       - name: Summary
