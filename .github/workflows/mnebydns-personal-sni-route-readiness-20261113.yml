@@ -56,12 +56,12 @@ jobs:
               if not pathlib.Path(module).exists():continue
               with tempfile.TemporaryDirectory(prefix='sni-preflight-') as d:
                   conf=pathlib.Path(d)/'nginx.conf'
-                  conf.write_text('load_module '+module+';\\n'
-                    'pid '+d+'/nginx.pid;\\n'
-                    'error_log '+d+'/nginx.log warn;\\n'
-                    'events { worker_connections 16; }\\n'
+                  conf.write_text('load_module '+module+';\n'
+                    'pid '+d+'/nginx.pid;\n'
+                    'error_log '+d+'/nginx.log warn;\n'
+                    'events { worker_connections 16; }\n'
                     'stream { server { listen 127.0.0.1:18853; '
-                    'ssl_preread on; proxy_pass 127.0.0.1:1853; } }\\n')
+                    'ssl_preread on; proxy_pass 127.0.0.1:1853; } }\n')
                   r=run(['nginx','-t','-c',str(conf)],timeout=10)
                   print('NGINX_STREAM_SSL_PREREAD_TEST='+('PASS' if r and r.returncode==0 else 'FAILED'))
                   if r and r.returncode!=0:
