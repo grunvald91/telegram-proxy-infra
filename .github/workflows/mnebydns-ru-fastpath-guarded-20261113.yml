@@ -1,0 +1,113 @@
+name: MNEBYDNS guarded RU ingress for 13 verified exact A hostnames
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - ".github/workflows/mnebydns-ru-fastpath-guarded-20261113.yml"
+      - "scripts/mnebydns-ru-fastpath-*.sh"
+      - "scripts/mnebydns-ru-fastpath-deploy-20261113.py"
+      - "data/mnebydns-fastpath-ru-mode-20261113.txt"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/mnebydns-ru-fastpath-guarded-20261113.yml"
+      - "scripts/mnebydns-ru-fastpath-*.sh"
+      - "scripts/mnebydns-ru-fastpath-deploy-20261113.py"
+      - "data/mnebydns-fastpath-ru-mode-20261113.txt"
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('ru-fastpath-offline-{0}',github.ref) || 'mnebydns-google-public-443-change' }}
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate exact A-only renderer, independent rollback and deploy
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-ru-fastpath-plan-20261113.py scripts/mnebydns-ru-fastpath-deploy-20261113.py
+          python3 scripts/mnebydns-ru-fastpath-plan-20261113.py --self-test
+          python3 scripts/mnebydns-ru-fastpath-deploy-20261113.py --self-test
+          python3 scripts/mnebydns-owner-domain-render-20261110.py self-test
+          for name in stage rollback commit; do
+            bash -n "scripts/mnebydns-ru-fastpath-$name-20261113.sh"
+          done
+          test "$(grep -c ' ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts)" -eq 2
+          test "$(cat data/mnebydns-fastpath-ru-mode-20261113.txt)" = plan ||
+            test "$(cat data/mnebydns-fastpath-ru-mode-20261113.txt)" = activate-once-20261113
+          echo MNEBYDNS_RU_FASTPATH_OFFLINE=PASS
+  guarded:
+    if: github.event_name == 'push'
+    needs: offline
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      HEAD_COMMIT_TITLE: ${{ github.event.head_commit.message }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Resolve explicit one-time activation gate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mode=plan
+          if [[ "$HEAD_COMMIT_TITLE" == "deploy(MNEBYDNS): activate 13 RU fastpath exact A" &&
+                "$(cat data/mnebydns-fastpath-ru-mode-20261113.txt)" == activate-once-20261113 ]]; then
+            mode=deploy
+          fi
+          echo "FASTPATH_MODE=$mode" >> "$GITHUB_ENV"
+          echo "FASTPATH_MODE=$mode"
+      - name: Install pinned SSH
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+      - name: Read-only or guarded exact A transition with independent rollback
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if [[ "$FASTPATH_MODE" == deploy ]]; then
+            python3 scripts/mnebydns-ru-fastpath-deploy-20261113.py --deploy
+          else
+            python3 scripts/mnebydns-ru-fastpath-plan-20261113.py --plan
+          fi
+      - name: Read-only stable route and owner status after successful activation
+        if: success() && env.FASTPATH_MODE == 'deploy'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/mnebydns-batch-108-live-status-20261112.py inspect
+      - name: Publish exact statuses and event evidence
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## RU exact A SmartDNS fast path"
+            echo "Mode: ${FASTPATH_MODE:-unresolved}"
+            if [ -s fastpath-ru-plan/report.md ]; then cat fastpath-ru-plan/report.md; fi
+            if [ -s fastpath-ru-plan/deploy-events.jsonl ]; then tail -n 35 fastpath-ru-plan/deploy-events.jsonl; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Archive non-secret plan and activation records
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mnebydns-ru-fastpath-${{ github.run_id }}
+          path: |
+            fastpath-ru-plan/plan.json
+            fastpath-ru-plan/report.md
+            fastpath-ru-plan/deploy-events.jsonl
+            mnebydns-108-live-status/report.md
+          if-no-files-found: warn
+          retention-days: 30
