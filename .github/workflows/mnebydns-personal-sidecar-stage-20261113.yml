@@ -1,0 +1,100 @@
+name: Stage personal DoT over private WireGuard with public cert (preserve public 853)
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/mnebydns-personal-sidecar-stage-20261113.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-personal-private-sidecar
+  cancel-in-progress: false
+jobs:
+  stage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 16
+    env:
+      DE_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      APP_SHA: 'becf3db987e340dccbe6a21d0c1cabbbe47c3899'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify pinned source, signed wildcard cert and route policy
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASSWORD" && test -n "$RU_PASSWORD"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          test -s scripts/mnebydns-personal-dot-sidecar-stage-20261113.sh
+          bash -n scripts/mnebydns-personal-dot-sidecar-stage-20261113.sh
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass >/dev/null
+          work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
+          chmod 700 "$work"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          export SSHPASS="$DE_PASSWORD"
+          sshpass -e scp -q "${opts[@]}" \
+            root@89.125.90.101:/etc/mnebydns/personal-dot/fullchain.pem "$work/fullchain.pem"
+          sshpass -e scp -q "${opts[@]}" \
+            root@89.125.90.101:/etc/mnebydns/personal-dot/privkey.pem "$work/privkey.pem"
+          sshpass -e ssh -T "${opts[@]}" root@89.125.90.101 'python3 -' >"$work/policy.json" <<'PY'
+          import re,json,pathlib
+          data=pathlib.Path('/opt/mnebydns-dot/Corefile').read_text(errors='replace')
+          found=re.findall(r'(?m)^\s*template\s+IN\s+(?:A|AAAA|HTTPS|SVCB)\s+([^\s{]+)',data)
+          cleaned=sorted(set(x.lower().rstrip('.') for x in found
+             if re.fullmatch(r'(?:\*\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+',x.lower().rstrip('.'))))
+          assert 100<=len(cleaned)<=10000 and 'claude.ai' in cleaned
+          print(json.dumps(cleaned,separators=(',',':')))
+          PY
+          chmod 600 "$work"/{privkey.pem,fullchain.pem,policy.json}
+          openssl x509 -in "$work/fullchain.pem" -checkhost aaaaaaaaaaaa.dns.mnebyvpn.site -noout >/dev/null
+          openssl x509 -in "$work/fullchain.pem" -checkend 604800 -noout >/dev/null
+          echo 'DE_PERSONAL_CERT_AND_ROUTE_POLICY=VERIFIED'
+          export SSHPASS="$RU_PASSWORD"
+          sshpass -e ssh -T "${opts[@]}" root@188.120.254.223 \
+            "install -d -m 700 /tmp/mnebydns-personal-stage-$APP_SHA"
+          for filename in privkey.pem fullchain.pem policy.json; do
+            sshpass -e scp -q "${opts[@]}" "$work/$filename" \
+              "root@188.120.254.223:/tmp/mnebydns-personal-stage-$APP_SHA/$filename"
+          done
+          sshpass -e scp -q "${opts[@]}" \
+            scripts/mnebydns-personal-dot-sidecar-stage-20261113.sh \
+            "root@188.120.254.223:/tmp/mnebydns-personal-stage-$APP_SHA/install.sh"
+          sshpass -e ssh -T "${opts[@]}" root@188.120.254.223 \
+            "bash /tmp/mnebydns-personal-stage-$APP_SHA/install.sh '$APP_SHA'"
+          echo 'RU_PERSONAL_DOT_PRIVATE_STAGE=SUCCESS'
+      - name: Verify strict wildcard TLS from foreign VPS to RU WireGuard (read-only)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASSWORD"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY'
+          import socket,ssl
+          ctx=ssl.create_default_context()
+          host='aaaaaaaaaaaa.dns.mnebyvpn.site'
+          with socket.create_connection(('10.66.77.2',8853),timeout=7) as raw:
+              raw.settimeout(7)
+              with ctx.wrap_socket(raw,server_hostname=host) as tls:
+                  assert tls.version() in ('TLSv1.2','TLSv1.3')
+                  assert bool(tls.getpeercert())
+          print('DE_TO_RU_PERSONAL_SNI_TLS=STRICT_PASS')
+          PY
+      - name: Check existing public foreign CoreDNS remains reachable
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import socket,ssl
+          with socket.create_connection(('89.125.90.101',853),timeout=8) as raw:
+              with ssl.create_default_context().wrap_socket(raw,
+                    server_hostname='dns.mnebyvpn.site') as tls:
+                  assert bool(tls.getpeercert())
+          print('LEGACY_DE_PUBLIC_853_TLS=PASS')
+          PY
