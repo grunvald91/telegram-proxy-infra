@@ -19,14 +19,12 @@ jobs:
     env:
       DE_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
       RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
-      APP_SHA: 'f98ce62ec04e1d3270c8dc9258d9b2cdbff184c0'
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      # The active RU staging image is pinned to becf3db; only its upstream
-      # DoT port check is stale. Mount the reviewed, immutable fix into the
-      # private sidecar rather than redeploying web/bot/DB services.
+      # Preserve the immutable reviewed gateway source overlay only for the
+      # isolated sidecar. Do not redeploy existing web, bot or DB services.
       - name: Checkout reviewed upstream DoT 853 port fix
         uses: actions/checkout@v4
         with:
@@ -34,6 +32,39 @@ jobs:
           ref: 88d0a157b66207054a01782d6cc733a4729f8da5
           path: reviewed-gateway
           persist-credentials: false
+      # Telegram bot deployment may replace the RU staged image independently.
+      # Resolve its active SHA at runtime; fail closed unless the corresponding
+      # release contains the exact immutable reviewed personal DoT gateway source.
+      - name: Resolve and verify active RU staging image
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASSWORD"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          test -s reviewed-gateway/apps/service/src/personal-dot-production.ts
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          export SSHPASS="$RU_PASSWORD"
+          active="$(sshpass -e ssh "${opts[@]}" root@188.120.254.223 \
+            'cat /opt/mnebyvpn/staging/active_sha')"
+          [[ "$active" =~ ^[0-9a-f]{40}$ ]] ||
+            { echo 'RU_STAGE_ACTIVE_SHA_INVALID=true'; exit 2; }
+          source_path="/opt/mnebyvpn/releases/$active/apps/service/src/personal-dot-production.ts"
+          expected="$(sha256sum reviewed-gateway/apps/service/src/personal-dot-production.ts | cut -d' ' -f1)"
+          actual="$(sshpass -e ssh "${opts[@]}" root@188.120.254.223 \
+            "sha256sum '$source_path' | cut -d' ' -f1")"
+          [[ "$actual" == "$expected" ]] ||
+            { echo 'RU_STAGE_GATEWAY_SOURCE_MISMATCH=true'; exit 2; }
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 \
+            "docker image inspect 'mnebyvpn-stage-web:$active' >/dev/null"
+          current="$(sshpass -e ssh "${opts[@]}" root@188.120.254.223 \
+            'cat /opt/mnebyvpn/staging/active_sha')"
+          [[ "$current" == "$active" ]] ||
+            { echo 'RU_STAGE_ACTIVE_SHA_CHANGED_DURING_PREFLIGHT=true'; exit 2; }
+          echo "APP_SHA=$active" >> "$GITHUB_ENV"
+          echo "RU_STAGE_VERIFIED_SHA=$active"
       - name: Verify pinned source, signed wildcard cert and route policy
         id: install
         shell: bash
@@ -46,7 +77,6 @@ jobs:
           test "$(git -C reviewed-gateway rev-parse HEAD)" = '88d0a157b66207054a01782d6cc733a4729f8da5'
           test -s reviewed-gateway/apps/service/src/personal-dot-production.ts
           grep -Fq "const portNumber=port('MNEBYDNS_PERSONAL_'+prefix+'_DOT_PORT',853,1);" reviewed-gateway/apps/service/src/personal-dot-production.ts
-          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass >/dev/null
           work="$(mktemp -d)"
           trap 'rm -rf "$work"' EXIT
           chmod 700 "$work"
