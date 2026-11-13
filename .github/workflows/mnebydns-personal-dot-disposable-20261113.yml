@@ -32,14 +32,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: grunvald91/Mnebyvpn
-          ref: 3fe1e6feb93ab49cde5c11e33e17050049029fa7
+          ref: 47c8c65c046b2c7b4dcedc2f1f8b7561e5a77600
           path: app
           persist-credentials: false
       - name: Verify exactly pinned canary app code and safe cleanup script
         shell: bash
         run: |
           set -Eeuo pipefail
-          test "$(git -C app rev-parse HEAD)" = 3fe1e6feb93ab49cde5c11e33e17050049029fa7
+          test "$(git -C app rev-parse HEAD)" = 47c8c65c046b2c7b4dcedc2f1f8b7561e5a77600
           bash -n infra/scripts/mnebydns-personal-dot-disposable-20261113.sh
           test "$(grep -c ' ssh-ed25519 ' infra/ops/mnebydns-owner-ssh-known_hosts)" -eq 2
           grep -Fq 'CANARY_RU_TO_FOREIGN_DOT_DISPOSABLE=PASS' infra/scripts/mnebydns-personal-dot-disposable-20261113.sh
