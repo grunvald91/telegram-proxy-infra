@@ -1,0 +1,112 @@
+name: MNEBYDNS guarded public personal SNI cutover - preserve CoreDNS
+on:
+  push:
+    branches: [feat/mnebydns-personal-public-sni-guarded-cutover-20261113]
+    paths: ['.github/workflows/mnebydns-personal-public-sni-release-20261113.yml']
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-public-dot-sni-853
+  cancel-in-progress: false
+jobs:
+  cutover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Preflight and guarded isolated 8854 preparation
+        id: prepare
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          bash -n scripts/mnebydns-personal-public-sni-guarded-20261113.sh
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass >/dev/null
+          export SSHPASS="$DE_PASS"
+          options=(-o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e scp -q "${options[@]}" scripts/mnebydns-personal-public-sni-guarded-20261113.sh root@89.125.90.101:/tmp/mnebydns-personal-public-sni-guarded-20261113.sh
+          sshpass -e ssh -T "${options[@]}" root@89.125.90.101 'bash /tmp/mnebydns-personal-public-sni-guarded-20261113.sh prepare'
+      - name: Start external TCP 853 reversible canary
+        id: begin
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR \
+            root@89.125.90.101 'bash /tmp/mnebydns-personal-public-sni-guarded-20261113.sh begin'
+      - name: Verify public DNS query on legacy SNI and valid wildcard TLS
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import socket,ssl,struct,secrets
+          ctx=ssl.create_default_context()
+          for host in ('dns.mnebyvpn.site','aaaaaaaaaaaa.dns.mnebyvpn.site'):
+              with socket.create_connection(('89.125.90.101',853),timeout=8) as tcp:
+                  tcp.settimeout(8)
+                  with ctx.wrap_socket(tcp,server_hostname=host) as tls:
+                      assert tls.version() in ('TLSv1.2','TLSv1.3')
+                      assert tls.getpeercert()
+                      if host.startswith('aaaaaaaaaaaa.'):
+                          print('PUBLIC_PERSONAL_TLS=PASS')
+                          continue
+                      tid=secrets.randbelow(65535)
+                      q=struct.pack('!HHHHHH',tid,0x0100,1,0,0,0)+b'\x07example\x03com\x00'+struct.pack('!HH',1,1)
+                      tls.sendall(struct.pack('!H',len(q))+q)
+                      prefix=tls.recv(2)
+                      assert len(prefix)==2
+                      n=struct.unpack('!H',prefix)[0]
+                      assert 12<=n<=65535
+                      answer=b''
+                      while len(answer)<n:
+                          data=tls.recv(n-len(answer))
+                          assert data
+                          answer+=data
+                      assert struct.unpack('!H',answer[:2])[0]==tid
+                      assert answer[2]&128
+                      print('PUBLIC_LEGACY_DNS_QUERY=PASS')
+          PY
+      - name: Persist route only when both protocols pass
+        id: finalize
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR \
+            root@89.125.90.101 'bash /tmp/mnebydns-personal-public-sni-guarded-20261113.sh finalize'
+      - name: Recheck public TLS and original CoreDNS service after persistence
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import ssl,socket
+          for host in ('dns.mnebyvpn.site','aaaaaaaaaaaa.dns.mnebyvpn.site'):
+              with socket.create_connection(('89.125.90.101',853),timeout=8) as s:
+                  s.settimeout(8)
+                  with ssl.create_default_context().wrap_socket(s,server_hostname=host) as tls:
+                      assert tls.getpeercert()
+          print('PERSISTENT_PUBLIC_DOT_TLS_BOTH_SNI=PASS')
+          PY
+      - name: Fail open to original CoreDNS on any failed stage
+        if: ${{ failure() && steps.prepare.outcome != 'skipped' }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS"
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR \
+            root@89.125.90.101 'if test -s /tmp/mnebydns-personal-public-sni-guarded-20261113.sh; then bash /tmp/mnebydns-personal-public-sni-guarded-20261113.sh rollback; fi'
