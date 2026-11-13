@@ -1,0 +1,105 @@
+name: Publish public iPhone DNS profile on relay89
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/mnebydns-ios-profile-publish-20261113.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-ios-profile-publish
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      SSHPASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Publish validated Apple profile with rollback and HTTPS checks
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$SSHPASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          if ! command -v sshpass >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -qq -y sshpass >/dev/null
+          fi
+          sshpass -e ssh -T -o ConnectTimeout=10 -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR \
+            root@89.125.90.101 'python3 -' <<'REMOTE_PY'
+          import base64
+          import hashlib
+          import pathlib
+          import plistlib
+          import subprocess
+          import time
+          import urllib.request
+          
+          URL = 'https://cdn.servgo.ru/mnebyvpn-dns.mobileconfig'
+          PROFILE_B64 = 'PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiPz4KPCFET0NUWVBFIHBsaXN0IFBVQkxJQyAiLS8vQXBwbGUvL0RURCBQTElTVCAxLjAvL0VOIiAiaHR0cDovL3d3dy5hcHBsZS5jb20vRFREcy9Qcm9wZXJ0eUxpc3QtMS4wLmR0ZCI+CjxwbGlzdCB2ZXJzaW9uPSIxLjAiPgo8ZGljdD4KCTxrZXk+UGF5bG9hZFR5cGU8L2tleT4KCTxzdHJpbmc+Q29uZmlndXJhdGlvbjwvc3RyaW5nPgoJPGtleT5QYXlsb2FkVmVyc2lvbjwva2V5PgoJPGludGVnZXI+MTwvaW50ZWdlcj4KCTxrZXk+UGF5bG9hZElkZW50aWZpZXI8L2tleT4KCTxzdHJpbmc+c2l0ZS5tbmVieXZwbi5kbnMucHJvZmlsZTwvc3RyaW5nPgoJPGtleT5QYXlsb2FkVVVJRDwva2V5PgoJPHN0cmluZz43NjQ2MUQ2Qy1FNzdFLTVDM0YtQjREMC1ENDM1RUI0RkZDODM8L3N0cmluZz4KCTxrZXk+UGF5bG9hZERpc3BsYXlOYW1lPC9rZXk+Cgk8c3RyaW5nPk1ORUJZVlBOIEROUzwvc3RyaW5nPgoJPGtleT5QYXlsb2FkRGVzY3JpcHRpb248L2tleT4KCTxzdHJpbmc+RW5jcnlwdGVkIEROUyBvdmVyIFRMUzogZG5zLm1uZWJ5dnBuLnNpdGU8L3N0cmluZz4KCTxrZXk+UGF5bG9hZE9yZ2FuaXphdGlvbjwva2V5PgoJPHN0cmluZz5NTkVCWVZQTjwvc3RyaW5nPgoJPGtleT5QYXlsb2FkUmVtb3ZhbERpc2FsbG93ZWQ8L2tleT4KCTxmYWxzZS8+Cgk8a2V5PlBheWxvYWRDb250ZW50PC9rZXk+Cgk8YXJyYXk+CgkJPGRpY3Q+CgkJCTxrZXk+UGF5bG9hZFR5cGU8L2tleT4KCQkJPHN0cmluZz5jb20uYXBwbGUuZG5zU2V0dGluZ3MubWFuYWdlZDwvc3RyaW5nPgoJCQk8a2V5PlBheWxvYWRWZXJzaW9uPC9rZXk+CgkJCTxpbnRlZ2VyPjE8L2ludGVnZXI+CgkJCTxrZXk+UGF5bG9hZElkZW50aWZpZXI8L2tleT4KCQkJPHN0cmluZz5zaXRlLm1uZWJ5dnBuLmRucy5zZXR0aW5nczwvc3RyaW5nPgoJCQk8a2V5PlBheWxvYWRVVUlEPC9rZXk+CgkJCTxzdHJpbmc+MzEzNEVDNzYtRDA1Ri01MkE1LUJFMzQtMDgzQjc1MTQ0QkM4PC9zdHJpbmc+CgkJCTxrZXk+UGF5bG9hZERpc3BsYXlOYW1lPC9rZXk+CgkJCTxzdHJpbmc+TU5FQllWUE4gRE5TPC9zdHJpbmc+CgkJCTxrZXk+RE5TU2V0dGluZ3M8L2tleT4KCQkJPGRpY3Q+CgkJCQk8a2V5PkROU1Byb3RvY29sPC9rZXk+CgkJCQk8c3RyaW5nPlRMUzwvc3RyaW5nPgoJCQkJPGtleT5TZXJ2ZXJOYW1lPC9rZXk+CgkJCQk8c3RyaW5nPmRucy5tbmVieXZwbi5zaXRlPC9zdHJpbmc+CgkJCQk8a2V5PlNlcnZlckFkZHJlc3Nlczwva2V5PgoJCQkJPGFycmF5PgoJCQkJCTxzdHJpbmc+ODkuMTI1LjkwLjEwMTwvc3RyaW5nPgoJCQkJPC9hcnJheT4KCQkJPC9kaWN0PgoJCTwvZGljdD4KCTwvYXJyYXk+CjwvZGljdD4KPC9wbGlzdD4K'
+          data = base64.b64decode(PROFILE_B64)
+          profile = plistlib.loads(data)
+          assert profile['PayloadContent'][0]['DNSSettings']['ServerName'] == 'dns.mnebyvpn.site'
+          config = pathlib.Path('/etc/nginx/sites-enabled/cdn-servgo').resolve(strict=True)
+          before = config.read_bytes()
+          text = before.decode()
+          anchor = 'listen 127.0.0.1:4453 ssl http2;'
+          assert text.count(anchor) == 1, 'Expected one CDN TLS server'
+          assert 'server_name cdn.servgo.ru;' in text
+          assert 'location = /mnebyvpn-dns.mobileconfig' not in text, 'Profile location already exists; inspect before replacing'
+          target = pathlib.Path('/var/www/cdn-servgo/mnebyvpn-dns.mobileconfig')
+          assert target.parent.is_dir()
+          assert not target.exists(), 'Profile already exists; inspect before replacing'
+          snippet = '''
+              # MNEBYVPN public Apple DNS profile
+              location = /mnebyvpn-dns.mobileconfig {
+                  alias /var/www/cdn-servgo/mnebyvpn-dns.mobileconfig;
+                  types { }
+                  default_type application/x-apple-aspen-config;
+                  add_header Content-Disposition 'attachment; filename="mnebyvpn-dns.mobileconfig"' always;
+                  add_header X-Content-Type-Options nosniff always;
+              }
+          '''
+          def fetch(url):
+              with urllib.request.urlopen(url, timeout=20) as response:
+                  return response.read(), response.headers
+          
+          root_before, _ = fetch('https://cdn.servgo.ru/')
+          backup = pathlib.Path('/var/backups/mnebyvpn-dns-profile-' + time.strftime('%Y%m%d-%H%M%S'))
+          backup.mkdir(mode=0o700)
+          (backup / 'cdn-servgo.before').write_bytes(before)
+          changed = False
+          try:
+              target.write_bytes(data)
+              target.chmod(0o644)
+              index = text.index(anchor) + len(anchor)
+              config.write_text(text[:index] + '\n' + snippet + text[index:])
+              changed = True
+              subprocess.run(['nginx', '-t'], check=True)
+              subprocess.run(['systemctl', 'reload', 'nginx'], check=True)
+              downloaded, headers = fetch(URL)
+              assert downloaded == data, 'Downloaded profile differs'
+              assert headers.get_content_type() == 'application/x-apple-aspen-config'
+              assert 'mnebyvpn-dns.mobileconfig' in headers['Content-Disposition']
+              root_after, _ = fetch('https://cdn.servgo.ru/')
+              assert root_after == root_before, 'CDN homepage changed'
+              subprocess.run(['systemctl', 'is-active', '--quiet', 'nginx'], check=True)
+              print('PROFILE_URL=' + URL)
+              print('PROFILE_SHA256=' + hashlib.sha256(data).hexdigest())
+              print('PROFILE_MIME=' + headers.get_content_type())
+              print('HOMEPAGE_UNCHANGED=true')
+              print('CONFIG_BACKUP=' + str(backup))
+          except BaseException:
+              if changed:
+                  config.write_bytes(before)
+                  subprocess.run(['nginx', '-t'], check=True)
+                  subprocess.run(['systemctl', 'reload', 'nginx'], check=True)
+              target.unlink(missing_ok=True)
+              raise
+          REMOTE_PY
