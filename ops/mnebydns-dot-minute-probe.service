@@ -1,0 +1,18 @@
+[Unit]
+Description=MNEBYDNS synthetic read-only DNS-over-TLS minute check
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+TimeoutStartSec=17
+ExecStart=/usr/bin/python3 /usr/local/libexec/mnebydns-dot-minute-probe.py
+StandardOutput=journal
+StandardError=journal
