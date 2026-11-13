@@ -3,7 +3,9 @@ name: Stage personal DoT over private WireGuard with public cert (preserve publi
 on:
   push:
     branches: [main]
-    paths: ['.github/workflows/mnebydns-personal-sidecar-stage-20261113.yml']
+    paths:
+      - '.github/workflows/mnebydns-personal-sidecar-stage-20261113.yml'
+      - 'scripts/mnebydns-personal-dot-sidecar-stage-20261113.sh'
   workflow_dispatch:
 permissions:
   contents: read
@@ -22,6 +24,16 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      # The active RU staging image is pinned to becf3db; only its upstream
+      # DoT port check is stale. Mount the reviewed, immutable fix into the
+      # private sidecar rather than redeploying web/bot/DB services.
+      - name: Checkout reviewed upstream DoT 853 port fix
+        uses: actions/checkout@v4
+        with:
+          repository: grunvald91/Mnebyvpn
+          ref: 88d0a157b66207054a01782d6cc733a4729f8da5
+          path: reviewed-gateway
+          persist-credentials: false
       - name: Verify pinned source, signed wildcard cert and route policy
         shell: bash
         run: |
@@ -30,6 +42,9 @@ jobs:
           test -s ops/mnebydns-owner-ssh-known_hosts
           test -s scripts/mnebydns-personal-dot-sidecar-stage-20261113.sh
           bash -n scripts/mnebydns-personal-dot-sidecar-stage-20261113.sh
+          test "$(git -C reviewed-gateway rev-parse HEAD)" = '88d0a157b66207054a01782d6cc733a4729f8da5'
+          test -s reviewed-gateway/apps/service/src/personal-dot-production.ts
+          grep -Fq "const portNumber=port('MNEBYDNS_PERSONAL_'+prefix+'_DOT_PORT',853,1);" reviewed-gateway/apps/service/src/personal-dot-production.ts
           sudo apt-get update -qq && sudo apt-get install -y -qq sshpass >/dev/null
           work="$(mktemp -d)"
           trap 'rm -rf "$work"' EXIT
@@ -58,7 +73,8 @@ jobs:
           export SSHPASS="$RU_PASSWORD"
           sshpass -e ssh -T "${opts[@]}" root@188.120.254.223 \
             "install -d -m 700 /tmp/mnebydns-personal-stage-$APP_SHA"
-          for filename in privkey.pem fullchain.pem policy.json; do
+          cp reviewed-gateway/apps/service/src/personal-dot-production.ts "$work/personal-dot-production.ts"
+          for filename in privkey.pem fullchain.pem policy.json personal-dot-production.ts; do
             sshpass -e scp -q "${opts[@]}" "$work/$filename" \
               "root@188.120.254.223:/tmp/mnebydns-personal-stage-$APP_SHA/$filename"
           done
