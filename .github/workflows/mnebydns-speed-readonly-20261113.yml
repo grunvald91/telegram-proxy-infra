@@ -1,0 +1,77 @@
+name: MNEBYDNS read-only speed and reliability benchmark RU DE runner
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - ".github/workflows/mnebydns-speed-readonly-20261113.yml"
+      - "scripts/mnebydns-speed-readonly-20261113.py"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/mnebydns-speed-readonly-20261113.yml"
+      - "scripts/mnebydns-speed-readonly-20261113.py"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('mnebydns-speed-offline-{0}',github.ref) || 'mnebydns-speed-readonly' }}
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify no production changes and basic DNS wire decoder
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-speed-readonly-20261113.py
+          python3 scripts/mnebydns-speed-readonly-20261113.py --self-test
+          test "$(grep -c ' ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts)" -eq 2
+          ! grep -Eq 'systemctl (restart|reload|start|stop)|chgrp|chmod|ip route add|iptables|StrictHostKeyChecking=no|accept-new|verify=False|check_hostname=False' scripts/mnebydns-speed-readonly-20261113.py
+          echo MNEBYDNS_SPEED_OFFLINE=PASS
+  sample:
+    if: github.event_name != 'pull_request'
+    needs: offline
+    runs-on: ubuntu-latest
+    timeout-minutes: 13
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install pinned read-only SSH prerequisites
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -qq -y sshpass >/dev/null
+      - name: Measure TLS and DNS RTT p50 p95, failure rates and CoreDNS resources
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/mnebydns-speed-readonly-20261113.py --run
+      - name: Publish report
+        if: always()
+        shell: bash
+        run: |
+          if [ -s speed-readonly-results/report.md ]; then
+            cat speed-readonly-results/report.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'No complete read-only measurements obtained' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Archive complete performance data, no private client traffic
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mnebydns-speed-readonly-${{ github.run_id }}
+          path: speed-readonly-results/
+          if-no-files-found: warn
+          retention-days: 30
