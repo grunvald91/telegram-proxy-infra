@@ -1,0 +1,142 @@
+# An opt-in, one-shot, resource-limited RU→DE DoT canary with disposable
+# PostgreSQL and disposable Node containers on the existing RU Docker host.
+# No host ports published. No production DB, CoreDNS or Nginx mutations.
+name: MNEBYDNS isolated RU to foreign personal DoT canary 2026-11-13
+
+on:
+  push:
+    branches:
+      - feat/personal-dot-disposable-ru-canary-20261113
+    paths:
+      - '.github/workflows/mnebydns-personal-dot-disposable-20261113.yml'
+      - 'scripts/mnebydns-personal-dot-disposable-20261113.sh'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mnebydns-personal-dot-disposable-ru-20261113
+  cancel-in-progress: false
+
+jobs:
+  disposable:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: infra
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: grunvald91/Mnebyvpn
+          ref: 47c8c65c046b2c7b4dcedc2f1f8b7561e5a77600
+          path: app
+          persist-credentials: false
+      - name: Verify exactly pinned canary app code and safe cleanup script
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(git -C app rev-parse HEAD)" = 47c8c65c046b2c7b4dcedc2f1f8b7561e5a77600
+          bash -n infra/scripts/mnebydns-personal-dot-disposable-20261113.sh
+          test "$(grep -c ' ssh-ed25519 ' infra/ops/mnebydns-owner-ssh-known_hosts)" -eq 2
+          grep -Fq 'CANARY_RU_TO_FOREIGN_DOT_DISPOSABLE=PASS' infra/scripts/mnebydns-personal-dot-disposable-20261113.sh
+          ! grep -Eq 'systemctl|iptables|nginx -s|ufw|docker system prune' infra/scripts/mnebydns-personal-dot-disposable-20261113.sh
+      - name: Typecheck pinned application before shipping to isolated canary
+        shell: bash
+        working-directory: app
+        run: |
+          set -Eeuo pipefail
+          npm install --ignore-scripts --no-audit --no-fund >/dev/null
+          npm run typecheck
+      - name: Generate isolated app package, one-day wildcard TLS and fixture
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p /tmp/personal-dot-test/config
+          tar -czf /tmp/personal-dot-test/app.tgz -C app \
+            apps packages db package.json .github/workflows/offline-contracts.yml
+          grep -oE 'db/migrations/[0-9]{4}_[a-z0-9_]+\.sql' \
+            app/.github/workflows/offline-contracts.yml |
+            awk '!seen[$0]++' > /tmp/personal-dot-test/migration-list.txt
+          test "$(wc -l < /tmp/personal-dot-test/migration-list.txt)" -ge 30
+          printf '%s\n' '["claude.ai"]' > /tmp/personal-dot-test/config/routes.json
+          openssl req -x509 -newkey rsa:2048 -nodes \
+            -keyout /tmp/personal-dot-test/config/test.key \
+            -out /tmp/personal-dot-test/config/test.crt -days 1 \
+            -subj '/CN=*.dns.mnebyvpn.site' \
+            -addext 'subjectAltName=DNS:*.dns.mnebyvpn.site' >/dev/null 2>&1
+          chmod 600 /tmp/personal-dot-test/config/test.key
+          cat > /tmp/personal-dot-test/config/fixture.sql <<'SQL'
+          INSERT INTO accounts(id) VALUES('44333333-3333-4333-8333-333333333333');
+          INSERT INTO orders(id,account_id,product,provider,amount_minor,currency,state)
+            VALUES('55444444-4444-4444-8444-444444444444',
+              '44333333-3333-4333-8333-333333333333',
+              'smart_dns','fixture',20000,'RUB','PAID');
+          INSERT INTO entitlements(
+            id,account_id,source_order_id,product,state,revision,starts_at,expires_at,quota_limit_bytes)
+            VALUES('66555555-5555-4555-8555-555555555555',
+              '44333333-3333-4333-8333-333333333333',
+              '55444444-4444-4444-8444-444444444444',
+              'smart_dns','ACTIVE',1,clock_timestamp()-interval '10 minutes',
+              clock_timestamp()+interval '30 days',1000000);
+          DO $$
+          BEGIN
+            IF issue_personal_dns_credential(
+              '66555555-5555-4555-8555-555555555555',
+              'abcdefghijkl',
+              encode(sha256(convert_to('abcdefghijkl','UTF8')),'hex'),3
+            ) <> 'ISSUED' THEN RAISE EXCEPTION 'canary fixture credential issuance failed'; END IF;
+          END;
+          $$;
+          SQL
+      - name: Run only isolated disposable containers over pinned SSH
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" || { echo 'RU_STAGING_SSH_UNAVAILABLE';exit 2; }
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get -y -qq install sshpass >/dev/null
+          export SSHPASS="$RU_PASS"
+          remote="root@188.120.254.223"
+          dir="/tmp/mnebydns-personal-dot-$GITHUB_RUN_ID"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/infra/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" "$remote" \
+            "test ! -e '$dir' && mkdir -m 700 '$dir' && mkdir -m 700 '$dir/config'"
+          sshpass -e scp -q "${opts[@]}" \
+            /tmp/personal-dot-test/app.tgz \
+            /tmp/personal-dot-test/migration-list.txt \
+            infra/scripts/mnebydns-personal-dot-disposable-20261113.sh \
+            "$remote:$dir/"
+          sshpass -e scp -q "${opts[@]}" \
+            /tmp/personal-dot-test/config/test.key \
+            /tmp/personal-dot-test/config/test.crt \
+            /tmp/personal-dot-test/config/routes.json \
+            /tmp/personal-dot-test/config/fixture.sql \
+            "$remote:$dir/config/"
+          sshpass -e ssh "${opts[@]}" "$remote" \
+            "mkdir -m 700 '$dir/app' && tar -xzf '$dir/app.tgz' -C '$dir/app' && chmod 600 '$dir/config/test.key' && bash '$dir/mnebydns-personal-dot-disposable-20261113.sh' '$GITHUB_RUN_ID' '$dir'"
+      - name: Best-effort cleanup of uniquely named canary resources
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          if test -n "$RU_PASS"; then
+            command -v sshpass >/dev/null 2>&1 || exit 0
+            export SSHPASS="$RU_PASS"
+            remote="root@188.120.254.223"
+            runid="$GITHUB_RUN_ID"
+            [[ "$runid" =~ ^[0-9]{6,20}$ ]] || exit 0
+            opts=(-o ConnectTimeout=10 -o StrictHostKeyChecking=yes
+              -o HostKeyAlgorithms=ssh-ed25519
+              -o "UserKnownHostsFile=$PWD/infra/ops/mnebydns-owner-ssh-known_hosts"
+              -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+            sshpass -e ssh "${opts[@]}" "$remote" \
+              "docker rm -f 'mnebydns-canary-node-$runid' 'mnebydns-canary-pg-$runid' >/dev/null 2>&1 || true; docker network rm 'mnebydns-canary-net-$runid' >/dev/null 2>&1 || true; if test -d '/tmp/mnebydns-personal-dot-$runid'; then rm -rf -- '/tmp/mnebydns-personal-dot-$runid'; fi" || true
+          fi
+          echo "Unique disposable containers and files cleanup attempted" >> "$GITHUB_STEP_SUMMARY"
