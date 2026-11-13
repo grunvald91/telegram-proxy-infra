@@ -10,7 +10,44 @@ jobs:
   inspect:
     runs-on: ubuntu-latest
     timeout-minutes: 6
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Inspect authoritative NS and existing DE 853 configuration (read-only)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          dig +short NS mnebyvpn.site | sort | sed 's/^/AUTHORITATIVE_NS=/'
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          test -n "$DE_PASS"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=10 -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR \
+            root@89.125.90.101 'python3 -' <<'PY'
+          import subprocess,os,re
+          p=subprocess.run(['ss','-Hlntp'],capture_output=True,text=True)
+          endpoints=[line for line in p.stdout.splitlines() if re.search(r':853\\b',line)]
+          print('DE_853_LISTENERS='+str(len(endpoints)))
+          print('DE_853_NGINX_LISTENER='+str(any('nginx' in line for line in endpoints)))
+          print('DE_853_DOT_LISTENER='+str(any('dot' in line.lower() for line in endpoints)))
+          for svc in ['mnebydns_dot','nginx']:
+              q=subprocess.run(['systemctl','is-active',svc],capture_output=True,text=True)
+              print('DE_SERVICE_'+svc+'='+q.stdout.strip())
+          print('DE_CERTBOT_INSTALLED='+str(os.path.isfile('/usr/bin/certbot')))
+          print('DE_ACME_SH_INSTALLED='+str(os.path.isfile('/root/.acme.sh/acme.sh')))
+          print('DE_LETSENCRYPT_LIVE_EXISTS='+str(os.path.isdir('/etc/letsencrypt/live')))
+          n=subprocess.run(['nginx','-T'],capture_output=True,text=True)
+          if n.returncode==0:
+              print('DE_NGINX_853_CONFIGURED='+str(bool(re.search(r'(?m)^\\s*listen\\s+[^;]*853\\b',n.stdout))))
+              print('DE_NGINX_SSL_PREREAD='+str(bool(re.search(r'\\bssl_preread\\s+on\\s*;',n.stdout))))
+          else:print('DE_NGINX_CONFIG_READ=FAILED')
+          print('READ_ONLY=true')
+          PY
       - name: Probe both server public DoT ports, wildcard DNS and strict TLS
         shell: bash
         run: |
