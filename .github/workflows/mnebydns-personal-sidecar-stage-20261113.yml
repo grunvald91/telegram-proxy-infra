@@ -19,7 +19,7 @@ jobs:
     env:
       DE_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
       RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
-      APP_SHA: 'becf3db987e340dccbe6a21d0c1cabbbe47c3899'
+      APP_SHA: 'f98ce62ec04e1d3270c8dc9258d9b2cdbff184c0'
     steps:
       - uses: actions/checkout@v4
         with:
