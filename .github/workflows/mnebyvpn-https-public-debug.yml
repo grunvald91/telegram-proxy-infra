@@ -4,6 +4,9 @@ on:
   push:
     paths: ['.github/workflows/mnebyvpn-https-public-debug.yml']
   workflow_dispatch:
+  schedule:
+    # Read-only daily external crawler-style reachability check (06:27 Moscow).
+    - cron: '27 3 * * *'
 permissions:
   contents: read
 jobs:
@@ -19,11 +22,13 @@ jobs:
         with:
           persist-credentials: false
       - name: Probe external TCP and TLS path
+        id: external
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import socket,subprocess
+          import socket,subprocess,os
+          failures=[]
           for port in [80,443,8443]:
             try:
               sock=socket.create_connection(('188.120.254.223',port),5)
@@ -33,11 +38,23 @@ jobs:
               print('external_tcp_'+str(port)+'='+type(exc).__name__)
           for name in ['mnebyvpn.site','www.mnebyvpn.site']:
             p=subprocess.run(['curl','--noproxy','*','--connect-timeout','5','--max-time','10','-sS',
-              '-o','/dev/null','-w','code=%{http_code};connect=%{time_connect};tls=%{time_appconnect};verify=%{ssl_verify_result};ip=%{remote_ip}',
+              '-o','/dev/null','-w','code=%{http_code};connect=%{time_connect};tls=%{time_appconnect};verify=%{ssl_verify_result};ip=%{remote_ip};redirect=%{redirect_url}',
               'https://'+name+'/'],capture_output=True,text=True,timeout=12)
             print('external_https_'+name+'_exit='+str(p.returncode))
             print('external_https_'+name+'_metrics='+p.stdout.strip())
             print('external_https_'+name+'_error='+p.stderr.strip()[:100])
+            fields=dict(item.split('=',1) for item in p.stdout.strip().split(';') if '=' in item)
+            if name=='mnebyvpn.site':
+              expected=p.returncode==0 and fields.get('code')=='200'
+            else:
+              expected=(p.returncode==0 and fields.get('code') in ('301','308')
+                        and fields.get('redirect')=='https://mnebyvpn.site/')
+            if not expected:failures.append(name)
+          public_ok=not failures
+          print('public_https_expected='+str(public_ok).lower())
+          if failures:print('public_https_failed_hosts='+','.join(failures))
+          with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as out:
+            out.write('public_ok='+str(public_ok).lower()+'\n')
           PY
       - name: Verify site HTTPS from independent foreign VPS egress (read-only)
         shell: bash
@@ -106,3 +123,16 @@ jobs:
             print('server_https_'+name+'_metrics='+(p.stdout.strip() if p else '?'))
           print('read_only=true')
           PY
+      - name: Mark external HTTPS access as a real SEO gate
+        if: always()
+        shell: bash
+        env:
+          PUBLIC_OK: ${{ steps.external.outputs.public_ok }}
+        run: |
+          if [ "$PUBLIC_OK" = true ]; then
+            echo 'External HTTPS: PASS (apex 200, www canonical redirect)' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'External HTTPS: FAILED from GitHub runner (crawlability risk)' >> "$GITHUB_STEP_SUMMARY"
+            echo '::error::Public HTTPS is not reachable with the expected status/redirect from GitHub runner; internal/foreign server success alone is insufficient for SEO readiness'
+            exit 1
+          fi
