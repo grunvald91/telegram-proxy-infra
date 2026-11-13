@@ -31,10 +31,11 @@ jobs:
             root@89.125.90.101 'python3 -' <<'PY'
           import subprocess,os,re
           p=subprocess.run(['ss','-Hlntp'],capture_output=True,text=True)
-          endpoints=[line for line in p.stdout.splitlines() if re.search(r':853\\b',line)]
+          endpoints=[line for line in p.stdout.splitlines() if ':853' in line]
           print('DE_853_LISTENERS='+str(len(endpoints)))
           print('DE_853_NGINX_LISTENER='+str(any('nginx' in line for line in endpoints)))
           print('DE_853_DOT_LISTENER='+str(any('dot' in line.lower() for line in endpoints)))
+          print('DE_853_LISTENER_SUMMARY='+','.join(sorted(set(('nginx' if 'nginx' in line else 'coredns' if 'coredns' in line.lower() else 'docker' if 'docker' in line else 'other') for line in endpoints))))[:120])
           for svc in ['mnebydns_dot','nginx']:
               q=subprocess.run(['systemctl','is-active',svc],capture_output=True,text=True)
               print('DE_SERVICE_'+svc+'='+q.stdout.strip())
@@ -43,7 +44,7 @@ jobs:
           print('DE_LETSENCRYPT_LIVE_EXISTS='+str(os.path.isdir('/etc/letsencrypt/live')))
           n=subprocess.run(['nginx','-T'],capture_output=True,text=True)
           if n.returncode==0:
-              print('DE_NGINX_853_CONFIGURED='+str(bool(re.search(r'(?m)^\\s*listen\\s+[^;]*853\\b',n.stdout))))
+              print('DE_NGINX_853_CONFIGURED='+str(any('listen ' in line and '853' in line for line in n.stdout.splitlines())))
               print('DE_NGINX_SSL_PREREAD='+str(bool(re.search(r'\\bssl_preread\\s+on\\s*;',n.stdout))))
           else:print('DE_NGINX_CONFIG_READ=FAILED')
           print('READ_ONLY=true')
