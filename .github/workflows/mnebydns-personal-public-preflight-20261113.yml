@@ -35,7 +35,7 @@ jobs:
           print('DE_853_LISTENERS='+str(len(endpoints)))
           print('DE_853_NGINX_LISTENER='+str(any('nginx' in line for line in endpoints)))
           print('DE_853_DOT_LISTENER='+str(any('dot' in line.lower() for line in endpoints)))
-          print('DE_853_LISTENER_SUMMARY='+','.join(sorted(set(('nginx' if 'nginx' in line else 'coredns' if 'coredns' in line.lower() else 'docker' if 'docker' in line else 'other') for line in endpoints))))[:120])
+          print('DE_853_LISTENER_SUMMARY='+','.join(sorted(set('nginx' if 'nginx' in line else 'coredns' if 'coredns' in line.lower() else 'docker' if 'docker' in line else 'other' for line in endpoints)))[:120])
           for svc in ['mnebydns_dot','nginx']:
               q=subprocess.run(['systemctl','is-active',svc],capture_output=True,text=True)
               print('DE_SERVICE_'+svc+'='+q.stdout.strip())
