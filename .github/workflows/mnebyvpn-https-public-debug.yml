@@ -58,10 +58,10 @@ jobs:
                   raw.settimeout(7)
                   ctx=ssl.create_default_context()
                   with ctx.wrap_socket(raw,server_hostname='mnebyvpn.site') as tls:
-                      tls.sendall(b'HEAD / HTTP/1.1\r\nHost: mnebyvpn.site\r\nConnection: close\r\n\r\n')
+                      tls.sendall(b'GET / HTTP/1.1\r\nHost: mnebyvpn.site\r\nUser-Agent: MNEBYVPN-Release-ReadOnly/1\r\nConnection: close\r\n\r\n')
                       line=tls.recv(256).split(b'\r\n',1)[0]
                       print('DE_TO_RU_HTTPS_TLS=PASS')
-                      print('DE_TO_RU_HTTPS_HTTP_STATUS='+line.decode('ascii','replace')[:90])
+                      print('DE_TO_RU_HTTPS_GET_STATUS='+line.decode('ascii','replace')[:90])
                       if not line.startswith(b'HTTP/1.1 200') and not line.startswith(b'HTTP/1.0 200'):
                           raise ValueError('Unexpected response status')
           except Exception as exc:
