@@ -21,9 +21,12 @@ if grep -Fxq '    reload 5s 1s' "$dns"; then
   }
   echo 'mnebydns_reload_without_restart=true'
 else
-  # Compatibility with the legacy stable Corefile before the migration.
-  systemctl restart "$service"
-  echo 'mnebydns_legacy_restart=true'
+  # Do not interrupt live Android Private DNS sessions just to update
+  # a hostname route. Old CoreDNS deployments lacking reload must be
+  # migrated separately with a reviewed maintenance/rollback window.
+  # Route controllers fail closed and restore their own staged Corefile.
+  echo 'mnebydns_legacy_restart_refused_no_reload=true' >&2
+  exit 5
 fi
 
 for attempt in $(seq 1 20); do
