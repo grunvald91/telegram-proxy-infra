@@ -1,0 +1,105 @@
+name: MNEBYDNS personal wildcard ACME finalize after Jino TXT confirmed (no 853 changes)
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/mnebydns-personal-acme-finalize-20261113.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-personal-wildcard-acme
+  cancel-in-progress: false
+jobs:
+  cert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      DE_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      DNS_NAME: '_acme-challenge.dns.mnebyvpn.site'
+      TXT_EXPECTED: '3nUqGN5gbo2TtTAuhAsY_44KXOn9iNxfRYvFm_M1x5c'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Require DNS-01 TXT at all Jino authoritative servers before ACME
+        id: txt
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          check=1
+          for ns in ns1.jino.ru ns2.jino.ru ns3.jino.ru ns4.jino.ru; do
+            response="$(dig +short +time=3 +tries=1 @"$ns" TXT "$DNS_NAME" || true)"
+            if [[ "$response" == *"$TXT_EXPECTED"* ]]; then
+              echo "AUTHORITATIVE_$ns=MATCH"
+            else
+              echo "AUTHORITATIVE_$ns=PENDING"
+              check=0
+            fi
+          done
+          if [[ "$check" != 1 ]]; then
+            echo 'TXT_STATUS=WAITING_FOR_JINO_RECORD'
+            echo 'ready=no' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo 'TXT_STATUS=ALL_AUTHORITATIVE_PRESENT'
+          echo 'ready=yes' >> "$GITHUB_OUTPUT"
+      - name: Complete signed ACME manual wildcard certificate on existing DE VPS
+        if: steps.txt.outputs.ready == 'yes'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASSWORD"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass >/dev/null
+          export SSHPASS="$DE_PASSWORD"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR \
+            root@89.125.90.101 'bash -se' <<'REMOTE'
+          set -Eeuo pipefail
+          umask 077
+          client=/opt/mnebydns/acme-client-3.1.6/acme.sh
+          home=/var/lib/mnebydns/acme-personal
+          target=/etc/mnebydns/personal-dot
+          domain='*.dns.mnebyvpn.site'
+          test -x "$client"
+          test -d "$home"
+          if [[ -f "$target/fullchain.pem" && -f "$target/privkey.pem" ]]; then
+            if openssl x509 -in "$target/fullchain.pem" -noout \
+              -checkhost 'aaaaaaaaaaaa.dns.mnebyvpn.site' >/dev/null &&
+              openssl x509 -in "$target/fullchain.pem" -noout -checkend 604800 >/dev/null; then
+                echo 'WILDCARD_CERT_ALREADY_VALID=true'
+                exit 0
+            fi
+          fi
+          log="$(mktemp "$home/manual-finalize.XXXXXXXX")"
+          chmod 600 "$log"
+          set +e
+          "$client" --home "$home" --renew --dns \
+            -d "$domain" --server letsencrypt \
+            --yes-I-know-dns-manual-mode-enough-go-ahead-please \
+            >"$log" 2>&1
+          rc=$?
+          set -e
+          if [[ $rc != 0 ]]; then
+            echo 'ACME_WILDCARD_FINALIZE=FAILED'
+            grep -Ei 'error|invalid|challenge|retry' "$log" | tail -n 6 | cut -c 1-180 || true
+            exit 3
+          fi
+          install -d -m 700 "$target"
+          "$client" --home "$home" --install-cert -d "$domain" \
+            --key-file "$target/privkey.pem" \
+            --fullchain-file "$target/fullchain.pem" \
+            --reloadcmd '/bin/true' > /dev/null
+          chmod 600 "$target/privkey.pem" "$target/fullchain.pem"
+          openssl x509 -in "$target/fullchain.pem" -noout \
+            -checkhost 'aaaaaaaaaaaa.dns.mnebyvpn.site' >/dev/null
+          openssl x509 -in "$target/fullchain.pem" -noout -checkend 604800 >/dev/null
+          key_fp="$(openssl pkey -in "$target/privkey.pem" -pubout -outform DER | sha256sum | cut -d' ' -f1)"
+          cert_fp="$(openssl x509 -in "$target/fullchain.pem" -pubkey -noout | \
+            openssl pkey -pubin -outform DER | sha256sum | cut -d' ' -f1)"
+          test "$key_fp" = "$cert_fp"
+          echo 'PERSONAL_WILDCARD_CERT_VALID=true'
+          echo 'PERSONAL_WILDCARD_KEY_MATCH=true'
+          echo 'DE_853_CONFIGURATION_UNCHANGED=true'
+          REMOTE
