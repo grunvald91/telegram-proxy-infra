@@ -1,0 +1,42 @@
+name: MNEBYDNS live unique A-rule count read-only 2026-11-14
+on:
+  push:
+    branches: [diag/mnebydns-outage-20261114]
+    paths: ['.github/workflows/mnebydns-count-live-a-rules-20261114.yml']
+permissions: {contents: read}
+jobs:
+  count:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read only counts of unique rule matchers from active CoreDNS
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=10 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@89.125.90.101 'python3 -' <<'PY'
+          import re,hashlib,collections
+          from pathlib import Path
+          p=Path("/opt/mnebydns-dot/Corefile")
+          raw=p.read_text()
+          blocks=re.findall(r"(?ms)^\\s*template\\s+IN\\s+A\\s+([^\\s{]+)\\s*\\{(.*?)^\\s*\\}",raw)
+          headers=[x[0] for x in blocks]
+          matches=[m.strip() for _,body in blocks for m in re.findall(r"(?m)^\\s*match\\s+(.+?)\\s*$",body)]
+          ru_ans=re.findall(r'(?m)^\\s*answer\\s+"\\{\\{ \\.Name \\}\\}\\s+\\d+\\s+IN\\s+A\\s+188\\.120\\.254\\.223"',raw)
+          de_ans=re.findall(r'(?m)^\\s*answer\\s+"\\{\\{ \\.Name \\}\\}\\s+\\d+\\s+IN\\s+A\\s+89\\.125\\.90\\.101"',raw)
+          print("CORE_SHA256="+hashlib.sha256(raw.encode()).hexdigest())
+          print("A_TEMPLATE_BLOCKS="+str(len(blocks)))
+          print("A_HEADER_UNIQUE="+str(len(set(headers))))
+          print("A_MATCH_RULES="+str(len(matches)))
+          print("A_MATCH_UNIQUE="+str(len(set(matches))))
+          print("A_MAPPED_TO_RU188="+str(len(ru_ans)))
+          print("A_MAPPED_TO_DE89="+str(len(de_ans)))
+          print("A_MATCH_MISSING="+str(sum("match" not in body for _,body in blocks)))
+          print("A_HEADER_DOT="+str(headers.count(".")))
+          print("A_HEADER_DUPLICATE_GROUPS="+str(sum(v>1 for v in collections.Counter(headers).values())))
+          
+          PY
