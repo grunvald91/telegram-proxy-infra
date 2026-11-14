@@ -1,0 +1,45 @@
+name: MNEBYDNS inspect wildcard CoreDNS dot-zone routing (read-only)
+on:
+  push:
+    branches: [audit/mnebydns-legacy-personal-full-route-diff-20261114]
+    paths: ['.github/workflows/mnebydns-corefile-dot-zones-readonly-20261114.yml']
+permissions: {contents: read}
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Parse all live CoreDNS A template match expressions (including zone dot)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -s ops/mnebydns-owner-ssh-known_hosts && test -n "$DE_PASS"
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass >/dev/null
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@89.125.90.101 'python3 -' <<'PY'
+          import pathlib,re,collections
+          core=pathlib.Path('/opt/mnebydns-dot/Corefile').read_text()
+          blocks=re.findall(r'(?ms)^\s*template\s+IN\s+A\s+(\S+)\s*\{(.*?)^\s*\}',core)
+          print('A_BLOCKS_TOTAL='+str(len(blocks)))
+          byzone=collections.Counter(z for z,b in blocks)
+          print('A_BLOCK_ZONE_DOT='+str(byzone['.']))
+          print('A_BLOCK_UNIQUE_LITERAL_ZONES='+str(len(byzone)-('.' in byzone)))
+          generic=[b for z,b in blocks if z=='.']
+          values=[re.findall(r'(?m)^\s*match\s+(.+)$',block) for block in generic]
+          print('A_BLOCK_GENERIC_MATCHES_TOTAL='+str(sum(len(x) for x in values)))
+          for x in values[:18]:
+            print('A_GENERIC_MATCH_PATTERN='+str(x)[:240],flush=True)
+          complex_matches=[]
+          for x in values:
+            for p in x:
+              normalized=p.replace('[.]','.').replace('\\-','-').removeprefix('(?i)').strip('^$').rstrip('.')
+              if not re.fullmatch(r'[a-z0-9-]+(?:\.[a-z0-9-]+)+',normalized):
+                complex_matches.append(p)
+          print('A_GENERIC_COMPLEX_REGEX_COUNT='+str(len(complex_matches)))
+          for p in complex_matches:
+            print('A_GENERIC_COMPLEX_REGEX='+p[:260],flush=True)
+          PY
