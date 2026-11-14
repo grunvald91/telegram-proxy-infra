@@ -23,11 +23,11 @@ jobs:
           from pathlib import Path
           p=Path("/opt/mnebydns-dot/Corefile")
           raw=p.read_text()
-          blocks=re.findall(r"(?ms)^\\s*template\\s+IN\\s+A\\s+([^\\s{]+)\\s*\\{(.*?)^\\s*\\}",raw)
+          blocks=re.findall(r"(?ms)^\s*template\s+IN\s+A\s+([^\s{]+)\s*\{(.*?)^\s*\}",raw)
           headers=[x[0] for x in blocks]
-          matches=[m.strip() for _,body in blocks for m in re.findall(r"(?m)^\\s*match\\s+(.+?)\\s*$",body)]
-          ru_ans=re.findall(r'(?m)^\\s*answer\\s+"\\{\\{ \\.Name \\}\\}\\s+\\d+\\s+IN\\s+A\\s+188\\.120\\.254\\.223"',raw)
-          de_ans=re.findall(r'(?m)^\\s*answer\\s+"\\{\\{ \\.Name \\}\\}\\s+\\d+\\s+IN\\s+A\\s+89\\.125\\.90\\.101"',raw)
+          matches=[m.strip() for _,body in blocks for m in re.findall(r"(?m)^\s*match\s+(.+?)\s*$",body)]
+          ru_ans=re.findall(r'(?m)^\s*answer\s+"\{\{ \.Name \}\}\s+\d+\s+IN\s+A\s+188\.120\.254\.223"',raw)
+          de_ans=re.findall(r'(?m)^\s*answer\s+"\{\{ \.Name \}\}\s+\d+\s+IN\s+A\s+89\.125\.90\.101"',raw)
           print("CORE_SHA256="+hashlib.sha256(raw.encode()).hexdigest())
           print("A_TEMPLATE_BLOCKS="+str(len(blocks)))
           print("A_HEADER_UNIQUE="+str(len(set(headers))))
