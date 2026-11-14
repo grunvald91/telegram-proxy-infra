@@ -1,0 +1,47 @@
+name: MNEBYDNS read-only ChatGPT exact host HTTPS proxy route audit
+on:
+  push:
+    branches: [audit/mnebydns-auth60-chatgpt-live-20261114]
+    paths: ['.github/workflows/mnebydns-chatgpt-https-route-readonly-20261114.yml']
+permissions: {contents: read}
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read-only Nginx SNI and actual public TLS for two ChatGPT domains
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS"
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass >/dev/null
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@89.125.90.101 'python3 -' <<'PY'
+          import pathlib,re,socket,ssl
+          data=pathlib.Path('/etc/nginx/nginx.conf').read_text()
+          names=('chatgpt.com','auth.openai.com')
+          for name in names:
+              entry=bool(re.search(r'(?m)^\s*'+re.escape(name)+r'\s+\d{1,3}(?:\.\d{1,3}){3}:443;',data))
+              text=bool(re.search(re.escape(name),data,re.I))
+              print('DE_NGINX_'+name.replace('.','_').upper()+'_EXACT_ROUTE='+str(entry),flush=True)
+              print('DE_NGINX_'+name.replace('.','_').upper()+'_TEXT_PRESENT='+str(text),flush=True)
+              try:
+                  ips=sorted({r[4][0] for r in socket.getaddrinfo(name,443,socket.AF_INET,socket.SOCK_STREAM)})
+                  print('DE_ORIGIN_'+name.replace('.','_').upper()+'_IPV4_CANDIDATES='+str(len(ips)),flush=True)
+                  successes=0
+                  for ip in ips[:4]:
+                      try:
+                          with socket.create_connection((ip,443),timeout=5) as raw:
+                              raw.settimeout(5)
+                              with ssl.create_default_context().wrap_socket(raw,server_hostname=name) as tls:
+                                  assert tls.getpeercert()
+                                  successes+=1
+                      except (OSError,ssl.SSLError):pass
+                  print('DE_ORIGIN_'+name.replace('.','_').upper()+'_TLS_VERIFIED_CANDIDATES='+str(successes),flush=True)
+              except OSError as ex:
+                  print('DE_ORIGIN_'+name.replace('.','_').upper()+'_TLS_VERIFIED_CANDIDATES=DNS_ERROR',flush=True)
+          print('DE_PROXY_HTTP_ROUTE_AUDIT_READ_ONLY=true',flush=True)
+          PY
