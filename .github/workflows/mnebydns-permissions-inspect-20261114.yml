@@ -1,0 +1,29 @@
+name: MNEBYDNS inspect CoreDNS permissions 2026-11-14
+on:
+  push:
+    branches: [diag/mnebydns-outage-20261114]
+    paths: ['.github/workflows/mnebydns-permissions-inspect-20261114.yml']
+permissions: {contents: read}
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read-only uid, mode, unit and timers
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@89.125.90.101 'bash -se' <<'SH'
+          set -Eeuo pipefail
+          echo "FILE_STAT"; stat -c '%n %a %u:%g %U:%G' /opt /opt/mnebydns-dot /opt/mnebydns-dot/Corefile
+          echo "UNIT_IDENTITY"; systemctl show mnebydns-dot.service -p User -p Group -p DynamicUser -p SupplementaryGroups -p ExecStart -p RootDirectory -p ProtectSystem -p BindReadOnlyPaths -p StateDirectory
+          echo "SERVICE"; systemctl is-active mnebydns-dot.service || true
+          echo "TIMER"; systemctl list-timers --all --no-pager | grep mnebydns-fastpath-rollback || true
+          echo "CHECKPOINT"; cat /opt/mnebydns-stable-checkpoints/current
+          echo "FILE_HASH"; sha256sum /opt/mnebydns-dot/Corefile
+          SH
