@@ -189,3 +189,5 @@ jobs:
               -o LogLevel=ERROR "root@$HOST" \
               "rm -f /tmp/mnebyvpn-bot-auto-stage-$sha.sh /tmp/mnebyvpn-bot-auto-source-$sha.tgz /tmp/mnebyvpn-bot-auto-promote-$sha.sh" || true
           fi
+
+# Restore customer Telegram text menu (source CI green, 2026-11-14).
