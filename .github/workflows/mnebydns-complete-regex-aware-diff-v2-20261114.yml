@@ -1,0 +1,152 @@
+name: MNEBYDNS regex-aware complete live legacy vs personal domain diff
+on:
+  push:
+    branches: [audit/mnebydns-legacy-personal-full-route-diff-20261114]
+    paths: ['.github/workflows/mnebydns-complete-regex-aware-diff-v2-20261114.yml']
+permissions: {contents: read}
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Read both active resolver policies without credentials or config edits
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -' > ru-personal-v2.json <<'PY'
+          import json,subprocess,pathlib
+          c=json.loads(subprocess.check_output(['docker','inspect','mnebydns-personal-dot-private'],text=True))[0]
+          assert c['State']['Running']
+          e={s.split('=',1)[0]:s.split('=',1)[1] for s in c['Config']['Env'] if '=' in s}
+          p=pathlib.Path('/etc/mnebydns/personal-dot')/pathlib.Path(e['MNEBYDNS_PERSONAL_DOT_ROUTE_POLICY_FILE']).name
+          print(json.dumps(json.loads(p.read_text())))
+          PY
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' > de-corefile-v2.json <<'PY'
+          import json,pathlib,subprocess
+          r=subprocess.run(['systemctl','show','mnebydns-dot','-p','ExecStart','-p','ActiveState'],capture_output=True,text=True,timeout=8)
+          assert 'ActiveState=active' in r.stdout and '-conf /opt/mnebydns-dot/Corefile' in r.stdout
+          print(json.dumps(pathlib.Path('/opt/mnebydns-dot/Corefile').read_text()))
+          PY
+      - name: Compute regex-aware exact mismatch, family root mismatch and publish complete lists
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import collections,json,re,pathlib,os
+          p=json.loads(pathlib.Path('ru-personal-v2.json').read_text())
+          core=json.loads(pathlib.Path('de-corefile-v2.json').read_text())
+          exact={x for x in p if not x.startswith('*.')}
+          wild={x[2:] for x in p if x.startswith('*.')}
+          def personal(name):
+              return name in exact or any(name.endswith('.'+s) for s in wild)
+          blocks=re.findall(r'(?ms)^\s*template\s+IN\s+A\s+(\S+)\s*\{(.*?)^\s*\}',core)
+          assert len(blocks)==264, 'Changed CoreDNS A templates'
+          exact_legacy=set()
+          generic_literal=set()
+          groups=[]
+          for header,body in blocks:
+              patterns=re.findall(r'(?m)^\s*match\s+(.+)$',body)
+              assert len(patterns)==1,(header,patterns)
+              regex=patterns[0]
+              assert re.compile(regex)
+              if header!='.':
+                  assert re.fullmatch(r'[a-z0-9-]+(?:\.[a-z0-9-]+)+',header),header
+                  assert re.compile(regex).fullmatch(header+'.'),('header mismatch',header,regex)
+                  exact_legacy.add(header)
+              else:
+                  simplified=regex.removeprefix('(?i)').strip('^$').replace('[.]','.').replace('\\-','-').rstrip('.')
+                  if re.fullmatch(r'[a-z0-9-]+(?:\.[a-z0-9-]+)+',simplified):
+                      assert re.compile(regex).fullmatch(simplified+'.')
+                      generic_literal.add(simplified)
+                      exact_legacy.add(simplified)
+                  else:
+                      assert regex.startswith('(?i)^(?:[a-z0-9-]+[.])*(?:') and regex.endswith(')[.]$'),regex
+                      values=regex.rsplit('(?:',1)[1].rsplit(')[.]$',1)[0]
+                      roots=[value.replace('\\.','.').replace('\\-','-') for value in values.split('|')]
+                      assert all(re.fullmatch(r'[a-z0-9-]+(?:\.[a-z0-9-]+)+',x) for x in roots),roots
+                      assert all(re.compile(regex).fullmatch(x+'.') and re.compile(regex).fullmatch('www.'+x+'.') for x in roots)
+                      groups.append({'regex':regex,'roots':roots})
+          assert len(generic_literal)==111 and len(groups)==2
+          core_only=sorted(x for x in exact_legacy if not personal(x))
+          personal_only_exact=sorted(x for x in exact if x not in exact_legacy)
+          print('V2_LEGACY_EXACT_UNIQUE='+str(len(exact_legacy)))
+          print('V2_LEGACY_LITERAL_A_HEADERS='+str(len({h for h,b in blocks if h!="."})))
+          print('V2_LEGACY_GENERIC_EXACT='+str(len(generic_literal)))
+          print('V2_LEGACY_REGEX_FAMILIES='+str(len(groups)))
+          print('V2_PERSONAL_EXACT='+str(len(exact)))
+          print('V2_PERSONAL_WILDCARDS='+str(len(wild)))
+          print('V2_LEGACY_EXACT_MISSING_PERSONAL='+str(len(core_only)))
+          print('V2_PERSONAL_EXACT_NOT_LEGACY_EXACT='+str(len(personal_only_exact)))
+          print('V2_LEGACY_EXACT_COVERED_BY_PERSONAL='+str(len(exact_legacy)-len(core_only)))
+          for x in core_only:print('V2_MISSING_PREMIUM_EXACT_DOMAIN='+x)
+          for x in personal_only_exact:print('V2_PERSONAL_EXTRA_EXACT='+x)
+          for g in groups:
+              apex_missing=[x for x in g['roots'] if not personal(x)]
+              sub_missing=[x for x in g['roots'] if not personal('www.'+x)]
+              print('V2_REGEX_ROOTS='+str(len(g['roots']))+':'+','.join(g['roots']))
+              print('V2_REGEX_ROOTS_APEX_MISSING='+str(len(apex_missing))+':'+','.join(apex_missing))
+              print('V2_REGEX_ROOTS_WWW_MISSING='+str(len(sub_missing))+':'+','.join(sub_missing))
+          assert len(exact_legacy)==262
+          assert len(core_only)>0
+          doc=[
+              '# Полный аудит активных DNS-маршрутов MNEBYDNS: неперсональный vs персональный',
+              '',
+              'Конфигурации сняты из запущенных CoreDNS (DE) и персонального контейнера (RU), без изменений на серверах.',
+              '',
+              '| Показатель | Неперсональный DNS | Персональный DNS |',
+              '|---|---:|---:|',
+              f'| Точные доменные имена | {len(exact_legacy)} | {len(exact)} |',
+              f'| Семейства доменов (регулярные выражения / маски) | {len(groups)} | {len(wild)} |',
+              f'| Точные имена обычного DNS, не входящие в персональную premium-политику | **{len(core_only)}** | — |',
+              '',
+              '## Точные имена из CoreDNS, отсутствующие в premium-политике персонального DNS',
+              '',
+              *[f'- `{name}`' for name in core_only],
+              '',
+              '## Дополнительные личные точные записи, не перечисленные отдельными правилами CoreDNS',
+              '',
+              *[f'- `{name}`' for name in personal_only_exact],
+              '',
+              '## Групповые регулярные выражения неперсонального DNS',
+              '',
+          ]
+          for n,g in enumerate(groups,1):
+              apex_missing=[x for x in g['roots'] if not personal(x)]
+              sub_missing=[x for x in g['roots'] if not personal('www.'+x)]
+              doc += [f'### Группа {n}: {len(g["roots"])} базовых зон', '',
+                      f'Корни зон, не попадающие в персональный premium: **{len(apex_missing)}**.', '',
+                      *[f'- `{x}`' for x in apex_missing],
+                      '',f'Поддомены вида www.* без персонального premium: **{len(sub_missing)}**.', '',
+                      *[f'- `www.{x}`' for x in sub_missing],
+                      '','Все корни семейства: '+', '.join('`'+x+'`' for x in g['roots']), '']
+          doc += ['## Полный список точных доменов CoreDNS', '', *[f'- `{x}`' for x in sorted(exact_legacy)], '',
+                  '## Полный список правил персонального DNS', '', *[f'- `{x}`' for x in sorted(p)], '',
+                  '## Важное замечание', '',
+                  'Подсчёт по семействам не эквивалентен количеству отдельных hostnames: каждая маска/регулярное выражение покрывает переменное множество имён.',
+                  'Домены, не попадающие в premium, идут на 1.1.1.1:853 вместо маршрута DE CoreDNS.',
+                  'DNS-сопоставление не подтверждает работу клиентского HTTPS через конкретную сеть оператора.',
+                  '']
+          pathlib.Path('mnebydns-full-live-regex-aware-dns-diff-20261114.md').write_text('\n'.join(doc))
+          if os.environ.get('GITHUB_STEP_SUMMARY'):
+              with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as fd:
+                  fd.write('\n'.join(doc[:12])+'\n')
+          print('V2_FULL_DOMAIN_SET_DIFF=PASS')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mnebydns-complete-live-legacy-personal-regex-aware-diff
+          path: mnebydns-full-live-regex-aware-dns-diff-20261114.md
+          if-no-files-found: warn
+          retention-days: 14
