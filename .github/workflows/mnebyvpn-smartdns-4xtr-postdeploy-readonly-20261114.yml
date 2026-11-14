@@ -35,7 +35,7 @@ jobs:
           else
             echo 'personal_dot_release_flag=not_enabled'
           fi
-          docker exec mnebyvpn-stage-postgres psql -v ON_ERROR_STOP=1 -At -U mnebyvpn_stage -d mnebyvpn_stage <<'SQL'
+          docker exec -i mnebyvpn-stage-postgres psql -v ON_ERROR_STOP=1 -At -U mnebyvpn_stage -d mnebyvpn_stage <<'SQL'
           SELECT 'migration_0124_applied='||
             (SELECT COUNT(*) FROM deployment_schema_migrations
               WHERE file_name='0124_smart_dns_four_stars_offers.sql');
