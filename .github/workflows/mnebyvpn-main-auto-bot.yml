@@ -191,3 +191,5 @@ jobs:
           fi
 
 # Restore customer Telegram text menu (source CI green, 2026-11-14).
+
+# 2026-11-14 Smart DNS bot menu/iOS profile release: Mnebyvpn main fb895bbc4be5098ab8337e7bd38f92793d509d1b passed CI 43637121722; 0124 prepares disabled Stars plans after pre-migration snapshot. Do not enable paid DNS without separate E2E gate.
