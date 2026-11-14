@@ -1,0 +1,52 @@
+name: MNEBYDNS verify isolated legacy RU-188 resolver prerequisites
+on:
+  push:
+    branches: [audit/mnebydns-legacy-all-via-188-readonly-20261114]
+    paths: ['.github/workflows/mnebydns-dual-resolver-split-preflight-readonly-20261114.yml']
+permissions: {contents: read}
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Verify isolated CoreDNS loopback, SNI map and systemd limits without writing
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS" && test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@89.125.90.101 'python3 -' <<'PY'
+          import pathlib,subprocess,os,re
+          p=pathlib.Path('/opt/mnebydns-dot/Corefile')
+          lines=p.read_text().splitlines()
+          print('SPLIT_CORE_HEAD_LINES='+str(lines[:22]),flush=True)
+          print('SPLIT_CORE_TAIL_LINES='+str(lines[-22:]),flush=True)
+          sensitive=('/etc/letsencrypt/live','/etc/ssl/','/opt/mnebydns-dot')
+          for line in lines:
+              if line.strip().startswith(('tls ','bind ','health ','ready ','prometheus ','log ','reload ', 'import ')):
+                  print('SPLIT_CORE_DIRECTIVE='+line.strip()[:220])
+          for label,cmd in (
+             ('OLD_RESOLVER_UNIT',['systemctl','cat','mnebydns-dot.service']),
+             ('SNI_DEMUX_UNIT',['systemctl','cat','mnebydns-personal-sni-stream.service']),
+             ('CURRENT_PORT',['ss','-Hlntp']),
+             ('SNI_FILE_PERMISSIONS',['stat','-c','%a %U:%G %n','/etc/mnebydns/personal-sni/nginx.conf']),
+          ):
+              p=subprocess.run(cmd,capture_output=True,text=True,timeout=8)
+              if label=='CURRENT_PORT':
+                  a=[s for s in p.stdout.splitlines() if any(':'+str(n)+' ' in s for n in (18553,18554,853,8854))]
+              elif label.endswith('_UNIT'):
+                  a=[s for s in p.stdout.splitlines() if not s.startswith('#') and
+                     not any(w in s for w in ('Environment=', 'PassEnvironment=','LoadCredential'))]
+              else:a=p.stdout.splitlines()
+              for line in a[:34]:print('SPLIT_'+label+'='+line[:210],flush=True)
+          path=pathlib.Path('/etc/mnebydns/personal-sni/nginx.conf')
+          cfg=path.read_text()
+          print('SPLIT_DEMUX_DEFAULT_EXPECTED='+str('default 89.125.90.101:853;' in cfg),flush=True)
+          print('SPLIT_DEMUX_PERSONAL_RULE_EXPECTED='+str('10.66.77.2:8856' in cfg),flush=True)
+          print('SPLIT_NEW_UNIT_EXISTS='+str(pathlib.Path('/etc/systemd/system/mnebydns-legacy-ru188-dot.service').exists()),flush=True)
+          PY
