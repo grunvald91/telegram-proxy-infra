@@ -30,7 +30,8 @@ jobs:
           test "$(cat data/mnebydns-batch-auto-enabled-20261112.txt)" = disabled
           echo 'FIRST100_BOUNDED_OFFLINE_TEST=PASS'
   guarded:
-    if: github.event.head_commit.message == 'deploy(MNEBYDNS): first100 verified' 
+    if: >-
+      github.event.head_commit.message == 'deploy(MNEBYDNS): first100 verified'
     needs: offline
     runs-on: ubuntu-latest
     timeout-minutes: 58
