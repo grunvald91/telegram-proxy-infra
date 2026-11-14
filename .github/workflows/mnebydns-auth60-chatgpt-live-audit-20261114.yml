@@ -1,0 +1,97 @@
+name: MNEBYDNS read-only auth60 + two ChatGPT domains production review
+on:
+  push:
+    branches: [audit/mnebydns-auth60-chatgpt-live-20261114]
+    paths: ['.github/workflows/mnebydns-auth60-chatgpt-live-audit-20261114.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Inspect personalized policy, real loader classification and auth cache without changing service
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -' <<'PY'
+          import subprocess,json,hashlib,pathlib
+          name='mnebydns-personal-dot-private'
+          report=json.loads(subprocess.check_output(['docker','inspect',name],text=True))[0]
+          assert report['State']['Running'], 'Personal sidecar is down'
+          assert report['HostConfig']['NetworkMode']=='host'
+          assert report['Config']['User']=='1001:1001'
+          env=dict(item.split('=',1) for item in report['Config']['Env'] if '=' in item)
+          assert env['MNEBYDNS_PERSONAL_DOT_PORT']=='8856'
+          assert env['MNEBYDNS_PERSONAL_MAPPED_DOT_IP']=='10.66.77.1'
+          assert env['MNEBYDNS_PERSONAL_MAPPED_DOT_PORT']=='1853'
+          namepath=env['MNEBYDNS_PERSONAL_DOT_ROUTE_POLICY_FILE']
+          policy=pathlib.Path('/etc/mnebydns/personal-dot')/pathlib.Path(namepath).name
+          items=json.loads(policy.read_text())
+          assert len(items)==153 and len(set(items))==153
+          assert 'chatgpt.com' in items and 'auth.openai.com' in items
+          digest=hashlib.sha256(policy.read_bytes()).hexdigest()
+          assert digest==env['MNEBYDNS_PERSONAL_DOT_ROUTE_POLICY_SHA256']
+          print('ACTIVE_PERSONAL_DOMAIN_CHATGPT_COM=PRESENT')
+          print('ACTIVE_PERSONAL_DOMAIN_AUTH_OPENAI_COM=PRESENT')
+          print('ACTIVE_PERSONAL_POLICY_SHA256_MATCH=true')
+          print('ACTIVE_PERSONAL_RULE_COUNT='+str(len(items)))
+          overlay=[m for m in report['Mounts'] if m['Destination']=='/srv/mnebyvpn/packages/dns-policy/src/personal-dot-listener.ts']
+          assert len(overlay)==1 and not overlay[0]['RW']
+          source=pathlib.Path(overlay[0]['Source']).read_text()
+          assert 'const AUTH_RECHECK_MS=60000;' in source
+          assert 'reserve_personal_dns_query' in source
+          assert 'finish_personal_dns_query' in source
+          print('ACTIVE_PERSONAL_AUTH_CACHE_60_SECONDS=VERIFIED')
+          print('ACTIVE_PERSONAL_METER_RESERVE_SETTLE=SOURCE_PRESENT')
+          js="""import {readFileSync} from 'node:fs';
+          import {pinnedCanaryPolicy} from '/srv/mnebyvpn/apps/service/src/personal-dot-canary.ts';
+          const raw=readFileSync(process.env.MNEBYDNS_PERSONAL_DOT_ROUTE_POLICY_FILE);
+          const policy=pinnedCanaryPolicy(raw,process.env.MNEBYDNS_PERSONAL_DOT_ROUTE_POLICY_SHA256);
+          for (const domain of ['chatgpt.com','auth.openai.com']) {
+            if (policy({name:domain,type:1,dnsClass:1})!=='premium') throw Error('not premium '+domain);
+            console.log('ACTIVE_CLASSIFIER_'+domain.replaceAll('.','_').toUpperCase()+'=PREMIUM');
+          }
+          if (policy({name:'example.org',type:1,dnsClass:1})!=='direct')
+            throw Error('direct route broken');
+          console.log('ACTIVE_CLASSIFIER_DIRECT_GUARD=PASS');
+          """
+          p=subprocess.run(['docker','exec','-i',name,'node','--experimental-strip-types','--input-type=module','-'],
+                           input=js,text=True,capture_output=True,timeout=28)
+          if p.returncode:
+            print('ACTIVE_CLASSIFIER_INSPECTION=FAILED_'+str(p.returncode))
+            print(p.stderr[:500])
+            raise SystemExit(2)
+          print(p.stdout,end='')
+          print('ACTIVE_PERSONAL_SERVICE_READ_ONLY_AUDIT=PASS')
+          PY
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY'
+          import pathlib,re,subprocess
+          conf=pathlib.Path('/etc/mnebydns/personal-sni/nginx.conf').read_text()
+          assert conf.count('10.66.77.2:8856;')==1
+          assert conf.count('default 89.125.90.101:853;')==1
+          core=pathlib.Path('/opt/mnebydns-dot/Corefile').read_text()
+          matches=re.findall(r'(?m)^\s*template\s+IN\s+(?:A|AAAA|HTTPS|SVCB)\s+([^\s{]+)',core)
+          for name in ('chatgpt.com','auth.openai.com'):
+            present=any(name==pattern.lower().rstrip('.') or
+              (pattern.startswith('*.') and name.endswith('.'+pattern[2:].rstrip('.'))) for pattern in matches)
+            print('DE_CORE_FILE_'+name.replace('.','_').upper()+'_PREMIUM_TEMPLATE='+str(present),flush=True)
+          print('DE_CORE_FILE_ROUTE_TEMPLATE_TOTAL='+str(len(matches)))
+          print('DE_ORIGINAL_PERSONAL_SNI=8856')
+          print('DE_CORE_FILE_READ_ONLY_AUDIT=PASS')
+          PY
