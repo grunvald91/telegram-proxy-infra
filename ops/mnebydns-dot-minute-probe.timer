@@ -1,0 +1,12 @@
+[Unit]
+Description=MNEBYDNS DoT availability check each minute (existing nodes only)
+
+[Timer]
+OnCalendar=minutely
+AccuracySec=5s
+RandomizedDelaySec=0
+Persistent=false
+Unit=mnebydns-dot-minute-probe.service
+
+[Install]
+WantedBy=timers.target

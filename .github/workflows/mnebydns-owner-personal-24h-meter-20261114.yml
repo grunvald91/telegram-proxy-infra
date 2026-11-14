@@ -1,0 +1,69 @@
+name: MNEBYDNS owner 24h personal query count (read-only, finite window)
+on:
+  push:
+    branches: [main, feat/mnebydns-owner-24h-query-meter-20261114]
+    paths:
+      - '.github/workflows/mnebydns-owner-personal-24h-meter-20261114.yml'
+      - 'scripts/mnebydns-owner-personal-24h-meter-20261114.py'
+  schedule:
+    - cron: '38 * * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-owner-personal-24h-queries
+  cancel-in-progress: false
+jobs:
+  sample:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Enforce finite 24-hour window and no runtime changes
+        id: window
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-owner-personal-24h-meter-20261114.py
+          python3 - <<'PY'
+          from pathlib import Path
+          source=Path('scripts/mnebydns-owner-personal-24h-meter-20261114.py').read_text()
+          assert 'used_queries' in source and 'internal_trial' in source
+          assert 'telegram_user_id' in source
+          assert 'OWNER_PERSONAL_BEARER_EXPOSED=false' in source
+          assert "UPDATE entitlements" not in source
+          assert "INSERT INTO" not in source
+          assert "DELETE FROM" not in source
+          print('METER_READONLY_GUARDS=PASS')
+          PY
+          now="$(date -u +%s)"
+          stop="$(date -u -d '2026-11-15T08:00:00Z' +%s)"
+          if ((now >= stop)); then
+            echo 'meter_window=ended; no SSH; no database access' >> "$GITHUB_STEP_SUMMARY"
+            echo "sample=no" >> "$GITHUB_OUTPUT"
+          else
+            echo "sample=yes" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Sample only the owner's live 24h trial premium counter
+        if: steps.window.outputs.sample == 'yes'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass >/dev/null
+          export SSHPASS="$RU_PASS"
+          options=(-o BatchMode=no -o ConnectTimeout=12
+            -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no
+            -o LogLevel=ERROR)
+          sshpass -e ssh -T "${options[@]}" root@188.120.254.223             'python3 -' < scripts/mnebydns-owner-personal-24h-meter-20261114.py
+          echo 'Read-only premium counter sampled from the owner trial.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'These are successful premium DNS lookups, not all direct DNS queries.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'No personal DNS hostname, Telegram ID, user token or UUID was logged.' >> "$GITHUB_STEP_SUMMARY"

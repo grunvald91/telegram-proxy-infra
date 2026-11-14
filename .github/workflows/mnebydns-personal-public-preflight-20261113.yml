@@ -1,0 +1,139 @@
+name: Personal Smart DNS public 853 and wildcard preflight (read-only)
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/mnebydns-personal-public-preflight-20261113.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Inspect authoritative NS and existing DE 853 configuration (read-only)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          dig +short NS mnebyvpn.site | sort | sed 's/^/AUTHORITATIVE_NS=/'
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          test -n "$DE_PASS"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=10 -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR \
+            root@89.125.90.101 'python3 -' <<'PY'
+          import subprocess,os,re
+          p=subprocess.run(['ss','-Hlntp'],capture_output=True,text=True)
+          endpoints=[line for line in p.stdout.splitlines() if ':853' in line]
+          print('DE_853_LISTENERS='+str(len(endpoints)))
+          print('DE_853_NGINX_LISTENER='+str(any('nginx' in line for line in endpoints)))
+          print('DE_853_DOT_LISTENER='+str(any('dot' in line.lower() for line in endpoints)))
+          print('DE_853_LISTENER_SUMMARY='+','.join(sorted(set('nginx' if 'nginx' in line else 'coredns' if 'coredns' in line.lower() else 'docker' if 'docker' in line else 'other' for line in endpoints)))[:120])
+          for svc in ['mnebydns_dot','nginx']:
+              q=subprocess.run(['systemctl','is-active',svc],capture_output=True,text=True)
+              print('DE_SERVICE_'+svc+'='+q.stdout.strip())
+          print('DE_CERTBOT_INSTALLED='+str(os.path.isfile('/usr/bin/certbot')))
+          print('DE_ACME_SH_INSTALLED='+str(os.path.isfile('/root/.acme.sh/acme.sh')))
+          print('DE_LETSENCRYPT_LIVE_EXISTS='+str(os.path.isdir('/etc/letsencrypt/live')))
+          n=subprocess.run(['nginx','-T'],capture_output=True,text=True)
+          if n.returncode==0:
+              print('DE_NGINX_853_CONFIGURED='+str(any('listen ' in line and '853' in line for line in n.stdout.splitlines())))
+              print('DE_NGINX_SSL_PREREAD='+str(bool(re.search(r'\\bssl_preread\\s+on\\s*;',n.stdout))))
+          else:print('DE_NGINX_CONFIG_READ=FAILED')
+          # Inspect whether existing CoreDNS can be kept on :853 while
+          # PREROUTING redirects external TCP/853 to a separate SSL-preread
+          # stream proxy port. This diagnostic does not change live services.
+          import pathlib,subprocess
+          def call(argv):
+              try:
+                  p=subprocess.run(argv,capture_output=True,text=True,timeout=7)
+                  return p.stdout.strip() if p.returncode==0 else ''
+              except Exception:
+                  return ''
+          print('DE_PUBLIC_NETWORK_INTERFACES='+','.join(
+              x.split()[1] for x in call(['ip','-o','-4','addr','show','scope','global']).splitlines()))
+          for key,argv in [
+            ('NAT_PREROUTING',['iptables','-t','nat','-S','PREROUTING']),
+            ('FILTER_INPUT',['iptables','-S','INPUT']),
+            ('UFW_STATUS',['ufw','status','verbose'])
+          ]:
+              selected=[x.strip()[:200] for x in call(argv).splitlines() if any(
+                s in x.lower() for s in ('853','8854','1853','policy','drop','default:','status:'))]
+              print('DE_'+key+'_MATCH_COUNT='+str(len(selected)))
+              for line in selected[:20]:print('DE_'+key+'_RULE='+line)
+          for port in [853,8854,1853]:
+              lines=[x.strip() for x in call(['ss','-Hlntp']).splitlines()
+                     if ':'+str(port)+' ' in x]
+              print('DE_TCP_'+str(port)+'_LISTENER='+(
+                ','.join('coredns' if 'coredns' in x.lower() else
+                'nginx' if 'nginx' in x.lower() else 'other' for x in lines)
+                if lines else 'none'))
+          core=pathlib.Path('/opt/mnebydns-dot/Corefile')
+          if core.is_file():
+              lines=core.read_text(errors='replace').splitlines()
+              heads=[x.strip()[:150] for x in lines
+                     if x.strip().endswith('{') and not x.lstrip().startswith('#')]
+              print('DE_COREFILE_SERVER_HEADERS='+','.join(heads[:4]))
+              print('DE_COREFILE_BINDS_LOCALHOST='+str(any('bind 127.0.0.1' in x for x in lines)))
+          for d in ['/usr/lib/nginx/modules/ngx_stream_module.so',
+                    '/usr/share/nginx/modules/ngx_stream_module.so']:
+              if pathlib.Path(d).is_file():
+                  print('DE_NGINX_STREAM_MODULE='+d)
+                  break
+          print('DE_EXISTING_DOT_HEALTH='+call(['systemctl','is-active','mnebydns-dot']))
+          print('READ_ONLY=true')
+          PY
+      - name: Probe both server public DoT ports, wildcard DNS and strict TLS
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import socket, ssl, concurrent.futures, subprocess
+          domain='aaaaaaaaaaaa.dns.mnebyvpn.site'
+          # Authoritative sources bypass recursive negative caches after user
+          # added wildcard. A and AAAA are shown separately; no writes.
+          import subprocess
+          for ns in ('ns1.jino.ru','ns2.jino.ru','ns3.jino.ru','ns4.jino.ru'):
+              cmd=['dig','+time=3','+tries=1','+short','@'+ns,domain,'A']
+              run=subprocess.run(cmd,capture_output=True,text=True,timeout=6)
+              print('JINO_'+ns.replace('.','_')+'_WILDCARD_A='+
+                    (' '.join(run.stdout.split()) if run.returncode==0 and run.stdout.strip() else 'MISSING'))
+          for host in ('1.1.1.1','8.8.8.8'):
+              run=subprocess.run(['dig','+time=3','+tries=1','+short','@'+host,domain,'A'],
+                capture_output=True,text=True,timeout=6)
+              print('RESOLVER_'+host.replace('.','_')+'_WILDCARD_A='+
+                    (' '.join(run.stdout.split()) if run.returncode==0 and run.stdout.strip() else 'MISSING'))
+          for name in ['dns.mnebyvpn.site',domain]:
+              try:
+                  ips=sorted(set(x[4][0] for x in socket.getaddrinfo(name,853,type=socket.SOCK_STREAM)))
+                  print('PUBLIC_A_'+name.replace('.','_')+'='+','.join(ips))
+              except Exception as exc:
+                  print('PUBLIC_A_'+name.replace('.','_')+'='+type(exc).__name__)
+          def probe(label,ip,sni):
+              try:
+                  raw=socket.create_connection((ip,853),timeout=5)
+                  raw.settimeout(5)
+                  ctx=ssl.create_default_context()
+                  try:
+                      with ctx.wrap_socket(raw,server_hostname=sni) as tls:
+                          return f'{label}_{sni.replace(".","_")}=STRICT_TLS_PASS'
+                  except ssl.SSLCertVerificationError as exc:
+                      return f'{label}_{sni.replace(".","_")}=CERT_ERROR:{exc.verify_code}'
+                  except Exception as exc:
+                      return f'{label}_{sni.replace(".","_")}='+type(exc).__name__
+              except Exception as exc:
+                  return f'{label}_{sni.replace(".","_")}='+type(exc).__name__
+          jobs=[('RU','188.120.254.223','dns.mnebyvpn.site'),
+            ('DE','89.125.90.101','dns.mnebyvpn.site'),
+            ('DE','89.125.90.101',domain)]
+          with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+              for line in pool.map(lambda a:probe(*a),jobs):print(line)
+          print('READ_ONLY=true')
+          PY

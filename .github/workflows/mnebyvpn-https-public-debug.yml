@@ -1,8 +1,12 @@
+# 2026-11-13 read-only post-release verification for MNEBYVPN core safety fix 96220f2 (website backend 200, outside Github Runner TCP443 timed out). No production config writes.
 name: MNEBYVPN diagnose external HTTPS timeout (read only)
 on:
   push:
     paths: ['.github/workflows/mnebyvpn-https-public-debug.yml']
   workflow_dispatch:
+  schedule:
+    # Read-only daily external crawler-style reachability check (06:27 Moscow).
+    - cron: '27 3 * * *'
 permissions:
   contents: read
 jobs:
@@ -12,13 +16,19 @@ jobs:
     env:
       HOST: '188.120.254.223'
       PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      FOREIGN_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Probe external TCP and TLS path
+        id: external
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import socket,subprocess
+          import socket,subprocess,os
+          failures=[]
           for port in [80,443,8443]:
             try:
               sock=socket.create_connection(('188.120.254.223',port),5)
@@ -28,11 +38,58 @@ jobs:
               print('external_tcp_'+str(port)+'='+type(exc).__name__)
           for name in ['mnebyvpn.site','www.mnebyvpn.site']:
             p=subprocess.run(['curl','--noproxy','*','--connect-timeout','5','--max-time','10','-sS',
-              '-o','/dev/null','-w','code=%{http_code};connect=%{time_connect};tls=%{time_appconnect};verify=%{ssl_verify_result};ip=%{remote_ip}',
+              '-o','/dev/null','-w','code=%{http_code};connect=%{time_connect};tls=%{time_appconnect};verify=%{ssl_verify_result};ip=%{remote_ip};redirect=%{redirect_url}',
               'https://'+name+'/'],capture_output=True,text=True,timeout=12)
             print('external_https_'+name+'_exit='+str(p.returncode))
             print('external_https_'+name+'_metrics='+p.stdout.strip())
             print('external_https_'+name+'_error='+p.stderr.strip()[:100])
+            fields=dict(item.split('=',1) for item in p.stdout.strip().split(';') if '=' in item)
+            if name=='mnebyvpn.site':
+              expected=p.returncode==0 and fields.get('code')=='200'
+            else:
+              expected=(p.returncode==0 and fields.get('code') in ('301','308')
+                        and fields.get('redirect')=='https://mnebyvpn.site/')
+            if not expected:failures.append(name)
+          public_ok=not failures
+          print('public_https_expected='+str(public_ok).lower())
+          if failures:print('public_https_failed_hosts='+','.join(failures))
+          with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as out:
+            out.write('public_ok='+str(public_ok).lower()+'\n')
+          PY
+      - name: Verify site HTTPS from independent foreign VPS egress (read-only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$FOREIGN_PASSWORD"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          export SSHPASS="$FOREIGN_PASSWORD"
+          sshpass -e ssh -T -o ConnectTimeout=9 -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR \
+            root@89.125.90.101 'python3 -' <<'PY'
+          import socket,ssl
+          for port in [853]:
+              try:
+                  with socket.create_connection(('188.120.254.223',port),timeout=5):
+                      print('DE_TO_RU_TCP_'+str(port)+'=CONNECTED')
+              except OSError as exc:
+                  print('DE_TO_RU_TCP_'+str(port)+'='+type(exc).__name__)
+          target=('188.120.254.223',443)
+          try:
+              with socket.create_connection(target,timeout=6) as raw:
+                  raw.settimeout(7)
+                  ctx=ssl.create_default_context()
+                  with ctx.wrap_socket(raw,server_hostname='mnebyvpn.site') as tls:
+                      tls.sendall(b'GET / HTTP/1.1\r\nHost: mnebyvpn.site\r\nUser-Agent: MNEBYVPN-Release-ReadOnly/1\r\nConnection: close\r\n\r\n')
+                      line=tls.recv(256).split(b'\r\n',1)[0]
+                      print('DE_TO_RU_HTTPS_TLS=PASS')
+                      print('DE_TO_RU_HTTPS_GET_STATUS='+line.decode('ascii','replace')[:90])
+                      if not line.startswith(b'HTTP/1.1 200') and not line.startswith(b'HTTP/1.0 200'):
+                          raise ValueError('Unexpected response status')
+          except Exception as exc:
+              print('DE_TO_RU_HTTPS_TLS=FAIL '+type(exc).__name__)
+              raise
           PY
       - name: Check local TLS, port ownership and certificate status
         shell: bash
@@ -66,3 +123,16 @@ jobs:
             print('server_https_'+name+'_metrics='+(p.stdout.strip() if p else '?'))
           print('read_only=true')
           PY
+      - name: Mark external HTTPS access as a real SEO gate
+        if: always()
+        shell: bash
+        env:
+          PUBLIC_OK: ${{ steps.external.outputs.public_ok }}
+        run: |
+          if [ "$PUBLIC_OK" = true ]; then
+            echo 'External HTTPS: PASS (apex 200, www canonical redirect)' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'External HTTPS: FAILED from GitHub runner (crawlability risk)' >> "$GITHUB_STEP_SUMMARY"
+            echo '::error::Public HTTPS is not reachable with the expected status/redirect from GitHub runner; internal/foreign server success alone is insufficient for SEO readiness'
+            exit 1
+          fi

@@ -1,0 +1,235 @@
+# Retry after automatic private canary rollback: report sanitized startup error classification from installer; original DE CoreDNS remains unchanged.
+name: Stage personal DoT over private WireGuard with public cert (preserve public 853)
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebydns-personal-sidecar-stage-20261113.yml'
+      - 'scripts/mnebydns-personal-dot-sidecar-stage-20261113.sh'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-personal-private-sidecar
+  cancel-in-progress: false
+jobs:
+  stage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 16
+    env:
+      DE_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # Preserve the immutable reviewed gateway source overlay only for the
+      # isolated sidecar. Do not redeploy existing web, bot or DB services.
+      - name: Checkout reviewed upstream DoT 853 port fix
+        uses: actions/checkout@v4
+        with:
+          repository: grunvald91/Mnebyvpn
+          ref: 88d0a157b66207054a01782d6cc733a4729f8da5
+          path: reviewed-gateway
+          persist-credentials: false
+      # Telegram bot deployment may replace the RU staged image independently.
+      # Resolve its active SHA at runtime; fail closed unless the corresponding
+      # release contains the exact immutable reviewed personal DoT gateway source.
+      - name: Resolve and verify active RU staging image
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASSWORD"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          test -s reviewed-gateway/apps/service/src/personal-dot-production.ts
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          export SSHPASS="$RU_PASSWORD"
+          active="$(sshpass -e ssh "${opts[@]}" root@188.120.254.223 \
+            'cat /opt/mnebyvpn/staging/active_sha')"
+          [[ "$active" =~ ^[0-9a-f]{40}$ ]] ||
+            { echo 'RU_STAGE_ACTIVE_SHA_INVALID=true'; exit 2; }
+          source_path="/opt/mnebyvpn/releases/$active/apps/service/src/personal-dot-production.ts"
+          expected="$(sha256sum reviewed-gateway/apps/service/src/personal-dot-production.ts | cut -d' ' -f1)"
+          actual="$(sshpass -e ssh "${opts[@]}" root@188.120.254.223 \
+            "sha256sum '$source_path' | cut -d' ' -f1")"
+          [[ "$actual" == "$expected" ]] ||
+            { echo 'RU_STAGE_GATEWAY_SOURCE_MISMATCH=true'; exit 2; }
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 \
+            "docker image inspect 'mnebyvpn-stage-web:$active' >/dev/null"
+          current="$(sshpass -e ssh "${opts[@]}" root@188.120.254.223 \
+            'cat /opt/mnebyvpn/staging/active_sha')"
+          [[ "$current" == "$active" ]] ||
+            { echo 'RU_STAGE_ACTIVE_SHA_CHANGED_DURING_PREFLIGHT=true'; exit 2; }
+          echo "APP_SHA=$active" >> "$GITHUB_ENV"
+          echo "RU_STAGE_VERIFIED_SHA=$active"
+      # This port is private to the existing DE -> RU WireGuard peer.
+      # RU UFW defaults to DROP and currently does not allow TCP/8853.
+      - name: Allow only DE WireGuard peer to RU personal DoT TCP 8853
+        id: firewall
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASSWORD"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          export SSHPASS="$RU_PASSWORD"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          set +e
+          result="$(sshpass -e ssh "${opts[@]}" root@188.120.254.223 'bash -se' <<'SH'
+          set -Eeuo pipefail
+          echo 'PERSONAL_DOT_UFW_DIAG=REMOTE_CONNECTED'
+          [[ "$(id -u)" == 0 ]]
+          echo 'PERSONAL_DOT_UFW_DIAG=ROOT_OK'
+          ip -o -4 addr show dev tg-relay | grep -Fq '10.66.77.2/24'
+          echo 'PERSONAL_DOT_UFW_DIAG=WG_IP_OK'
+          status="$(ufw status)"
+          [[ "$status" == 'Status: active'* ]]
+          echo 'PERSONAL_DOT_UFW_DIAG=UFW_ACTIVE'
+          rule='10[.]66[.]77[.]2[[:space:]]+8853/tcp[[:space:]]+on[[:space:]]+tg-relay[[:space:]]+ALLOW[[:space:]]+IN[[:space:]]+10[.]66[.]77[.]1'
+          if [[ "$status" =~ $rule ]]; then
+            echo 'PERSONAL_DOT_WG_FIREWALL_ADDED=no'
+          else
+            created=0
+            cleanup_rule() {
+              if [[ "$created" == 1 ]]; then
+                ufw delete allow in on tg-relay from 10.66.77.1 to 10.66.77.2 port 8853 proto tcp >/dev/null 2>&1 || true
+              fi
+            }
+            trap cleanup_rule ERR EXIT
+            created=1
+            echo 'PERSONAL_DOT_UFW_DIAG=BEFORE_RULE_CREATE'
+            ufw allow in on tg-relay from 10.66.77.1 to 10.66.77.2 port 8853 proto tcp comment 'MNEBYDNS private personal DoT' >/dev/null
+            echo 'PERSONAL_DOT_UFW_DIAG=AFTER_RULE_CREATE'
+            echo 'PERSONAL_DOT_WG_FIREWALL_ADDED=yes'
+            created=0
+            trap - ERR EXIT
+          fi
+          SH
+          )"
+          code=$?
+          set -e
+          if (( code != 0 )); then
+            printf '%s\n' "$result" | grep '^PERSONAL_DOT_' || true
+            echo 'PERSONAL_DOT_WG_FIREWALL_SETUP=FAILED'
+            exit "$code"
+          fi
+          if [[ "$result" == *'PERSONAL_DOT_WG_FIREWALL_ADDED=yes'* ]]; then
+            echo 'added=yes' >> "$GITHUB_OUTPUT"
+            echo 'PERSONAL_DOT_WG_FIREWALL=SCOPED_RULE_ADDED'
+          elif [[ "$result" == *'PERSONAL_DOT_WG_FIREWALL_ADDED=no'* ]]; then
+            echo 'added=no' >> "$GITHUB_OUTPUT"
+            echo 'PERSONAL_DOT_WG_FIREWALL=SCOPED_RULE_ALREADY_PRESENT'
+          else
+            echo 'PERSONAL_DOT_WG_FIREWALL_STATE=UNKNOWN'
+            exit 2
+          fi
+      - name: Verify pinned source, signed wildcard cert and route policy
+        id: install
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASSWORD" && test -n "$RU_PASSWORD"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          test -s scripts/mnebydns-personal-dot-sidecar-stage-20261113.sh
+          bash -n scripts/mnebydns-personal-dot-sidecar-stage-20261113.sh
+          test "$(git -C reviewed-gateway rev-parse HEAD)" = '88d0a157b66207054a01782d6cc733a4729f8da5'
+          test -s reviewed-gateway/apps/service/src/personal-dot-production.ts
+          grep -Fq "const portNumber=port('MNEBYDNS_PERSONAL_'+prefix+'_DOT_PORT',853,1);" reviewed-gateway/apps/service/src/personal-dot-production.ts
+          work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
+          chmod 700 "$work"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          export SSHPASS="$DE_PASSWORD"
+          sshpass -e scp -q "${opts[@]}" \
+            root@89.125.90.101:/etc/mnebydns/personal-dot/fullchain.pem "$work/fullchain.pem"
+          sshpass -e scp -q "${opts[@]}" \
+            root@89.125.90.101:/etc/mnebydns/personal-dot/privkey.pem "$work/privkey.pem"
+          sshpass -e ssh -T "${opts[@]}" root@89.125.90.101 'python3 -' >"$work/policy.json" <<'PY'
+          import re,json,pathlib
+          data=pathlib.Path('/opt/mnebydns-dot/Corefile').read_text(errors='replace')
+          found=re.findall(r'(?m)^\s*template\s+IN\s+(?:A|AAAA|HTTPS|SVCB)\s+([^\s{]+)',data)
+          cleaned=sorted(set(x.lower().rstrip('.') for x in found
+             if re.fullmatch(r'(?:\*\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+',x.lower().rstrip('.'))))
+          assert 100<=len(cleaned)<=10000 and 'claude.ai' in cleaned
+          print(json.dumps(cleaned,separators=(',',':')))
+          PY
+          chmod 600 "$work"/{privkey.pem,fullchain.pem,policy.json}
+          openssl x509 -in "$work/fullchain.pem" -checkhost aaaaaaaaaaaa.dns.mnebyvpn.site -noout >/dev/null
+          openssl x509 -in "$work/fullchain.pem" -checkend 604800 -noout >/dev/null
+          echo 'DE_PERSONAL_CERT_AND_ROUTE_POLICY=VERIFIED'
+          export SSHPASS="$RU_PASSWORD"
+          sshpass -e ssh -T "${opts[@]}" root@188.120.254.223 \
+            "install -d -m 700 /tmp/mnebydns-personal-stage-$APP_SHA"
+          cp reviewed-gateway/apps/service/src/personal-dot-production.ts "$work/personal-dot-production.ts"
+          for filename in privkey.pem fullchain.pem policy.json personal-dot-production.ts; do
+            sshpass -e scp -q "${opts[@]}" "$work/$filename" \
+              "root@188.120.254.223:/tmp/mnebydns-personal-stage-$APP_SHA/$filename"
+          done
+          sshpass -e scp -q "${opts[@]}" \
+            scripts/mnebydns-personal-dot-sidecar-stage-20261113.sh \
+            "root@188.120.254.223:/tmp/mnebydns-personal-stage-$APP_SHA/install.sh"
+          sshpass -e ssh -T "${opts[@]}" root@188.120.254.223 \
+            "bash /tmp/mnebydns-personal-stage-$APP_SHA/install.sh '$APP_SHA'"
+          echo 'RU_PERSONAL_DOT_PRIVATE_STAGE=SUCCESS'
+      - name: Verify strict wildcard TLS from foreign VPS to RU WireGuard (read-only)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASSWORD"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY'
+          import socket,ssl
+          ctx=ssl.create_default_context()
+          host='aaaaaaaaaaaa.dns.mnebyvpn.site'
+          with socket.create_connection(('10.66.77.2',8853),timeout=7) as raw:
+              raw.settimeout(7)
+              with ctx.wrap_socket(raw,server_hostname=host) as tls:
+                  assert tls.version() in ('TLSv1.2','TLSv1.3')
+                  assert bool(tls.getpeercert())
+          print('DE_TO_RU_PERSONAL_SNI_TLS=STRICT_PASS')
+          PY
+      - name: Check existing public foreign CoreDNS remains reachable
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import socket,ssl
+          with socket.create_connection(('89.125.90.101',853),timeout=8) as raw:
+              with ssl.create_default_context().wrap_socket(raw,
+                    server_hostname='dns.mnebyvpn.site') as tls:
+                  assert bool(tls.getpeercert())
+          print('LEGACY_DE_PUBLIC_853_TLS=PASS')
+          PY
+
+      - name: Roll back only newly staged private sidecar if subsequent connectivity check fails
+        if: ${{ failure() && steps.install.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASSWORD"
+          export SSHPASS="$RU_PASSWORD"
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass >/dev/null
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR \
+            root@188.120.254.223 'docker rm -f mnebydns-personal-dot >/dev/null 2>&1 || true; echo "PERSONAL_DOT_AFTERCHECK_ROLLBACK=true"'
+
+      - name: Undo only the newly added private RU WireGuard firewall rule after failed canary
+        if: ${{ failure() && steps.firewall.outputs.added == 'yes' }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASSWORD"
+          export SSHPASS="$RU_PASSWORD"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR \
+            root@188.120.254.223 'ufw delete allow in on tg-relay from 10.66.77.1 to 10.66.77.2 port 8853 proto tcp >/dev/null; echo PERSONAL_DOT_WG_FIREWALL_ROLLBACK=true'

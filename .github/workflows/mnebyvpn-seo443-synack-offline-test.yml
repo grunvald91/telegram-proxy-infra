@@ -1,0 +1,26 @@
+name: Verify MNEBYVPN SYNACK fix offline - no server access
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - scripts/mnebyvpn_seo443_synack_permanent_20261113.py
+      - .github/workflows/mnebyvpn-seo443-synack-offline-test.yml
+  push:
+    paths: ['.github/workflows/mnebyvpn-seo443-synack-offline-test.yml']
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate patch structure and rollback without any credentials or SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/mnebyvpn_seo443_synack_permanent_20261113.py
+          python3 scripts/mnebyvpn_seo443_synack_permanent_20261113.py self-test
+          echo NO_PRODUCTION_SSH_OR_FIREWALL_CHANGES=true

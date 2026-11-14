@@ -1,0 +1,65 @@
+name: MNEBYDNS personal DoT synthetic public health - legacy preserved
+on:
+  push:
+    branches: [main, fix/mnebydns-personal-postlaunch-hardening-20261114]
+    paths: ['.github/workflows/mnebydns-personal-public-synthetic-monitor-20261114.yml']
+  workflow_dispatch:
+  schedule:
+    - cron: '*/15 * * * *'
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-personal-public-synthetic-monitor
+  cancel-in-progress: true
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify public legacy DNS query, personal wildcard TLS and unknown key rejection
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import socket,ssl,struct,secrets,time,datetime
+          addr=('89.125.90.101',853)
+          ctx=ssl.create_default_context()
+          question=struct.pack('!HHHHHH',secrets.randbelow(65534)+1,256,1,0,0,0)
+          question+=b'\x07example\x03com\x00'+struct.pack('!HH',1,1)
+          frame=struct.pack('!H',len(question))+question
+          start=time.monotonic()
+          with socket.create_connection(addr,timeout=7) as raw:
+              raw.settimeout(7)
+              with ctx.wrap_socket(raw,server_hostname='dns.mnebyvpn.site') as tls:
+                  tls.sendall(frame)
+                  size=tls.recv(2)
+                  assert len(size)==2
+                  n=struct.unpack('!H',size)[0]
+                  assert 12<=n<=65535
+                  answer=b''
+                  while len(answer)<n:
+                      part=tls.recv(n-len(answer))
+                      assert part
+                      answer+=part
+                  assert answer[:2]==question[:2] and answer[2]&128
+          print('LEGACY_DOT_DNS_QUERY=PASS')
+          print('LEGACY_DOT_MILLISECONDS='+str(round((time.monotonic()-start)*1000)))
+          start=time.monotonic()
+          with socket.create_connection(addr,timeout=7) as raw:
+              raw.settimeout(7)
+              with ctx.wrap_socket(raw,server_hostname='zzzzzzzzzzzz.dns.mnebyvpn.site') as tls:
+                  assert tls.getpeercert()
+                  print('PERSONAL_WILDCARD_TLS=PASS')
+                  tls.sendall(frame)
+                  try:
+                      reply=tls.recv(2)
+                  except ssl.SSLEOFError:
+                      reply=b''
+                  assert reply==b'', 'Unknown personal key must not receive DNS response'
+          print('PERSONAL_UNKNOWN_KEY_REJECTED=PASS')
+          print('PERSONAL_ROUTE_MILLISECONDS='+str(round((time.monotonic()-start)*1000)))
+          print('PRODUCTION_MUTATIONS=false')
+          PY

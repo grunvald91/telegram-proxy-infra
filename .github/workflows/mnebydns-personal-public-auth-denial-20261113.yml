@@ -1,0 +1,53 @@
+name: MNEBYDNS public personal DoT authorization denial and legacy DNS health (read-only)
+on:
+  push:
+    branches: [feat/mnebydns-personal-public-sni-guarded-cutover-20261113]
+    paths: ['.github/workflows/mnebydns-personal-public-auth-denial-20261113.yml']
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify real DNS legacy response and deny unknown bearer DNS query
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import socket, ssl, struct, secrets
+          host='89.125.90.101'
+          ctx=ssl.create_default_context()
+          query_id=secrets.randbelow(65534)+1
+          query=struct.pack('!HHHHHH',query_id,256,1,0,0,0)+b'\x07example\x03com\x00'+struct.pack('!HH',1,1)
+          packet=struct.pack('!H',len(query))+query
+          with socket.create_connection((host,853),timeout=7) as sock:
+              sock.settimeout(7)
+              with ctx.wrap_socket(sock,server_hostname='dns.mnebyvpn.site') as tls:
+                  tls.sendall(packet)
+                  size=tls.recv(2)
+                  assert len(size)==2, 'Legacy DNS reply missing'
+                  n=struct.unpack('!H',size)[0]
+                  response=b''
+                  while len(response)<n:
+                      part=tls.recv(n-len(response))
+                      assert part, 'Legacy DNS truncated'
+                      response+=part
+                  assert struct.unpack('!H',response[:2])[0]==query_id
+                  assert response[2]&128
+                  print('LEGACY_PUBLIC_DNS_APPLICATION_QUERY=PASS')
+          with socket.create_connection((host,853),timeout=7) as sock:
+              sock.settimeout(6)
+              with ctx.wrap_socket(sock,server_hostname='zzzzzzzzzzzz.dns.mnebyvpn.site') as tls:
+                  assert tls.getpeercert(), 'Personal wildcard certificate missing'
+                  tls.sendall(packet)
+                  try:
+                      result=tls.recv(2)
+                  except ssl.SSLEOFError:
+                      result=b''
+                  assert result==b'', 'Unknown bearer received a DNS response'
+                  print('PERSONAL_UNKNOWN_BEARER_DENIED=PASS')
+          PY

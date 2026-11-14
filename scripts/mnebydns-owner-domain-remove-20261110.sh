@@ -32,6 +32,17 @@ done
 test -s "$work/mnebydns-owner-domain-render-20261110.py"
 test -s "$work/mnebydns-owner-domain-rollback-20261110.sh"
 test -s "$work/mnebydns-dot-config-change-20261111.sh"
+# Refuse any route edit BEFORE touching nginx or Corefile when a non-disruptive
+# CoreDNS reload cannot be verified. Legacy config needs separate maintenance.
+grep -Fxq '    reload 5s 1s' "$dns" || {
+  echo 'owner_domain_requires_non_disruptive_dot_reload=true' >&2
+  exit 3
+}
+/opt/mnebydns-dot/coredns -plugins 2>&1 |
+  grep -Eq '(^|[[:space:].])reload([[:space:]]|$)' || {
+  echo 'owner_domain_reload_plugin_missing=true' >&2
+  exit 3
+}
 exec 9>/run/lock/mnebyvpn-public-route.lock
 flock -w 30 9 || exit 3
 test ! -e "$base"

@@ -41,6 +41,13 @@ jobs:
             code="$(curl --noproxy '*' --silent -o /dev/null -w '%{http_code}' --connect-timeout 2 --max-time 4 -X POST -H 'Content-Type: application/json' -d '{\"update_id\":100}' http://10.66.77.2:8794/webhooks/telegram || true)"
             echo "ru_private_8794_$i=$code"
           done
+          if docker inspect --format '{{json .Config.Env}}' mnebyvpn-bot-info 2>/dev/null | grep -q 'TELEGRAM_TOKEN_BOT='; then
+            echo 'widget_outbound_api_configured=true'
+          else
+            echo 'widget_outbound_api_configured=false'
+          fi
+          outbound_code="$(curl --noproxy '*' --silent --output /dev/null --write-out '%{http_code}' --connect-timeout 4 --max-time 8 https://api.telegram.org/ || true)"
+          echo "ru_telegram_api_https=$outbound_code"
           echo 'ru_read_only=true'
           REMOTE
           if [[ -n "$FOREIGN_PASS" ]]; then
@@ -113,3 +120,5 @@ jobs:
           echo 'foreign_read_only=true'
           FOREIGN
           fi
+
+# Diagnostic rerun 2026-11-14: inspect existing bot and foreign relay without changing services.

@@ -1,0 +1,70 @@
+name: MNEBYDNS guarded SNI watchdog (preserve existing free DoT)
+on:
+  push:
+    branches: [fix/mnebydns-personal-postlaunch-hardening-20261114]
+    paths: ['.github/workflows/mnebydns-personal-sni-watch-deploy-20261114.yml']
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-personal-public-853-guarded-watch
+  cancel-in-progress: false
+jobs:
+  install-watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate watchdog sources offline
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          bash -n scripts/mnebydns-personal-sni-watch-20261114.sh
+          bash -n scripts/mnebydns-personal-sni-watch-install-20261114.sh
+          ! grep -Fq 'systemctl stop mnebydns-dot' scripts/mnebydns-personal-sni-watch-20261114.sh
+          ! grep -Fq 'systemctl restart mnebydns-dot' scripts/mnebydns-personal-sni-watch-20261114.sh
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          test -n "$DE_PASS"
+      - name: Install isolated watchdog; first healthy run must not change NAT
+        id: deploy
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass >/dev/null
+          export SSHPASS="$DE_PASS"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e scp -q "${opts[@]}" scripts/mnebydns-personal-sni-watch-20261114.sh root@89.125.90.101:/tmp/mnebydns-personal-sni-watch-20261114.sh
+          sshpass -e scp -q "${opts[@]}" scripts/mnebydns-personal-sni-watch-install-20261114.sh root@89.125.90.101:/tmp/mnebydns-personal-sni-watch-install-20261114.sh
+          sshpass -e ssh -T "${opts[@]}" root@89.125.90.101 'bash /tmp/mnebydns-personal-sni-watch-install-20261114.sh /tmp/mnebydns-personal-sni-watch-20261114.sh'
+      - name: External legacy and personalized DoT TLS still valid after watchdog install
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import socket,ssl,struct,secrets
+          for name in ('dns.mnebyvpn.site','aaaaaaaaaaaa.dns.mnebyvpn.site'):
+              with socket.create_connection(('89.125.90.101',853),timeout=7) as raw:
+                  raw.settimeout(7)
+                  with ssl.create_default_context().wrap_socket(raw,server_hostname=name) as tls:
+                      assert bool(tls.getpeercert())
+                      if name=='dns.mnebyvpn.site':
+                          tid=secrets.randbelow(65534)+1
+                          q=struct.pack('!HHHHHH',tid,256,1,0,0,0)+b'\x07example\x03com\x00'+struct.pack('!HH',1,1)
+                          tls.sendall(struct.pack('!H',len(q))+q)
+                          n=struct.unpack('!H',tls.recv(2))[0]
+                          assert n>=12
+                          answer=b''
+                          while len(answer)<n:
+                              chunk=tls.recv(n-len(answer))
+                              assert chunk
+                              answer+=chunk
+                          assert int.from_bytes(answer[:2],'big')==tid
+                          print('PUBLIC_LEGACY_DNS_AFTER_WATCH=PASS')
+                      else:
+                          print('PUBLIC_PERSONAL_TLS_AFTER_WATCH=PASS')
+          PY

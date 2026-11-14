@@ -1,0 +1,81 @@
+name: MNEBYDNS personal wildcard ACME DNS-01 first stage (no live service changes)
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/mnebydns-personal-acme-first-stage-20261113.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-personal-wildcard-acme
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      DE_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify signed ACME client, generate first DNS-01 TXT challenge on foreign VPS
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASSWORD"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass >/dev/null
+          export SSHPASS="$DE_PASSWORD"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR \
+            root@89.125.90.101 'bash -se' <<'REMOTE'
+          set -Eeuo pipefail
+          umask 077
+          domain='*.dns.mnebyvpn.site'
+          client=/opt/mnebydns/acme-client-3.1.6
+          home=/var/lib/mnebydns/acme-personal
+          if [[ ! -f "$client/acme.sh" ]]; then
+            command -v git >/dev/null
+            mkdir -p /opt/mnebydns
+            tmp="$(mktemp -d /opt/mnebydns/.acme-install.XXXXXXXX)"
+            trap 'rm -rf "$tmp"' EXIT
+            git clone -q --depth 1 --branch 3.1.6 https://github.com/acmesh-official/acme.sh.git "$tmp/repo"
+            git -C "$tmp/repo" config gpg.ssh.allowedSignersFile "$tmp/repo/allowed_signers"
+            git -C "$tmp/repo" verify-tag 3.1.6 >/dev/null
+            mv "$tmp/repo" "$client"
+            trap - EXIT
+            rm -rf "$tmp"
+          fi
+          chmod 700 "$client"
+          "$client/acme.sh" --version | grep -F 'v3.1.6' >/dev/null
+          install -d -m 700 "$home"
+          if find "$home" -type f -name '*.cer' -print -quit | grep -q .; then
+            echo 'EXISTING_ACME_CERT_PRESENT=CHECK_BEFORE_REISSUE'
+            exit 3
+          fi
+          log="$(mktemp "$home/manual-first-stage.XXXXXXXX")"
+          chmod 600 "$log"
+          # Manual first stage creates an ACME order and prints a TXT value.
+          # A pending DNS authorization is NOT a trusted certificate.
+          set +e
+          "$client/acme.sh" --home "$home" --issue --dns \
+            -d "$domain" --server letsencrypt \
+            --yes-I-know-dns-manual-mode-enough-go-ahead-please \
+            > "$log" 2>&1
+          rc=$?
+          set -e
+          echo "ACME_STAGE_RETURN_CODE=$rc"
+          grep -E 'Add the following TXT record|Domain:|TXT value:|Txt value:|Please add|Please run.*renew|challenge is pending' "$log" | tail -n 16 || true
+          if grep -qE 'TXT value:|Txt value:' "$log"; then
+            echo 'ACME_DNS01_CHALLENGE_GENERATED=true'
+          else
+            echo 'ACME_DNS01_CHALLENGE_GENERATED=false'
+            # Do not reveal full private ACME account logs.
+            echo 'ACME_FAILURE_CLASS=NO_MANUAL_CHALLENGE'
+            exit 3
+          fi
+          echo 'EXISTING_DOT_853_UNCHANGED=true'
+          echo 'NO_CERTIFICATE_INSTALLED=true'
+          REMOTE

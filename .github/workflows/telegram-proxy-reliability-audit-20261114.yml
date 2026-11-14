@@ -1,0 +1,127 @@
+name: Telegram proxy reliability audit (read-only)
+"on":
+  push:
+    branches: [main]
+    paths: ['.github/workflows/telegram-proxy-reliability-audit-20261114.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: telegram-proxy-reliability-audit
+  cancel-in-progress: false
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Public port baseline from runner, two samples per port
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import socket,time,ssl
+          for role,addr in [('RU','188.120.254.223'),('DE','89.125.90.101')]:
+              for port in (443,8443,2052,2086):
+                  results=[]
+                  for _ in range(2):
+                      t=time.monotonic()
+                      try:
+                          with socket.create_connection((addr,port),timeout=3):
+                              results.append('OK_'+str(round((time.monotonic()-t)*1000))+'ms')
+                      except OSError as e:results.append(type(e).__name__)
+                  print('EXTERNAL',role,port,','.join(results),flush=True)
+          for role,ip,host in [('RU','188.120.254.223','bandbook.site'),('DE','89.125.90.101','cdn.servgo.ru')]:
+              try:
+                  with socket.create_connection((ip,443),timeout=4) as sock:
+                      sock.settimeout(4)
+                      with ssl.create_default_context().wrap_socket(sock,server_hostname=host) as tls:
+                          print('TLS',role,host,'443',tls.version(),flush=True)
+              except Exception as e:print('TLS',role,host,'443',type(e).__name__,flush=True)
+          PY
+      - name: Both nodes - units, retransmissions, WireGuard and WEB readiness (read-only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass >/dev/null
+          audit() {
+            local role="$1" host="$2"
+            export SSHPASS="$3"
+            sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no "root@$host" "python3 - '$role'" <<'PY'
+          import sys,re,time,socket,subprocess,pathlib,urllib.request,urllib.error
+          role=sys.argv[1]
+          def out(k,v):print(role+'_'+k+'='+str(v),flush=True)
+          def cmd(args):
+              try:
+                  p=subprocess.run(args,text=True,capture_output=True,timeout=7)
+                  return p.returncode,p.stdout.strip()
+              except Exception:return 255,''
+          def counters():
+              data={}
+              for path in ('/proc/net/netstat','/proc/net/snmp'):
+                  rows=pathlib.Path(path).read_text().splitlines()
+                  for a,b in zip(rows[::2],rows[1::2]):
+                      names=a.split();vals=b.split()
+                      if names and vals and names[0]==vals[0]:
+                          data.update({names[0][:-1]+'_'+k:int(v) for k,v in zip(names[1:],vals[1:]) if v.isdigit()})
+              return data
+          first=counters();time.sleep(8);last=counters()
+          for k in ('Tcp_RetransSegs','Tcp_OutSegs','TcpExt_TCPTimeouts','TcpExt_TCPLostRetransmit','TcpExt_TCPBacklogDrop'):
+              out('DELTA_'+k,max(0,last.get(k,0)-first.get(k,0)))
+          rc,lines=cmd(['systemctl','list-units','--type=service','--all','--no-pager','--no-legend','--plain'])
+          units=[]
+          for line in lines.splitlines():
+              u=line.split()[0] if line.split() else ''
+              if u.endswith('.service') and re.search(r'telemt|mtproxy|mtg|tproxy|nginx|telegram.*nfqws|wg-quick@tg-relay',u,re.I):units.append(u)
+          for unit in sorted(set(units))[:45]:
+              _,data=cmd(['systemctl','show',unit,'-p','ActiveState','-p','SubState','-p','NRestarts','-p','Result','--no-pager'])
+              props=dict(x.split('=',1) for x in data.splitlines() if '=' in x)
+              out('UNIT_'+unit,','.join(props.get(k,'?') for k in ('ActiveState','SubState','NRestarts','Result')))
+              if re.search(r'telemt|mtproxy|mtg|tproxy|nginx',unit,re.I):
+                  rc,journal=cmd(['journalctl','-u',unit,'--since','-60 minutes','-n','300','--no-pager','-o','cat'])
+                  if rc==0:
+                      for key,pattern in [('timeout',r'timeout|timed out'),('reset',r'connection reset|broken pipe'),('refused',r'connection refused'),('limits',r'too many open files'),('backend',r'middle.?end|upstream.*(error|closed)')]:
+                          out('ERR_'+unit+'_'+key,len(re.findall(pattern,journal,re.I)))
+          rc,ss=cmd(['ss','-lntH'])
+          for port in (443,8443,10443,2052,2086,8080,8081,8084,8085,2398,2399,9470):
+              out('LISTEN_'+str(port),bool(re.search(r':'+str(port)+r'\s',ss)))
+          rc,wg=cmd(['wg','show','all','latest-handshakes'])
+          if rc==0:
+              ages=[]
+              for line in wg.splitlines():
+                  try:
+                      t=int(line.split()[-1])
+                      if t:ages.append(int(time.time())-t)
+                  except Exception:pass
+              out('WG_LAST_HANDSHAKE_AGE_S',min(ages) if ages else 'none')
+          for key in ('nf_conntrack_count','nf_conntrack_max'):
+              p=pathlib.Path('/proc/sys/net/netfilter')/key
+              if p.exists():out(key,p.read_text().strip())
+          out('NGINX_CONFIG_OK',cmd(['nginx','-t'])[0]==0)
+          if role=='DE':
+              for label,port in [('WEB_ORIGINAL',8081),('WEB_RU',8085)]:
+                  try:
+                      with urllib.request.urlopen('http://127.0.0.1:'+str(port)+'/readyz',timeout=4) as resp:out(label+'_READY',resp.status)
+                  except urllib.error.HTTPError as e:out(label+'_READY',e.code)
+                  except Exception as e:out(label+'_READY',type(e).__name__)
+          peers=[('WG_DE_443','10.66.77.1',443),('WG_DE_WEB','10.66.77.1',8082)] if role=='RU' else [
+              ('MT_BACKEND_1','127.0.0.1',2398),('MT_BACKEND_2','127.0.0.1',2399),
+              ('WEB_BACKEND_1','127.0.0.1',8080),('WEB_BACKEND_2','127.0.0.1',8084)]
+          for key,host,port in peers:
+              try:
+                  with socket.create_connection((host,port),timeout=3):out(key,'connected')
+              except Exception as e:out(key,type(e).__name__)
+          out('READ_ONLY_DONE',True)
+          PY
+          }
+          audit RU 188.120.254.223 "$RU_PASS"
+          audit DE 89.125.90.101 "$DE_PASS"
+          echo 'AUDIT_FINISHED=true'

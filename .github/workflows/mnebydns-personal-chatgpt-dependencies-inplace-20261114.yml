@@ -1,0 +1,151 @@
+name: MNEBYDNS fix existing personal DNS ChatGPT dependencies in-place
+on:
+  push:
+    branches: [fix/mnebydns-personal-chatgpt-dependency-routes-20261114]
+    paths:
+      - 'scripts/mnebydns-personal-chatgpt-dependency-fix-20261114.sh'
+      - '.github/workflows/mnebydns-personal-chatgpt-dependencies-inplace-20261114.yml'
+  workflow_dispatch:
+permissions: {contents: read}
+concurrency:
+  group: mnebydns-personal-chatgpt-dependencies-20261114
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Validate source and legacy ChatGPT dependency mapping before editing anything
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          bash -n scripts/mnebydns-personal-chatgpt-dependency-fix-20261114.sh
+          test -n "$RU_PASS" && test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@188.120.254.223 'python3 -' <<'PY'
+          import ssl,socket,struct,secrets
+          def query(name):
+            tid=secrets.randbelow(65534)+1
+            wire=struct.pack('!HHHHHH',tid,256,1,0,0,0)+b''.join(bytes([len(x)])+x.encode() for x in name.split('.'))+b'\0'+struct.pack('!HH',1,1)
+            with socket.create_connection(('10.66.77.1',1853),timeout=7) as raw:
+              raw.settimeout(7)
+              with ssl.create_default_context().wrap_socket(raw,server_hostname='dns.mnebyvpn.site') as tls:
+                tls.sendall(struct.pack('!H',len(wire))+wire)
+                hdr=tls.recv(2)
+                assert len(hdr)==2
+                length=struct.unpack('!H',hdr)[0]
+                assert 12<=length<=16384
+                reply=b''
+                while len(reply)<length:
+                  p=tls.recv(length-len(reply))
+                  assert p
+                  reply+=p
+            assert reply[:2]==wire[:2] and reply[3]&15==0
+            return b'Y}\x00e' in reply or bytes([89,125,90,101]) in reply
+          for name in ('chatgpt.com','www.chatgpt.com','ws.chatgpt.com','auth.openai.com',
+                       'setup.auth.openai.com','android.chat.openai.com','cdn.oaistatic.com',
+                       'files.oaiusercontent.com'):
+            assert query(name), 'Legacy mapped upstream missing: '+name
+          print('CHATGPT_DEPENDENCIES_ALL_LEGACY_MAPPED_UPSTREAM=PASS')
+          PY
+      - name: Stage five wildcard rules for original private service, no live change
+        id: stage
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e scp -q "${opts[@]}" scripts/mnebydns-personal-chatgpt-dependency-fix-20261114.sh root@188.120.254.223:/tmp/mnebydns-personal-chatgpt-dependency-fix-20261114.sh
+          sshpass -e ssh -T "${opts[@]}" root@188.120.254.223 'bash /tmp/mnebydns-personal-chatgpt-dependency-fix-20261114.sh stage'
+      - name: Replace only existing RU private :8856 container with rollback timer
+        id: replaced
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@188.120.254.223 'bash /usr/local/sbin/mnebydns-personal-chatgpt-dependency-fix-20261114 replace'
+      - name: Verify LIVE classifier, original key format, 60s auth and 158 unique premium routes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@188.120.254.223 'docker exec -i mnebydns-personal-dot-private node --experimental-strip-types --input-type=module -' <<'JS'
+          import {readFileSync} from 'node:fs';
+          import {pinnedCanaryPolicy} from '/srv/mnebyvpn/apps/service/src/personal-dot-canary.ts';
+          const filename=process.env.MNEBYDNS_PERSONAL_DOT_ROUTE_POLICY_FILE;
+          const data=readFileSync(filename);
+          const policy=pinnedCanaryPolicy(data,process.env.MNEBYDNS_PERSONAL_DOT_ROUTE_POLICY_SHA256);
+          const list=JSON.parse(data.toString('utf8'));
+          if(list.length!==158||new Set(list).size!==158)throw Error('Policy total mismatch');
+          for(const name of [
+            'chatgpt.com','www.chatgpt.com','ws.chatgpt.com',
+            'tcr9i.chat.openai.com','auth.openai.com','setup.auth.openai.com',
+            'auth0.openai.com','chat.openai.com','android.chat.openai.com',
+            'ios.chat.openai.com','desktop.chat.openai.com','api.openai.com',
+            'cdn.oaistatic.com','files.oaiusercontent.com',
+            'cdn.openaimerge.com','cdn.platform.openai.com',
+            'cdn.workos.com','setup.workos.com','forwarder.workos.com',
+            'frontend-apps-multi-region.workos.com','challenges.cloudflare.com'
+          ]){
+            if(policy({name,type:1,dnsClass:1})!=='premium')throw Error('Still direct: '+name);
+          }
+          if(policy({name:'example.org',type:1,dnsClass:1})!=='direct')
+            throw Error('Unrelated domain is no longer direct');
+          console.log('LIVE_PERSONAL_CHATGPT_21_DEPENDENCIES_PREMIUM=PASS');
+          console.log('LIVE_PERSONAL_UNRELATED_DOMAIN_DIRECT=PASS');
+          JS
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@188.120.254.223 'bash /usr/local/sbin/mnebydns-personal-chatgpt-dependency-fix-20261114 status'
+      - name: Verify old public DNS still responds and unknown customer key rejected
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import ssl,socket,struct,secrets
+          address=('89.125.90.101',853)
+          tid=secrets.randbelow(65534)+1
+          wire=struct.pack('!HHHHHH',tid,256,1,0,0,0)+b'\x07example\x03com\x00'+struct.pack('!HH',1,1)
+          data=struct.pack('!H',len(wire))+wire
+          for name in ('dns.mnebyvpn.site','zzzzzzzzzzzz.dns.mnebyvpn.site'):
+            with socket.create_connection(address,timeout=8) as plain:
+              plain.settimeout(9)
+              with ssl.create_default_context().wrap_socket(plain,server_hostname=name) as tls:
+                assert tls.getpeercert()
+                tls.sendall(data)
+                if name.startswith('zzzz'):
+                  try: reply=tls.recv(2)
+                  except ssl.SSLEOFError: reply=b''
+                  assert reply==b''
+                  print('CHATGPT_DEPENDENCIES_UNKNOWN_PERSONAL_KEY_DENIED=true')
+                else:
+                  head=tls.recv(2)
+                  assert len(head)==2
+                  length=struct.unpack('!H',head)[0]
+                  assert 12<=length<=16384
+                  response=b''
+                  while len(response)<length:
+                    chunk=tls.recv(length-len(response))
+                    assert chunk
+                    response+=chunk
+                  assert response[:2]==wire[:2] and response[2]&128
+                  print('CHATGPT_DEPENDENCIES_PUBLIC_LEGACY_DNS=PASS')
+          PY
+      - name: Finalize after all checks; preserve old policy file for operator rollback
+        id: finalized
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@188.120.254.223 'bash /usr/local/sbin/mnebydns-personal-chatgpt-dependency-fix-20261114 finalize'
+          echo 'Existing personalized DNS :8856 preserved; 158 mapped-domain rules including five ChatGPT wildcards; original 60s auth cache and per-query premium reserve/settle preserved. Legacy CoreDNS unchanged.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Restore original personal container on any failure after replacement
+        if: ${{ failure() && steps.replaced.outcome == 'success' && steps.finalized.outcome != 'success' }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@188.120.254.223 'bash /usr/local/sbin/mnebydns-personal-chatgpt-dependency-fix-20261114 rollback'

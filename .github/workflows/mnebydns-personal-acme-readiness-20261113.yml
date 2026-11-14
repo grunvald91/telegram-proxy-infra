@@ -1,0 +1,64 @@
+name: MNEBYDNS personal wildcard certificate and DoT listener readiness (read only)
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/mnebydns-personal-acme-readiness-20261113.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      DE_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify certbot/acme client, ownership of 853 and SNI-proxy capability
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASSWORD"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass >/dev/null
+          export SSHPASS="$DE_PASSWORD"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR \
+            root@89.125.90.101 'python3 -' <<'PY'
+          import os,re,subprocess,pathlib,shutil
+          def run(args,timeout=8):
+              try:
+                  r=subprocess.run(args,capture_output=True,text=True,timeout=timeout)
+                  return r.returncode,r.stdout,r.stderr
+              except Exception as e:return 99,'',type(e).__name__
+          rc,ss,_=run(['ss','-lntp'])
+          for line in ss.splitlines():
+              if ':853 ' in line or ':8853 ' in line or ':8855 ' in line:
+                  print('TLS_PORT_LISTENER='+('coreDNS' if 'coredns' in line.lower() else
+                        'nginx' if 'nginx' in line else 'other')+
+                        ' port='+('853' if ':853 ' in line else '8853' if ':8853 ' in line else '8855'))
+          for name in ['acme.sh','certbot','openssl','nginx','coredns','docker','node','dig']:
+              print('INSTALLED_'+name.replace('.','_')+'='+str(bool(shutil.which(name))))
+          rc,apt,_=run(['apt-cache','policy','acme.sh'])
+          print('ACME_APT_PACKAGE='+str(any(x.strip().startswith('Candidate:') and
+            '(none)' not in x for x in apt.splitlines())))
+          rc,ver,_=run(['nginx','-V'])
+          print('NGINX_STREAM_MODULE_AVAILABLE='+str('--with-stream' in ver or
+            pathlib.Path('/usr/lib/nginx/modules/ngx_stream_module.so').exists() or
+            pathlib.Path('/usr/share/nginx/modules/ngx_stream_module.so').exists()))
+          print('NGINX_STREAM_SSL_PREREAD_AVAILABLE='+str(
+            '--with-stream_ssl_preread_module' in ver))
+          print('CERTBOT_CONF_DIR_EXISTS='+str(pathlib.Path('/etc/letsencrypt').is_dir()))
+          print('ACME_ACCOUNT_DIR_EXISTS='+str(pathlib.Path('/root/.acme.sh').is_dir()))
+          print('COREDNS_CONFIG_EXISTS='+str(any(pathlib.Path(x).exists() for x in
+             ['/etc/coredns/Corefile','/opt/coredns/Corefile',
+              '/etc/mnebydns/Corefile','/etc/coredns/office.Corefile'])))
+          for target in ('mnebydns_dot','coredns','nginx'):
+              rc,out,_=run(['systemctl','is-active',target])
+              print('SERVICE_'+target+'='+out.strip() if out.strip() else 'SERVICE_'+target+'=unknown')
+          print('AUDIT_READ_ONLY=true')
+          PY
