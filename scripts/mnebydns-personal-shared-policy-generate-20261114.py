@@ -4,7 +4,7 @@
 Inputs are read-only snapshots exported by GitHub Actions, no secrets.
 Accept exactly 264 mapped CoreDNS A templates and 2 anchored domain families;
 never allow a broad/unreviewed regex to expand a subscriber's paid routing.
-Preserve every approved personal entry. Output immutable sorted JSON plus SHA.
+The old personal policy is a regression fixture only, never an independent source.\nOutput immutable sorted JSON plus SHA.
 """
 from __future__ import annotations
 
@@ -103,12 +103,21 @@ def generate(core_path: Path, old_path: Path, output: Path) -> dict:
     assert "*.chatgpt.com" in old and "auth.openai.com" in old
     core = core_path.read_text()
     exact, roots = parse(core)
-    new = set(old) | exact | roots | {"*." + root for root in roots}
-    if not set(old).issubset(new):
-        raise ValueError("Destructive change to personal policy")
+    # Do not union with the old personal list: that would perpetuate a second
+    # independent domain source and could retain stale paid routes forever.
+    new = exact | roots | {"*." + root for root in roots}
+    missing_old = sorted(s for s in exact if not classify(set(old), s))
+    # No pre-existing personal-only domain may silently disappear. A wildcard
+    # from old must still exist as a wildcard in the derived shared policy.
+    unsupported_old = sorted(
+        s for s in old
+        if (s not in new if s.startswith("*.") else not classify(new, s))
+    )
+    if unsupported_old:
+        raise ValueError("Old personal rules not backed by shared CoreDNS: " +
+                         repr(unsupported_old[:30]))
     if any(not POLICY.fullmatch(s) for s in new):
         raise ValueError("Malformed generated personal rules")
-    missing_old = sorted(s for s in exact if not classify(set(old), s))
     if len(missing_old) != 111:
         raise ValueError("Unexpected missing exact rule count " + str(len(missing_old)))
     samples = set(exact) | roots
@@ -133,6 +142,7 @@ def generate(core_path: Path, old_path: Path, output: Path) -> dict:
         "core_exact_domains": len(exact),
         "core_family_roots": len(roots),
         "previous_unmapped_exact": len(missing_old),
+        "obsolete_personal_only_entries": len(unsupported_old),
         "covered_samples": len(samples),
         "sha256": digest,
     }
