@@ -1,0 +1,71 @@
+name: "MNEBYDNS Groq production read-only inspection 2026-11-15"
+on:
+  push:
+    branches: ["diagnostics/groq-smartdns-readonly-20261115"]
+    paths: [".github/workflows/mnebydns-groq-readonly-20261115.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Inspect exact Groq domains on DE and RU without modifications
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'bash -s' <<'DE'
+          set -u
+          echo "TARGETS=groq.com,chat.groq.com,console.groq.com"
+          echo "DE_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "DE_COREDNS_ACTIVE=$(systemctl is-active mnebydns-dot 2>/dev/null || true)"
+          for path in /opt/mnebydns-dot/Corefile /etc/nginx/nginx.conf /etc/mnebydns-googlepilot/nginx.conf; do
+            echo "DE_FILE=$path"
+            if test -f "$path"; then
+              grep -inF 'groq' "$path" || echo "DE_EXACT_TEXT_GROQ_ABSENT"
+            else
+              echo "DE_FILE_ABSENT"
+            fi
+          done
+          echo "DE_NGINX_COMPILED_GROQ_BEGIN"
+          nginx -T 2>/dev/null | grep -inF 'groq' | head -n 20 || true
+          echo "DE_NGINX_COMPILED_GROQ_END"
+          python3 - <<'PY'
+          import pathlib
+          p=pathlib.Path('/opt/mnebydns-dot/Corefile')
+          if p.exists():
+              s=p.read_text(errors='replace')
+              for needle in ('groq.com','chat.groq.com','console.groq.com','grok.com'):
+                  print('DE_COREFILE_LITERAL_'+needle+'='+str(needle in s.lower()))
+          PY
+          DE
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 'bash -s' <<'RU'
+          set -u
+          echo "RU_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          docker exec mnebyvpn-stage-postgres psql -XqAt -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage -c "SELECT 'DB_GROQ|' || domain || '|' || status || '|' || coalesce(product,'') FROM dns_admin_domains WHERE domain='groq.com' OR domain LIKE '%.groq.com' ORDER BY domain;" || true
+          for path in /opt/mnebydns-dot/Corefile /etc/nginx/nginx.conf; do
+            echo "RU_FILE=$path"
+            if test -f "$path"; then
+              grep -inF 'groq' "$path" || echo "RU_EXACT_TEXT_GROQ_ABSENT"
+            else
+              echo "RU_FILE_ABSENT"
+            fi
+          done
+          echo "RU_NGINX_COMPILED_GROQ_BEGIN"
+          nginx -T 2>/dev/null | grep -inF 'groq' | head -n 20 || true
+          echo "RU_NGINX_COMPILED_GROQ_END"
+          RU
+          echo "PRODUCTION_CHECK_READ_ONLY=PASS"
