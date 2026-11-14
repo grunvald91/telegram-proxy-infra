@@ -1,0 +1,57 @@
+name: MNEBYDNS exact ChatGPT effective DNS and TLS routes (read-only)
+on:
+  push:
+    branches: [audit/mnebydns-auth60-chatgpt-live-20261114]
+    paths: ['.github/workflows/mnebydns-chatgpt-effective-route-readonly-20261114.yml']
+permissions: {contents: read}
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate existing exact or wildcard CoreDNS response and TLS end-to-end, read only
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass >/dev/null
+          python3 - <<'PY'
+          import importlib.util,pathlib
+          path=pathlib.Path('scripts/mnebydns-owner-domain-controller-20261110.py')
+          spec=importlib.util.spec_from_file_location('owner',path)
+          assert spec and spec.loader
+          owner=importlib.util.module_from_spec(spec);spec.loader.exec_module(owner)
+          for name in ('chatgpt.com','auth.openai.com'):
+              key=name.replace('.','_').upper()
+              try:
+                  r,ips=owner.dns_q(name,1)
+                  print('EXISTING_'+key+'_A_RCODE='+str(r),flush=True)
+                  print('EXISTING_'+key+'_A_IS_FOREIGN_EDGE='+str(r==0 and ips==[owner.EDGE]),flush=True)
+                  print('EXISTING_'+key+'_A_IPV4_COUNT='+str(len(ips)),flush=True)
+                  if r!=0:
+                      raise RuntimeError('Unexpected DNS RCODE')
+              except Exception as exc:
+                  print('EXISTING_'+key+'_DNS_ERROR='+type(exc).__name__,flush=True)
+              try:
+                  other={}
+                  for t,kind in ((5,'CNAME'),(28,'AAAA'),(64,'HTTPS'),(65,'SVCB')):
+                      code,ips=owner.dns_q(name,t)
+                      other[kind]={'rcode':code,'a_records':len(ips)}
+                  print('EXISTING_'+key+'_OTHER_QTYPES='+str(other),flush=True)
+              except Exception as exc:
+                  print('EXISTING_'+key+'_OTHER_ERROR='+type(exc).__name__,flush=True)
+              try:
+                  owner.tls_public_route(name)
+                  print('EXISTING_'+key+'_RU_TO_DE_PUBLIC_TLS_VERIFIED=true',flush=True)
+              except Exception as exc:
+                  print('EXISTING_'+key+'_RU_TO_DE_PUBLIC_TLS_VERIFIED=false',flush=True)
+                  print('EXISTING_'+key+'_TLS_ERROR_CLASS='+type(exc).__name__,flush=True)
+          print('EXISTING_CHATGPT_EFFECTIVE_ROUTE_READ_ONLY=COMPLETE')
+          PY
