@@ -41,6 +41,85 @@ jobs:
             code="$(curl --noproxy '*' --silent -o /dev/null -w '%{http_code}' --connect-timeout 2 --max-time 4 -X POST -H 'Content-Type: application/json' -d '{\"update_id\":100}' http://10.66.77.2:8794/webhooks/telegram || true)"
             echo "ru_private_8794_$i=$code"
           done
+          if docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' mnebyvpn-bot-info 2>/dev/null | grep -Eq '^TELEGRAM_TOKEN_BOT=[^[:space:]]+
+          REMOTE
+          if [[ -n "$FOREIGN_PASS" ]]; then
+            SSHPASS="$FOREIGN_PASS" sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@89.125.90.101 'bash -s' <<'FOREIGN'
+          set -Eeuo pipefail
+          echo 'foreign_dns_cdn_servgo_ru'
+          getent ahostsv4 cdn.servgo.ru | head -3 || true
+          echo 'foreign_listener_8443'
+          ss -H -ltnp | grep ':8443 ' | head -4 || true
+          echo "foreign_nginx_active=$(systemctl is-active nginx || true)"
+          echo "foreign_nginx_syntax=$(nginx -t 2>&1 | tail -1)"
+          for host in cdn.servgo.ru; do
+            echo "foreign_tls_8443=$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --connect-timeout 4 --max-time 9 --resolve $host:8443:127.0.0.1 -X POST -H 'Content-Type: application/json' -d '{\"update_id\":100}' https://$host:8443/mnebyvpn-telegram/webhook || true)"
+          done
+          for n in 1 2 3; do
+            response="$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --connect-timeout 4 --max-time 8 \
+              --resolve cdn.servgo.ru:8443:89.125.90.101 -X POST \
+              -H 'Content-Type: application/json' -d '{\"update_id\":100}' \
+              https://cdn.servgo.ru:8443/mnebyvpn-telegram/webhook || true)"
+            echo "foreign_public_nginx_post_$n=$response"
+            sleep 1
+          done
+          echo "foreign_to_ru_8793=$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --connect-timeout 4 --max-time 7 -X POST -H 'Content-Type: application/json' -d '{\"update_id\":100}' http://10.66.77.2:8793/webhooks/telegram || true)"
+          echo "foreign_to_ru_8794=$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --connect-timeout 4 --max-time 7 -X POST -H 'Content-Type: application/json' -d '{\"update_id\":100}' http://10.66.77.2:8794/webhooks/telegram || true)"
+          echo 'foreign_wireguard_snapshot'
+          python3 - <<'PY'
+          import subprocess,time,re
+          p=subprocess.run(['wg','show','tg-relay','latest-handshakes'],text=True,capture_output=True,timeout=5)
+          stamps=[]
+          for line in p.stdout.splitlines():
+            cols=line.split()
+            if len(cols)==2 and cols[1].isdigit() and int(cols[1])>0:
+              stamps.append(int(cols[1]))
+          ages=[round(time.time()-x) for x in stamps]
+          print('wg_peer_count='+str(len(stamps)))
+          print('wg_handshake_newest_age_seconds='+str(min(ages) if ages else -1))
+          r=subprocess.run(['ip','route','get','10.66.77.2'],text=True,capture_output=True,timeout=5)
+          print('route_to_bot_private='+r.stdout.strip()[:180])
+          conf=subprocess.run(['nginx','-T'],text=True,capture_output=True,timeout=8)
+          for line in conf.stdout.splitlines():
+            if 'mnebyvpn-telegram' in line:
+              print('nginx_telegram_location_present=true')
+            if 'proxy_pass' in line and ('10.66.77.' in line or '8794' in line or '8793' in line):
+              match=re.search(r'proxy_pass\\s+(https?://[0-9a-zA-Z.:-]+)',line)
+              if match: print('nginx_telegram_upstream='+match.group(1))
+          PY
+          for attempt in 1 2 3 4 5; do
+            code="$(curl --noproxy '*' --silent -o /dev/null -w '%{http_code}' --connect-timeout 2 --max-time 4 -X POST -H 'Content-Type: application/json' -d '{\"update_id\":100}' http://10.66.77.2:8794/webhooks/telegram || true)"
+            echo "private_telegram_upstream_$attempt=$code"
+            sleep 1
+          done
+          python3 - <<'PY'
+          import re,subprocess,pathlib
+          ping=subprocess.run(['ping','-q','-c','12','-i','0.2','-W','1','10.66.77.2'],
+            text=True,capture_output=True,timeout=17)
+          for line in ping.stdout.splitlines():
+            if 'packet loss' in line or 'rtt min' in line:
+              print('wireguard_route_ping='+line.strip()[:150])
+          error=pathlib.Path('/var/log/nginx/error.log')
+          if error.is_file():
+            lines=error.read_text(errors='replace').splitlines()[-1800:]
+            matches=[x for x in lines if 'upstream' in x and
+                     ('mnebyvpn-telegram' in x or '10.66.77.2' in x)]
+            print('telegram_nginx_upstream_errors_recent='+str(len(matches)))
+            for line in matches[-6:]:
+              reason=re.search(r'\\]\\s+([^,]+?)(?:, client:|, server:|$)',line)
+              snippet=reason.group(1) if reason else 'upstream_error'
+              print('telegram_nginx_error='+snippet[:160])
+          PY
+          echo 'foreign_read_only=true'
+          FOREIGN
+          fi
+
+# Diagnostic rerun 2026-11-14: inspect existing bot and foreign relay without changing services.
+; then
+            echo 'bot_outbound_api_token_configured=true'
+          else
+            echo 'bot_outbound_api_token_configured=false'
+          fi
           echo 'ru_read_only=true'
           REMOTE
           if [[ -n "$FOREIGN_PASS" ]]; then
