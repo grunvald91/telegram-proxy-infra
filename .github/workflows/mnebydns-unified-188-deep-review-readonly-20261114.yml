@@ -1,0 +1,154 @@
+name: MNEBYDNS unified RU188 post-deploy deep review (read only)
+on:
+  push:
+    branches: [audit/mnebydns-unified-188-deep-review-20261114]
+    paths: ['.github/workflows/mnebydns-unified-188-deep-review-readonly-20261114.yml']
+permissions: {contents: read}
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Install only audit prerequisites
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass dnsutils >/dev/null
+      - name: Check live RU original personal classifier against shared foreign CoreDNS exact and family rules
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -' > ru-personal-policy.json <<'PY'
+          import json,subprocess,pathlib
+          c=json.loads(subprocess.check_output(['docker','inspect','mnebydns-personal-dot-private'],text=True))[0]
+          assert c['State']['Running']
+          e={s.split('=',1)[0]:s.split('=',1)[1] for s in c['Config']['Env'] if '=' in s}
+          f=pathlib.Path('/etc/mnebydns/personal-dot')/pathlib.Path(e['MNEBYDNS_PERSONAL_DOT_ROUTE_POLICY_FILE']).name
+          p=json.loads(f.read_text())
+          print(json.dumps(p))
+          PY
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' > de-corefile.json <<'PY'
+          import json,pathlib,subprocess
+          p=subprocess.run(['systemctl','is-active','mnebydns-dot.service'],capture_output=True,text=True)
+          assert p.stdout.strip()=='active'
+          print(json.dumps(pathlib.Path('/opt/mnebydns-dot/Corefile').read_text()))
+          PY
+          python3 - <<'PY'
+          import json,re
+          old=json.load(open('de-corefile.json'))
+          personal=json.load(open('ru-personal-policy.json'))
+          exact={s for s in personal if not s.startswith('*.')}
+          wild={s[2:] for s in personal if s.startswith('*.')}
+          def premium(n):return n in exact or any(n.endswith('.'+w) for w in wild)
+          blocks=re.findall(r'(?ms)^\s*template\s+IN\s+A\s+(\S+)\s*\{(.*?)^\s*\}',old)
+          assert len(blocks)==264
+          assert len(exact)==153 and len(wild)==5
+          literal=[]
+          regexfam=[]
+          for header,body in blocks:
+            m=re.search(r'(?m)^\s*match\s+(.+)$',body)
+            assert m and re.compile(m.group(1))
+            if header!='.':literal.append(header)
+            else:
+              regex=m.group(1)
+              simple=regex.removeprefix('(?i)').strip('^$').replace('[.]','.').replace('\\-','-').rstrip('.')
+              if re.fullmatch(r'[a-z0-9-]+(?:\.[a-z0-9-]+)+',simple):literal.append(simple)
+              else:regexfam.append(regex)
+          unique=sorted(set(literal))
+          missing=[s for s in unique if not premium(s)]
+          print('REVIEW_SHARED_A_RULES='+str(len(blocks)))
+          print('REVIEW_SHARED_EXACT_UNIQUE='+str(len(unique)))
+          print('REVIEW_PERSONAL_EXACT='+str(len(exact)))
+          print('REVIEW_PERSONAL_WILDCARD='+str(len(wild)))
+          print('REVIEW_PERSONAL_EXACT_MISSING_SHARED='+str(len(missing)))
+          print('REVIEW_SHARED_REGEX_FAMILIES='+str(len(regexpfam) if False else len(regexfam)))
+          for n in missing:print('REVIEW_PERSONAL_DIRECT_BUT_SHARED_MAPPED='+n)
+          for n in ['openai.com','oaistatic.com','oaiusercontent.com','oaistatsig.com','www.youtube.com','googlevideo.com','api.anthropic.com','youtubei.googleapis.com','accounts.google.com','api.telegram.org']:
+              print('REVIEW_PERSONAL_CLASSIFICATION='+n+' '+('PREMIUM' if premium(n) else 'DIRECT'))
+          for rgx in regexfam:
+              print('REVIEW_REGEX_FAMILY='+rgx[:600])
+          PY
+      - name: RU 188 actual ingress, HTTPS and UDP leakage checks
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@188.120.254.223 'python3 -' <<'PY'
+          import subprocess,pathlib,re,socket,ssl,json,hashlib
+          def command(label,cmd,subset=None):
+            r=subprocess.run(cmd,capture_output=True,text=True,timeout=12)
+            print('RU_REVIEW_'+label+'_RC='+str(r.returncode),flush=True)
+            lines=r.stdout.splitlines()
+            if subset is not None:lines=[x for x in lines if subset in x]
+            for l in lines[:14]:print('RU_REVIEW_'+label+'_LINE='+l[:220],flush=True)
+          for label,cmd in [
+             ('UDP443_LISTEN',['ss','-Hlunp','sport = :443']),
+             ('TCP443_LISTEN',['ss','-Hlnpt','sport = :443']),
+             ('TCP853_LISTEN',['ss','-Hlnpt','sport = :853']),
+             ('UFW_853',['ufw','status']),
+             ('WAN443_NAT',['iptables','-t','nat','-S','PREROUTING']),
+             ('NGINX_TEST',['nginx','-t'])]:
+            command(label,cmd,'853/tcp' if label=='UFW_853' else None)
+          cfg=pathlib.Path('/etc/nginx/streams.d/01-mtproxy-443.conf').read_text()
+          print('RU_REVIEW_HTTPS_DEFAULT_WG='+str('default 10.66.77.1:443;' in cfg))
+          ingress=pathlib.Path('/etc/nginx/streams.d/01-mtproxy-stdports.conf').read_text()
+          print('RU_REVIEW_DOT_SNI_TO_DE_WG='+str('dns.mnebyvpn.site 10.66.77.1:8854;' in ingress))
+          print('RU_REVIEW_DOT_SNI_PERSONAL_TO_DE_WG='+str('12}[.]dns[.]mnebyvpn[.]site$' in ingress))
+          print('RU_REVIEW_TCP853_TELEGRAM_FALLBACK='+str('default s1_mtproxy;' in ingress))
+          print('RU_REVIEW_PRIV_DOT_SIDECAR_RUNNING='+str(json.loads(subprocess.check_output(['docker','inspect','mnebydns-personal-dot-private'],text=True))[0]['State']['Running']))
+          PY
+      - name: DE 89 actual SNI to origin 443 and loop prevention checks
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@89.125.90.101 'python3 -' <<'PY'
+          import pathlib,re,subprocess,collections
+          c=pathlib.Path('/etc/nginx/nginx.conf').read_text()
+          print('DE_REVIEW_NGINX_STATIC_TEST='+str(subprocess.run(['nginx','-t'],capture_output=True).returncode==0))
+          reg=re.search(r'map\s+\$ssl_preread_server_name\s+\$direct_mtproxy_backend\s*\{(.*?)\n\s*\}',c,re.S)
+          assert reg
+          entries=[l.split('#',1)[0].strip() for l in reg.group(1).splitlines() if l.strip() and not l.lstrip().startswith('#')]
+          print('DE_REVIEW_443_SNI_MAP_ENTRIES='+str(len(entries)))
+          for line in entries:
+              if line.startswith('~') or 'default ' in line or '10.66.77.2' in line:
+                  print('DE_REVIEW_443_MAP_ENTRY='+line[:220])
+          for path in ('/etc/mnebydns/personal-sni/nginx.conf','/etc/mnebydns-googlepilot/nginx.conf'):
+              f=pathlib.Path(path)
+              if f.exists():
+                  txt=f.read_text()
+                  print('DE_REVIEW_CONFIG='+str(f)+' BYTES='+str(len(txt)))
+                  for line in txt.splitlines():
+                      if ('proxy_pass' in line or 'default ' in line or '10.66.77.2' in line):
+                          print('DE_REVIEW_BACKEND='+line.strip()[:180])
+          r=subprocess.run(['ss','-Hlunp','sport = :443'],capture_output=True,text=True,timeout=6)
+          print('DE_REVIEW_UDP443_LISTEN='+repr(r.stdout.strip()[:300]))
+          PY
+      - name: Public DNS and external TLS reality check
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get install -qq -y dnsutils >/dev/null
+          for hostname in dns.mnebyvpn.site aaaaaaaaaaaa.dns.mnebyvpn.site;do
+             a="$(dig @ns1.jino.ru +time=3 +tries=1 +short "$hostname" A | sort -u | paste -sd, -)"
+             echo "REVIEW_JINO_A host=$hostname result=${a:-NONE}"
+          done
+          python3 - <<'PY'
+          import socket,ssl
+          for host in ('dns.mnebyvpn.site','aaaaaaaaaaaa.dns.mnebyvpn.site'):
+            with socket.create_connection(('188.120.254.223',853),timeout=8) as raw:
+              raw.settimeout(9)
+              with ssl.create_default_context().wrap_socket(raw,server_hostname=host) as tls:
+                print('REVIEW_EXTERNAL_DOT_TLS='+host+' '+tls.version(),flush=True)
+          PY
