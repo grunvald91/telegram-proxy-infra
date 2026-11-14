@@ -1,0 +1,39 @@
+name: MNEBYDNS 89 Russian vantage public TCP reachability check read-only
+on:
+  push:
+    branches: [diag/mnebydns-outage-20261114]
+    paths: ['.github/workflows/mnebydns-89-russian-vantage-tcp-20261114.yml']
+permissions: {contents: read}
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Launch external Russian measurement nodes towards foreign 89 TCP443
+        run: |
+          python3 - <<'PY'
+          import json,urllib.request,urllib.parse,time
+          base='https://check-host.net'
+          def request(path):
+            req=urllib.request.Request(base+path,headers={'Accept':'application/json','User-Agent':'MNEBYDNS-network-compatibility-audit/1.0'})
+            with urllib.request.urlopen(req,timeout=15) as r:return json.load(r)
+          nodes=request('/nodes/hosts')['nodes']
+          ru=[(n,v) for n,v in nodes.items() if v.get('location',[''])[0]=='ru']
+          print('RU_AVAILABLE_NODES',[(n,v.get('location')) for n,v in ru[:10]],flush=True)
+          if not ru:
+            print('NO_RUSSIAN_NODES_AVAILABLE');raise SystemExit(0)
+          chosen=[n for n,v in ru[:4]]
+          query=urllib.parse.urlencode([('host','89.125.90.101:443')]+[('node',n) for n in chosen])
+          result=request('/check-tcp?'+query)
+          print('CHECK_REQUEST',result.get('permanent_link'),flush=True)
+          print('REQUESTED_RU_NODES',chosen,flush=True)
+          rid=result.get('request_id')
+          if not rid:print('CHECK_REJECTED',str(result)[:700]);raise SystemExit(0)
+          for i in range(10):
+            time.sleep(2)
+            data=request('/check-result/'+urllib.parse.quote(rid))
+            latest={k:data.get(k) for k in chosen}
+            print('RU_TCP443_SAMPLE',i,json.dumps(latest,ensure_ascii=False),flush=True)
+            if all(data.get(n) is not None for n in chosen):break
+          print('THIS_CHECK_IS_TCP_SYN_ONLY_NOT_SNI_OR_CLIENTHELLO',flush=True)
+          PY
