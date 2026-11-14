@@ -106,7 +106,8 @@ def observe(role, seconds, mod):
     quic = {}
     video_hosts = set()
     ports = {443, 15449, 19444}
-    s = socket.socket(socket.AF_PACKET, socket.SOCK_DGRAM, socket.htons(0x0800))
+    # ETH_P_ALL is needed to observe outgoing packets as well as ingress.
+    s = socket.socket(socket.AF_PACKET, socket.SOCK_DGRAM, socket.htons(0x0003))
     s.settimeout(0.25)
     deadline = time.monotonic() + seconds
 
@@ -115,7 +116,7 @@ def observe(role, seconds, mod):
             return
         kind = category(name)
         hellos[label + '_' + kind] += 1
-        if kind in ('googleapis.com', 'google.com'):
+        if kind in ('googleapis.com', 'google.com', 'googlevideo.com'):
             google_services[label + '_' + name] += 1
         if kind == 'googlevideo.com' and re.fullmatch(r'[a-z0-9.-]{1,253}', name):
             video_hosts.add(name)
@@ -189,6 +190,7 @@ def observe(role, seconds, mod):
             else:
                 data = body[8:]
                 stats[label + '_udp_bytes'] += len(data)
+                stats[label + '_udp_length_' + str(len(data))] += 1
                 if direction != 'to' or len(data) < 5 or not data[0] & 0x80:
                     continue
                 version = data[1:5].hex()
