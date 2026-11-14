@@ -1,9 +1,22 @@
 name: CI validate isolated personal DoT SNI router (no production access)
 on:
   push:
-    branches: [feat/mnebydns-personal-public-sni-guarded-cutover-20261113]
+    branches: [main]
     paths:
       - 'scripts/mnebydns-personal-public-sni-guarded-20261113.sh'
+      - 'scripts/mnebydns-personal-sni-watch-20261114.sh'
+      - 'scripts/mnebydns-personal-sni-watch-install-20261114.sh'
+      - 'scripts/mnebydns-private-origin-bridge-20261114.sh'
+      - 'scripts/mnebydns-personal-private-canary-20261114.sh'
+      - 'scripts/mnebydns-personal-private-sni-switch-20261114.sh'
+      - '.github/workflows/mnebydns-personal-public-sni-ci-20261113.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scripts/mnebydns-personal-public-sni-guarded-20261113.sh'
+      - 'scripts/mnebydns-personal-sni-watch-20261114.sh'
+      - 'scripts/mnebydns-personal-private-canary-20261114.sh'
+      - 'scripts/mnebydns-personal-private-sni-switch-20261114.sh'
       - '.github/workflows/mnebydns-personal-public-sni-ci-20261113.yml'
   workflow_dispatch:
 permissions:
@@ -20,7 +33,16 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          bash -n scripts/mnebydns-personal-public-sni-guarded-20261113.sh
+          for script in \
+            scripts/mnebydns-personal-public-sni-guarded-20261113.sh \
+            scripts/mnebydns-personal-sni-watch-20261114.sh \
+            scripts/mnebydns-personal-sni-watch-install-20261114.sh \
+            scripts/mnebydns-private-origin-bridge-20261114.sh \
+            scripts/mnebydns-personal-private-canary-20261114.sh \
+            scripts/mnebydns-personal-private-sni-switch-20261114.sh; do
+            test -s "$script"
+            bash -n "$script"
+          done
           python3 - <<'PY'
           import pathlib
           s=pathlib.Path('scripts/mnebydns-personal-public-sni-guarded-20261113.sh').read_text()
