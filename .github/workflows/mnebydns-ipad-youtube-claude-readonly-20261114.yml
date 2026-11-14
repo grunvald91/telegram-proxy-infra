@@ -12,6 +12,7 @@ jobs:
     timeout-minutes: 8
     env:
       DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -163,4 +164,56 @@ jobs:
               state['ms']=round((time.monotonic()-st)*1000,1)
               print('DE_ORIGINAL_SNI_TLS='+json.dumps(state,sort_keys=True))
           print('SERVER_INSPECTION_READ_ONLY=true')
+          PY
+
+      - name: Inspect RU fastpath public TLS and on-node listeners (read only)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import socket,ssl,json,re,time
+          for host in ('www.youtube.com','claude.ai','api.anthropic.com','gemini.google.com','googlevideo.com'):
+              info={'hostname':host}
+              st=time.monotonic()
+              try:
+                  with socket.create_connection(('188.120.254.223',443),timeout=5) as raw:
+                      raw.settimeout(6)
+                      ctx=ssl.create_default_context()
+                      ctx.set_alpn_protocols(['http/1.1'])
+                      with ctx.wrap_socket(raw,server_hostname=host) as tls:
+                          info['tls']='verified'
+                          tls.sendall(('HEAD / HTTP/1.1\r\nHost: '+host+'\r\nConnection: close\r\n\r\n').encode())
+                          resp=tls.recv(256)
+                          info['status']=resp.split(b'\r\n',1)[0].decode('ascii','replace')[:90]
+              except Exception as e:info['error']=type(e).__name__
+              info['ms']=round((time.monotonic()-st)*1000,1)
+              print('RU_PUBLIC_SNI='+json.dumps(info,sort_keys=True))
+          PY
+          test -n "$RU_PASS" && test -s ops/mnebydns-owner-ssh-known_hosts
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR \
+            root@188.120.254.223 'python3 -' <<'PY'
+          import subprocess,json,pathlib,ssl,socket,time
+          def cmd(argv):
+              try:
+                  p=subprocess.run(argv,capture_output=True,text=True,timeout=5)
+                  return p.stdout.strip() if p.returncode==0 else 'unavailable'
+              except Exception:return 'unavailable'
+          for unit in ('nginx','mnebydns-dot','mnebydns-googlepilot'):
+              print('RU_UNIT_'+unit+'='+cmd(['systemctl','is-active',unit]))
+          lines=cmd(['ss','-Hlntp'])
+          for port in (443,15449,1853,8856):
+              selected=[x.split()[3] for x in lines.splitlines()
+                        if len(x.split())>=4 and x.split()[3].rsplit(':',1)[-1]==str(port)]
+              print('RU_LISTENER_'+str(port)+'='+json.dumps(selected[:12]))
+          for path in ('/etc/nginx/nginx.conf','/etc/nginx/stream.conf'):
+              p=pathlib.Path(path)
+              if p.exists():
+                  s=p.read_text(errors='replace').splitlines()
+                  for host in ('www.youtube.com','claude.ai','api.anthropic.com'):
+                      matches=[(i,x.strip()[:175]) for i,x in enumerate(s,1) if host in x and not any(t in x.lower() for t in ('token','password','secret'))]
+                      print('RU_RULE='+json.dumps({'file':path,'host':host,'matches':matches[:8]}))
+          print('RU_FASTPATH_READ_ONLY=true')
           PY
