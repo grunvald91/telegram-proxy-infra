@@ -25,7 +25,7 @@ ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz"
 ALLOWED_KEYS = ("DNS_ADMIN_TELEGRAM_ID", "SUPPORT_TELEGRAM_OPERATOR_ID",
                 "TELEGRAM_TOKEN_BOT")
 DB_SHELL = ('PGPASSWORD="$POSTGRES_PASSWORD" exec psql -XAt '
-            '-v ON_ERROR_STOP=1 -v VERBOSITY=sqlstate -h 127.0.0.1 '
+            '-v ON_ERROR_STOP=1 -v VERBOSITY=default -h 127.0.0.1 '
             '-U "$POSTGRES_USER" -d "$POSTGRES_DB"')
 DB_CONTAINER = "mnebyvpn-stage-postgres"
 
