@@ -1,0 +1,169 @@
+name: MNEBYDNS restore existing personalized DNS with two ChatGPT rules
+on:
+  push:
+    branches: [fix/mnebydns-update-existing-personal-chatgpt-20261114]
+    paths:
+      - 'scripts/mnebydns-update-existing-personal-chatgpt-20261114.sh'
+      - '.github/workflows/mnebydns-existing-personal-chatgpt-inplace-20261114.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-existing-personal-chatgpt-update
+  cancel-in-progress: false
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 17
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify source and expected existing route
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          bash -n scripts/mnebydns-update-existing-personal-chatgpt-20261114.sh
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          export SSHPASS="$DE_PASS"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh -T "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY'
+          import pathlib
+          p=pathlib.Path('/etc/mnebydns/personal-sni/nginx.conf')
+          b=pathlib.Path('/etc/mnebydns/personal-sni/nginx.conf.before-chatgpt-two-20261114')
+          assert p.read_bytes().count(b'10.66.77.2:8858;')==1
+          assert b.read_bytes().count(b'10.66.77.2:8856;')==1
+          assert p.read_bytes().count(b'default 89.125.90.101:853;')==1
+          assert b.read_bytes().count(b'default 89.125.90.101:853;')==1
+          print('CURRENT_PERSONAL_NAME_UNCHANGED=true')
+          print('TEMP_BACKEND_CAN_ROLL_BACK_TO_EXISTING_8856=true')
+          PY
+      - name: Stage only two policy entries for original 8856 container
+        id: staged
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e scp -q "${opts[@]}" scripts/mnebydns-update-existing-personal-chatgpt-20261114.sh root@188.120.254.223:/tmp/mnebydns-update-existing-personal-chatgpt-20261114.sh
+          sshpass -e ssh -T "${opts[@]}" root@188.120.254.223 'bash /tmp/mnebydns-update-existing-personal-chatgpt-20261114.sh stage'
+      - name: Replace same named container on original RU 8856, old container rollback preserved
+        id: replaced
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@188.120.254.223 'bash /tmp/mnebydns-update-existing-personal-chatgpt-20261114.sh replace'
+      - name: Verify original 8856 and temporary 8858 both respond to strict TLS
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@89.125.90.101 'python3 -' <<'PY'
+          import socket,ssl
+          for port in (8856,8858):
+              with socket.create_connection(('10.66.77.2',port),timeout=6) as raw:
+                  raw.settimeout(6)
+                  with ssl.create_default_context().wrap_socket(raw,server_hostname='aaaaaaaaaaaa.dns.mnebyvpn.site') as tls:
+                      assert tls.getpeercert()
+          print('DE_TO_ORIGINAL_PERSONAL_8856_TLS=PASS')
+          print('DE_TO_TEMP_PERSONAL_8858_TLS=PASS')
+          PY
+      - name: Restore DE SNI to original RU 8856, never change common CoreDNS
+        id: restored
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@89.125.90.101 'python3 -' <<'PY'
+          import pathlib,subprocess
+          p=pathlib.Path('/etc/mnebydns/personal-sni/nginx.conf')
+          b=pathlib.Path('/etc/mnebydns/personal-sni/nginx.conf.before-chatgpt-two-20261114')
+          cur=p.read_bytes();original=b.read_bytes()
+          assert cur.count(b'10.66.77.2:8858;')==1
+          assert original.count(b'10.66.77.2:8856;')==1
+          assert original.count(b'default 89.125.90.101:853;')==1
+          assert cur.replace(b'10.66.77.2:8858;',b'10.66.77.2:8856;')==original
+          p.write_bytes(original)
+          if subprocess.run(['nginx','-t','-c',str(p)],capture_output=True).returncode:
+              p.write_bytes(cur)
+              raise RuntimeError('Nginx rejected original route')
+          subprocess.run(['nginx','-s','reload','-c',str(p)],check=True)
+          print('EXISTING_PERSONAL_8856_ROUTE_RESTORED=true')
+          print('LEGACY_DNS_MAPPING_UNCHANGED=true')
+          PY
+      - name: Check public legacy query and personalized TLS + unknown key
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import socket,ssl,struct,secrets
+          addr=('89.125.90.101',853)
+          context=ssl.create_default_context()
+          qid=secrets.randbelow(65534)+1
+          request=struct.pack('!HHHHHH',qid,256,1,0,0,0)+b'\x07example\x03com\x00'+struct.pack('!HH',1,1)
+          frame=struct.pack('!H',len(request))+request
+          for name in ('dns.mnebyvpn.site','zzzzzzzzzzzz.dns.mnebyvpn.site'):
+              with socket.create_connection(addr,timeout=7) as raw:
+                  raw.settimeout(7)
+                  with context.wrap_socket(raw,server_hostname=name) as tls:
+                      tls.sendall(frame)
+                      if name.startswith('zzzzzzzzzzzz.'):
+                          try: answer=tls.recv(2)
+                          except ssl.SSLEOFError: answer=b''
+                          assert answer==b''
+                          print('EXISTING_PERSONAL_UNKNOWN_CREDENTIAL_DENIED=true')
+                      else:
+                          hdr=tls.recv(2)
+                          assert len(hdr)==2
+                          n=struct.unpack('!H',hdr)[0]
+                          assert 12<=n<=16384
+                          answer=b''
+                          while len(answer)<n:
+                              piece=tls.recv(n-len(answer))
+                              assert piece
+                              answer+=piece
+                          assert answer[:2]==request[:2] and answer[2]&128
+                          print('LEGACY_CORE_DNS_QUERY=PASS')
+          print('EXISTING_PERSONAL_PUBLIC_TLS=PASS')
+          PY
+      - name: Verify live original :8856 running and clean up temporary :8858
+        id: clean
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh -T "${opts[@]}" root@188.120.254.223 'bash /tmp/mnebydns-update-existing-personal-chatgpt-20261114.sh status'
+          sshpass -e ssh -T "${opts[@]}" root@188.120.254.223 'bash /tmp/mnebydns-update-existing-personal-chatgpt-20261114.sh cleanup'
+          sshpass -e ssh -T "${opts[@]}" root@188.120.254.223 'bash /tmp/mnebydns-update-existing-personal-chatgpt-20261114.sh finalize'
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -T "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY'
+          import pathlib
+          p=pathlib.Path('/etc/mnebydns/personal-sni/nginx.conf')
+          assert p.read_bytes().count(b'10.66.77.2:8856;')==1
+          b=pathlib.Path('/etc/mnebydns/personal-sni/nginx.conf.before-chatgpt-two-20261114')
+          if b.exists():
+              assert b.read_bytes()==p.read_bytes()
+              b.unlink()
+          print('TEMP_DE_ROUTE_BACKUP_CLEANED=true')
+          PY
+          echo 'Existing personalized DNS endpoint and original :8856 container restored, 2 domains in active policy; temporary :8858 removed.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Restore original 8856 container only if replacement fails before live cutback
+        if: ${{ failure() && steps.replaced.outcome == 'success' && steps.restored.outcome != 'success' }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@188.120.254.223 'bash /tmp/mnebydns-update-existing-personal-chatgpt-20261114.sh rollback'
