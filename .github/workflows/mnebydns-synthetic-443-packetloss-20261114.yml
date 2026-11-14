@@ -1,0 +1,50 @@
+name: MNEBYDNS synthetic TLS three-hop packet-loss location (read-only)
+on:
+  push:
+    branches: [diag/mnebydns-outage-20261114]
+    paths:
+      - '.github/workflows/mnebydns-synthetic-443-packetloss-20261114.yml'
+      - 'scripts/mnebydns-packetloss-three-hop-20261114.py'
+permissions: {contents: read}
+jobs:
+  locate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Validate and prepare read-only observer, pinned SSH and runner source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-packetloss-three-hop-20261114.py
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+          client_ip="$(curl -4 -fsS --max-time 7 https://api.ipify.org)"
+          python3 -c "import ipaddress,sys;ipaddress.IPv4Address(sys.argv[1])" "$client_ip"
+          echo "SYNTHETIC_SOURCE_IPV4_DISCOVERED=true"
+          echo "SOURCE_IPV4=$client_ip" >> "$GITHUB_ENV"
+      - name: Read only packet headers at RU public ingress, RU WG and DE WG/egress
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          src=scripts/mnebydns-packetloss-three-hop-20261114.py
+          SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223             "python3 -u - observe RU '$SOURCE_IPV4' 31" < "$src" > ru-observation.txt &
+          ru_pid=$!
+          SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101             "python3 -u - observe DE '$SOURCE_IPV4' 31" < "$src" > de-observation.txt &
+          de_pid=$!
+          sleep 4
+          python3 "$src" client
+          wait "$ru_pid"
+          wait "$de_pid"
+          echo '=== RU READ-ONLY AGGREGATE TRACE ==='
+          cat ru-observation.txt
+          echo '=== DE READ-ONLY AGGREGATE TRACE ==='
+          cat de-observation.txt
+          rm -f ru-observation.txt de-observation.txt
+          echo 'NO_PRODUCTION_MUTATIONS=true'
