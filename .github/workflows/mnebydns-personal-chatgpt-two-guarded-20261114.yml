@@ -1,0 +1,139 @@
+name: MNEBYDNS add two ChatGPT domains to personal DoT (blue-green guarded)
+on:
+  push:
+    branches: [fix/mnebydns-chatgpt-personal-two-20261114]
+    paths:
+      - 'scripts/mnebydns-personal-chatgpt-two-stage-20261114.sh'
+      - 'scripts/mnebydns-personal-chatgpt-two-switch-20261114.sh'
+      - '.github/workflows/mnebydns-personal-chatgpt-two-guarded-20261114.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-personal-chatgpt-two-release-20261114
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Guarded source preflight (no server changes)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          bash -n scripts/mnebydns-personal-chatgpt-two-stage-20261114.sh
+          bash -n scripts/mnebydns-personal-chatgpt-two-switch-20261114.sh
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          grep -Fq "'chatgpt.com','auth.openai.com'" scripts/mnebydns-personal-chatgpt-two-stage-20261114.sh
+          grep -Fq "default 89.125.90.101:853;" scripts/mnebydns-personal-chatgpt-two-switch-20261114.sh
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass >/dev/null
+      - name: Start isolated RU personal DoT candidate with 153 rules
+        id: stage
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e scp -q "${opts[@]}" scripts/mnebydns-personal-chatgpt-two-stage-20261114.sh root@188.120.254.223:/tmp/mnebydns-personal-chatgpt-two-stage-20261114.sh
+          sshpass -e ssh -T "${opts[@]}" root@188.120.254.223 'bash /tmp/mnebydns-personal-chatgpt-two-stage-20261114.sh stage'
+      - name: Switch DE SNI personal upstream only, with independent auto-rollback
+        id: switch
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e scp -q "${opts[@]}" scripts/mnebydns-personal-chatgpt-two-switch-20261114.sh root@89.125.90.101:/tmp/mnebydns-personal-chatgpt-two-switch-20261114.sh
+          sshpass -e ssh -T "${opts[@]}" root@89.125.90.101 'bash /tmp/mnebydns-personal-chatgpt-two-switch-20261114.sh switch'
+      - name: Verify public legacy DNS answer, personal TLS and unknown-key rejection
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import socket,ssl,secrets,struct
+          ip='89.125.90.101'
+          ctx=ssl.create_default_context()
+          qid=secrets.randbelow(65534)+1
+          question=struct.pack('!HHHHHH',qid,256,1,0,0,0)+b'\x07example\x03com\x00'+struct.pack('!HH',1,1)
+          frame=struct.pack('!H',len(question))+question
+          with socket.create_connection((ip,853),timeout=7) as raw:
+              raw.settimeout(7)
+              with ctx.wrap_socket(raw,server_hostname='dns.mnebyvpn.site') as tls:
+                  tls.sendall(frame)
+                  header=tls.recv(2)
+                  assert len(header)==2
+                  n=struct.unpack('!H',header)[0]
+                  assert 12<=n<=16384
+                  answer=b''
+                  while len(answer)<n:
+                      chunk=tls.recv(n-len(answer))
+                      assert chunk
+                      answer+=chunk
+                  assert answer[:2]==question[:2] and answer[2]&128
+          print('LEGACY_DNS_QUERY_AFTER_CHATGPT_PERSONAL=PASS')
+          with socket.create_connection((ip,853),timeout=7) as raw:
+              raw.settimeout(7)
+              with ctx.wrap_socket(raw,server_hostname='zzzzzzzzzzzz.dns.mnebyvpn.site') as tls:
+                  assert tls.getpeercert()
+                  tls.sendall(frame)
+                  try: reply=tls.recv(2)
+                  except ssl.SSLEOFError: reply=b''
+                  assert reply==b''
+          print('PERSONAL_CHATGPT_TWO_PUBLIC_TLS=PASS')
+          print('PERSONAL_CHATGPT_TWO_UNKNOWN_KEY_DENIED=PASS')
+          PY
+      - name: Verify live policy, RU containers, DE upstream
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -' <<'PY'
+          import pathlib,json,subprocess
+          path=pathlib.Path('/etc/mnebydns/personal-dot-chatgpt-two-20261114/policy.json')
+          items=json.loads(path.read_text())
+          assert len(items)==153 and len(set(items))==153
+          assert 'chatgpt.com' in items and 'auth.openai.com' in items
+          assert subprocess.run(['docker','inspect','-f','{{.State.Running}}','mnebydns-personal-dot-private'],capture_output=True,text=True,check=True).stdout.strip()=='true'
+          assert subprocess.run(['docker','inspect','-f','{{.State.Running}}','mnebydns-personal-dot-chatgpt-two'],capture_output=True,text=True,check=True).stdout.strip()=='true'
+          print('PERSONAL_CHATGPT_TWO_NEW_POLICY_LIVE=PASS')
+          print('PERSONAL_CHATGPT_TWO_OLD_AND_NEW_RUNNING=true')
+          PY
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'bash /tmp/mnebydns-personal-chatgpt-two-switch-20261114.sh status'
+      - name: Finalize personal SNI only after all gates pass
+        id: finalize
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@89.125.90.101 'bash /tmp/mnebydns-personal-chatgpt-two-switch-20261114.sh finalize'
+          echo 'Two exact ChatGPT hostnames added to new personal policy. Legacy DNS, original 8856 and original policy left untouched.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Android key-bearing query and app login still require device-side acceptance testing.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Roll back DE SNI on any failure before finalization
+        if: ${{ failure() && steps.stage.outcome == 'success' && steps.finalize.outcome != 'success' }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@89.125.90.101 'bash /tmp/mnebydns-personal-chatgpt-two-switch-20261114.sh rollback'
+      - name: Remove only new RU candidate after unsuccessful release
+        if: ${{ failure() && steps.stage.outcome == 'success' && steps.finalize.outcome != 'success' }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@188.120.254.223 'bash /tmp/mnebydns-personal-chatgpt-two-stage-20261114.sh rollback'
