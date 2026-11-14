@@ -169,4 +169,39 @@ jobs:
           ip -4 route get 10.66.77.1 2>/dev/null | sed -E 's/src [0-9.]+/src [redacted]/' | cut -c1-160 | sed 's/^/RU_WG_ROUTE=/' || true
           REMOTE
           sshpass -e ssh -T "${opts[@]}" root@188.120.254.223 'python3 -' < scripts/mnebydns-owner-personal-24h-meter-20261114.py
+          sshpass -e ssh -T "${opts[@]}" root@188.120.254.223 'python3 -' <<'PY'
+          import pathlib,re,subprocess
+          cfg={}
+          for line in pathlib.Path('/opt/mnebyvpn/bot/web.env').read_text().splitlines():
+              if '=' in line:
+                  key,val=line.split('=',1)
+                  if key in ('DNS_ADMIN_TELEGRAM_ID','SUPPORT_TELEGRAM_OPERATOR_ID'):
+                      cfg[key]=val.strip().strip('"').strip("'")
+          owner=cfg.get('DNS_ADMIN_TELEGRAM_ID') or cfg.get('SUPPORT_TELEGRAM_OPERATOR_ID','')
+          if not re.fullmatch('[1-9][0-9]{0,15}',owner):
+              raise SystemExit('OWNER_CONFIG_MISSING')
+          sql=f"""WITH selected AS (
+            SELECT e.id FROM entitlements e
+            JOIN accounts a ON a.id=e.account_id
+            JOIN orders o ON o.id=e.source_order_id
+            WHERE a.telegram_user_id={owner}::bigint
+              AND e.product='smart_dns' AND o.provider='internal_trial'
+              AND e.starts_at>clock_timestamp()-interval '72 hours'
+            ORDER BY e.starts_at DESC LIMIT 1
+          ) SELECT COALESCE(to_char(MAX(w.updated_at) AT TIME ZONE 'UTC',
+                            'YYYY-MM-DD"T"HH24:MI:SS"Z"'),'NONE')||'|'||
+                       COALESCE(SUM(w.used_queries),0)::bigint
+          FROM selected s LEFT JOIN personal_dns_query_windows w
+            ON w.entitlement_id=s.id;"""
+          shell='PGPASSWORD="$POSTGRES_PASSWORD" exec psql -XAt -v ON_ERROR_STOP=1 -h 127.0.0.1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+          p=subprocess.run(['docker','exec','-i','mnebyvpn-stage-postgres','sh','-c',shell],
+             input=sql,capture_output=True,text=True,timeout=20)
+          if p.returncode:raise SystemExit('DB_LAST_UPDATE_QUERY_FAILED')
+          v=p.stdout.strip().split('|')
+          if len(v)!=2 or not re.fullmatch(r'[0-9]{1,13}',v[1]):
+              raise SystemExit('INVALID_LAST_UPDATE_RESPONSE')
+          print('PERSONAL_OWNER_LAST_DNS_METER_UPDATE_UTC='+v[0],flush=True)
+          print('PERSONAL_OWNER_SETTLED_QUERIES='+v[1],flush=True)
+          print('PERSONAL_OWNER_LAST_UPDATE_DB_READONLY=true',flush=True)
+          PY
           echo 'INCIDENT_DIAGNOSTICS_MUTATIONS=false'
