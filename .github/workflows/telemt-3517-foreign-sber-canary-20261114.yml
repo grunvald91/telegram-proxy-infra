@@ -24,12 +24,20 @@ jobs:
           set -euo pipefail
           bash -n scripts/telemt_3517_sber_canary_20261114.sh
           test -n "$DE_PASS" && test -s ops/mnebydns-owner-ssh-known_hosts
+          test "$(uname -m)" = x86_64
           curl --fail --location --silent --show-error --retry 2 --proto '=https' --proto-redir '=https' --tlsv1.2 --max-time 90 \
-            -o "$RUNNER_TEMP/telemt-3.5.17" \
-            https://github.com/telemt/telemt/releases/download/3.5.17/telemt
-          printf 'e5ca8befdc1428fcd66537ef04f3a95e5f278ebf3c3dd0d0909ce25a390f502b  %s\n' "$RUNNER_TEMP/telemt-3.5.17" | sha256sum -c -
-          chmod 0755 "$RUNNER_TEMP/telemt-3.5.17"
-          "$RUNNER_TEMP/telemt-3.5.17" --version | grep -F 3.5.17
+            -o "$RUNNER_TEMP/telemt-x86_64-linux-gnu.tar.gz" \
+            https://github.com/telemt/telemt/releases/download/3.5.17/telemt-x86_64-linux-gnu.tar.gz
+          printf '0570762ddcd79530d666b09e955b955bb52c9e134cc8b8ed1a0f50ad28d58a0e  %s\n' "$RUNNER_TEMP/telemt-x86_64-linux-gnu.tar.gz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/telemt-3517-extracted"
+          tar -xzf "$RUNNER_TEMP/telemt-x86_64-linux-gnu.tar.gz" -C "$RUNNER_TEMP/telemt-3517-extracted" --no-same-owner
+          CANDIDATE="$(find "$RUNNER_TEMP/telemt-3517-extracted" -type f -name telemt -print -quit)"
+          test -n "$CANDIDATE" && test -f "$CANDIDATE"
+          file -b "$CANDIDATE" | grep -F 'x86-64'
+          install -m 0755 "$CANDIDATE" "$RUNNER_TEMP/telemt-3.5.17"
+          "$RUNNER_TEMP/telemt-3.5.17" --version 2>&1 | grep -F 3.5.17
+          BIN_SHA="$(sha256sum "$RUNNER_TEMP/telemt-3.5.17" | cut -d' ' -f1)"
+          echo "BIN_SHA=$BIN_SHA" >> "$GITHUB_ENV"
           echo 'UPSTREAM_VERIFIED_3517=true'
           sudo apt-get update -qq && sudo apt-get install -y -qq sshpass >/dev/null
       - name: Transfer verified binary without changing shared system Telemt
@@ -52,7 +60,7 @@ jobs:
           opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519
             -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
             -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
-          sshpass -e ssh -T ${opts[@]} root@89.125.90.101 "bash /tmp/telemt_3517_sber_canary_20261114.sh stage '$GITHUB_RUN_ID'" | tee "$RUNNER_TEMP/stage.log"
+          sshpass -e ssh -T ${opts[@]} root@89.125.90.101 "bash /tmp/telemt_3517_sber_canary_20261114.sh stage '$GITHUB_RUN_ID' '$BIN_SHA'" | tee "$RUNNER_TEMP/stage.log"
           grep -Fq 'TELEMT_INDEPENDENT_ROLLBACK_ARMED=true' "$RUNNER_TEMP/stage.log"
           grep -Fq 'TELEMT_SBER_CANARY_RUNNING_3517=true' "$RUNNER_TEMP/stage.log"
           echo 'active=true' >> "$GITHUB_OUTPUT"
