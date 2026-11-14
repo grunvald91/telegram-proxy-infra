@@ -7,7 +7,7 @@ Roles:
 
 No TLS interception. No reusable arbitrary UDP proxy: every new flow is
 admitted only after parsing QUIC Initial / TLS ClientHello SNI and a strict
-YouTube allowlist. Unparseable Initials fail closed.
+YouTube and Google API allowlist. Unparseable Initials fail closed.
 """
 from __future__ import annotations
 import argparse
@@ -30,7 +30,7 @@ INITIAL_V1_SALT = bytes.fromhex("38762cf7f55934b34d179ae6a4c80cadccbb7f0a")
 INITIAL_V2_SALT = bytes.fromhex("0dede3def700a6db819381be6e269dcbf9bd2ed9")
 YOUTUBE_SUFFIXES = (
     "youtube.com", "youtube-nocookie.com", "googlevideo.com",
-    "ytimg.com", "ggpht.com",
+    "ytimg.com", "ggpht.com", "googleapis.com",
 )
 YOUTUBE_EXACT = frozenset(("youtubei.googleapis.com", "youtube.googleapis.com", "youtubeembeddedplayer.googleapis.com"))
 # QUIC datagrams larger than 1450 bytes (e.g. coalesced packets) are valid.
