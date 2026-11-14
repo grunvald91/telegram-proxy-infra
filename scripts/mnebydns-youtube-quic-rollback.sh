@@ -21,7 +21,7 @@ for f in "/etc/systemd/system/$unit.service" \
     }
   fi
 done
-systemctl stop "$unit.service" >/dev/null 2>&1 || true
+systemctl disable --now "$unit.service" >/dev/null 2>&1 || true
 if systemctl is-active --quiet "$unit.service"; then
   echo "youtube_quic_${role}_rollback_stop_failed=true"; exit 3
 fi
