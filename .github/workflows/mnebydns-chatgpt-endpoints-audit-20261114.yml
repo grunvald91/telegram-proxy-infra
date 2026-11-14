@@ -1,0 +1,34 @@
+name: MNEBYDNS ChatGPT auth WebSocket and CDN endpoint differential 20261114
+on:
+  push:
+    branches: [diag/mnebydns-outage-20261114]
+    paths: ['.github/workflows/mnebydns-chatgpt-endpoints-audit-20261114.yml']
+permissions: {contents: read}
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare TLS and HTTP status pinned to RU and DE endpoints read-only
+        run: |
+          python3 - <<'PY'
+          import socket,ssl,time,concurrent.futures
+          names=['ws.chatgpt.com','tcr9i.chat.openai.com','www.chatgpt.com','auth0.openai.com','setup.auth.openai.com','ios.chat.openai.com','desktop.chat.openai.com','cdn.openaimerge.com','cdn.oaistatsig.com','cdn.workos.com','setup.workos.com','forwarder.workos.com','frontend-apps-multi-region.workos.com','challenges.cloudflare.com']
+          def test(arg):
+            name,ip=arg
+            t=time.monotonic()
+            try:
+              with socket.create_connection((ip,443),timeout=4) as raw:
+                raw.settimeout(6)
+                with ssl.create_default_context().wrap_socket(raw,server_hostname=name) as s:
+                  tls_ms=round((time.monotonic()-t)*1000)
+                  s.sendall(('GET / HTTP/1.1\r\nHost: '+name+'\r\nConnection: close\r\nUser-Agent: Mozilla/5.0\r\nAccept: */*\r\n\r\n').encode())
+                  status=s.recv(150).split(b'\r\n',1)[0].decode('ascii','replace')[:55]
+                  return name,ip,'OK',tls_ms,status
+            except Exception as e:return name,ip,type(e).__name__,round((time.monotonic()-t)*1000),''
+          args=[(n,ip) for n in names for ip in ('188.120.254.223','89.125.90.101')]
+          with concurrent.futures.ThreadPoolExecutor(max_workers=6) as ex:
+            for n,ip,status,ms,http in ex.map(test,args):
+              print('HOST',n,ip,status,ms,http,flush=True)
+          PY
