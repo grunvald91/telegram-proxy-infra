@@ -25,7 +25,7 @@ ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz"
 ALLOWED_KEYS = ("DNS_ADMIN_TELEGRAM_ID", "SUPPORT_TELEGRAM_OPERATOR_ID",
                 "TELEGRAM_TOKEN_BOT")
 DB_SHELL = ('PGPASSWORD="$POSTGRES_PASSWORD" exec psql -XAt '
-            '-v ON_ERROR_STOP=1 -h 127.0.0.1 '
+            '-v ON_ERROR_STOP=1 -v VERBOSITY=sqlstate -h 127.0.0.1 '
             '-U "$POSTGRES_USER" -d "$POSTGRES_DB"')
 DB_CONTAINER = "mnebyvpn-stage-postgres"
 
@@ -54,7 +54,10 @@ def sqlrun(sql: str) -> list[str]:
         input=sql, capture_output=True, text=True, timeout=25, check=False,
     )
     if r.returncode:
-        # Never print stderr: SQL may contain the ephemeral bearer label.
+        # SQLSTATE contains no DNS bearer, user ID or application data.
+        code = re.search(r"(?<![A-Z0-9])[0-9A-Z]{5}(?![A-Z0-9])", r.stderr)
+        print("OWNER_PERSONAL_POSTGRES_SQLSTATE=" + (
+            code.group(0) if code else "UNAVAILABLE"), flush=True)
         raise RuntimeError("POSTGRES_TRANSACTION_FAILED")
     return [v.strip() for v in r.stdout.splitlines() if v.strip()]
 
@@ -242,5 +245,8 @@ if __name__ == "__main__":
     except Exception as exc:
         # Explicitly avoid traceback, exception messages containing credentials,
         # request URLs, Telegram IDs or database connection strings.
+        code = str(exc)
+        code = code if re.fullmatch(r"[A-Z0-9_]{4,90}", code) else "UNCLASSIFIED"
+        print("OWNER_PERSONAL_TEST_ISSUE_ERROR_CODE=" + code)
         print("OWNER_PERSONAL_TEST_ISSUE_ERROR_CLASS=" + type(exc).__name__)
         sys.exit(2)
