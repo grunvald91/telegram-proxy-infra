@@ -1,0 +1,107 @@
+name: Diagnose ordinary MNEBYDNS YouTube route RU188 DE89 (read-only)
+on:
+  push:
+    branches: [diag/ordinary-dns-youtube-20261114]
+    paths: ['.github/workflows/diag-ordinary-youtube-20261114.yml']
+  workflow_dispatch:
+permissions: {contents: read}
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Verify requirements
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+      - name: Public ordinary DoT and TCP 443 actual HTTPS response
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import socket,ssl,struct
+          ip='188.120.254.223'
+          names=['www.youtube.com','youtubei.googleapis.com','www.googlevideo.com','r1---sn-test.googlevideo.com','i.ytimg.com']
+          def dns(n):
+              query=struct.pack('!HHHHHH',55771,0x100,1,0,0,0)
+              query+=b''.join(bytes([len(p)])+p.encode() for p in n.split('.'))+b'\0'+struct.pack('!HH',1,1)
+              with socket.create_connection((ip,853),timeout=6) as conn:
+                  conn.settimeout(7)
+                  with ssl.create_default_context().wrap_socket(conn,server_hostname='dns.mnebyvpn.site') as s:
+                      s.sendall(struct.pack('!H',len(query))+query)
+                      prefix=s.recv(2)
+                      if len(prefix)!=2:return 'TRUNCATED'
+                      size=struct.unpack('!H',prefix)[0]
+                      data=b''
+                      while len(data)<size:
+                          b=s.recv(size-len(data))
+                          if not b:break
+                          data+=b
+                      return 'RU188' if bytes([188,120,254,223]) in data else 'OTHER_OR_EMPTY_'+str(len(data))
+          for host in names:
+              try:print('ORDINARY_DOT_A_'+host+'='+dns(host),flush=True)
+              except Exception as e:print('ORDINARY_DOT_A_'+host+'='+type(e).__name__,flush=True)
+              if host.startswith('r1---'):continue
+              try:
+                  with socket.create_connection((ip,443),timeout=7) as tcp:
+                      tcp.settimeout(8)
+                      with ssl.create_default_context().wrap_socket(tcp,server_hostname=host) as s:
+                          s.sendall(('HEAD / HTTP/1.1\r\nHost: '+host+'\r\nConnection: close\r\n\r\n').encode())
+                          first=s.recv(512).split(b'\r\n',1)[0]
+                          print('RU188_TCP_HTTP_'+host+'='+repr(first[:100]),flush=True)
+              except Exception as e:print('RU188_TCP_HTTP_'+host+'='+type(e).__name__+':'+str(e)[:130],flush=True)
+          PY
+      - name: Live Russian 188 UDP443 and TCP443 state without modifying anything
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@188.120.254.223 'python3 -' <<'PY'
+          import subprocess
+          for label,cmd in [
+              ('UDP443_LISTENER',['ss','-Hlunp','sport = :443']),
+              ('TCP443_LISTENER',['ss','-Hlnpt','sport = :443']),
+              ('RU_WG_IP',['ip','-o','-4','addr','show','dev','tg-relay'])
+          ]:
+              try:
+                  x=subprocess.run(cmd,text=True,capture_output=True,timeout=7)
+                  print('RU_'+label+'_RC='+str(x.returncode)+' LINE='+repr(x.stdout.strip()[:280]),flush=True)
+              except Exception as e:print('RU_'+label+'='+type(e).__name__,flush=True)
+          for proto in ['udp','tcp']:
+              try:
+                  x=subprocess.run(['ufw','status','numbered'],text=True,capture_output=True,timeout=7)
+                  matching=[line for line in x.stdout.splitlines() if '443' in line and (proto in line or '443 ' in line)]
+                  print('RU_FIREWALL_'+proto+'443='+repr(matching[:10]),flush=True)
+              except Exception as e:print('RU_FIREWALL_'+proto+'443='+type(e).__name__,flush=True)
+          PY
+      - name: Inspect actual DE89 Google video SNI backend 15449 and HTTP without modifying anything
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@89.125.90.101 'python3 -' <<'PY'
+          import socket,ssl,subprocess
+          for port in (15449,443):
+              p=subprocess.run(['ss','-Hlnpt','sport = :'+str(port)],text=True,capture_output=True,timeout=8)
+              print('DE_TCP_LISTENER_'+str(port)+'='+repr(p.stdout.strip()[:350]),flush=True)
+          p=subprocess.run(['nginx','-t'],text=True,capture_output=True,timeout=10)
+          print('DE_NGINX_TEST_RC='+str(p.returncode),flush=True)
+          for port in (15449,443):
+              for host in ('www.googlevideo.com','www.youtube.com'):
+                  try:
+                      with socket.create_connection(('127.0.0.1',port),timeout=7) as tcp:
+                          tcp.settimeout(8)
+                          with ssl.create_default_context().wrap_socket(tcp,server_hostname=host) as s:
+                              s.sendall(('HEAD / HTTP/1.1\r\nHost: '+host+'\r\nConnection: close\r\n\r\n').encode())
+                              line=s.recv(512).split(b'\r\n',1)[0]
+                              print('DE_HTTP_'+str(port)+'_'+host+'='+repr(line[:100]),flush=True)
+                  except Exception as e:print('DE_HTTP_'+str(port)+'_'+host+'='+type(e).__name__+':'+str(e)[:130],flush=True)
+          print('LIVE_MUTATION=NONE',flush=True)
+          PY
