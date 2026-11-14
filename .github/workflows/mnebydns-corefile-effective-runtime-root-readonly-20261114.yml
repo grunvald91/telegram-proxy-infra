@@ -1,0 +1,47 @@
+name: MNEBYDNS verify true active CoreDNS source and ChatGPT mapping components
+on:
+  push:
+    branches: [audit/mnebydns-legacy-personal-full-route-diff-20261114]
+    paths: ['.github/workflows/mnebydns-corefile-effective-runtime-root-readonly-20261114.yml']
+permissions: {contents: read}
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Inspect CoreDNS effective ExecStart, loader and relevant routing blocks only
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -s ops/mnebydns-owner-ssh-known_hosts && test -n "$DE_PASS"
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass >/dev/null
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@89.125.90.101 'python3 -' <<'PY'
+          import subprocess,pathlib,re
+          for cmd in [
+            ['systemctl','show','mnebydns-dot','-p','ExecStart','-p','WorkingDirectory','-p','MainPID'],
+            ['systemctl','show','nginx','-p','ExecStart','-p','MainPID']]:
+            p=subprocess.run(cmd,capture_output=True,text=True,timeout=10)
+            for line in p.stdout.splitlines():
+              print('EFFECTIVE_PROCESS_INFO='+line[:400],flush=True)
+          c=pathlib.Path('/opt/mnebydns-dot/Corefile')
+          core=c.read_text()
+          words=('chatgpt','openai','host','rewrite','import','forward','file ','template IN A .','.:',':853','cache 30')
+          print('CORE_COREDNS_FILE_PATH='+str(c))
+          print('CORE_MATCHING_LINES_LIMITED_BEGIN')
+          for i,line in enumerate(core.splitlines(),start=1):
+            stripped=line.strip().lower()
+            if any(w in stripped for w in words) and not stripped.startswith('answer'):
+              if ('tls ' in stripped or 'key' in stripped or 'password' in stripped):continue
+              print('CORE_MATCH_LINE='+str(i)+':'+line.strip()[:200],flush=True)
+          print('CORE_MATCHING_LINES_LIMITED_END')
+          for path in ('/etc/mnebydns/personal-sni/nginx.conf','/etc/nginx/nginx.conf'):
+            src=pathlib.Path(path).read_text()
+            for line in src.splitlines():
+              if '1853' in line or '15449' in line or 'ssl_preread_server_name' in line:
+                print('NGINX_RELEVANT='+path+':'+line.strip()[:210],flush=True)
+          PY
