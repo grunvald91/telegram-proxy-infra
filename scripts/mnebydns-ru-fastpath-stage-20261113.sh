@@ -21,6 +21,7 @@ p=pathlib.Path(sys.argv[1])
 d=json.loads((p/'plan.json').read_text())
 assert d['read_only'] is True and d['selected_count']>=3
 assert d['selected_count']==len(set(d['selected']))
+assert d.get('expected_mapped_ipv4','188.120.254.223') in ('188.120.254.223','89.125.90.101')
 for file,key in (('dns.before','sha_before'),('dns.pilot','sha_pilot')):
     assert hashlib.sha256((p/file).read_bytes()).hexdigest()==d[key]
 print('FASTPATH_STAGED_HASHES_VERIFIED=true',flush=True)
@@ -91,7 +92,10 @@ done
 ss -H -lnt 'sport = :18553' | grep -Fq '127.0.0.1:18553'
 python3 - "$base/plan.json" <<'PY'
 import ipaddress,json,socket,ssl,struct,sys
-selected=json.load(open(sys.argv[1]))['selected']
+plan=json.load(open(sys.argv[1]))
+selected=plan['selected']
+expected=plan.get('expected_mapped_ipv4','188.120.254.223')
+assert expected in ('188.120.254.223','89.125.90.101')
 def read(conn,n):
     b=b''
     while len(b)<n:
@@ -108,8 +112,8 @@ def query(host):
             tls.sendall(len(payload).to_bytes(2,'big')+payload)
             data=read(tls,int.from_bytes(read(tls,2),'big'))
     if data[:2]!=payload[:2] or data[3]&15:raise RuntimeError("Bad preflight DNS reply")
-    if host in selected and ipaddress.IPv4Address('188.120.254.223').packed not in data:
-        raise RuntimeError("Selected name did not map to RU: "+host)
+    if host in selected and ipaddress.IPv4Address(expected).packed not in data:
+        raise RuntimeError("Selected name did not map to the planned ingress: "+host)
 for item in selected+['example.org','api.telegram.org']:
     query(item)
 print("FASTPATH_ISOLATED_DOT_VERIFIED="+str(len(selected)),flush=True)
