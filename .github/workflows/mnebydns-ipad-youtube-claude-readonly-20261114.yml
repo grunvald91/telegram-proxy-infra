@@ -1,0 +1,166 @@
+name: MNEBYDNS iPad YouTube Claude exact diagnostics (read only)
+on:
+  push:
+    branches: [diag/ipad-youtube-claude-readonly-20261114]
+    paths: ['.github/workflows/mnebydns-ipad-youtube-claude-readonly-20261114.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Inspect exact public Apple profile without installation
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json,urllib.request,plistlib,hashlib
+          url='https://cdn.servgo.ru/mnebyvpn-dns.mobileconfig'
+          try:
+              with urllib.request.urlopen(url,timeout=15) as r:
+                  payload=r.read(65536)
+                  typ=r.headers.get('Content-Type','')
+              p=plistlib.loads(payload)
+              d=p['PayloadContent'][0]['DNSSettings']
+              print('APPLE_PROFILE='+json.dumps({
+                  'reachable':True,'sha256':hashlib.sha256(payload).hexdigest(),
+                  'content_type':typ,'protocol':d.get('DNSProtocol'),
+                  'server_name':d.get('ServerName'),
+                  'server_addresses':d.get('ServerAddresses'),
+                  'supplemental_match_domains':d.get('SupplementalMatchDomains'),
+                  'allow_failover':d.get('AllowFailover'),
+                  'payload_type':p['PayloadContent'][0].get('PayloadType')
+              },sort_keys=True))
+          except Exception as e:
+              print('APPLE_PROFILE_ERROR='+type(e).__name__)
+          PY
+      - name: Query exact public legacy DoT A AAAA HTTPS for content and authentication
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import socket,struct,ssl,secrets,json,time
+          ip='89.125.90.101'; sni='dns.mnebyvpn.site'
+          hosts=(
+             'www.youtube.com','youtube.com','i.ytimg.com','ytimg.com',
+             'youtubei.googleapis.com','googlevideo.com','redirector.googlevideo.com',
+             'claude.com','www.claude.com','claude.ai','www.claude.ai',
+             'api.anthropic.com','auth.anthropic.com','console.anthropic.com',
+             'example.org'
+          )
+          def exact(sock,n):
+              out=b''
+              while len(out)<n:
+                  chunk=sock.recv(n-len(out))
+                  if not chunk:raise EOFError('short_dns')
+                  out+=chunk
+              return out
+          def domain_at(buf,at):
+              labels=[]; jumped=False; stop=at; hops=0
+              while True:
+                  if at>=len(buf):raise ValueError('out_of_bounds')
+                  length=buf[at]
+                  if length&192==192:
+                      if at+1>=len(buf):raise ValueError('short_pointer')
+                      ptr=((length&63)<<8)|buf[at+1]
+                      if not jumped: stop=at+2
+                      at=ptr;jumped=True;hops+=1
+                      if hops>12:raise ValueError('cyclic_dns_pointer')
+                      continue
+                  if length&192:raise ValueError('unknown_label')
+                  at+=1
+                  if length==0:
+                      if not jumped:stop=at
+                      return '.'.join(labels),stop
+                  if at+length>len(buf):raise ValueError('short_label')
+                  labels.append(buf[at:at+length].decode('ascii','replace'))
+                  at+=length
+          def query(host,typ):
+              qname=b''.join(bytes([len(label)])+label.encode() for label in host.split('.'))+b'\0'
+              qid=secrets.randbelow(65535)
+              req=struct.pack('!HHHHHH',qid,0x0100,1,0,0,0)+qname+struct.pack('!HH',typ,1)
+              st=time.monotonic()
+              with socket.create_connection((ip,853),timeout=5) as raw:
+                  raw.settimeout(5)
+                  with ssl.create_default_context().wrap_socket(raw,server_hostname=sni) as tls:
+                      tls.sendall(struct.pack('!H',len(req))+req)
+                      size=struct.unpack('!H',exact(tls,2))[0]
+                      if not 12<=size<=64000:raise ValueError('wrong_frame_size')
+                      resp=exact(tls,size)
+              tx,flags,qd,an,ns,ar=struct.unpack_from('!HHHHHH',resp)
+              if tx!=qid or not flags&0x8000 or qd!=1:raise ValueError('invalid_dns_transaction')
+              pos=12
+              for _ in range(qd):
+                  _,pos=domain_at(resp,pos);pos+=4
+              answers=[]
+              for _ in range(min(an,50)):
+                  owner,pos=domain_at(resp,pos)
+                  rrtype,rrclass,ttl,rdlen=struct.unpack_from('!HHIH',resp,pos);pos+=10
+                  rstart=pos;pos+=rdlen
+                  if pos>len(resp):raise ValueError('bad_rdlen')
+                  if rrtype==1 and rdlen==4:record=socket.inet_ntop(socket.AF_INET,resp[rstart:pos])
+                  elif rrtype==28 and rdlen==16:record=socket.inet_ntop(socket.AF_INET6,resp[rstart:pos])
+                  elif rrtype==5:record=domain_at(resp,rstart)[0]
+                  else:record='RR'+str(rrtype)
+                  answers.append({'type':rrtype,'name':owner,'record':record})
+              return {'rcode':flags&15,'answers':answers[:8],'ms':round((time.monotonic()-st)*1000,1)}
+          for host in hosts:
+              results={}
+              for label,typ in (('A',1),('AAAA',28),('HTTPS',65)):
+                  try:results[label]=query(host,typ)
+                  except Exception as e:results[label]={'error':type(e).__name__}
+              print('DOT_HOST='+json.dumps({'host':host,**results},sort_keys=True))
+          print('DOT_DIAGNOSTIC_READ_ONLY=true')
+          PY
+      - name: Read existing foreign routing rules and perform original-SNI local TLS checks
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS" && test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR \
+            root@89.125.90.101 'python3 -' <<'PY'
+          import pathlib,socket,ssl,json,subprocess,re,time
+          terms=('youtube','googlevideo','ytimg','youtubei','claude','anthropic')
+          for name,where in [('COREDNS','/opt/mnebydns-dot/Corefile'),('NGINX','/etc/nginx/nginx.conf')]:
+              p=pathlib.Path(where)
+              if not p.is_file():
+                  print(name+'_FILE=MISSING')
+                  continue
+              lines=p.read_text(errors='replace').splitlines()
+              print(name+'_LINE_COUNT='+str(len(lines)))
+              for term in terms:
+                  hits=[{'line':i,'text':x.strip()[:240]} for i,x in enumerate(lines,1)
+                        if term in x.lower() and not re.search(r'password|secret|token',x,re.I)]
+                  print(name+'_TERM='+json.dumps({'term':term,'matches':hits[:12],'total_matches':len(hits)}))
+          for unit in ('mnebydns-dot','nginx'):
+              proc=subprocess.run(['systemctl','is-active',unit],capture_output=True,text=True,timeout=5)
+              print('DE_SYSTEMD_'+unit+'='+proc.stdout.strip())
+          for h in ('www.youtube.com','i.ytimg.com','claude.com','www.claude.com','claude.ai','www.claude.ai','api.anthropic.com'):
+              state={'host':h}
+              st=time.monotonic()
+              try:
+                  with socket.create_connection(('127.0.0.1',443),timeout=5) as raw:
+                      raw.settimeout(5)
+                      ctx=ssl.create_default_context()
+                      ctx.set_alpn_protocols(['http/1.1'])
+                      with ctx.wrap_socket(raw,server_hostname=h) as tls:
+                          state['tls']='verified'
+                          tls.sendall(('HEAD / HTTP/1.1\r\nHost: '+h+'\r\nConnection: close\r\n\r\n').encode())
+                          first=tls.recv(200).split(b'\r\n',1)[0]
+                          state['http_status_line']=first.decode('ascii','replace')[:85]
+              except Exception as e:
+                  state['error']=type(e).__name__
+              state['ms']=round((time.monotonic()-st)*1000,1)
+              print('DE_ORIGINAL_SNI_TLS='+json.dumps(state,sort_keys=True))
+          print('SERVER_INSPECTION_READ_ONLY=true')
+          PY
