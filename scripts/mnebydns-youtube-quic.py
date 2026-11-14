@@ -107,8 +107,8 @@ def tls_hello_sni(hello: bytes) -> Optional[str]:
     return None
 
 
-def initial_sni(packet: bytes) -> Optional[str]:
-    """Extract SNI from one complete QUIC v1 or v2 Initial containing CRYPTO at offset 0.
+def initial_crypto_fragments(packet: bytes) -> Optional[list[tuple[int, bytes]]]:
+    """Extract authenticated QUIC Initial CRYPTO frame offsets and bytes.
 
     No application data or TLS traffic is decrypted: only public Initial keys
     and the ClientHello are processed, as defined in RFC 9001.
@@ -156,20 +156,60 @@ def initial_sni(packet: bytes) -> Optional[str]:
         nonce = bytes(a ^ b for a,b in zip(iv, packet_number.to_bytes(12, "big")))
         plain = AESGCM(key).decrypt(nonce, packet[pn_offset+pn_len:pn_offset+frame_len], associated)
         offset = 0
-        # PADDING (0x00) and CRYPTO (0x06) are sufficient for the observed PCAPs.
+        fragments: list[tuple[int,bytes]] = []
+        # Handle padding, ping, ACK and any CRYPTO frames; never inspect app payloads.
         while offset < len(plain):
             typ = plain[offset]; offset += 1
             if typ in (0, 1): continue
-            if typ != 6: return None
+            if typ in (2, 3):
+                largest,offset=varint(plain,offset)
+                ack_delay,offset=varint(plain,offset)
+                ranges,offset=varint(plain,offset)
+                first_range,offset=varint(plain,offset)
+                if ranges>128:return None
+                for _ in range(ranges):
+                    gap,offset=varint(plain,offset)
+                    length,offset=varint(plain,offset)
+                if typ==3:
+                    for _ in range(3):
+                        value,offset=varint(plain,offset)
+                continue
+            if typ != 6: return fragments or None
             crypto_offset, offset = varint(plain, offset)
             length, offset = varint(plain, offset)
-            if length > 8192 or offset + length > len(plain):return None
-            if crypto_offset == 0:
-                return tls_hello_sni(plain[offset:offset+length])
+            if length > 8192 or crypto_offset+length>8192 or offset + length > len(plain):
+                return None
+            fragments.append((crypto_offset,plain[offset:offset+length]))
             offset += length
+        return fragments or None
     except (ValueError, IndexError, InvalidTag, OverflowError):
         return None
-    return None
+
+
+def contiguous_hello(parts: dict[int, bytes]) -> tuple[bytes, bool]:
+    """Assemble only a bounded contiguous TLS ClientHello from authenticated frames."""
+    assembled=bytearray()
+    for offset, data in sorted(parts.items()):
+        if offset>len(assembled):
+            break
+        overlap=len(assembled)-offset
+        if overlap and assembled[offset:offset+min(overlap,len(data))] != data[:min(overlap,len(data))]:
+            return b"",True
+        assembled.extend(data[overlap:])
+        if len(assembled)>8192: return b"",True
+    if len(assembled)<4: return bytes(assembled),False
+    if assembled[0]!=1:return b"",True
+    size=int.from_bytes(assembled[1:4],"big")+4
+    if size>8192:return b"",True
+    return bytes(assembled),len(assembled)>=size
+
+
+def initial_sni(packet: bytes) -> Optional[str]:
+    frames=initial_crypto_fragments(packet)
+    if not frames:return None
+    parts={offset:data for offset,data in frames}
+    hello,done=contiguous_hello(parts)
+    return tls_hello_sni(hello) if done else None
 
 
 def public_ipv4(name: str) -> str:
@@ -180,6 +220,13 @@ def public_ipv4(name: str) -> str:
         if ipaddress.ip_address(ip).is_global and ip not in ("188.120.254.223", "89.125.90.101"):
             return ip
     raise ValueError("no safe public IPv4 origin")
+
+
+@dataclass
+class PendingInitial:
+    pieces: dict[int, bytes] = field(default_factory=dict)
+    packets: list[bytes] = field(default_factory=list)
+    created: float = field(default_factory=time.monotonic)
 
 
 @dataclass
@@ -216,11 +263,14 @@ class YoutubeRouter(asyncio.DatagramProtocol):
         self.role, self.peer, self.listen_ip = role, peer, listen_ip
         self.transport = None
         self.flows: dict[tuple[str, int], Flow] = {}
+        self.assembling: dict[tuple[str, int], PendingInitial] = {}
         # Aggregate counters only: never log app payloads, user IPs or SNI.
         self.counters = {"admitted":0, "rejected":0, "expired":0, "resolve_error":0,
                          "rx":0, "to_upstream":0, "upstream_rx":0, "client_tx":0,
                          "oversize":0, "undersize":0, "peer_drop":0, "overflow":0,
-                         "socket_error":0, "emsgsize":0}
+                         "socket_error":0, "emsgsize":0, "fragmented_admitted":0,
+                         "partial_initial":0, "unreadable_initial":0, "not_youtube":0,
+                         "pending_expired":0}
 
     def connection_made(self, transport):
         self.transport = transport
@@ -259,11 +309,44 @@ class YoutubeRouter(asyncio.DatagramProtocol):
         if len(self.flows) >= MAX_FLOWS:
             self.counters['overflow'] += 1
             return
-        name = initial_sni(packet)
-        if not allowed(name):
-            self.counters['rejected'] += 1
+        fragments=initial_crypto_fragments(packet)
+        if not fragments:
+            self.counters['rejected']+=1
+            self.counters['unreadable_initial']+=1
+            self.assembling.pop(source,None)
             return
-        flow = Flow(pending=[packet]); self.flows[source] = flow
+        waiting=self.assembling.get(source)
+        if waiting is None:
+            if len(self.assembling)>=MAX_FLOWS:
+                self.counters['overflow']+=1
+                return
+            waiting=PendingInitial()
+            self.assembling[source]=waiting
+        if len(waiting.packets)>=8 or sum(len(p) for p in waiting.packets)+len(packet)>MAX_PENDING_BYTES:
+            self.assembling.pop(source,None)
+            self.counters['overflow']+=1
+            return
+        waiting.packets.append(packet)
+        for offset,data in fragments:
+            existing=waiting.pieces.get(offset)
+            if existing is not None and existing!=data:
+                self.assembling.pop(source,None)
+                self.counters['rejected']+=1
+                return
+            waiting.pieces[offset]=data
+        hello,complete=contiguous_hello(waiting.pieces)
+        if not complete:
+            self.counters['partial_initial']+=1
+            return
+        self.assembling.pop(source,None)
+        name=tls_hello_sni(hello)
+        if not allowed(name):
+            self.counters['rejected']+=1
+            self.counters['not_youtube']+=1
+            return
+        if len(waiting.packets)>1:
+            self.counters['fragmented_admitted']+=1
+        flow=Flow(pending=waiting.packets); self.flows[source]=flow
         asyncio.create_task(self.establish(source,name,flow))
 
     async def destination_for(self, name: str) -> tuple[str, int]:
@@ -295,6 +378,10 @@ class YoutubeRouter(asyncio.DatagramProtocol):
         while True:
             await asyncio.sleep(12)
             now=time.monotonic()
+            for addr,pending in list(self.assembling.items()):
+                if now-pending.created>5:
+                    self.assembling.pop(addr,None)
+                    self.counters['pending_expired']+=1
             for addr,flow in list(self.flows.items()):
                 if now-flow.last>IDLE_SECONDS:
                     self.discard(addr)
