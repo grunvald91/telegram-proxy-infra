@@ -1,0 +1,89 @@
+name: MNEBYDNS all legacy routes via RU 188 ingress readiness - read-only
+on:
+  push:
+    branches: [audit/mnebydns-legacy-all-via-188-readonly-20261114]
+    paths: ['.github/workflows/mnebydns-ru-188-universal-ingress-readonly-20261114.yml']
+permissions: {contents: read}
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Install trusted SSH prerequisites
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass >/dev/null
+      - name: Read-only audit RU 188 public HTTPS ingress and DE 89 route map
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@188.120.254.223 'python3 -' <<'PY'
+          import subprocess,pathlib,re,collections,json,os
+          nginx=pathlib.Path('/etc/nginx/nginx.conf').read_text()
+          print('RU_NGINX_CONFIG_BYTES='+str(len(nginx)))
+          for line in nginx.splitlines():
+              if re.search(r'listen\s+[^;]*(?<!\d)(?:443|15443|15449)(?!\d)|proxy_pass|ssl_preread|stream\s*\{|map\s+\$',line):
+                  print('RU_NGINX_RELEVANT='+line.strip()[:250])
+          for unit in ('nginx','xray','xray.service','mnebydns-personal-dot-private'):
+              p=subprocess.run(['systemctl','is-active',unit],capture_output=True,text=True,timeout=5)
+              print('RU_UNIT_'+unit.upper().replace('.','_')+'='+p.stdout.strip())
+          for port in (443,853,15443,15449,9443):
+              p=subprocess.run(['ss','-Hlnpt','sport = :'+str(port)],capture_output=True,text=True,timeout=6)
+              for line in p.stdout.splitlines()[:6]:print('RU_LISTEN_'+str(port)+'='+line[:230])
+          p=subprocess.run(['wg','show','tg-relay','latest-handshakes'],capture_output=True,text=True,timeout=5)
+          print('RU_WG_PEER_HANDSHAKE_LINES='+str(len(p.stdout.strip().splitlines())))
+          PY
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@89.125.90.101 'python3 -' <<'PY'
+          import pathlib,re,subprocess
+          config=pathlib.Path('/opt/mnebydns-dot/Corefile').read_text()
+          blocks=re.findall(r'(?ms)^\s*template\s+IN\s+A\s+\S+\s*\{(.*?)^\s*\}',config)
+          dest=[]
+          for b in blocks:
+              a=re.search(r'(?m)^\s*answer\s+"\{\{ \.Name \}\}\s+\d+\s+IN\s+A\s+([0-9.]+)"',b)
+              if a:dest.append(a.group(1))
+          from collections import Counter
+          print('DE_DNS_A_DEST_COUNTS='+str(dict(Counter(dest))))
+          for service in ('mnebydns-dot.service','nginx','mnebydns-googlepilot.service'):
+              p=subprocess.run(['systemctl','is-active',service],capture_output=True,text=True,timeout=5)
+              print('DE_UNIT_'+service+'='+p.stdout.strip())
+          PY
+      - name: Real CA-verified HTTPS and HTTP to 188 and 89 using original SNI, from RU network
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@188.120.254.223 'python3 -' <<'PY'
+          import subprocess,concurrent.futures,os
+          hosts=(
+              'chatgpt.com','auth.openai.com','claude.ai','api.anthropic.com',
+              'gemini.google.com','www.youtube.com','youtubei.googleapis.com',
+              'googlevideo.com','www.googlevideo.com','i.ytimg.com','s.ytimg.com',
+              'gvt1.com','gstatic.com','x.com','grok.com','www.tiktok.com',
+              'cloud.oracle.com','copilot.microsoft.com','cdn.oaistatic.com',
+              'files.oaiusercontent.com','cdn.openaimerge.com'
+          )
+          def probe(host,ip):
+              cmd=['curl','--http1.1','--noproxy','*','-sS',
+                  '--connect-timeout','5','--max-time','13',
+                  '-o','/dev/null','-w','%{http_code}|%{time_connect}|%{time_appconnect}|%{time_starttransfer}|%{remote_ip}',
+                  '--resolve',host+':443:'+ip,'https://'+host+'/']
+              try:
+                  p=subprocess.run(cmd,capture_output=True,text=True,timeout=16)
+                  return host,ip,p.returncode,p.stdout.strip(),p.stderr.strip()[-100:]
+              except Exception as e:return host,ip,-1,'','EXC_'+type(e).__name__
+          items=[(h,ip) for h in hosts for ip in ('188.120.254.223','89.125.90.101')]
+          with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
+              for h,ip,rc,v,err in pool.map(lambda item:probe(*item),items):
+                  label='RU188' if ip=='188.120.254.223' else 'DE89'
+                  print('LIVE_HTTPS_COMPARE='+h+' '+label+' CURL_EXIT='+str(rc)+' STATUS_TLS_TIME_IP='+v+' ERROR='+err,flush=True)
+          PY
