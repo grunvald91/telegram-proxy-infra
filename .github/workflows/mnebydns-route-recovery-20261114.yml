@@ -35,7 +35,7 @@ jobs:
             sudo apt-get update -qq
             sudo apt-get install -qq -y sshpass >/dev/null
           fi
-      - name: Inspect both node resources and owned VPN configuration shape
+      - name: Inspect node resources, VPN shape and CoreDNS mount visibility
         if: env.RECOVERY_PHASE == 'stage' || env.RECOVERY_PHASE == 'inspect'
         run: |
           set -Eeuo pipefail

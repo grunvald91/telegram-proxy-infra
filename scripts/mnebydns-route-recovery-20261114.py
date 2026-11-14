@@ -87,6 +87,22 @@ def resource(role):
         print('DE_COREDNS_CONFIG_SOURCE=' + str(config), flush=True)
         print('DE_COREDNS_CONFIG_MATCHES_MANAGED_FILE=' + str(config.samefile(LIVE)), flush=True)
         print('DE_COREDNS_MANAGED_SHA256=' + hashlib.sha256(LIVE.read_bytes()).hexdigest(), flush=True)
+        visible = Path('/proc/' + str(pid) + '/root') / str(config).lstrip('/')
+        outside = LIVE.stat()
+        inside = visible.stat()
+        print('DE_COREDNS_PROCESS_VIEW=' + json.dumps({
+            'same_inode': (outside.st_dev,outside.st_ino)==(inside.st_dev,inside.st_ino),
+            'visible_sha256':hashlib.sha256(visible.read_bytes()).hexdigest(),
+            'has_reload': 'reload 5s 1s' in visible.read_text(),
+            'stdout':str(Path('/proc/' + str(pid) + '/fd/1').readlink())}), flush=True)
+        properties = subprocess.check_output(['systemctl','show','mnebydns-dot.service',
+            '-p','ReadOnlyPaths','-p','BindReadOnlyPaths','-p','RootDirectory',
+            '-p','ProtectSystem','-p','PrivateMounts','-p','StandardOutput'],text=True)
+        for line in properties.splitlines():
+            print('DE_COREDNS_HARDENING=' + line, flush=True)
+        for line in Path('/proc/' + str(pid) + '/mountinfo').read_text().splitlines():
+            if '/opt/mnebydns-dot' in line:
+                print('DE_COREDNS_MOUNT=' + line[:650], flush=True)
         journal = subprocess.run(['journalctl','--no-pager','-o','cat','-u','mnebydns-dot.service',
                                   '--since','25 minutes ago','-n','150'],capture_output=True,text=True,timeout=10).stdout
         for line in journal.splitlines():
