@@ -31,17 +31,17 @@ jobs:
             sudo apt-get update -qq
             sudo apt-get install -qq -y sshpass >/dev/null
           fi
-      - name: Observe both nodes for 60 seconds and identify public Google service gaps
+      - name: Observe both nodes for 15 seconds after concurrent Google API release
         run: |
           set -Eeuo pipefail
           opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
             -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
             -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
           SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 \
-            'python3 - RU 60' < scripts/mnebydns-youtube-session-readonly.py &
+            'python3 - RU 15' < scripts/mnebydns-youtube-session-readonly.py &
           ru_pid=$!
           SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
-            'python3 - DE 60' < scripts/mnebydns-youtube-session-readonly.py &
+            'python3 - DE 15' < scripts/mnebydns-youtube-session-readonly.py &
           de_pid=$!
           status=0
           wait "$ru_pid" || status=1
@@ -69,24 +69,28 @@ jobs:
           cleanup() {
             de "rm -rf -- '$root'" || true
             ru "rm -rf -- '$root'" || true
+            ssh "${opts[@]}" -S "$local_probe/ssh-control" -O exit root@89.125.90.101 2>/dev/null || true
             rm -rf -- "$local_probe"
           }
           trap cleanup EXIT
-          de "test ! -e '$root' && mkdir -m 700 '$root'"
-          SSHPASS="$DE_PASS" sshpass -e scp "${cp_opts[@]}" "$local_probe"/yt_dlp-*.whl \
-            "root@89.125.90.101:$root/"
-          SSHPASS="$DE_PASS" sshpass -e scp "${cp_opts[@]}" \
-            scripts/mnebydns-youtube-real-media-readonly.py "root@89.125.90.101:$root/probe.py"
-          de "timeout 75s python3 '$root/probe.py' extract '$root'" || \
+          # Use the runner's supported Python, with all YouTube connections
+          # tunneled over authenticated SSH to the actual DE egress.
+          SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" -fN -M \
+            -S "$local_probe/ssh-control" -D 127.0.0.1:18089 \
+            -o ExitOnForwardFailure=yes root@89.125.90.101
+          MNEBY_MEDIA_SOCKS=socks5h://127.0.0.1:18089 timeout 75s \
+            python3 scripts/mnebydns-youtube-real-media-readonly.py extract "$local_probe" || \
             echo 'DE_MEDIA_METADATA_PROCESS_TIMEOUT_OR_ERROR=true'
-          if ! de "test -s '$root/media.json'"; then
+          if ! test -s "$local_probe/media.json"; then
             echo 'ACTUAL_MEDIA_TEST=INCONCLUSIVE_NO_URL'
             exit 0
           fi
-          de "python3 '$root/probe.py' probe '$root' DE"
+          de "test ! -e '$root' && mkdir -m 700 '$root'"
           SSHPASS="$DE_PASS" sshpass -e scp "${cp_opts[@]}" \
-            "root@89.125.90.101:$root/media.json" "$local_probe/media.json"
-          chmod 600 "$local_probe/media.json"
+            scripts/mnebydns-youtube-real-media-readonly.py "root@89.125.90.101:$root/probe.py"
+          SSHPASS="$DE_PASS" sshpass -e scp "${cp_opts[@]}" \
+            "$local_probe/media.json" "root@89.125.90.101:$root/media.json"
+          de "python3 '$root/probe.py' probe '$root' DE"
           ru "test ! -e '$root' && mkdir -m 700 '$root'"
           SSHPASS="$RU_PASS" sshpass -e scp "${cp_opts[@]}" \
             "$local_probe/media.json" "root@188.120.254.223:$root/media.json"

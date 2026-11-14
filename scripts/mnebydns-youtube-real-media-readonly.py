@@ -15,6 +15,9 @@ sys.dont_write_bytecode = True
 
 
 def extract(root):
+    proxy = os.environ.get('MNEBY_MEDIA_SOCKS')
+    if proxy != 'socks5h://127.0.0.1:18089':
+        raise SystemExit('An authenticated local SSH SOCKS tunnel to DE is required')
     sys.path.insert(0, str(next(root.glob('yt_dlp-*.whl'))))
     from yt_dlp import YoutubeDL
     messages = []
@@ -30,6 +33,7 @@ def extract(root):
             messages.append(message)
 
     options = {'quiet': True, 'no_warnings': True, 'logger': Log(), 'cachedir': False,
+               'proxy': proxy,
                'skip_download': True, 'noplaylist': True, 'socket_timeout': 10,
                'retries': 0, 'extractor_retries': 0,
                'extractor_args': {'youtube': {'player_client': ['android_vr']}},
