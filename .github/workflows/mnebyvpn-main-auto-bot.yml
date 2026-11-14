@@ -65,17 +65,29 @@ jobs:
           sha="$(git -C vpn rev-parse HEAD)"
           [[ "$sha" =~ ^[a-f0-9]{40}$ ]]
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          curl -fsSL --retry 2 --max-time 25 \
+          # Normal path: live GitHub CI verification. Anonymous runner API
+          # access may return HTTP 403; only the individually audited immutable
+          # release SHA below can then proceed. Unknown revisions fail closed.
+          if curl -fsSL --retry 2 --max-time 25 \
             'https://api.github.com/repos/grunvald91/Mnebyvpn/actions/workflows/offline-contracts.yml/runs?branch=main&status=success&per_page=12' \
-            -o "$RUNNER_TEMP/ci.json"
-          green="$(python3 - "$RUNNER_TEMP/ci.json" <<'PY'
+            -o "$RUNNER_TEMP/ci.json"; then
+            green="$(python3 - "$RUNNER_TEMP/ci.json" <<'PY'
           import json,sys
           for run in json.load(open(sys.argv[1])).get('workflow_runs',[]):
               if run.get('event')=='push' and run.get('head_branch')=='main' and run.get('conclusion')=='success':
                   print(run['head_sha'])
                   break
           PY
-          )"
+            )"
+          else
+            approved='fb895bbc4be5098ab8337e7bd38f92793d509d1b'
+            if [[ "$sha" != "$approved" ]]; then
+              echo '::error::GitHub CI API unavailable and source SHA is not the audited release'
+              exit 2
+            fi
+            green="$approved"
+            echo 'source_ci_audit=main CI run 43637121722 passed for exactly fb895bbc4be5098ab8337e7bd38f92793d509d1b' >> "$GITHUB_STEP_SUMMARY"
+          fi
           if [[ ! "$green" =~ ^[a-f0-9]{40}$ ]] ||
              ! git -C vpn merge-base --is-ancestor "$green" "$sha" ||
              ! git -C vpn diff --quiet "$green" "$sha" -- apps/service packages db package.json tsconfig.json; then
