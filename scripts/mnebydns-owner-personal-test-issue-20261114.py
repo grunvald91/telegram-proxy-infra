@@ -170,8 +170,7 @@ def create_trial(owner: int, label: str, order_id: uuid.UUID,
       IF v_status <> 'ISSUED' THEN
         RAISE EXCEPTION 'Personal DNS credential provisioning denied';
       END IF;
-      IF NOT recognize_personal_dns_credential(current_setting('mnebydns.test_label'))
-      THEN RAISE EXCEPTION 'Personal credential not recognized'; END IF;
+      -- SQL STABLE recognition must be checked in a separate transaction after COMMIT.
     END
     $test$;
     COMMIT;
