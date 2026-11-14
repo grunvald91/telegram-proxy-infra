@@ -18,6 +18,13 @@ systemctl is-active --quiet "$watch.timer"
 port=19444
 [[ "$role" == de ]] || port=443
 ss -H -lun "sport = :$port" | grep -q .
+# The temporary canary unit has no [Install] section; add the minimal boot target only
+# after verifying that this exact unit is owned by the pilot checkpoint.
+if ! grep -Fq 'WantedBy=multi-user.target' "$base/$unit.service";then
+  printf '\n[Install]\nWantedBy=multi-user.target\n' >> "$base/$unit.service"
+  install -m 644 "$base/$unit.service" "/etc/systemd/system/$unit.service"
+  systemctl daemon-reload
+fi
 systemctl enable "$unit.service" >/dev/null
 systemctl is-enabled --quiet "$unit.service"
 systemctl disable --now "$watch.timer" >/dev/null
