@@ -1,0 +1,40 @@
+name: MNEBYDNS ChatGPT owner route readiness (read only)
+on:
+  push:
+    branches: [audit/mnebydns-auth60-chatgpt-live-20261114]
+    paths: ['.github/workflows/mnebydns-chatgpt-route-preflight-readonly-20261114.yml']
+permissions: {contents: read}
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check legacy CoreDNS+Nginx checkpoint and non-disruptive reload
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS"
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass >/dev/null
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalHostKeyAlgorithms=ssh-ed25519 -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@89.125.90.101 'python3 -' <<'PY'
+          import pathlib,subprocess,hashlib
+          ck=pathlib.Path('/opt/mnebydns-stable-checkpoints/current')
+          if ck.exists():
+              cp=pathlib.Path(ck.read_text().strip())
+              print('EDGE_CHECKPOINT_PRESENT='+str(cp.is_dir()),flush=True)
+              if cp.is_dir():
+                  for kind,p in (('dns','/opt/mnebydns-dot/Corefile'),('nginx','/etc/nginx/nginx.conf'),('proxy','/etc/mnebydns-googlepilot/nginx.conf')):
+                      a=(cp/(kind+'.stable')).read_bytes();b=pathlib.Path(p).read_bytes()
+                      print('EDGE_CHECKPOINT_'+kind.upper()+'_MATCH='+str(a==b),flush=True)
+          else:print('EDGE_CHECKPOINT_PRESENT=False')
+          dns=pathlib.Path('/opt/mnebydns-dot/Corefile').read_text()
+          print('EDGE_CORE_DNS_RELOAD_CONFIGURED='+str('    reload 5s 1s' in dns),flush=True)
+          for unit in ('nginx','mnebydns-dot.service','mnebydns-googlepilot.service','xray.service'):
+              x=subprocess.run(['systemctl','is-active','--quiet',unit])
+              print('EDGE_UNIT_'+unit.upper().replace('.','_').replace('-','_')+'_ACTIVE='+str(x.returncode==0),flush=True)
+          print('EDGE_NGINX_CONFIG_VALID='+str(subprocess.run(['nginx','-t'],capture_output=True).returncode==0),flush=True)
+          print('EDGE_ROUTE_PREFLIGHT_READ_ONLY=COMPLETE')
+          PY
