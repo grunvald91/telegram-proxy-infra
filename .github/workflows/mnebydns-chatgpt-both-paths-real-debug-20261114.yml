@@ -1,0 +1,137 @@
+name: MNEBYDNS investigate personal vs legacy ChatGPT end-to-end (read only)
+on:
+  push:
+    branches: [audit/mnebydns-chatgpt-legacy-personal-e2e-20261114]
+    paths: ['.github/workflows/mnebydns-chatgpt-both-paths-real-debug-20261114.yml']
+permissions: {contents: read}
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 13
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Install pinned SSH diagnostics prerequisites
+        run: |
+          set -euo pipefail
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+      - name: Foreign DE read-only live proxy and DNS routing audit
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@89.125.90.101 'python3 -' <<'PY'
+          import re,pathlib,subprocess,json
+          def show(key,args,limit=4):
+              try:
+                  x=subprocess.run(args,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=14,text=True)
+                  print('DE_'+key+'_RC='+str(x.returncode))
+                  for line in x.stdout.splitlines()[:limit]:print('DE_'+key+'_OUT='+line[:210])
+                  if x.returncode:print('DE_'+key+'_ERR='+x.stderr.splitlines()[-1][:160] if x.stderr.strip() else '')
+              except Exception as e:print('DE_'+key+'_EXC='+type(e).__name__)
+          for unit in ['mnebydns-dot.service','mnebydns-personal-sni-stream.service','mnebydns-personal-sni-redirect.service','nginx','xray.service']:
+              show('UNIT_'+unit.upper().replace('-','_').replace('.','_'),['systemctl','is-active',unit],1)
+          nginx=pathlib.Path('/etc/nginx/nginx.conf').read_text()
+          for host in ('chatgpt.com','auth.openai.com','gemini.google.com'):
+              key=host.upper().replace('.','_')
+              entries=[l.strip() for l in nginx.splitlines() if host in l and 'proxy_set_header' not in l]
+              print('DE_HTTPS_NGINX_'+key+'_ENTRY_COUNT='+str(len(entries)))
+              for ent in entries[:3]:print('DE_HTTPS_NGINX_'+key+'_ENTRY='+ent[:160])
+          marker='map $ssl_preread_server_name $direct_mtproxy_backend {'
+          if marker in nginx:
+              tail=nginx.split(marker,1)[1].split('}',1)[0]
+              for l in tail.splitlines():
+                  if 'default ' in l or 'hostnames' in l:
+                      print('DE_NGINX_SNI_MAP='+l.strip()[:140])
+          sni=pathlib.Path('/etc/mnebydns/personal-sni/nginx.conf').read_text()
+          for line in sni.splitlines():
+              if 'default ' in line or '10.66.77.2:8856' in line or 'proxy_pass' in line:print('DE_DOT_SNI='+line.strip()[:140])
+          show('PORT_443',['ss','-Hlnpt','sport = :443'],5)
+          show('PORT_853',['ss','-Hlnpt','sport = :853'],5)
+          show('PORT_8854',['ss','-Hlnpt','sport = :8854'],5)
+          show('PORT_1853',['ss','-Hlnpt','sport = :1853'],5)
+          show('NAT853',['iptables','-t','nat','-S','PREROUTING'],14)
+          show('COREDNS_LAST_LOG',['journalctl','-u','mnebydns-dot.service','-n','15','--no-pager','-o','cat'],4)
+          PY
+      - name: RU read-only HTTPS GET through real foreign SNI proxy versus direct CDN
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@188.120.254.223 'python3 -' <<'PY'
+          import subprocess,socket,ssl
+          for host in ('chatgpt.com','auth.openai.com','gemini.google.com'):
+              iplist=sorted({res[4][0] for res in socket.getaddrinfo(host,443,socket.AF_INET,socket.SOCK_STREAM)})
+              for path,target in [('EDGE','89.125.90.101'),('ORIGIN',iplist[0])]:
+                  args=['curl','--noproxy','*','--http1.1','-sS','-o','/dev/null','--connect-timeout','7','--max-time','15',
+                        '-A','Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/132.0 Safari/537.36',
+                        '--resolve',host+':443:'+target,'-w','%{http_code}|%{time_connect}|%{time_appconnect}|%{time_starttransfer}|%{remote_ip}',
+                        'https://'+host+'/']
+                  try:
+                      r=subprocess.run(args,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=20,text=True)
+                      print('RU_HTTPS_'+host.replace('.','_').upper()+'_'+path+'_CURL_EXIT='+str(r.returncode),flush=True)
+                      print('RU_HTTPS_'+host.replace('.','_').upper()+'_'+path+'_STATUS_TLS_TIMINGS_IP='+r.stdout[:180],flush=True)
+                      if r.returncode:print('RU_HTTPS_'+host.replace('.','_').upper()+'_'+path+'_ERROR='+r.stderr.strip()[-160:],flush=True)
+                  except Exception as e:print('RU_HTTPS_'+host.replace('.','_').upper()+'_'+path+'_EXC='+type(e).__name__,flush=True)
+          PY
+      - name: Compare actual legacy public DNS, RU mapped upstream and personal service status
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@188.120.254.223 'python3 -' <<'PY'
+          import socket,ssl,struct,secrets,json,subprocess,pathlib,time
+          def dns(host,port,sni,domain,t):
+              tx=secrets.randbelow(64000)+1
+              q=struct.pack('!HHHHHH',tx,0x100,1,0,0,0)+b''.join(bytes([len(s)])+s.encode() for s in domain.split('.'))+b'\0'+struct.pack('!HH',t,1)
+              with socket.create_connection((host,port),timeout=6) as raw:
+                  raw.settimeout(7)
+                  with ssl.create_default_context().wrap_socket(raw,server_hostname=sni) as tls:
+                      tls.sendall(struct.pack('!H',len(q))+q)
+                      head=tls.recv(2)
+                      if len(head)!=2:raise RuntimeError('no header')
+                      n=struct.unpack('!H',head)[0]
+                      data=b''
+                      while len(data)<n:
+                          chunk=tls.recv(n-len(data))
+                          if not chunk:raise RuntimeError('truncated')
+                          data+=chunk
+              if data[:2]!=q[:2]:raise RuntimeError('id mismatch')
+              ips=[]
+              off=12
+              def step(off):
+                  while off<len(data):
+                      n=data[off]
+                      if n&192==192:return off+2
+                      if not n:return off+1
+                      off+=n+1
+                  raise RuntimeError('bad name')
+              for _ in range(struct.unpack('!H',data[4:6])[0]):off=step(off)+4
+              for _ in range(struct.unpack('!H',data[6:8])[0]):
+                  off=step(off)
+                  typ,cls,ttl,length=struct.unpack_from('!HHIH',data,off)
+                  off+=10
+                  if typ==1 and cls==1 and length==4:ips.append(socket.inet_ntoa(data[off:off+4]))
+                  off+=length
+              return data[3]&15,ips
+          for domain in ('chatgpt.com','auth.openai.com'):
+              for label,host,port,sni in [('PUBLIC_LEGACY','89.125.90.101',853,'dns.mnebyvpn.site'),
+                                           ('RU_MAPPED','10.66.77.1',1853,'dns.mnebyvpn.site')]:
+                  try:
+                      a=time.monotonic()
+                      rc,ips=dns(host,port,sni,domain,1)
+                      print('RU_DNS_'+domain.replace('.','_').upper()+'_'+label+'_RCODE_IPS_RTT_MS='+str((rc,ips,round((time.monotonic()-a)*1000,1))),flush=True)
+                  except Exception as e:print('RU_DNS_'+domain.replace('.','_').upper()+'_'+label+'_ERROR='+type(e).__name__+':'+str(e)[:120],flush=True)
+          try:
+              x=json.loads(subprocess.check_output(['docker','inspect','mnebydns-personal-dot-private'],text=True))[0]
+              print('RU_PERSONAL_CONTAINER_RUNNING='+str(x['State']['Running']))
+              mounts=x['Mounts']
+              print('RU_PERSONAL_AUTH60_SOURCE_MOUNTED='+str(any(m['Destination'].endswith('/personal-dot-listener.ts') for m in mounts)))
+              print('RU_PERSONAL_HEALTH_HTTP='+subprocess.run(['curl','--noproxy','*','-s','-o','/dev/null','-w','%{http_code}','--max-time','3','http://127.0.0.1:8857/readyz'],capture_output=True,text=True).stdout)
+          except Exception as e:print('RU_PERSONAL_STATUS_ERROR='+type(e).__name__)
+          PY
