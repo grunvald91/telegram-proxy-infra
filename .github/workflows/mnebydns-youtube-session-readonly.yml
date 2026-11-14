@@ -1,4 +1,4 @@
-name: MNEBYDNS correlated YouTube session observation (read only)
+name: MNEBYDNS correlated YouTube session and actual media (read only)
 on:
   push:
     branches: [feat/mnebydns-youtube-quic-ru188-de89-20261114]
@@ -31,19 +31,66 @@ jobs:
             sudo apt-get update -qq
             sudo apt-get install -qq -y sshpass >/dev/null
           fi
-      - name: Observe both nodes together for 120 seconds and compare real CDN TLS
+      - name: Observe both nodes for 60 seconds and identify public Google service gaps
         run: |
           set -Eeuo pipefail
           opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
             -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
             -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
           SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 \
-            'python3 - RU 120' < scripts/mnebydns-youtube-session-readonly.py &
+            'python3 - RU 60' < scripts/mnebydns-youtube-session-readonly.py &
           ru_pid=$!
           SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
-            'python3 - DE 120' < scripts/mnebydns-youtube-session-readonly.py &
+            'python3 - DE 60' < scripts/mnebydns-youtube-session-readonly.py &
           de_pid=$!
           status=0
           wait "$ru_pid" || status=1
           wait "$de_pid" || status=1
           exit "$status"
+      - name: Obtain test video URL on the actual DE egress and compare 128 KiB media ranges
+        run: |
+          set -Eeuo pipefail
+          id="$GITHUB_RUN_ID"
+          [[ "$id" =~ ^[0-9]{9,13}$ ]]
+          root="/tmp/mnebydns-media-readonly-$id"
+          local_probe="$RUNNER_TEMP/mnebydns-media-readonly-$id"
+          mkdir -m 700 "$local_probe"
+          python3 -m pip download --disable-pip-version-check --no-deps --only-binary=:all: \
+            --quiet --dest "$local_probe" yt-dlp
+          sha256sum "$local_probe"/yt_dlp-*.whl
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          cp_opts=(-q -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          de() { SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 "$@"; }
+          ru() { SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 "$@"; }
+          cleanup() {
+            de "rm -rf -- '$root'" || true
+            ru "rm -rf -- '$root'" || true
+            rm -rf -- "$local_probe"
+          }
+          trap cleanup EXIT
+          de "test ! -e '$root' && mkdir -m 700 '$root'"
+          SSHPASS="$DE_PASS" sshpass -e scp "${cp_opts[@]}" "$local_probe"/yt_dlp-*.whl \
+            "root@89.125.90.101:$root/"
+          SSHPASS="$DE_PASS" sshpass -e scp "${cp_opts[@]}" \
+            scripts/mnebydns-youtube-real-media-readonly.py "root@89.125.90.101:$root/probe.py"
+          de "timeout 75s python3 '$root/probe.py' extract '$root'" || \
+            echo 'DE_MEDIA_METADATA_PROCESS_TIMEOUT_OR_ERROR=true'
+          if ! de "test -s '$root/media.json'"; then
+            echo 'ACTUAL_MEDIA_TEST=INCONCLUSIVE_NO_URL'
+            exit 0
+          fi
+          de "python3 '$root/probe.py' probe '$root' DE"
+          SSHPASS="$DE_PASS" sshpass -e scp "${cp_opts[@]}" \
+            "root@89.125.90.101:$root/media.json" "$local_probe/media.json"
+          chmod 600 "$local_probe/media.json"
+          ru "test ! -e '$root' && mkdir -m 700 '$root'"
+          SSHPASS="$RU_PASS" sshpass -e scp "${cp_opts[@]}" \
+            "$local_probe/media.json" "root@188.120.254.223:$root/media.json"
+          SSHPASS="$RU_PASS" sshpass -e scp "${cp_opts[@]}" \
+            scripts/mnebydns-youtube-real-media-readonly.py "root@188.120.254.223:$root/probe.py"
+          ru "python3 '$root/probe.py' probe '$root' RU"
+          echo 'ACTUAL_MEDIA_RANGE_COMPARISON_COMPLETE=true'

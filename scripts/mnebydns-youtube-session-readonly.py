@@ -101,6 +101,7 @@ def inventory(role):
 def observe(role, seconds, mod):
     stats = collections.Counter()
     hellos = collections.Counter()
+    google_services = collections.Counter()
     tcp = {}
     quic = {}
     video_hosts = set()
@@ -114,6 +115,8 @@ def observe(role, seconds, mod):
             return
         kind = category(name)
         hellos[label + '_' + kind] += 1
+        if kind in ('googleapis.com', 'google.com'):
+            google_services[label + '_' + name] += 1
         if kind == 'googlevideo.com' and re.fullmatch(r'[a-z0-9.-]{1,253}', name):
             video_hosts.add(name)
 
@@ -207,6 +210,7 @@ def observe(role, seconds, mod):
         s.close()
     emit(role + '_TRAFFIC', dict(stats))
     emit(role + '_HELLO_CATEGORIES', dict(hellos))
+    emit(role + '_PUBLIC_GOOGLE_SERVICE_HELLOS', dict(google_services))
     emit(role + '_VIDEO_HOST_COUNT', len(video_hosts))
     return video_hosts
 
