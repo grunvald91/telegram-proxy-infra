@@ -1,0 +1,59 @@
+name: MNEBYDNS YouTube route snapshot read-only
+on:
+  push:
+    branches: [diag/mnebydns-outage-20261114]
+    paths: ['.github/workflows/mnebydns-youtube-route-audit-20261114.yml']
+permissions: {contents: read}
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Audit public DoT answers and first-hop resolver
+        run: |
+          python3 - <<'PY'
+          import socket, ssl, struct, secrets
+          host='dns.mnebyvpn.site'
+          try:
+              print('PRIVATE_DNS_HOST_PUBLIC_A='+repr(sorted({v[4][0] for v in socket.getaddrinfo(host,853,socket.AF_INET,socket.SOCK_STREAM)})),flush=True)
+          except Exception as e:print('HOST_LOOKUP_ERROR='+repr(e),flush=True)
+          names=['www.youtube.com','youtubei.googleapis.com','www.googlevideo.com','i.ytimg.com','s.ytimg.com','chatgpt.com','example.org']
+          def read(s,n):
+              z=b''
+              while len(z)<n:
+                  p=s.recv(n-len(z))
+                  if not p: raise EOFError('short response')
+                  z+=p
+              return z
+          def skip(d,p):
+              for i in range(128):
+                  k=d[p]
+                  if k&192==192:return p+2
+                  if k==0:return p+1
+                  p+=k+1
+              raise ValueError('bad name')
+          def query(ip,name):
+              d=b''.join(bytes([len(s)])+s.encode() for s in name.split('.'))+b'\0'
+              q=struct.pack('!HHHHHH',secrets.randbelow(65535),256,1,0,0,0)+d+struct.pack('!HH',1,1)
+              with socket.create_connection((ip,853),timeout=7) as sock:
+                  sock.settimeout(7)
+                  with ssl.create_default_context().wrap_socket(sock,server_hostname=host) as s:
+                      s.sendall(struct.pack('!H',len(q))+q)
+                      ans=read(s,int.from_bytes(read(s,2),'big'))
+              if ans[:2]!=q[:2]:raise ValueError('response ID mismatch')
+              pos=12
+              for _ in range(struct.unpack_from('!H',ans,4)[0]):pos=skip(ans,pos)+4
+              vals=[]
+              for _ in range(struct.unpack_from('!H',ans,6)[0]):
+                  pos=skip(ans,pos)
+                  typ,cl,ttl,ln=struct.unpack_from('!HHIH',ans,pos)
+                  pos+=10
+                  if typ==1 and cl==1 and ln==4:vals.append(socket.inet_ntoa(ans[pos:pos+4]))
+                  pos+=ln
+              return {'rcode':ans[3]&15,'A':vals}
+          for ip in ('89.125.90.101','188.120.254.223'):
+              for name in names:
+                  try:print('DOT',ip,name,query(ip,name),flush=True)
+                  except Exception as e:print('DOT_ERROR',ip,name,type(e).__name__,str(e)[:80],flush=True)
+          PY
