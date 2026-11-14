@@ -1,0 +1,21 @@
+name: MNEBYDNS 89-only public TCP ClientHello 17 families client response read-only
+on:
+  push:
+    branches: [diag/mnebydns-outage-20261114]
+    paths: ['.github/workflows/mnebydns-meta89-client-response-20261114.yml']
+permissions: {contents: read}
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Send complete 35 synthetic TLS ClientHellos to DE89 only
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/mnebydns-meta89-clienthello-completeness-20261114.py selftest
+          python3 scripts/mnebydns-meta89-clienthello-completeness-20261114.py client
+          echo 'CHECK_ONLY_FOREIGN_89=true'
+          echo 'NO_REMOTE_SSH_OR_CONFIG_MODIFICATION=true'
