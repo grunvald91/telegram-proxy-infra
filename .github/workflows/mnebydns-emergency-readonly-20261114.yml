@@ -1,0 +1,106 @@
+name: MNEBYDNS emergency read-only 2026-11-14 diagnostics
+on:
+  push:
+    branches: [diag/mnebydns-outage-20261114]
+    paths: ['.github/workflows/mnebydns-emergency-readonly-20261114.yml']
+permissions: {contents: read}
+jobs:
+  read_only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read-only CoreDNS service state, journal and public DoT
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=10 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@89.125.90.101 'python3 -B - DE' <<'PY'
+          import datetime, hashlib, os, re, socket, ssl, struct, subprocess, sys
+          from pathlib import Path
+          role=sys.argv[1]
+          print('TRIAGE_TIME_UTC='+datetime.datetime.now(datetime.timezone.utc).isoformat(),flush=True)
+          print('TRIAGE_ROLE='+role,flush=True)
+          units=(['mnebydns-dot.service','nginx.service','mnebydns-googlepilot.service','xray.service'] if role=='DE' else ['nginx.service','mnebydns-youtube-quic-ru-43612369808.service'])
+          for unit in units:
+           p=subprocess.run(['systemctl','show',unit,'--property=ActiveState,SubState,Result,ExecMainStatus,NRestarts,LoadState,MainPID'],capture_output=True,text=True,timeout=8)
+           print('UNIT='+unit+' '+p.stdout.strip().replace('\n',' '),flush=True)
+          p=subprocess.run(['ss','-H','-ltn','sport = :853'],capture_output=True,text=True,timeout=8)
+          print('TCP853_LISTENERS='+repr(p.stdout.strip()[:900]),flush=True)
+          if role=='DE':
+           f=Path('/opt/mnebydns-dot/Corefile')
+           if f.is_file():
+            st=f.stat()
+            print('COREFILE_SHA256='+hashlib.sha256(f.read_bytes()).hexdigest()+' SIZE='+str(st.st_size)+' MODE='+oct(st.st_mode&0o777),flush=True)
+           p=subprocess.run(['systemctl','list-timers','--all','--no-pager','--plain'],capture_output=True,text=True,timeout=8)
+           for item in p.stdout.splitlines():
+            if 'mnebydns-fastpath-rollback' in item:print('ROLLBACK_TIMER='+item[:250],flush=True)
+           p=subprocess.run(['journalctl','-u','mnebydns-dot.service','--since','2026-11-14 18:32:00 UTC','--no-pager','-o','cat','-n','250'],capture_output=True,text=True,timeout=10)
+           safe=[]
+           for item in p.stdout.splitlines():
+            if re.search('fail|error|unable|fatal|start|stop|listen|bind|address|permission|denied|config|reload|plugin|tls|systemd|read-only|operation not permitted',item,re.I):
+             item=re.sub(r'\b(?:\d{1,3}\.){3}\d{1,3}\b','[IP]',item)
+             item=re.sub(r'[A-Za-z0-9_-]{8,}\.dns\.mnebyvpn\.site','[PERSONAL]',item,re.I)
+             safe.append(item[:350])
+           print('FILTERED_DNS_JOURNAL_LAST_35='+repr(safe[-35:]),flush=True)
+          def dot(ip):
+           q=struct.pack('!HHHHHH',0x3e9c,0x100,1,0,0,0)+b'\x07example\x03org\x00'+struct.pack('!HH',1,1)
+           try:
+            with socket.create_connection((ip,853),timeout=3) as tcp:
+             tcp.settimeout(3)
+             with ssl.create_default_context().wrap_socket(tcp,server_hostname='dns.mnebyvpn.site') as sock:
+              sock.sendall(len(q).to_bytes(2,'big')+q)
+              h=sock.recv(2)
+              if len(h)!=2:raise EOFError('missing length')
+              ans=sock.recv(int.from_bytes(h,'big'))
+              print('DOT='+ip+' TLS='+sock.version()+' DNS_REPLY='+str(len(ans)>=12)+' RCODE='+str(ans[3]&15 if len(ans)>=12 else 'unknown'),flush=True)
+           except Exception as e:print('DOT='+ip+' FAILURE='+type(e).__name__+' '+str(e)[:100],flush=True)
+          for ip in ['89.125.90.101','188.120.254.223']:dot(ip)
+          PY
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=10 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@188.120.254.223 'python3 -B - RU' <<'PY'
+          import datetime, hashlib, os, re, socket, ssl, struct, subprocess, sys
+          from pathlib import Path
+          role=sys.argv[1]
+          print('TRIAGE_TIME_UTC='+datetime.datetime.now(datetime.timezone.utc).isoformat(),flush=True)
+          print('TRIAGE_ROLE='+role,flush=True)
+          units=(['mnebydns-dot.service','nginx.service','mnebydns-googlepilot.service','xray.service'] if role=='DE' else ['nginx.service','mnebydns-youtube-quic-ru-43612369808.service'])
+          for unit in units:
+           p=subprocess.run(['systemctl','show',unit,'--property=ActiveState,SubState,Result,ExecMainStatus,NRestarts,LoadState,MainPID'],capture_output=True,text=True,timeout=8)
+           print('UNIT='+unit+' '+p.stdout.strip().replace('\n',' '),flush=True)
+          p=subprocess.run(['ss','-H','-ltn','sport = :853'],capture_output=True,text=True,timeout=8)
+          print('TCP853_LISTENERS='+repr(p.stdout.strip()[:900]),flush=True)
+          if role=='DE':
+           f=Path('/opt/mnebydns-dot/Corefile')
+           if f.is_file():
+            st=f.stat()
+            print('COREFILE_SHA256='+hashlib.sha256(f.read_bytes()).hexdigest()+' SIZE='+str(st.st_size)+' MODE='+oct(st.st_mode&0o777),flush=True)
+           p=subprocess.run(['systemctl','list-timers','--all','--no-pager','--plain'],capture_output=True,text=True,timeout=8)
+           for item in p.stdout.splitlines():
+            if 'mnebydns-fastpath-rollback' in item:print('ROLLBACK_TIMER='+item[:250],flush=True)
+           p=subprocess.run(['journalctl','-u','mnebydns-dot.service','--since','2026-11-14 18:32:00 UTC','--no-pager','-o','cat','-n','250'],capture_output=True,text=True,timeout=10)
+           safe=[]
+           for item in p.stdout.splitlines():
+            if re.search('fail|error|unable|fatal|start|stop|listen|bind|address|permission|denied|config|reload|plugin|tls|systemd|read-only|operation not permitted',item,re.I):
+             item=re.sub(r'\b(?:\d{1,3}\.){3}\d{1,3}\b','[IP]',item)
+             item=re.sub(r'[A-Za-z0-9_-]{8,}\.dns\.mnebyvpn\.site','[PERSONAL]',item,re.I)
+             safe.append(item[:350])
+           print('FILTERED_DNS_JOURNAL_LAST_35='+repr(safe[-35:]),flush=True)
+          def dot(ip):
+           q=struct.pack('!HHHHHH',0x3e9c,0x100,1,0,0,0)+b'\x07example\x03org\x00'+struct.pack('!HH',1,1)
+           try:
+            with socket.create_connection((ip,853),timeout=3) as tcp:
+             tcp.settimeout(3)
+             with ssl.create_default_context().wrap_socket(tcp,server_hostname='dns.mnebyvpn.site') as sock:
+              sock.sendall(len(q).to_bytes(2,'big')+q)
+              h=sock.recv(2)
+              if len(h)!=2:raise EOFError('missing length')
+              ans=sock.recv(int.from_bytes(h,'big'))
+              print('DOT='+ip+' TLS='+sock.version()+' DNS_REPLY='+str(len(ans)>=12)+' RCODE='+str(ans[3]&15 if len(ans)>=12 else 'unknown'),flush=True)
+           except Exception as e:print('DOT='+ip+' FAILURE='+type(e).__name__+' '+str(e)[:100],flush=True)
+          for ip in ['89.125.90.101','188.120.254.223']:dot(ip)
+          PY
