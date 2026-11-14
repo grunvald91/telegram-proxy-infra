@@ -1,0 +1,69 @@
+name: MNEBYDNS emergency active canary + WG latency inspection read-only
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/mnebydns-latency-wg-window-readonly-20261115.yml]
+  workflow_dispatch:
+permissions: {contents: read}
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Inspect canary scope, 20-probe WG tunnel and resource counters without changes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+          for role in RU DE; do
+            if [ "$role" = RU ]; then export SSHPASS="$RU_PASS"; host=188.120.254.223; else export SSHPASS="$DE_PASS"; host=89.125.90.101; fi
+            sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR "root@$host" "python3 - $role" <<'PY'
+          import sys,os,time,pathlib,subprocess,json,re,datetime
+          role=sys.argv[1]
+          def cmd(*args,timeout=7):
+              try:
+                  p=subprocess.run(args,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,timeout=timeout)
+                  return p.returncode,p.stdout.strip()
+              except Exception: return 255,""
+          def o(key,value):print("LIVE_"+role+"_"+key+"="+str(value),flush=True)
+          o("TIME",datetime.datetime.now(datetime.timezone.utc).isoformat())
+          o("LOAD",pathlib.Path("/proc/loadavg").read_text().split()[:3])
+          m=pathlib.Path("/proc/meminfo").read_text()
+          v={k:int(x) for k,x in re.findall(r"^(MemTotal|MemAvailable):\\s+(\\d+)",m,re.M)}
+          o("MEM_AVAILABLE_PCT",round(100*v.get("MemAvailable",0)/max(1,v.get("MemTotal",1)),1))
+          for svc in ("nginx.service","wg-quick@tg-relay.service","mnebydns-dot.service","mneby-meta-v26-ru-window.service","mneby-meta-v26-ru-watchdog.timer"):
+              code,data=cmd("systemctl","is-active",svc)
+              o("SERVICE_"+svc,data if data else "unknown")
+          rc,hs=cmd("wg","show","tg-relay","latest-handshakes")
+          times=[int(a.split()[1]) for a in hs.splitlines() if len(a.split())==2 and a.split()[1].isdigit()]
+          o("WG_HANDSHAKE_AGE_SECONDS",min((int(time.time())-t for t in times if t>0),default=-1))
+          if role=="RU":
+              root=pathlib.Path("/var/lib/mneby-meta-v26-ru")
+              peer=root/"peer"
+              o("META_TRIAL_STATE",root.is_dir())
+              if peer.is_file():
+                  value=peer.read_text().strip()
+                  o("META_TRIAL_PEER_SCOPE","ALL" if value=="all" else "EXACT_CLIENT")
+              else:o("META_TRIAL_PEER_SCOPE","NONE")
+              rc,data=cmd("nft","-j","list","table","inet","mneby_meta_v26_ru")
+              o("META_TRIAL_NFT_ACTIVE",rc==0)
+              if rc==0:
+                  try:
+                      j=json.loads(data)
+                      counts=[exp["counter"].get("packets",0) for d in j.get("nftables",[]) for exp in d.get("rule",{}).get("expr",[]) if "counter" in exp]
+                      o("META_TRIAL_RULE_COUNTS",counts)
+                  except Exception:o("META_TRIAL_RULE_COUNTS","UNAVAILABLE")
+              p=cmd("ping","-n","-q","-c","20","-i","0.25","-s","1200","-W","2","10.66.77.1",timeout=15)
+              for line in p[1].splitlines():
+                  if "packet loss" in line or "min/avg/max" in line:o("WG_PING_1200",line.strip())
+          PY
+          done
+          echo MNEBYDNS_LATENCY_CANARY_WG_READONLY=FINISHED
