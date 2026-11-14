@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Guarded foreign Telegram public443 SYNACK, preserve WEB/DNS/VPN traffic.
-Modes: self-test (offline), stage (RU root), commit (RU root), rollback (RU root).
+Modes: self-test (offline), stage (DE root), commit (DE root), rollback (DE root).
 No restarts, no nginx/DNS/WireGuard changes, independent auto-rollback after stage.
 """
 import hashlib
