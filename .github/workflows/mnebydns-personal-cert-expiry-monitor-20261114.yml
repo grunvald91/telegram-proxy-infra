@@ -66,12 +66,12 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          title='MNEBYDNS: renew personal wildcard TLS certificate'
+          title='MNEBYDNS: renew public DoT TLS certificates'
           existing="$(gh issue list --repo grunvald91/telegram-proxy-infra --state open \
-            --json number,title --jq '.[] | select(.title == "MNEBYDNS: renew personal wildcard TLS certificate") | .number' | head -n1)"
+            --json number,title --jq '.[] | select(.title == "MNEBYDNS: renew public DoT TLS certificates") | .number' | head -n1)"
           if [[ -z "$existing" ]]; then
             gh issue create --repo grunvald91/telegram-proxy-infra --title "$title" --body \
-              'The daily read-only wildcard DoT certificate monitor detected 30 or fewer remaining days, invalid TLS, or DE/RU certificate drift. Check the latest workflow report. Renew the DNS-01 wildcard with fresh authoritative TXT, then safely update both DE and RU certificate files. Do NOT restart or disable the existing dns.mnebyvpn.site CoreDNS. Verify both strict SNI certificates before closing.'
+              'The daily read-only legacy and personal DoT certificate monitor detected 30 or fewer remaining days on either public name, invalid TLS, or DE/RU personal certificate drift. Check the latest workflow report. Renew the DNS-01 wildcard with fresh authoritative TXT, then safely update both DE and RU certificate files. Do NOT restart or disable the existing dns.mnebyvpn.site CoreDNS. Verify both strict SNI certificates before closing.'
           else
             echo "PERSONAL_CERT_EXISTING_OPEN_ISSUE=$existing"
           fi
