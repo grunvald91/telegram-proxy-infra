@@ -59,7 +59,7 @@ jobs:
             echo "service_$unit=$(systemctl is-active "$unit" 2>/dev/null || true)"
             echo "restarts_$unit=$(systemctl show "$unit" -p NRestarts --value 2>/dev/null || true)"
           done
-          if test -x /opt/xray/xray; then /opt/xray/xray version | head -n 1; fi
+          if test -x /opt/xray/xray; then /opt/xray/xray version | sed -n "1p"; fi
           python3 - <<'PY'
           import pathlib,json,socket,subprocess
           cfg=pathlib.Path('/etc/mnebyvpn/xray-canary.json')
