@@ -1,0 +1,145 @@
+name: MNEBYDNS Meta Instagram foreign 89-only live audit read-only
+on:
+  push:
+    branches: [diag/mnebydns-outage-20261114]
+    paths: ['.github/workflows/mnebydns-meta-89-only-live-audit-20261114.yml']
+permissions: {contents: read}
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Prepare pinned SSH for foreign 89 only
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS" && test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+          echo 'TARGET_ONLY=FOREIGN_89'
+      - name: External client to foreign 89 DoT and HTTPS for real Meta hostnames
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import socket,ssl,struct,random,concurrent.futures,time
+          foreign='89.125.90.101'
+          hosts=[
+            'instagram.com','www.instagram.com','i.instagram.com','graph.instagram.com',
+            'edge-chat.instagram.com','api.instagram.com','b-graph.instagram.com',
+            'scontent.cdninstagram.com','video.cdninstagram.com',
+            'instagramstatic-a.akamaihd.net','igcdn-photos-e-a.akamaihd.net',
+            'igcdn-videos-a-0-a.akamaihd.net',
+            'threads.com','www.threads.com','threads.net','www.threads.net','graph.threads.net',
+            'facebook.com','www.facebook.com','graph.facebook.com','b-graph.facebook.com',
+            'edge-chat.facebook.com','connect.facebook.net',
+            'scontent.xx.fbcdn.net','static.xx.fbcdn.net','z-m-gateway.facebook.com',
+            'ig.me','www.instagramstatic.com','example.org'
+          ]
+          ctx=ssl.create_default_context()
+          def exactly(s,n):
+            res=b''
+            while len(res)<n:
+              chunk=s.recv(n-len(res))
+              if not chunk:raise EOFError('short frame')
+              res+=chunk
+            return res
+          def skip(d,i):
+            while True:
+              k=d[i]
+              if k&192==192:return i+2
+              if k==0:return i+1
+              i+=k+1
+          def dot(host,typ=1):
+            q=struct.pack('!HHHHHH',random.randrange(1,65535),256,1,0,0,0)+b''.join(bytes([len(x)])+x.encode() for x in host.split('.'))+b'\0'+struct.pack('!HH',typ,1)
+            with socket.create_connection((foreign,853),timeout=6) as raw:
+              raw.settimeout(7)
+              with ctx.wrap_socket(raw,server_hostname='dns.mnebyvpn.site') as tls:
+                tls.sendall(struct.pack('!H',len(q))+q)
+                size=int.from_bytes(exactly(tls,2),'big')
+                ans=exactly(tls,size)
+            i=12
+            for _ in range(int.from_bytes(ans[4:6],'big')):i=skip(ans,i)+4
+            out=[]
+            for _ in range(int.from_bytes(ans[6:8],'big')):
+              i=skip(ans,i)
+              rr,cl,ttl,n=struct.unpack_from('!HHIH',ans,i);i+=10
+              if rr==1 and n==4:out.append(socket.inet_ntoa(ans[i:i+4]))
+              i+=n
+            return (ans[3]&15,','.join(sorted(set(out))) or 'NONE',int.from_bytes(ans[6:8],'big'))
+          def tls(host):
+            t=time.monotonic()
+            try:
+              with socket.create_connection((foreign,443),timeout=5) as raw:
+                raw.settimeout(7)
+                with ctx.wrap_socket(raw,server_hostname=host) as s:
+                  ver=s.version()
+                  s.sendall(('HEAD / HTTP/1.1\r\nHost: '+host+'\r\nConnection: close\r\n\r\n').encode())
+                  try: status=s.recv(150).split(b'\r\n')[0].decode('ascii','replace')[:55]
+                  except Exception as e:status=type(e).__name__
+                  return ('PASS',ver,status,round((time.monotonic()-t)*1000))
+            except Exception as e:return ('FAIL',type(e).__name__,'',round((time.monotonic()-t)*1000))
+          def probe(host):
+            try:d=dot(host)
+            except Exception as e:d=('ERR_'+type(e).__name__,'',0)
+            return host,d,tls(host)
+          with concurrent.futures.ThreadPoolExecutor(max_workers=7) as ex:
+            for host,d,t in ex.map(probe,hosts):
+              print('FOREIGN89_META',host,'DNS_RCODE',d[0],'DNS_A',d[1],'A_COUNT',d[2],'TLS',*t,flush=True)
+          for host in ('i.instagram.com','graph.instagram.com','www.instagram.com','threads.com','scontent.xx.fbcdn.net'):
+            for kind in (28,65):
+              try:print('FOREIGN89_ALT_DNS',host,kind,dot(host,kind),flush=True)
+              except Exception as e:print('FOREIGN89_ALT_DNS',host,kind,type(e).__name__,flush=True)
+          print('FOREIGN89_ONLY_EXTERNAL_READONLY_COMPLETE=true')
+          PY
+      - name: Foreign 89 live SNI routing, service listeners and direct origin egress
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@89.125.90.101 'python3 -' <<'PY'
+          import pathlib,subprocess,socket,ssl,concurrent.futures,time,re
+          print('NODE=FOREIGN89')
+          def sh(cmd):
+            try:
+              p=subprocess.run(cmd,text=True,capture_output=True,timeout=9)
+              return p.returncode,p.stdout.strip()
+            except Exception as e:return 999,type(e).__name__
+          for svc in ('nginx.service','mnebydns-dot.service','mnebydns-googlepilot.service'):
+            print('SERVICE',svc,sh(['systemctl','is-active',svc]))
+          for port,kind in ((443,'tcp'),(443,'udp'),(853,'tcp'),(15449,'tcp'),(19444,'udp')):
+            filter='-Hln' + ('t' if kind=='tcp' else 'u')+'p'
+            val=sh(['ss',filter,'sport = :'+str(port)])
+            print('LISTEN',port,kind,bool(val[1]),val[1][:170])
+          for path in ('/opt/mnebydns-dot/Corefile','/etc/nginx/nginx.conf','/etc/mnebydns-googlepilot/nginx.conf'):
+            p=pathlib.Path(path)
+            if not p.exists():print('CONFIG_MISSING',path);continue
+            txt=p.read_text()
+            matches=[line.strip() for line in txt.splitlines() if any(k in line.lower() for k in ('instagram','threads','fbcdn','facebook','akamaihd','igcdn','meta-foreign'))]
+            print('ACTIVE_CONFIG',path,'META_LINE_COUNT',len(matches))
+            for line in matches[:26]:print('ACTIVE_META_LINE',path,line[:1100])
+          dirs=list(pathlib.Path('/opt/mnebydns-meta-foreign').glob('*/pending')) if pathlib.Path('/opt/mnebydns-meta-foreign').exists() else []
+          print('PENDING_META_CANARIES',len(dirs))
+          hosts=[
+            'www.instagram.com','i.instagram.com','graph.instagram.com',
+            'edge-chat.instagram.com','www.threads.net','threads.com',
+            'graph.facebook.com','scontent.xx.fbcdn.net',
+            'instagramstatic-a.akamaihd.net'
+          ]
+          def direct(host):
+            t=time.monotonic()
+            try:
+              ips=sorted({e[4][0] for e in socket.getaddrinfo(host,443,socket.AF_INET,socket.SOCK_STREAM)})
+              with socket.create_connection((ips[0],443),timeout=5) as raw:
+                raw.settimeout(6)
+                with ssl.create_default_context().wrap_socket(raw,server_hostname=host) as tls:
+                  return ('ORIGIN_PASS',ips[0],tls.version(),round((time.monotonic()-t)*1000))
+            except Exception as e:return ('ORIGIN_FAIL',type(e).__name__,round((time.monotonic()-t)*1000))
+          with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
+            for host,r in zip(hosts,ex.map(direct,hosts)):
+              print('DE89_DIRECT_ORIGIN',host,*r,flush=True)
+          print('FOREIGN89_ONLY_SERVER_READONLY_COMPLETE=true')
+          PY
