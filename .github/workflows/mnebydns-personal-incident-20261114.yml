@@ -158,7 +158,7 @@ jobs:
           opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=yes
             -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
             -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
-          sshpass -e ssh -T "\${opts[@]}" root@188.120.254.223 'python3 -' <<'PY'
+          sshpass -e ssh -T "${opts[@]}" root@188.120.254.223 'python3 -' <<'PY'
           import socket,ssl,struct,secrets,time,statistics
           ctx=ssl.create_default_context()
           endpoints=(
