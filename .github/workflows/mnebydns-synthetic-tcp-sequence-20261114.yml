@@ -1,0 +1,46 @@
+name: MNEBYDNS synthetic ClientHello TCP sequence loss exact read-only
+on:
+  push:
+    branches: [diag/mnebydns-outage-20261114]
+    paths:
+      - '.github/workflows/mnebydns-synthetic-tcp-sequence-20261114.yml'
+      - 'scripts/mnebydns-tcp-sequence-20261114.py'
+permissions: {contents: read}
+jobs:
+  trace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Check observer; discover synthetic runner source
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-tcp-sequence-20261114.py
+          test -n "$RU_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+          source_ip="$(curl -4 -fsS --max-time 7 https://api.ipify.org)"
+          python3 -c "import ipaddress,sys;ipaddress.IPv4Address(sys.argv[1])" "$source_ip"
+          echo "SOURCE_IPV4=$source_ip" >> "$GITHUB_ENV"
+          echo 'SYNTHETIC_RUNNER_IP_DISCOVERED=true'
+      - name: Compare all synthetic TCP sequence and ACK positions at runner and RU edge
+        run: |
+          set -Eeuo pipefail
+          script=scripts/mnebydns-tcp-sequence-20261114.py
+          sudo -n python3 -u "$script" watch RUNNER 0.0.0.0 25 > runner-tcp-headers.txt &
+          local_pid=$!
+          SSHPASS="$RU_PASS" sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@188.120.254.223 "python3 -u - watch RU '$SOURCE_IPV4' 25" < "$script" > ru-tcp-headers.txt &
+          ru_pid=$!
+          sleep 3
+          python3 "$script" client
+          wait "$local_pid"
+          wait "$ru_pid"
+          echo '=== RUNNER SYNTHETIC TCP HEADER TRACE ==='
+          cat runner-tcp-headers.txt
+          echo '=== RU SYNTHETIC TCP HEADER TRACE ==='
+          cat ru-tcp-headers.txt
+          rm -f runner-tcp-headers.txt ru-tcp-headers.txt
+          echo 'NO_SERVER_MUTATIONS=true'
