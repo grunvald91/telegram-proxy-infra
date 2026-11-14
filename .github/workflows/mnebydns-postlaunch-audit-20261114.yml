@@ -1,0 +1,108 @@
+name: MNEBYDNS personal public route and certificate live audit (read-only)
+on:
+  push:
+    branches: [fix/mnebydns-personal-postlaunch-hardening-20261114]
+    paths: ['.github/workflows/mnebydns-postlaunch-audit-20261114.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check public legacy and personalized TLS including anonymous DNS query
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import socket,ssl,datetime,struct,secrets
+          ip='89.125.90.101'
+          host='aaaaaaaaaaaa.dns.mnebyvpn.site'
+          with socket.create_connection((ip,853),timeout=6) as raw:
+              raw.settimeout(6)
+              with ssl.create_default_context().wrap_socket(raw,server_hostname=host) as tls:
+                  cert=tls.getpeercert()
+                  end=datetime.datetime.strptime(cert['notAfter'],'%b %d %H:%M:%S %Y %Z').replace(tzinfo=datetime.timezone.utc)
+                  days=(end-datetime.datetime.now(datetime.timezone.utc)).days
+                  print('PERSONAL_CERT_DAYS_REMAINING='+str(days))
+                  assert days>7,'Certificate expires too soon'
+                  print('PERSONAL_PUBLIC_STRICT_TLS=PASS')
+          with socket.create_connection((ip,853),timeout=6) as raw:
+              raw.settimeout(6)
+              with ssl.create_default_context().wrap_socket(raw,server_hostname='dns.mnebyvpn.site') as tls:
+                  print('LEGACY_PUBLIC_STRICT_TLS=PASS')
+          noverify=ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+          noverify.check_hostname=False
+          noverify.verify_mode=ssl.CERT_NONE
+          query=struct.pack('!HHHHHH',secrets.randbelow(65534)+1,256,1,0,0,0)+b'\x07example\x03com\x00'+struct.pack('!HH',1,1)
+          try:
+              with socket.create_connection((ip,853),timeout=5) as raw:
+                  raw.settimeout(5)
+                  with noverify.wrap_socket(raw) as tls:
+                      tls.sendall(struct.pack('!H',len(query))+query)
+                      result=tls.recv(2)
+                      print('LEGACY_ANONYMOUS_DOT_RESPONSE='+('ALLOWED' if len(result)==2 else 'DENIED'))
+          except (OSError,ssl.SSLError) as e:
+              print('LEGACY_ANONYMOUS_DOT_RESPONSE=REJECTED_'+type(e).__name__)
+          print('AUDIT_PUBLIC_READ_ONLY=true')
+          PY
+      - name: Server inventories without changing firewall or services
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS" && test -n "$RU_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          options=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh "${options[@]}" root@89.125.90.101 'python3 -' <<'PY'
+          import subprocess,pathlib,ssl,socket
+          def run(a):
+              try:
+                  p=subprocess.run(a,capture_output=True,text=True,timeout=7)
+                  return p.stdout.strip() if p.returncode==0 else ''
+              except Exception:return ''
+          print('DE_LEGACY_CORE_DOT='+run(['systemctl','is-active','mnebydns-dot']))
+          print('DE_PERSONAL_NGINX='+run(['systemctl','is-active','mnebydns-personal-sni-stream.service']))
+          print('DE_PERSONAL_NAT_UNIT='+run(['systemctl','is-active','mnebydns-personal-sni-redirect.service']))
+          rules=run(['iptables','-t','nat','-S','PREROUTING'])
+          print('DE_PERSONAL_PUBLIC_NAT='+str('--dport 853 -j REDIRECT --to-ports 8854' in rules))
+          ss=run(['ss','-Hlntp'])
+          for port in (853,8854,1853):
+              lines=[x for x in ss.splitlines() if ':'+str(port)+' ' in x]
+              print('DE_LISTENER_'+str(port)+'='+(','.join(
+                  'core' if 'coredns' in x.lower() else 'nginx' if 'nginx' in x.lower() else 'other'
+                  for x in lines) if lines else 'NONE'))
+          cert=pathlib.Path('/etc/mnebydns/personal-dot/fullchain.pem')
+          print('DE_PERSONAL_CERT_FILE='+str(cert.is_file()))
+          for ip in ['10.66.77.1','89.125.90.101']:
+              try:
+                  with socket.create_connection((ip,853),timeout=4) as raw:
+                      raw.settimeout(4)
+                      with ssl.create_default_context().wrap_socket(raw,server_hostname='dns.mnebyvpn.site'):
+                          print('DE_INTERNAL_CORE_'+ip.replace('.','_')+'=TLS_PASS')
+              except Exception as e:
+                  print('DE_INTERNAL_CORE_'+ip.replace('.','_')+'='+type(e).__name__)
+          print('DE_AUDIT_READ_ONLY=true')
+          PY
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh "${options[@]}" root@188.120.254.223 'python3 -' <<'PY'
+          import subprocess
+          def r(a):
+              try:
+                  p=subprocess.run(a,capture_output=True,text=True,timeout=7)
+                  return p.stdout.strip() if p.returncode==0 else ''
+              except Exception:return ''
+          print('RU_PERSONAL_CONTAINER='+r(['docker','inspect','--format','{{.State.Running}}','mnebydns-personal-dot']))
+          print('RU_PRIVATE_1853_AVAILABLE='+str(not any(':1853 ' in x for x in r(['ss','-Hlnt']).splitlines())))
+          print('RU_AUDIT_READ_ONLY=true')
+          PY

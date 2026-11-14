@@ -1,0 +1,87 @@
+name: MNEBYDNS personal wildcard TLS expiry and RU-DE sync monitor
+on:
+  push:
+    branches: [main, fix/mnebydns-personal-postlaunch-hardening-20261114]
+    paths:
+      - '.github/workflows/mnebydns-personal-cert-expiry-monitor-20261114.yml'
+      - 'scripts/mnebydns-personal-cert-watch-20261114.py'
+  workflow_dispatch:
+  schedule:
+    - cron: '33 4 * * *'
+permissions:
+  contents: read
+  issues: write
+concurrency:
+  group: mnebydns-personal-cert-expiry-monitor
+  cancel-in-progress: false
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify public TLS age, save bounded result
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-personal-cert-watch-20261114.py
+          set +e
+          python3 scripts/mnebydns-personal-cert-watch-20261114.py > personal-cert-report.json
+          code=$?
+          set -e
+          cat personal-cert-report.json
+          echo "CERT_CHECK_EXIT=$code" >> "$GITHUB_ENV"
+      - name: Check both certificate leaf fingerprints, no key exports
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS" && test -n "$RU_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          export SSHPASS="$DE_PASS"
+          de="$(sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
+            'openssl x509 -in /etc/mnebydns/personal-dot/fullchain.pem -outform DER | sha256sum | cut -d" " -f1')"
+          export SSHPASS="$RU_PASS"
+          ru="$(sshpass -e ssh "${opts[@]}" root@188.120.254.223 \
+            'openssl x509 -in /etc/mnebydns/personal-dot/fullchain.pem -outform DER | sha256sum | cut -d" " -f1')"
+          public="$(python3 -c 'import json;print(json.load(open("personal-cert-report.json")).get("personal_sha256",""))')"
+          if [[ -n "$public" && "$de" == "$ru" && "$ru" == "$public" ]]; then
+            echo 'PERSONAL_CERT_DE_RU_PUBLIC_SYNC=PASS'
+            echo 'CERT_SYNC=ok' >> "$GITHUB_ENV"
+          else
+            echo 'PERSONAL_CERT_DE_RU_PUBLIC_SYNC=FAILED'
+            echo 'CERT_SYNC=failed' >> "$GITHUB_ENV"
+          fi
+      - name: Create one tracked GitHub issue if expiring or certificate copies mismatch
+        if: ${{ always() && (env.CERT_CHECK_EXIT != '0' || env.CERT_SYNC != 'ok') }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          title='MNEBYDNS: renew public DoT TLS certificates'
+          existing="$(gh issue list --repo grunvald91/telegram-proxy-infra --state open \
+            --json number,title --jq '.[] | select(.title == "MNEBYDNS: renew public DoT TLS certificates") | .number' | head -n1)"
+          if [[ -z "$existing" ]]; then
+            gh issue create --repo grunvald91/telegram-proxy-infra --title "$title" --body \
+              'The daily read-only legacy and personal DoT certificate monitor detected 30 or fewer remaining days on either public name, invalid TLS, or DE/RU personal certificate drift. Check the latest workflow report. Renew the DNS-01 wildcard with fresh authoritative TXT, then safely update both DE and RU certificate files. Do NOT restart or disable the existing dns.mnebyvpn.site CoreDNS. Verify both strict SNI certificates before closing.'
+          else
+            echo "PERSONAL_CERT_EXISTING_OPEN_ISSUE=$existing"
+          fi
+      - name: Report certificate alert to GitHub Actions
+        if: always()
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if [[ "${CERT_CHECK_EXIT:-99}" != 0 || "${CERT_SYNC:-failed}" != ok ]]; then
+            echo '::error title=MNEBYDNS personal wildcard certificate::Cert expires soon, TLS invalid, or server certificate copies differ.'
+            exit 1
+          fi
+          echo 'PERSONAL_CERT_EXPIRY_AND_SYNC=HEALTHY'
