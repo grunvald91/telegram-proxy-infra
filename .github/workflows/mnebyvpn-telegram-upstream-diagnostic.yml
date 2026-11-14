@@ -46,6 +46,8 @@ jobs:
           else
             echo 'widget_outbound_api_configured=false'
           fi
+          outbound_code="$(curl --noproxy '*' --silent --output /dev/null --write-out '%{http_code}' --connect-timeout 4 --max-time 8 https://api.telegram.org/ || true)"
+          echo "ru_telegram_api_https=$outbound_code"
           echo 'ru_read_only=true'
           REMOTE
           if [[ -n "$FOREIGN_PASS" ]]; then
