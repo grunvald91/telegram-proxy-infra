@@ -1,0 +1,120 @@
+name: MNEBYVPN three-profile isolated read-only diagnostics 2026-11-14
+on:
+  push:
+    branches: ['diag/mnebyvpn-transport-health-20261114']
+    paths: ['.github/workflows/mnebyvpn-transport-health-20261114.yml']
+permissions:
+  contents: read
+concurrency:
+  group: mnebyvpn-transport-health-20261114
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      FOREIGN_SSH_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      FOREIGN_HOST: cdn.servgo.ru
+      RU_HOST: mnebyvpn.site
+    steps:
+      - name: Prepare SSH (no customer credentials)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$FOREIGN_SSH_PASSWORD"
+          test -n "$RU_SSH_PASSWORD"
+          command -v sshpass >/dev/null || { sudo apt-get update -qq; sudo apt-get install -qq -y sshpass; }
+      - name: Check external socket reachability and WebSocket handshake, no auth
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import socket,time,statistics
+          for port in (8443,2053):
+              samples=[]
+              for _ in range(4):
+                  start=time.monotonic()
+                  try:
+                      with socket.create_connection(("cdn.servgo.ru",port),timeout=5): pass
+                      samples.append((time.monotonic()-start)*1000)
+                  except OSError: pass
+              print("runner_port_"+str(port)+"_tcp_success="+str(len(samples))+"/4")
+              if samples: print("runner_port_"+str(port)+"_median_connect_ms="+str(round(statistics.median(samples))))
+          PY
+          code="$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --connect-timeout 6 --max-time 9 --http1.1 \
+              -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+              -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+              "https://cdn.servgo.ru:8443/mnebyvpn-vpn/ws" || true)"
+          echo "websocket_upgrade_http=$code"
+      - name: Read-only foreign Xray and REALITY listener inventory
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$FOREIGN_SSH_PASSWORD"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR "root@$FOREIGN_HOST" 'bash -se' <<'REMOTE'
+          set -Eeuo pipefail
+          echo "foreign_read_only=true"
+          for unit in xray.service mnebyvpn-vpn-provisioner.service mnebyvpn-xray-canary.service nginx.service; do
+            echo "service_$unit=$(systemctl is-active "$unit" 2>/dev/null || true)"
+            echo "restarts_$unit=$(systemctl show "$unit" -p NRestarts --value 2>/dev/null || true)"
+          done
+          if test -x /opt/xray/xray; then /opt/xray/xray version | head -n 1; fi
+          python3 - <<'PY'
+          import pathlib,json,socket,subprocess
+          cfg=pathlib.Path('/etc/mnebyvpn/xray-canary.json')
+          meta=pathlib.Path('/etc/mnebyvpn/reality-public.json')
+          enabled=pathlib.Path('/etc/mnebyvpn/reality-announce-enabled')
+          print('node_config_present='+str(cfg.is_file()).lower())
+          print('reality_announced='+str(enabled.exists()).lower())
+          if cfg.is_file():
+              x=json.loads(cfg.read_text())
+              for n,entry in enumerate(x.get('inbounds',[])):
+                  s=entry.get('streamSettings',{})
+                  flows={p.get('flow','') for p in entry.get('settings',{}).get('clients',[])}
+                  print('inbound_'+str(n)+'_transport='+str(s.get('network')))
+                  print('inbound_'+str(n)+'_security='+str(s.get('security')))
+                  print('inbound_'+str(n)+'_port='+str(entry.get('port')))
+                  print('inbound_'+str(n)+'_active_clients='+str(len(entry.get('settings',{}).get('clients',[]))))
+                  print('inbound_'+str(n)+'_has_vision='+str('xtls-rprx-vision' in flows).lower())
+                  if s.get('security')=='reality':
+                      reality=s.get('realitySettings',{})
+                      print('reality_server_names_count='+str(len(reality.get('serverNames',[]))))
+                      print('reality_public_metadata_matches_shortid='+str(meta.is_file() and reality.get('shortIds')==[json.loads(meta.read_text()).get('shortId')]).lower())
+                  p=entry.get('port')
+                  if isinstance(p,int):
+                      sock=socket.socket()
+                      sock.settimeout(1)
+                      try:
+                          status=sock.connect_ex(('127.0.0.1',p))==0
+                      except OSError: status=False
+                      finally: sock.close()
+                      print('inbound_'+str(n)+'_localhost_listen='+str(status).lower())
+              validation=subprocess.run(['/opt/xray/xray','run','-test','-config',str(cfg)],capture_output=True,timeout=8)
+              print('xray_config_valid='+str(validation.returncode==0).lower())
+          print('node_inspection_finished=true')
+          PY
+          REMOTE
+      - name: Check TCP reachability from RU VPS without changing routing
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_SSH_PASSWORD"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR "root@$RU_HOST" 'python3 -' <<'PY'
+          import socket,time,statistics
+          print('ru_to_foreign_read_only=true')
+          for port in (8443,2053):
+              times=[]
+              errors={}
+              for _ in range(6):
+                  t=time.monotonic()
+                  try:
+                      with socket.create_connection(('cdn.servgo.ru',port),timeout=5): pass
+                      times.append((time.monotonic()-t)*1000)
+                  except OSError as e:
+                      name=type(e).__name__
+                      errors[name]=errors.get(name,0)+1
+              print('ru_port_'+str(port)+'_success='+str(len(times))+'/6')
+              print('ru_port_'+str(port)+'_error_classes='+','.join(k+':'+str(v) for k,v in sorted(errors.items())))
+              if times: print('ru_port_'+str(port)+'_median_connect_ms='+str(round(statistics.median(times))))
+          PY
