@@ -1,0 +1,73 @@
+name: MNEBYDNS unified RU ingress DNS and HTTPS preflight (read-only)
+on:
+  push:
+    branches: [audit/mnebydns-unified-ru188-entry-20261114]
+    paths: ['.github/workflows/mnebydns-unified-ru188-input-preflight-20261114.yml']
+permissions: {contents: read}
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Install pinned SSH and DNS tools
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass dnsutils >/dev/null
+      - name: Check existing DNS zone A wildcard and NS without credentials
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for name in dns.mnebyvpn.site aaaaaaaaaaaa.dns.mnebyvpn.site zz-test-20261114.dns.mnebyvpn.site;do
+            echo "ZONE_LOOKUP_HOST=$name"
+            dig +time=3 +tries=1 +noall +answer "$name" A
+            dig @1.1.1.1 +time=3 +tries=1 +noall +answer "$name" A || true
+          done
+          dig +time=3 +tries=1 +noall +answer mnebyvpn.site NS
+      - name: RU actual Nginx 853 stream file and DE separate DoT SNI router
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -' <<'PY'
+          import pathlib,subprocess,socket,ssl,time
+          for name in ('/etc/nginx/streams.d/01-mtproxy-stdports.conf',
+                       '/etc/nginx/streams.d/01-mtproxy-443.conf',
+                       '/etc/nginx/streams.d/02-user-fastpath.conf'):
+              p=pathlib.Path(name)
+              if p.is_file():
+                  print('RU_STREAM_FILE='+name)
+                  for line in p.read_text().splitlines()[:100]:
+                      if 'secret' not in line.lower() and 'password' not in line.lower():
+                          print('RU_STREAM_LINE='+line[:260])
+          print('RU_NGINX_TEST='+str(subprocess.run(['nginx','-t'],capture_output=True).returncode))
+          for host,port in [('10.66.77.1',8854),('10.66.77.1',853),('89.125.90.101',853)]:
+              try:
+                  start=time.monotonic()
+                  with socket.create_connection((host,port),timeout=6) as raw:
+                      raw.settimeout(7)
+                      with ssl.create_default_context().wrap_socket(raw,server_hostname='dns.mnebyvpn.site') as tls:
+                          print('RU_TO_DE_TLS_TARGET='+host+':'+str(port)+' OK='+str(tls.version())+' LATENCY_MS='+str(round(1000*(time.monotonic()-start))))
+              except Exception as e:print('RU_TO_DE_TLS_TARGET='+host+':'+str(port)+' ERROR='+type(e).__name__+':'+str(e)[:100])
+          PY
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY'
+          import pathlib,subprocess
+          p=pathlib.Path('/etc/mnebydns/personal-sni/nginx.conf')
+          print('DE_SNI_CONFIG_START')
+          print(p.read_text()[:6000])
+          print('DE_SNI_CONFIG_END')
+          for unit in ('nginx','mnebydns-dot.service','mnebydns-personal-sni-stream.service','mnebydns-personal-sni-redirect.service'):
+              s=subprocess.run(['systemctl','is-active',unit],capture_output=True,text=True,timeout=5).stdout.strip()
+              print('DE_SYSTEMD_ACTIVE='+unit+':'+s)
+          print('DE_8854_LISTEN='+subprocess.run(['ss','-Hlnt','sport = :8854'],capture_output=True,text=True,timeout=6).stdout.strip())
+          PY
