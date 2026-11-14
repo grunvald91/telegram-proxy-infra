@@ -1,0 +1,65 @@
+name: MNEBYDNS inspect exact RU188 443 to DE backend path (read only)
+on:
+  push:
+    branches: [audit/mnebydns-legacy-all-via-188-readonly-20261114]
+    paths: ['.github/workflows/mnebydns-188-frontdoor-real-path-readonly-20261114.yml']
+permissions: {contents: read}
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Audit all live Nginx includes, WireGuard, routing and front-door rules
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          for role in ru de; do
+            if [[ "$role" == ru ]]; then export SSHPASS="$RU_PASS";host=188.120.254.223;else export SSHPASS="$DE_PASS";host=89.125.90.101;fi
+            sshpass -e ssh "${opts[@]}" root@"$host" 'python3 -' "$role" <<'PY'
+          import re,subprocess,sys,pathlib
+          role=sys.argv[1]
+          p=subprocess.run(['nginx','-T'],capture_output=True,text=True,timeout=12)
+          assert p.returncode==0,'nginx -T failed'
+          conf=p.stdout
+          print('ROUTE_'+role.upper()+'_NGINX_T_COUNT='+str(len(conf.splitlines())),flush=True)
+          current=''
+          selected=0
+          for line in conf.splitlines():
+              if line.startswith('# configuration file'):current=line.split(':',1)[0][:140]
+              s=line.strip()
+              if not s or s.startswith('#'):continue
+              if any(k in s for k in (
+                'ssl_preread_server_name','ssl_preread on','proxy_pass ','proxy_connect_timeout',
+                'listen 443','listen 0.0.0.0:443','listen 10.66.77.',
+                'map $ssl_preread','upstream ','proxy_bind ','allow 10.66.77.',
+                'default 10.66.77.','default 89.125.90.101','default 127.0.0.1',
+                'proxy_ssl_server_name'
+              )):
+                  # Never print secret/cert/credentials, only selected proxy instructions.
+                  if any(s.startswith(q) for q in ('ssl_certificate','ssl_certificate_key','proxy_set_header','map_hash_bucket_size')):continue
+                  if 'proxy_pass ' in s or 'listen ' in s or 'default ' in s or 'proxy_bind ' in s or 'ssl_preread' in s:
+                      print('ROUTE_'+role.upper()+'_NGINX='+current+':'+s[:230],flush=True)
+                      selected+=1
+                      if selected>170:break
+          for argv,label in [
+            (['ip','-4','route','get','10.66.77.1'],'WG_ROUTE_TO_DE'),
+            (['ip','-4','route','get','89.125.90.101'],'ROUTE_TO_DE_PUBLIC'),
+            (['wg','show','tg-relay','latest-handshakes'],'WG_HANDSHAKE'),
+            (['ss','-Hlnpt','sport = :443'],'PORT443'),
+          ]:
+              p=subprocess.run(argv,capture_output=True,text=True,timeout=6)
+              print('ROUTE_'+role.upper()+'_'+label+'_RC='+str(p.returncode),flush=True)
+              for row in p.stdout.splitlines()[:3]:
+                  if label=='WG_HANDSHAKE':continue
+                  print('ROUTE_'+role.upper()+'_'+label+'='+row[:225],flush=True)
+          PY
+          done
