@@ -19,7 +19,7 @@ jobs:
           test -n "$DE_PASS"
           sudo apt-get update -qq && sudo apt-get install -y -qq sshpass >/dev/null
           export SSHPASS="$DE_PASS"
-          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalHostKeyAlgorithms=ssh-ed25519 -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@89.125.90.101 'python3 -' <<'PY'
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o HostKeyAlgorithms=ssh-ed25519 -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@89.125.90.101 'python3 -' <<'PY'
           import pathlib,subprocess,hashlib
           ck=pathlib.Path('/opt/mnebydns-stable-checkpoints/current')
           if ck.exists():
