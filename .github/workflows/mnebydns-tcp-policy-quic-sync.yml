@@ -8,23 +8,132 @@ concurrency:
   group: mnebydns-youtube-quic-udp443-live
   cancel-in-progress: false
 jobs:
-  inventory:
+  release:
     runs-on: ubuntu-latest
-    timeout-minutes: 4
+    timeout-minutes: 8
     env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
       DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
         with: {persist-credentials: false}
-      - name: Read live explicit TCP domain rules without copying configurations or client data
+      - name: Verify every copied TCP rule, wildcard boundaries and both UDP relay roles
         run: |
           set -Eeuo pipefail
-          test -n "$DE_PASS" && test -s ops/mnebydns-owner-ssh-known_hosts
+          bash -n scripts/mnebydns-youtube-quic-upgrade-20261114.sh
+          python3 -B scripts/test-mnebydns-youtube-quic.py
+          python3 -B scripts/test-mnebydns-copied-tcp-policy.py
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
           if ! command -v sshpass >/dev/null;then
             sudo apt-get update -qq
             sudo apt-get install -qq -y sshpass >/dev/null
           fi
-          SSHPASS="$DE_PASS" sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes \
-            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" \
-            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR \
-            root@89.125.90.101 'python3 -B - /etc/nginx/nginx.conf' < scripts/mnebydns-extract-tcp-policy.py
+      - name: Guarded complete TCP policy copy on RU DE and genuine HTTP3
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          id="$GITHUB_RUN_ID"
+          [[ "$id" =~ ^[0-9]{9,13}$ ]]
+          work="/tmp/mnebydns-youtube-quic-upgrade-$id"
+          script="$work/upgrade.sh"
+          expiry="$(date -u -d '+10 minutes' +'%Y-%m-%d %H:%M:%S UTC')"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          cp_opts=(-q -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          de() { SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 "$@"; }
+          ru() { SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 "$@"; }
+          undo() {
+            rc=$?
+            trap - EXIT
+            if ((rc!=0));then
+              echo 'COPIED_TCP_RELEASE_FAILURE_ROLLBACK=true'
+              ru "test ! -s '/opt/mnebydns-youtube-quic-upgrade-ru-$id/upgrade.sh' || bash '/opt/mnebydns-youtube-quic-upgrade-ru-$id/upgrade.sh' rollback ru '$id'" || echo 'RU_ROLLBACK_ATTENTION=true'
+              de "test ! -s '/opt/mnebydns-youtube-quic-upgrade-de-$id/upgrade.sh' || bash '/opt/mnebydns-youtube-quic-upgrade-de-$id/upgrade.sh' rollback de '$id'" || echo 'DE_ROLLBACK_ATTENTION=true'
+            fi
+            exit "$rc"
+          }
+          trap undo EXIT
+          # Fail on any concurrent source drift; keep the existing stage/checkpoint machinery.
+          for role in de ru;do
+            "$role" "python3 -B -" <<'PY_CHECK'
+          import hashlib,pathlib
+          p=pathlib.Path('/opt/mnebydns-youtube-quic-43612369808/relay.py')
+          assert hashlib.sha256(p.read_bytes()).hexdigest()=='0468e44d74929860722fe922ec156bac04ac49a49452d364df6cc23c87b221da','Active relay changed; inspect before deployment'
+          print('COPIED_TCP_BASELINE_SOURCE_MATCH=PASS',flush=True)
+          PY_CHECK
+          done
+          de "test ! -d '$work' && mkdir -m 700 '$work'"
+          ru "test ! -d '$work' && mkdir -m 700 '$work'"
+          for ip in 89.125.90.101 188.120.254.223;do
+            if [[ "$ip" == 89.125.90.101 ]];then export SSHPASS="$DE_PASS";else export SSHPASS="$RU_PASS";fi
+            sshpass -e scp "${cp_opts[@]}" scripts/mnebydns-youtube-quic.py "root@$ip:$work/relay.py"
+            sshpass -e scp "${cp_opts[@]}" scripts/mnebydns-youtube-quic-upgrade-20261114.sh "root@$ip:$work/upgrade.sh"
+            sshpass -e scp "${cp_opts[@]}" scripts/mnebydns-extract-tcp-policy.py "root@$ip:$work/extract.py"
+          done
+          check_tcp_policy() {
+            de "python3 -B - '$work'" <<'PY_POLICY'
+          import importlib.util,pathlib,sys
+          sys.dont_write_bytecode=True
+          root=pathlib.Path(sys.argv[1])
+          def module(name,path):
+              spec=importlib.util.spec_from_file_location(name,path)
+              m=importlib.util.module_from_spec(spec);sys.modules[name]=m;spec.loader.exec_module(m)
+              return m
+          candidate=module('copied_policy_candidate',root/'relay.py')
+          extract=module('copied_policy_extractor',root/'extract.py').extract
+          actual=extract(pathlib.Path('/etc/nginx/nginx.conf').read_text())
+          expected=tuple((x['kind'],x['value']) for x in actual['rules'])
+          missing=set(expected)-set(candidate.TCP_ALLOWLIST_RULES)
+          extra=set(candidate.TCP_ALLOWLIST_RULES)-set(expected)
+          print('COPIED_TCP_POLICY_MISSING_RULES='+str(len(missing)),flush=True)
+          print('COPIED_TCP_POLICY_EXTRA_RULES='+str(len(extra)),flush=True)
+          assert not missing and not extra,'Current TCP policy differs from candidate'
+          assert actual['source_map_sha256']==candidate.TCP_ALLOWLIST_SOURCE_MAP_SHA256
+          assert all(candidate.allowed(v) for k,v in expected if k=='exact')
+          print('COPIED_TCP_POLICY_LIVE_SOURCE_AND_ALL_RULES=PASS',flush=True)
+          print('COPIED_TCP_POLICY_RULE_COUNT='+str(len(expected)),flush=True)
+          PY_POLICY
+          }
+          check_tcp_policy
+          de "bash '$script' stage de '$id' '$expiry'"
+          ru "bash '$script' stage ru '$id' '$expiry'"
+          ru 'PYTHONPATH=/tmp/mnebydns-youtube-quic-43612369808/deps YOUTUBE_QUIC_VIA=127.0.0.1 timeout 130s python3 -B -' <<'PY_H3'
+          import asyncio,runpy
+          p='/tmp/mnebydns-youtube-quic-43612369808/http3-probe.py'
+          once=runpy.run_path(p)['once']
+          async def verify():
+              for host in ['www.google.com','www.googleapis.com','www.youtube.com']:
+                  ok=await asyncio.wait_for(once(host),38)
+                  assert ok,'HTTP3/TLS failed for '+host
+              print('COPIED_TCP_RU_WG_DE_GENUINE_HTTP3=PASS',flush=True)
+          asyncio.run(verify())
+          PY_H3
+          for role in de ru;do
+            "$role" "python3 -B - '$work'" <<'PY_POST'
+          import hashlib,importlib.util,pathlib,sys
+          sys.dont_write_bytecode=True
+          live=pathlib.Path('/opt/mnebydns-youtube-quic-43612369808/relay.py')
+          candidate=pathlib.Path(sys.argv[1])/'relay.py'
+          assert live.read_bytes()==candidate.read_bytes()
+          spec=importlib.util.spec_from_file_location('relay_verify',live)
+          m=importlib.util.module_from_spec(spec);sys.modules[spec.name]=m;spec.loader.exec_module(m)
+          assert len(m.TCP_ALLOWLIST_RULES)==288
+          assert all(m.allowed(x) for x in ['accounts.google.com','www.gstatic.com','lh3.googleusercontent.com','chatgpt.com','api.anthropic.com','www.tiktok.com','play.googleapis.com'])
+          assert all(not m.allowed(x) for x in ['evilgoogleapis.com','googleapis.com.evil.org','127.0.0.1','example.org'])
+          print('COPIED_TCP_LIVE_WILDCARD_AND_BOUNDARIES=PASS',flush=True)
+          print('COPIED_TCP_LIVE_SHA256='+hashlib.sha256(live.read_bytes()).hexdigest(),flush=True)
+          PY_POST
+          done
+          check_tcp_policy
+          ru 'systemctl is-active --quiet nginx && ss -Hlnt "sport = :443" | grep -q .'
+          de 'systemctl is-active --quiet mnebydns-dot.service && systemctl is-active --quiet mnebydns-googlepilot.service'
+          de "bash '/opt/mnebydns-youtube-quic-upgrade-de-$id/upgrade.sh' commit de '$id'"
+          ru "bash '/opt/mnebydns-youtube-quic-upgrade-ru-$id/upgrade.sh' commit ru '$id'"
+          echo 'COPIED_TCP_COMPLETE_POLICY_RU_DE=DEPLOYED'
+          echo 'COPIED_TCP_TCP_DNS_VPN_UNCHANGED=true'
+          echo 'COPIED_TCP_ANDROID_PLAYBACK_NOT_YET_CONFIRMED=true'
+          trap - EXIT
