@@ -141,6 +141,12 @@ switch)
   nginx -t >/dev/null 2>&1
   nginx -s reload
   sleep 1
+  # Expose only IPv4 DoT on the existing external interface; default UFW DROP blocked clients.
+  # The explicit IPv4 source avoids implicitly adding any IPv6 rule.
+  ufw --dry-run allow in on ens3 from 0.0.0.0/0 to 188.120.254.223 port 853 proto tcp >/dev/null
+  ufw allow in on ens3 from 0.0.0.0/0 to 188.120.254.223 port 853 proto tcp comment 'MNEBYDNS public IPv4 DoT ingress' >/dev/null
+  touch "$ROOT/ufw853-added"
+  ufw status | grep -Fq '188.120.254.223 853/tcp'
   verify_dot 853
   cmp -s "$ROOT/candidate.conf" "$CONF"
   test "$(grep -Fc 'listen 993;' "$CONF")" -eq 1
@@ -160,6 +166,11 @@ rollback)
       echo 'UNIFIED_RU853_ROLLBACK_CONFIG_DRIFT_REFUSED=true' >&2
       exit 4
     fi
+    if [[ -f "$ROOT/ufw853-added" ]];then
+      ufw delete allow in on ens3 from 0.0.0.0/0 to 188.120.254.223 port 853 proto tcp >/dev/null
+      rm -f "$ROOT/ufw853-added"
+      echo 'UNIFIED_RU853_FIREWALL_RULE_REMOVED=PASS'
+    fi
     systemctl stop "$TIMER" >/dev/null 2>&1 || true
     cmp -s "$ROOT/original.conf" "$CONF"
     echo 'UNIFIED_RU853_ORIGINAL_MT_PROXY_853_RESTORED=PASS'
@@ -167,6 +178,8 @@ rollback)
   ;;
 finalize)
   cmp -s "$ROOT/candidate.conf" "$CONF"
+  test -f "$ROOT/ufw853-added"
+  ufw status | grep -Fq '188.120.254.223 853/tcp'
   verify_dot 853
   nginx -t >/dev/null 2>&1
   systemctl is-active --quiet nginx.service
