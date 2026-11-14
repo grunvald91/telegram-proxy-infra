@@ -1,0 +1,85 @@
+name: MNEBYDNS issue one real 24h personal DoT key privately to verified owner
+on:
+  push:
+    branches: [feat/mnebydns-owner-personal-test-key-20261114]
+    paths: ['.github/workflows/mnebydns-owner-personal-test-issue-20261114.yml']
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-owner-personal-test-credential-once
+  cancel-in-progress: false
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify credential issuer is owner-only with no payment or public DNS changes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          test -n "$RU_PASS"
+          python3 -m py_compile scripts/mnebydns-owner-personal-test-issue-20261114.py
+          python3 - <<'PY'
+          import pathlib
+          s=pathlib.Path('scripts/mnebydns-owner-personal-test-issue-20261114.py').read_text()
+          for part in ("secrets.randbelow(36 ** 12)",
+                       "owner, bot_token = env_values()",
+                       "issue_personal_dns_credential(",
+                       "ORDER", "24 hours", "OWNER_PERSONAL_TEST_KEY_SENT_IN_PRIVATE_TELEGRAM",
+                       "OWNER_PERSONAL_FREE_LEGACY_DOT_TOUCHED=false"):
+              if part=="ORDER": continue
+              assert part in s, part
+          assert "print(hostname)" not in s
+          assert "'PAID'" not in s
+          assert "UPDATE billing_plans" not in s
+          print('OWNER_ONE_TIME_TEST_STATIC_GUARDS=PASS')
+          PY
+      - name: Issue real, no-charge 24h test entitlement and securely deliver key via Telegram
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          export SSHPASS="$RU_PASS"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e scp -q "${opts[@]}" \
+            scripts/mnebydns-owner-personal-test-issue-20261114.py \
+            root@188.120.254.223:/tmp/mnebydns-owner-personal-test-issue-20261114.py
+          sshpass -e ssh -T "${opts[@]}" root@188.120.254.223 \
+            'python3 /tmp/mnebydns-owner-personal-test-issue-20261114.py'
+      - name: Confirm free public DNS still answers and wildcard TLS remains valid
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import socket,ssl,struct,secrets
+          ctx=ssl.create_default_context()
+          with socket.create_connection(('89.125.90.101',853),timeout=7) as raw:
+              raw.settimeout(7)
+              with ctx.wrap_socket(raw,server_hostname='dns.mnebyvpn.site') as tls:
+                  qid=secrets.randbelow(65534)+1
+                  q=struct.pack('!HHHHHH',qid,256,1,0,0,0)+b'\x07example\x03com\x00'+struct.pack('!HH',1,1)
+                  tls.sendall(struct.pack('!H',len(q))+q)
+                  hdr=tls.recv(2)
+                  assert len(hdr)==2
+                  n=struct.unpack('!H',hdr)[0]
+                  assert n>=12
+                  answer=b''
+                  while len(answer)<n:
+                      part=tls.recv(n-len(answer))
+                      assert part
+                      answer+=part
+                  assert answer[:2]==q[:2] and answer[2]&128
+          print('PUBLIC_FREE_CORE_DOT_UNCHANGED=PASS')
+          with socket.create_connection(('89.125.90.101',853),timeout=7) as raw:
+              raw.settimeout(7)
+              with ctx.wrap_socket(raw,server_hostname='aaaaaaaaaaaa.dns.mnebyvpn.site'):
+                  print('PERSONAL_PUBLIC_WILDCARD_TLS_UNCHANGED=PASS')
+          PY
