@@ -1,0 +1,70 @@
+name: MNEBYDNS audit 443 ChatGPT response fingerprints and Nginx backend
+on:
+  push:
+    branches: [audit/mnebydns-chatgpt-legacy-personal-e2e-20261114]
+    paths: ['.github/workflows/mnebydns-chatgpt-443-backend-fingerprint-20261114.yml']
+permissions: {contents: read}
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Inspect exact default SNI backend without changes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY'
+          import pathlib,re,socket,ssl
+          n=pathlib.Path('/etc/nginx/nginx.conf').read_text()
+          m=re.search(r'map\s+\$ssl_preread_server_name\s+\$direct_mtproxy_backend\s*\{(.*?)\n\s*\}',n,re.S)
+          assert m,'SNI map not found'
+          entries=[]
+          for line in m.group(1).splitlines():
+              line=line.split('#',1)[0].strip()
+              if line:entries.append(line)
+          print('DE_NGINX443_SNI_ENTRY_COUNT='+str(len(entries)),flush=True)
+          for e in entries:
+              if e.startswith('~') or 'default' in e or 'chatgpt' in e or 'openai' in e:
+                  print('DE_NGINX443_SNI_RULE='+e[:180],flush=True)
+          for name in ('chatgpt.com','auth.openai.com'):
+              print('DE_NGINX443_'+name.replace('.','_').upper()+'_LITERAL_IN_MAP='+str(name in m.group(1)),flush=True)
+          PY
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -' <<'PY'
+          import subprocess,socket,hashlib,re,tempfile,pathlib
+          for host in ('chatgpt.com','auth.openai.com','gemini.google.com'):
+              with tempfile.TemporaryDirectory() as tmp:
+                  headers=pathlib.Path(tmp)/'h'
+                  body=pathlib.Path(tmp)/'b'
+                  command=['curl','--noproxy','*','--http1.1','-sS','--connect-timeout','7','--max-time','18',
+                           '--resolve',host+':443:89.125.90.101','-D',str(headers),'-o',str(body),
+                           '-A','Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/132.0 Safari/537.36',
+                           'https://'+host+'/']
+                  r=subprocess.run(command,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=23)
+                  key=host.replace('.','_').upper()
+                  print('RU_FINGERPRINT_'+key+'_CURL_EXIT='+str(r.returncode),flush=True)
+                  if r.returncode:
+                      print('RU_FINGERPRINT_'+key+'_ERROR='+r.stderr[-120:],flush=True)
+                      continue
+                  lines=headers.read_text(errors='replace').splitlines()
+                  keep=('HTTP/','content-type:','server:','location:','content-length:')
+                  for line in lines:
+                      if line.lower().startswith(tuple(k.lower() for k in keep)):
+                          print('RU_FINGERPRINT_'+key+'_HEADER='+line[:160],flush=True)
+                  b=body.read_bytes()
+                  print('RU_FINGERPRINT_'+key+'_BODY_SIZE='+str(len(b)),flush=True)
+                  print('RU_FINGERPRINT_'+key+'_BODY_SHA256_PREFIX='+hashlib.sha256(b).hexdigest()[:16],flush=True)
+                  title=re.search(rb'<title[^>]*>(.*?)</title>',b,re.I|re.S)
+                  print('RU_FINGERPRINT_'+key+'_HTML_TITLE='+re.sub(rb'\s+',b' ',title.group(1)).decode('utf8','replace')[:100] if title else 'NONE',flush=True)
+                  for marker in (b'ChatGPT',b'Cloudflare',b'telemt',b'Telegram',b'Gemini'):
+                      print('RU_FINGERPRINT_'+key+'_MARK_'+marker.decode()+'='+str(marker.lower() in b.lower()),flush=True)
+          PY
