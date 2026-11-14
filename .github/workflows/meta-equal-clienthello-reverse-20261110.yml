@@ -1,0 +1,116 @@
+name: MNEBYDNS matched SNI TLS reverse public path DE to RU (read-only)
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths: [.github/workflows/meta-equal-clienthello-reverse-20261110.yml]
+permissions:
+  contents: read
+jobs:
+  reverse:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate exact-only-SNI difference, default and compact TLS
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/meta-equal-clienthello-20261110.py self-test
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+      - name: Capture TCP payload egress DE versus ingress RU, with ephemeral source ports
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass >/dev/null
+          ru_ssh() {
+            SSHPASS="$RU_PASS" sshpass -e ssh -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=12 root@188.120.254.223 "$@"
+          }
+          de_ssh() {
+            SSHPASS="$DE_PASS" sshpass -e ssh -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=12 root@89.125.90.101 "$@"
+          }
+          ru_ssh "systemctl is-active --quiet nginx && ip -4 route get 89.125.90.101 | grep -v tg-relay"
+          de_ssh "systemctl is-active --quiet nginx && ip -4 route get 188.120.254.223 | grep -v tg-relay"
+          de_ssh 'bash -s' <<'SH' > "$RUNNER_TEMP/de_reverse.log" &
+          set -Eeuo pipefail
+          iface="$(ip -4 route get 188.120.254.223 | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -1)"
+          test -n "$iface" && test "$iface" != "tg-relay"
+          echo 'de_reverse_capture_started=true'
+          timeout -s TERM 34s tcpdump -i "$iface" -nn -tt -l -s 112 'tcp and host 188.120.254.223 and port 443' 2>/dev/null | python3 -c '
+          import sys,re,collections
+          data=collections.defaultdict(lambda:[0,0])
+          for line in sys.stdin:
+              m=re.search(r"\bIP\s+([\d.]+)\.(\d+)\s+>\s+([\d.]+)\.(\d+):.*\blength\s+(\d+)",line)
+              if not m:continue
+              src,sp,dst,dp,n=m.groups()
+              if src=="89.125.90.101" and dst=="188.120.254.223" and int(dp)==443:
+                  data[int(sp)][0]+=1;data[int(sp)][1]+=int(n)
+          for p,row in sorted(data.items()):print("DE_REVERSE_PORT",p,*row,flush=True)
+          ' || test "$?" -eq 124
+          SH
+          de_capture_pid=$!
+          ru_ssh 'bash -s' <<'SH' > "$RUNNER_TEMP/ru_reverse.log" &
+          set -Eeuo pipefail
+          iface="$(ip -4 route get 89.125.90.101 | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -1)"
+          test -n "$iface" && test "$iface" != "tg-relay"
+          echo 'ru_reverse_capture_started=true'
+          timeout -s TERM 34s tcpdump -i "$iface" -nn -tt -l -s 112 'tcp and host 89.125.90.101 and port 443' 2>/dev/null | python3 -c '
+          import sys,re,collections
+          data=collections.defaultdict(lambda:[0,0])
+          for line in sys.stdin:
+              m=re.search(r"\bIP\s+([\d.]+)\.(\d+)\s+>\s+([\d.]+)\.(\d+):.*\blength\s+(\d+)",line)
+              if not m:continue
+              src,sp,dst,dp,n=m.groups()
+              if src=="89.125.90.101" and dst=="188.120.254.223" and int(dp)==443:
+                  data[int(sp)][0]+=1;data[int(sp)][1]+=int(n)
+          for p,row in sorted(data.items()):print("RU_REVERSE_PORT",p,*row,flush=True)
+          ' || test "$?" -eq 124
+          SH
+          ru_capture_pid=$!
+          sleep 6
+          de_ssh 'python3 - send --host 188.120.254.223 --repeat 3' < scripts/meta-equal-clienthello-20261110.py > "$RUNNER_TEMP/reverse_trials.log"
+          wait "$de_capture_pid"
+          wait "$ru_capture_pid"
+          python3 - "$RUNNER_TEMP/reverse_trials.log" "$RUNNER_TEMP/de_reverse.log" "$RUNNER_TEMP/ru_reverse.log" <<'PY'
+          import pathlib,sys,re,collections
+          source,de_file,ru_file=[pathlib.Path(x) for x in sys.argv[1:]]
+          def load(path,prefix):
+              rows={}
+              for line in path.read_text().splitlines():
+                  m=re.match(prefix+r"_REVERSE_PORT\s+(\d+)\s+(\d+)\s+(\d+)",line)
+                  if m:
+                      port,packets,size=map(int,m.groups())
+                      rows[port]=(packets,size)
+              return rows
+          de,ru=load(de_file,"DE"),load(ru_file,"RU")
+          st=collections.defaultdict(lambda:collections.Counter())
+          trials=0
+          for line in source.read_text().splitlines():
+              m=re.match(r"trial=(\w+) local_port=(-?\d+) tcp=(true|false) sent=(\d+) error=(\S+)",line)
+              if not m:continue
+              key,p,tcp,sent,error=m.groups()
+              label,mode,n,which=key.rsplit("_",3)
+              d=st[(label,mode,which)]
+              p=int(p);trials+=1
+              d["attempts"]+=1
+              d["tcp_connected"]+=int(tcp=="true")
+              d["send_calls"]+=int(int(sent)>0)
+              d["de_egress_seen"]+=int(de.get(p,(0,0))[1]>0)
+              d["ru_ingress_seen"]+=int(ru.get(p,(0,0))[1]>0)
+              d["de_egress_bytes"]+=de.get(p,(0,0))[1]
+              d["ru_ingress_bytes"]+=ru.get(p,(0,0))[1]
+          print("reverse_tls_trials="+str(trials),flush=True)
+          for (label,mode,which),row in sorted(st.items()):
+              print("reverse_diff "+label+" "+mode+" "+which+" "+
+                " ".join(k+"="+str(row[k]) for k in
+                  ("attempts","tcp_connected","send_calls","de_egress_seen","ru_ingress_seen","de_egress_bytes","ru_ingress_bytes")),flush=True)
+          assert trials==36
+          assert "ru_reverse_capture_started=true" in ru_file.read_text()
+          assert "de_reverse_capture_started=true" in de_file.read_text()
+          print("reverse_sni_exact_match_probe_complete=true",flush=True)
+          PY
+          echo 'reverse_sni_no_prod_services_modified=true'
