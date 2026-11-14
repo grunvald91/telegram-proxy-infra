@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Invert only the verified shared A-address cutover, preserving newer policy.
+"""Restore managed service A-addresses while preserving the complete DNS policy.
 
 Fail closed on any drift. The previous and candidate Corefiles must differ
-only by the original 253 DE-to-RU A-answer replacements. No keys or policy
+only by managed A-answer replacements. Validate the original 253-address
+cutover, then include the 11 earlier RU service routes in the recovery.
+No keys or policy
 contents are printed. The existing guarded stage/checkpoint scripts do the
 actual mutation, independent rollback and promotion.
 """
@@ -17,19 +19,27 @@ import sys
 OLD = Path('/opt/mnebydns-fastpath/43603843149')
 LIVE = Path('/opt/mnebydns-dot/Corefile')
 ANSWER = re.compile(r'(?m)^(\s*answer\s+"\{\{ \.Name \}\}\s+\d+\s+IN\s+A\s+)(89\.125\.90\.101)(")\s*$')
+RU_ANSWER = re.compile(r'(?m)^(\s*answer\s+"\{\{ \.Name \}\}\s+\d+\s+IN\s+A\s+)(188\.120\.254\.223)("[ \t]*)$')
+RECOVERED_ANSWER = re.compile(r'(?m)^(\s*answer\s+"\{\{ \.Name \}\}\s+\d+\s+IN\s+A\s+)(89\.125\.90\.101)("[ \t]*)$')
 SELECTED = ['www.youtube.com', 'youtubei.googleapis.com', 'www.googlevideo.com',
             'i.ytimg.com', 'chatgpt.com', 'claude.ai']
 
 
 def restored(previous, cutover, live):
-    candidate, count = ANSWER.subn(lambda m: m.group(1) + '188.120.254.223' + m.group(3), previous)
-    if count != 253 or candidate != cutover:
+    verified, count = ANSWER.subn(lambda m: m.group(1) + '188.120.254.223' + m.group(3), previous)
+    if count != 253 or verified != cutover:
         raise RuntimeError('ORIGINAL_CUTOVER_IS_NOT_THE_EXPECTED_253_A_ONLY_CHANGES')
     if live != cutover:
         raise RuntimeError('LIVE_DNS_DRIFT_REQUIRES_REVIEW_NO_CHANGE')
     if previous.count('template IN A ') != cutover.count('template IN A '):
         raise RuntimeError('DNS_TEMPLATE_STRUCTURE_DRIFT')
-    return previous, count
+    candidate, recovered = RU_ANSWER.subn(lambda m: m.group(1) + '89.125.90.101' + m.group(3), live)
+    if recovered != 264:
+        raise RuntimeError('EXPECTED_264_CURRENT_MANAGED_A_ANSWERS')
+    check, restored_count = RECOVERED_ANSWER.subn(lambda m: m.group(1) + '188.120.254.223' + m.group(3), candidate)
+    if restored_count != 264 or check != live:
+        raise RuntimeError('RECOVERY_CHANGED_NON_ADDRESS_POLICY')
+    return candidate, recovered
 
 
 def resource(role):
@@ -76,6 +86,7 @@ def plan(work):
         p.chmod(0o600)
     value = {'read_only': True, 'selected': SELECTED, 'selected_count': len(SELECTED),
              'expected_mapped_ipv4': '89.125.90.101', 'a_changes': count,
+             'original_cutover_a_changes': 253, 'earlier_ru_a_routes': 11,
              'sha_before': hashlib.sha256(current.encode()).hexdigest(),
              'sha_pilot': hashlib.sha256(candidate.encode()).hexdigest()}
     (work / 'plan.json').write_text(json.dumps(value, indent=2) + '\n')
@@ -85,10 +96,12 @@ def plan(work):
 
 def selftest():
     old = '\n'.join('    answer "{{ .Name }} 20 IN A 89.125.90.101"' for _ in range(253)) + '\n'
-    old += '    answer "{{ .Name }} 20 IN A 188.120.254.223"\n# unrelated policy\n'
+    old += '\n'.join('    answer "{{ .Name }} 20 IN A 188.120.254.223"' for _ in range(11)) + '\n# unrelated policy\n'
     cutover = ANSWER.sub(lambda m: m.group(1) + '188.120.254.223' + m.group(3), old)
     candidate, count = restored(old, cutover, cutover)
-    assert candidate == old and count == 253
+    assert count == 264 and '188.120.254.223' not in candidate
+    assert candidate.endswith('# unrelated policy\n')
+    assert ANSWER.sub(lambda m: m.group(1) + '188.120.254.223' + m.group(3), candidate) == cutover
     for args in [(old, cutover, cutover + '# new policy\n'),
                  (old, cutover + '# unexpected cutover\n', cutover),
                  (old.replace('89.125.90.101', '89.125.90.102', 1), cutover, cutover)]:
@@ -97,7 +110,7 @@ def selftest():
         except RuntimeError:
             continue
         raise AssertionError('Unrecognized drift was accepted')
-    print('RECOVERY_EXACT_REVERSE_AND_POLICY_DRIFT_TESTS=PASS')
+    print('RECOVERY_ALL_264_A_AND_POLICY_DRIFT_TESTS=PASS')
 
 
 if __name__ == '__main__':

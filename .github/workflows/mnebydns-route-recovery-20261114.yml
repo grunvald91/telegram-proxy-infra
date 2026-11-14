@@ -53,7 +53,7 @@ jobs:
             sshpass -e ssh "${opts[@]}" "root@$host" "python3 -B - resource '$role'" \
               < scripts/mnebydns-route-recovery-20261114.py
           done
-      - name: Stage only the 253 address reversals with isolated DoT verification and independent rollback
+      - name: Stage all 264 managed service addresses with isolated DoT verification and independent rollback
         if: env.RECOVERY_PHASE == 'stage'
         run: |
           set -Eeuo pipefail
