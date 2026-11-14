@@ -1,0 +1,71 @@
+name: MNEBYDNS ChatGPT OpenAI HTTPS path differential read-only 20261114
+on:
+  push:
+    branches: [diag/mnebydns-outage-20261114]
+    paths: ['.github/workflows/mnebydns-chatgpt-https-diagnostic-20261114.yml']
+permissions: {contents: read}
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Offline preflight SSH
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+      - name: TLS and HTTP via both public proxy IPs from runner
+        run: |
+          python3 - <<'PY'
+          import socket,ssl,time
+          names=['chatgpt.com','auth.openai.com','android.chat.openai.com','api.openai.com','cdn.oaistatic.com','persistent.oaistatic.com','files.oaiusercontent.com','challenges.cloudflare.com','www.youtube.com']
+          for h in names:
+            for ip in ('188.120.254.223','89.125.90.101'):
+              start=time.monotonic()
+              try:
+                with socket.create_connection((ip,443),timeout=5) as raw:
+                  raw.settimeout(6)
+                  with ssl.create_default_context().wrap_socket(raw,server_hostname=h) as tls:
+                    t=round((time.monotonic()-start)*1000)
+                    tls.sendall(('HEAD / HTTP/1.1\r\nHost: '+h+'\r\nConnection: close\r\n\r\n').encode())
+                    try: status=tls.recv(250).split(b'\r\n',1)[0].decode('ascii','replace')[:55]
+                    except Exception as e: status=type(e).__name__
+                    print('PUBLIC_PROXY',h,ip,'TLS_PASS','TLS_MS',t,'HTTP',status,flush=True)
+              except Exception as e:
+                print('PUBLIC_PROXY',h,ip,'FAIL',type(e).__name__,'MS',round((time.monotonic()-start)*1000),flush=True)
+          PY
+      - name: Inspect 188 and 89 local OpenAI routes and nginx service active
+        run: |
+          set -Eeuo pipefail
+          for role in RU DE;do
+            if [[ "$role" == RU ]];then ip=188.120.254.223;export SSHPASS="$RU_PASS";else ip=89.125.90.101;export SSHPASS="$DE_PASS";fi
+            sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@"$ip" python3 - "$role" <<'PY'
+          import socket,ssl,time,sys,subprocess
+          role=sys.argv[1]
+          print('ROLE',role,flush=True)
+          for svc in ['nginx.service','mnebydns-dot.service','mnebydns-googlepilot.service']:
+            p=subprocess.run(['systemctl','is-active',svc],capture_output=True,text=True,timeout=5)
+            print('UNIT',svc,p.stdout.strip(),flush=True)
+          for host in ['chatgpt.com','auth.openai.com','android.chat.openai.com','api.openai.com','cdn.oaistatic.com','persistent.oaistatic.com','files.oaiusercontent.com','www.youtube.com']:
+            for label,ip in [('RU_PUBLIC','188.120.254.223'),('DE_PUBLIC','89.125.90.101'),('DE_WG','10.66.77.1')]:
+              if label=='DE_WG' and role=='DE': continue
+              t=time.monotonic()
+              try:
+                with socket.create_connection((ip,443),timeout=4) as sock:
+                  sock.settimeout(5)
+                  with ssl.create_default_context().wrap_socket(sock,server_hostname=host) as tls:
+                    print('NODE_PROXY',role,label,host,'PASS',round((time.monotonic()-t)*1000),flush=True)
+              except Exception as e: print('NODE_PROXY',role,label,host,'FAIL',type(e).__name__,round((time.monotonic()-t)*1000),flush=True)
+          try:
+            c=subprocess.run(['nginx','-T'],capture_output=True,text=True,timeout=8).stdout
+            rows=[z.strip() for z in c.splitlines() if any(k in z.lower() for k in ('openai.com','chatgpt.com','oaistatic.com','oaiusercontent.com','15449','googlepilot','ssl_preread'))]
+            print('NGINX_SELECTED_COUNT',role,len(rows),flush=True)
+            for s in rows[:21]: print('NGINX_SELECTED',role,s[:150],flush=True)
+          except Exception as e: print('NGINX_READ_ERR',role,type(e).__name__,flush=True)
+          PY
+          done
