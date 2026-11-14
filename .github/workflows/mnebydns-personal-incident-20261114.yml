@@ -1,4 +1,4 @@
-name: MNEBYDNS incident: personal SNI, watchdog, route and owner counter (read-only)
+name: 'MNEBYDNS incident: personal SNI, watchdog, route and owner counter (read-only)'
 on:
   push:
     branches: [diag/personal-dot-incident-20261114]
