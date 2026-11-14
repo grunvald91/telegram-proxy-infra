@@ -1,0 +1,83 @@
+name: MNEBYDNS RU-DE DoT latency audit (read only)
+on:
+  push:
+    branches: [diag/ipad-youtube-claude-readonly-20261114]
+    paths: ['.github/workflows/mnebydns-ru-de-dot-latency-readonly-20261114.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  network-latency:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Read-only RU-to-DE direct and WireGuard TCP/DoT latency
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR \
+            root@188.120.254.223 'python3 -' <<'PY'
+          import json,subprocess,socket,ssl,time,statistics,struct
+          targets=(('de_public','89.125.90.101'),('de_wg','10.66.77.1'))
+          def samples(func,n=6):
+              values=[];errors=[]
+              for _ in range(n):
+                  try:values.append(round(func(),2))
+                  except Exception as e:errors.append(type(e).__name__)
+              return {'median_ms':round(statistics.median(values),2) if values else None,
+                      'min_ms':min(values) if values else None,
+                      'max_ms':max(values) if values else None,
+                      'samples':values,'errors':errors}
+          def tcp_once(ip):
+              st=time.monotonic()
+              with socket.create_connection((ip,853),timeout=3) as s:pass
+              return (time.monotonic()-st)*1000
+          def dot_handshake(ip):
+              st=time.monotonic()
+              with socket.create_connection((ip,853),timeout=3) as s:
+                  s.settimeout(3)
+                  with ssl.create_default_context().wrap_socket(s,server_hostname='dns.mnebyvpn.site'):pass
+              return (time.monotonic()-st)*1000
+          def dns_query(s,question_id):
+              name=b''.join(bytes([len(x)])+x for x in (b'example',b'org'))+b'\x00'
+              body=struct.pack('!HHHHHH',question_id,0x100,1,0,0,0)+name+struct.pack('!HH',1,1)
+              st=time.monotonic()
+              s.sendall(struct.pack('!H',len(body))+body)
+              h=s.recv(2)
+              if len(h)!=2:raise RuntimeError('short_dns_length')
+              size=int.from_bytes(h,'big')
+              if size<12 or size>4096:raise RuntimeError('bad_dns_size')
+              chunks=b''
+              while len(chunks)<size:
+                  ch=s.recv(size-len(chunks))
+                  if not ch:raise RuntimeError('short_dns_answer')
+                  chunks+=ch
+              if int.from_bytes(chunks[0:2],'big')!=question_id:raise RuntimeError('dns_txid_mismatch')
+              return (time.monotonic()-st)*1000
+          for name,ip in targets:
+              r={'target':name,'tcp853':samples(lambda:tcp_once(ip)),
+                 'tls_handshake':samples(lambda:dot_handshake(ip),4)}
+              try:
+                  with socket.create_connection((ip,853),timeout=4) as raw:
+                      raw.settimeout(5)
+                      with ssl.create_default_context().wrap_socket(raw,server_hostname='dns.mnebyvpn.site') as tls:
+                          r['reuse_dns_a_example_org']=samples(lambda:dns_query(tls,4000+int(time.monotonic()*1000)%10000),8)
+              except Exception as e:r['reuse_dns_error']=type(e).__name__
+              print('RU_DE_853_MEASURE='+json.dumps(r,sort_keys=True),flush=True)
+          p=subprocess.run(['ping','-n','-c','6','-W','2','10.66.77.1'],capture_output=True,text=True,timeout=20)
+          for l in (p.stdout+'\n'+p.stderr).splitlines():
+              if 'rtt ' in l or 'min/avg/max' in l or 'packets transmitted' in l:
+                  print('WG_PING='+l.strip(),flush=True)
+          print('LATENCY_PROBE_READ_ONLY=true')
+          PY
