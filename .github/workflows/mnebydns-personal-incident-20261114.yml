@@ -200,6 +200,31 @@ jobs:
                   print('PATH_SUMMARY '+label+' UNREACHABLE=true',flush=True)
           print('UPSTREAM_COMPARISON_MUTATIONS=false',flush=True)
           PY
+      - name: Compare pinned personal premium-domain classifier against observed legacy names
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS"
+          export SSHPASS="$RU_PASS"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh -T "${opts[@]}" root@188.120.254.223 'python3 -' <<'PY'
+          import json,pathlib
+          path=pathlib.Path('/etc/mnebydns/personal-dot/policy.json')
+          rules=json.loads(path.read_text())
+          assert isinstance(rules,list) and 0<len(rules)<=30000
+          exact={r for r in rules if not r.startswith('*.')}
+          suffix={r[2:] for r in rules if r.startswith('*.')}
+          print('PERSONAL_POLICY_RULE_COUNT='+str(len(rules)),flush=True)
+          for name in ('chatgpt.com','auth.openai.com','claude.ai',
+                       'api.anthropic.com','gemini.google.com','grok.com','x.com',
+                       'api.x.ai','www.tiktok.com','api.tiktokv.com',
+                       'www.youtube.com','example.org','api.telegram.org'):
+              premium=name in exact or any(name.endswith('.'+s) for s in suffix)
+              print('PERSONAL_POLICY '+name+'='+('PREMIUM' if premium else 'DIRECT'),flush=True)
+          print('POLICY_AUDIT_MUTATIONS=false',flush=True)
+          PY
       - name: Inspect RU personal service and owner account metering (read-only)
         shell: bash
         run: |
