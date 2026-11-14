@@ -1,0 +1,46 @@
+name: MNEBYVPN Xray v26.11.9 isolated compatibility check 20261114
+on:
+  push:
+    branches: ['diag/mnebyvpn-transport-health-20261114']
+    paths: ['.github/workflows/mnebyvpn-xray-staged-20261114.yml']
+permissions:
+  contents: read
+concurrency:
+  group: mnebyvpn-xray-staging-20261114
+  cancel-in-progress: false
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Validate official candidate without modifying active Xray
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$PASSWORD"
+          command -v sshpass >/dev/null || { sudo apt-get update -qq; sudo apt-get install -qq -y sshpass; }
+          TMP="$(mktemp -d)"
+          trap 'rm -rf "$TMP"' EXIT
+          curl -fLsS --retry 2 --connect-timeout 10 --max-time 90 -o "$TMP/upstream.zip" https://github.com/XTLS/Xray-core/releases/download/v26.11.9/Xray-linux-64.zip
+          echo 'b651f7e1d9966ee2c1b1ee1bf8b52c72771824d3065dce96bbc8bcc19ed95f82  '"$TMP/upstream.zip" | sha256sum -c -
+          unzip -p "$TMP/upstream.zip" xray > "$TMP/xray"
+          chmod 700 "$TMP/xray"
+          "$TMP/xray" version | sed -n '1p'
+          export SSHPASS="$PASSWORD"
+          OPTS=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          HOST=root@cdn.servgo.ru
+          sshpass -e ssh "${OPTS[@]}" "$HOST" 'test -d /opt/mnebyvpn && test "$(systemctl is-active mnebyvpn-vpn-provisioner.service)" = active && test "$(systemctl is-active xray.service)" = active'
+          sshpass -e scp -q "${OPTS[@]}" "$TMP/xray" "$HOST:/tmp/mnebyvpn-xray-26.11.9-test"
+          sshpass -e ssh "${OPTS[@]}" "$HOST" 'bash -se' <<'REMOTE'
+          set -Eeuo pipefail
+          trap 'rm -f /tmp/mnebyvpn-xray-26.11.9-test' EXIT
+          chmod 700 /tmp/mnebyvpn-xray-26.11.9-test
+          /tmp/mnebyvpn-xray-26.11.9-test version | sed -n '1p'
+          /tmp/mnebyvpn-xray-26.11.9-test run -test -config /etc/mnebyvpn/xray-canary.json >/dev/null 2>&1
+          echo 'upstream_26_11_9_existing_vpn_config_valid=true'
+          test "$(systemctl is-active mnebyvpn-vpn-provisioner.service)" = active
+          test "$(systemctl is-active xray.service)" = active
+          echo 'live_services_not_restarted_or_changed=true'
+          REMOTE
