@@ -69,6 +69,9 @@ class AdapterTests(unittest.TestCase):
         self.assertIn("test ! -L /usr/local/libexec",calls[0][1])
         self.assertIn("install -d -m 0755 -o root -g root /usr/local/libexec",calls[0][1])
         self.assertIn("test ! -e /usr/local/libexec/mneby-meta-v26",calls[0][1])
+        self.assertIn("test ! -e /var/lib/mneby-meta-v26-ru",calls[0][1])
+        self.assertIn("mneby-meta-v26-ru-window.service",calls[0][1])
+        self.assertIn("mneby_meta_v26_ru",calls[0][1])
         self.assertEqual(calls[0][2]["data"],b"fixture")
 
     def test_approved_thirty_minute_test(self):

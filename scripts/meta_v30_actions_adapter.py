@@ -147,11 +147,29 @@ class Remote:
         return out
 
     def stage_files(self,role):
+        state="/var/lib/mneby-meta-v26-"+role
+        timer="mneby-meta-v26-"+role+"-watchdog.timer"
+        extra=""
+        if role=="ru":
+            extra=(
+                "if systemctl is-active --quiet mneby-meta-v26-ru-window.service; then "
+                "echo 'active RU worker blocks restage' >&2; exit 3; fi; "
+                "if nft list table inet mneby_meta_v26_ru >/dev/null 2>&1; then "
+                "echo 'active RU nft table blocks restage' >&2; exit 3; fi; "
+            )
         command=(
             "set -eu; umask 077; "
             "test ! -L /usr/local/libexec; "
             "if test ! -d /usr/local/libexec; then "
             "install -d -m 0755 -o root -g root /usr/local/libexec; fi; "
+            f"if test -e {STAGE} || test -L {STAGE}; then "
+            f"test ! -L {STAGE} || {{ echo 'staged path is symlink' >&2; exit 3; }}; "
+            f"test ! -e {state} || {{ echo 'active trial state {state} blocks restage' >&2; exit 3; }}; "
+            f"if systemctl is-active --quiet {timer}; then "
+            f"echo 'active watchdog timer {timer} blocks restage' >&2; exit 3; fi; "
+            f"{extra}"
+            f"rm -rf -- {STAGE}; "
+            "fi; "
             f"test ! -e {STAGE}; "
             "d=$(mktemp -d /usr/local/libexec/.mneby-meta-v26.XXXXXXXX); "
             "trap 'rm -rf -- \"$d\"' EXIT; "
