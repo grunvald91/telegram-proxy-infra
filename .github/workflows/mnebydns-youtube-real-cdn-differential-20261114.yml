@@ -1,0 +1,112 @@
+name: MNEBYDNS YouTube real CDN path differential read-only 20261114
+on:
+  push:
+    branches: [diag/mnebydns-outage-20261114]
+    paths: ['.github/workflows/mnebydns-youtube-real-cdn-differential-20261114.yml']
+permissions: {contents: read}
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare pinned SSH connections
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+      - name: Differential DNS over TLS on live media name and front-end name
+        run: |
+          python3 - <<'PY'
+          import socket,ssl,struct,random
+          hosts=['rr1---sn-gxuo03g-ig3s.googlevideo.com','www.youtube.com','www.googlevideo.com']
+          def recv(s,n):
+            b=b''
+            while len(b)<n:
+              c=s.recv(n-len(b))
+              if not c:raise EOFError('short DNS frame')
+              b+=c
+            return b
+          def skip(b,i):
+            while True:
+              j=b[i]
+              if j&192==192:return i+2
+              if not j:return i+1
+              i+=j+1
+          def ask(ip,host,kind):
+            q=struct.pack('!HHHHHH',random.randrange(1,65535),256,1,0,0,0)+b''.join(bytes([len(p)])+p.encode() for p in host.split('.'))+b'\0'+struct.pack('!HH',kind,1)
+            with socket.create_connection((ip,853),timeout=6) as t:
+              t.settimeout(7)
+              with ssl.create_default_context().wrap_socket(t,server_hostname='dns.mnebyvpn.site') as s:
+                s.sendall(len(q).to_bytes(2,'big')+q)
+                d=recv(s,int.from_bytes(recv(s,2),'big'))
+            i=12
+            for _ in range(int.from_bytes(d[4:6],'big')): i=skip(d,i)+4
+            addresses=[]
+            for _ in range(int.from_bytes(d[6:8],'big')):
+              i=skip(d,i)
+              typ,cl,ttl,n=struct.unpack_from('!HHIH',d,i);i+=10
+              if typ==1 and n==4:addresses.append(socket.inet_ntoa(d[i:i+4]))
+              i+=n
+            return (d[3]&15,int.from_bytes(d[6:8],'big'),addresses)
+          for ip in ['188.120.254.223','89.125.90.101']:
+            for h in hosts:
+              for kind in [1,28,65]:
+                try:print('DNS',ip,h,kind,ask(ip,h,kind),flush=True)
+                except Exception as e:print('DNS_EXCEPTION',ip,h,kind,type(e).__name__,str(e)[:75],flush=True)
+          PY
+      - name: Public TLS on RU and DE pinned to same CDN hostname
+        run: |
+          python3 - <<'PY'
+          import socket,ssl,time
+          for host in ['rr1---sn-gxuo03g-ig3s.googlevideo.com','www.youtube.com']:
+            for ip in ['188.120.254.223','89.125.90.101']:
+              t=time.monotonic()
+              try:
+                with socket.create_connection((ip,443),timeout=5) as s:
+                  s.settimeout(7)
+                  tcp=round((time.monotonic()-t)*1000)
+                  with ssl.create_default_context().wrap_socket(s,server_hostname=host) as tls:
+                    print('PUBLIC_TLS',host,ip,'PASS','TCP_MS',tcp,'TOTAL_MS',round((time.monotonic()-t)*1000),tls.version(),flush=True)
+              except Exception as e:print('PUBLIC_TLS',host,ip,'FAIL',type(e).__name__,str(e)[:95],flush=True)
+          PY
+      - name: Both VPS local CDN upstream route tests and service status
+        run: |
+          set -Eeuo pipefail
+          for role in RU DE; do
+            if [[ "$role" == RU ]];then ip=188.120.254.223;export SSHPASS="$RU_PASS";else ip=89.125.90.101;export SSHPASS="$DE_PASS";fi
+            sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@"$ip" python3 - "$role" <<'PY'
+          import socket,ssl,subprocess,time,sys
+          role=sys.argv[1]
+          host='rr1---sn-gxuo03g-ig3s.googlevideo.com'
+          def run(cmd):
+            p=subprocess.run(cmd,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,timeout=7)
+            return p.stdout.strip()[:400]
+          print('ROLE',role,flush=True)
+          print('WG_INTERFACE',run(['ip','-o','link','show','tg-relay']),flush=True)
+          for svc in ['nginx','mnebydns-youtube-quic-ru-43612369808','mnebydns-youtube-quic-de-43612369808','mnebydns-googlepilot']:
+            s=run(['systemctl','is-active',svc])
+            if s=='active':print('ACTIVE_SERVICE',svc,flush=True)
+          for h in [host,'www.youtube.com']:
+            for label,ip in [('PUBLIC_RU','188.120.254.223'),('PUBLIC_DE','89.125.90.101'),('WG_DE','10.66.77.1'),('LOOPBACK','127.0.0.1')]:
+              if role=='DE' and label=='WG_DE':continue
+              t=time.monotonic()
+              try:
+                with socket.create_connection((ip,443),timeout=4) as sock:
+                  sock.settimeout(5)
+                  tcp=round((time.monotonic()-t)*1000)
+                  with ssl.create_default_context().wrap_socket(sock,server_hostname=h) as s:
+                    print('VPS_TLS',role,h,label,'PASS',tcp,round((time.monotonic()-t)*1000),flush=True)
+              except Exception as e:print('VPS_TLS',role,h,label,'FAIL',type(e).__name__,flush=True)
+          for h in [host,'www.youtube.com']:
+            try:print('PUBLIC_ORIGIN_IPS',role,h,sorted({z[4][0] for z in socket.getaddrinfo(h,443,socket.AF_INET,socket.SOCK_STREAM)})[:8],flush=True)
+            except Exception as e:print('ORIGIN_DNS_FAIL',role,h,type(e).__name__,flush=True)
+          import re
+          conf=run(['sh','-c','nginx -T 2>/dev/null | grep -Ei "googlevideo|15449|443|19444" | head -25'])
+          print('NGINX_ROUTE_EXCERPT',role,repr(conf[:360]),flush=True)
+          PY
+          done
