@@ -76,12 +76,7 @@ jobs:
           {
             echo '## First 100 research pending domains'
             if [ -f first100-deploy-results/summary.json ]; then
-              python3 - <<'PY'
-          import json
-          s=json.load(open('first100-deploy-results/summary.json'))
-          print('Checked: 100. Verified eligible: '+str(s['selected_from_first100']))
-          print('Skipped: '+json.dumps(s['decisions'],ensure_ascii=False))
-          PY
+              cat first100-deploy-results/summary.json
             fi
             if [ -f first100-deploy-results/events.jsonl ]; then tail -n 12 first100-deploy-results/events.jsonl; fi
           } >> "$GITHUB_STEP_SUMMARY"
