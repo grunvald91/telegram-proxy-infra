@@ -1,0 +1,120 @@
+name: MNEBYDNS full active legacy vs personal DNS route and domain diff (read only)
+on:
+  push:
+    branches: [audit/mnebydns-legacy-personal-full-route-diff-20261114]
+    paths: ['scripts/mnebydns-personal-legacy-full-diff-audit-20261114.py', '.github/workflows/mnebydns-full-legacy-vs-personal-diff-readonly-20261114.yml']
+permissions: {contents: read}
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 16
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Install SSH verifier
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          python3 -m py_compile scripts/mnebydns-personal-legacy-full-diff-audit-20261114.py
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+      - name: Read actual RU personalized container and policy (never read bearer keys)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@188.120.254.223 'python3 -' > ru-personal-snapshot.json <<'PY'
+          import json,subprocess,pathlib
+          c=json.loads(subprocess.check_output(['docker','inspect','mnebydns-personal-dot-private'],text=True))[0]
+          e={s.split('=',1)[0]:s.split('=',1)[1] for s in c['Config']['Env'] if '=' in s}
+          keep=('MNEBYDNS_PERSONAL_DOT_PORT','MNEBYDNS_PERSONAL_DOT_BIND_IP',
+                'MNEBYDNS_PERSONAL_MAPPED_DOT_IP','MNEBYDNS_PERSONAL_MAPPED_DOT_NAME',
+                'MNEBYDNS_PERSONAL_MAPPED_DOT_PORT','MNEBYDNS_PERSONAL_DIRECT_DOT_IP',
+                'MNEBYDNS_PERSONAL_DIRECT_DOT_NAME','MNEBYDNS_PERSONAL_DIRECT_DOT_PORT',
+                'MNEBYDNS_PERSONAL_DOT_ROUTE_POLICY_FILE')
+          env={k:e.get(k,'unset') for k in keep}
+          assert c['State']['Running'] and env['MNEBYDNS_PERSONAL_DOT_PORT']=='8856'
+          f=pathlib.Path('/etc/mnebydns/personal-dot')/pathlib.Path(env['MNEBYDNS_PERSONAL_DOT_ROUTE_POLICY_FILE']).name
+          policy=json.loads(f.read_text())
+          assert len(policy)>0
+          print(json.dumps({'env':env,'policy':policy,'container_running':True},ensure_ascii=False))
+          PY
+          python3 - <<'PY'
+          import json
+          d=json.load(open('ru-personal-snapshot.json'))
+          print('LIVE_RU_PERSONAL_CONTAINER_RUNNING=',d['container_running'])
+          print('LIVE_RU_PERSONAL_POLICY_RULES=',len(d['policy']))
+          print('LIVE_RU_PERSONAL_MAPPED_UPSTREAM=',d['env']['MNEBYDNS_PERSONAL_MAPPED_DOT_IP']+':'+d['env']['MNEBYDNS_PERSONAL_MAPPED_DOT_PORT'])
+          print('LIVE_RU_PERSONAL_DIRECT_UPSTREAM=',d['env']['MNEBYDNS_PERSONAL_DIRECT_DOT_IP']+':'+d['env']['MNEBYDNS_PERSONAL_DIRECT_DOT_PORT'])
+          PY
+      - name: Read actual DE CoreDNS/HTTPS stream/DoT SNI demultiplexer configs
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@89.125.90.101 'python3 -' > de-legacy-snapshot.json <<'PY'
+          import json,pathlib,subprocess
+          core=pathlib.Path('/opt/mnebydns-dot/Corefile').read_text()
+          nginx=pathlib.Path('/etc/nginx/nginx.conf').read_text()
+          sni853=pathlib.Path('/etc/mnebydns/personal-sni/nginx.conf').read_text()
+          units={}
+          for svc in ('mnebydns-dot','mnebydns-personal-sni-stream','mnebydns-personal-sni-redirect','nginx'):
+              p=subprocess.run(['systemctl','is-active',svc],capture_output=True,text=True,timeout=4)
+              units[svc]=p.stdout.strip()
+          assert all(v=='active' for v in units.values()),units
+          print(json.dumps({'corefile':core,'nginx':nginx,'sni853':sni853,'units':units}))
+          PY
+          python3 - <<'PY'
+          import json
+          d=json.load(open('de-legacy-snapshot.json'))
+          print('LIVE_DE_UNITS=',d['units'])
+          print('LIVE_DE_ACTIVE_COREDNS_CONFIG_BYTES=',len(d['corefile']))
+          print('LIVE_DE_ACTIVE_NGINX_CONFIG_BYTES=',len(d['nginx']))
+          PY
+      - name: Compare all personalized domain patterns against actual legacy public DoT A replies
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/mnebydns-personal-legacy-full-diff-audit-20261114.py
+      - name: Verify RU personal direct upstream vs mapped foreign upstream independently
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@188.120.254.223 'python3 -' <<'PY'
+          import socket,ssl,struct,secrets,time
+          def resolve(label,addr,port,sni,domain):
+              tid=secrets.randbelow(65535)
+              q=struct.pack('!HHHHHH',tid,256,1,0,0,0)+b''.join(bytes([len(p)])+p.encode() for p in domain.split('.'))+b'\0'+struct.pack('!HH',1,1)
+              t=time.monotonic()
+              try:
+                  with socket.create_connection((addr,port),timeout=6) as s:
+                      s.settimeout(7)
+                      with ssl.create_default_context().wrap_socket(s,server_hostname=sni) as tls:
+                          tls.sendall(struct.pack('!H',len(q))+q)
+                          head=tls.recv(2)
+                          assert len(head)==2
+                          n=struct.unpack('!H',head)[0]
+                          response=b''
+                          while len(response)<n:
+                              b=tls.recv(n-len(response))
+                              assert b
+                              response+=b
+                  assert response[:2]==q[:2]
+                  print('RU_UPSTREAM_'+label+'_RESULT=DNS_RCODE_'+str(response[3]&15)+'_RTT_MS_'+str(round(1000*(time.monotonic()-t))),flush=True)
+              except Exception as exc:
+                  print('RU_UPSTREAM_'+label+'_ERROR='+type(exc).__name__+':'+str(exc)[:110],flush=True)
+          resolve('DIRECT_CLOUDFLARE','1.1.1.1',853,'one.one.one.one','example.org')
+          resolve('PREMIUM_DE_MAPPED','10.66.77.1',1853,'dns.mnebyvpn.site','chatgpt.com')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mnebydns-personal-vs-legacy-live-diff-20261114
+          path: mnebydns-legacy-personal-route-diff-20261114.md
+          if-no-files-found: warn
+          retention-days: 14
