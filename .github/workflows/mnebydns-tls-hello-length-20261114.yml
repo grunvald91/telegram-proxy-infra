@@ -1,0 +1,50 @@
+name: MNEBYDNS synthetic Googlevideo short versus long TLS hello read-only
+on:
+  push:
+    branches: [diag/mnebydns-outage-20261114]
+    paths: ['.github/workflows/mnebydns-tls-hello-length-20261114.yml']
+permissions: {contents: read}
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare TLS1.2 shorter Hello versus normal TLS to media and control (no server changes)
+        run: |
+          python3 - <<'PY'
+          import socket,ssl,concurrent.futures,time
+          media='rr1---sn-gxuo03g-ig3s.googlevideo.com'
+          control='www.youtube.com'
+          def context(mode):
+            c=ssl.create_default_context()
+            if mode=='TLS12':
+              c.minimum_version=ssl.TLSVersion.TLSv1_2
+              c.maximum_version=ssl.TLSVersion.TLSv1_2
+            return c
+          def size(host,mode):
+            c=context(mode)
+            a,b=ssl.MemoryBIO(),ssl.MemoryBIO()
+            tls=c.wrap_bio(a,b,server_hostname=host)
+            try:tls.do_handshake()
+            except ssl.SSLWantReadError:pass
+            data=b.read()
+            return len(data), int.from_bytes(data[3:5],'big')+5 if len(data)>=5 else 0
+          for host in (control,media):
+            for mode in ('DEFAULT','TLS12'):
+              print('HELLO_LENGTH',host,mode,size(host,mode),flush=True)
+          def test(arg):
+            host,mode,ip=arg
+            t=time.monotonic()
+            try:
+              with socket.create_connection((ip,443),timeout=4) as sock:
+                sock.settimeout(7)
+                with context(mode).wrap_socket(sock,server_hostname=host) as tls:
+                  return host,mode,ip,'TLS_OK',tls.version(),round((time.monotonic()-t)*1000)
+            except Exception as e:return host,mode,ip,'TLS_FAIL',type(e).__name__,round((time.monotonic()-t)*1000)
+          args=[(h,mode,ip) for h in (control,media) for mode in ('DEFAULT','TLS12') for ip in ('188.120.254.223','89.125.90.101')]
+          with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
+            for x in ex.map(test,args):
+              print('RESULT',*x,flush=True)
+          print('NO_PRODUCTION_MUTATIONS=true')
+          PY
