@@ -1,134 +1,82 @@
-name: MNEBYDNS one-off DNS/DoT stability check (read-only)
+name: MNEBYDNS one-off DNS/DoT stability audit (read-only)
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     paths: ['.github/workflows/mnebydns-dot-instability-oneoff-20261113.yml']
-  workflow_dispatch:
 permissions:
   contents: read
-concurrency:
-  group: mnebydns-oneoff-dot-instability-check
-  cancel-in-progress: false
 jobs:
   health:
     runs-on: ubuntu-latest
     timeout-minutes: 16
     env:
-      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
       DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Validate read-only probe and prerequisites
+      - name: Validate read-only DNS probe
         shell: bash
         run: |
           set -Eeuo pipefail
-          test -n "$RU_PASS" && test -n "$DE_PASS"
-          test -s ops/mnebydns-owner-ssh-known_hosts
           python3 -m py_compile scripts/mnebydns-speed-readonly-20261113.py scripts/mnebydns_reliability_monitor.py
           python3 scripts/mnebydns-speed-readonly-20261113.py --self-test
-          sudo apt-get update -qq
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
-      - name: Repeated strict TLS and DNS queries from RU DE and GitHub (no production changes)
+      - name: Collect read-only DNS latency and error report
         shell: bash
         run: |
           set -Eeuo pipefail
           python3 scripts/mnebydns-speed-readonly-20261113.py --run
           test -s speed-readonly-results/report.md
           cat speed-readonly-results/report.md >> "$GITHUB_STEP_SUMMARY"
-      - name: Check DE DoT process continuity and classified errors (read-only)
+      - name: Read CoreDNS uptime and bounded error classifications (no restart)
         if: always()
         shell: bash
         run: |
           set -Eeuo pipefail
+          test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass >/dev/null
           export SSHPASS="$DE_PASS"
           sshpass -e ssh -T -o ConnectTimeout=10 -o StrictHostKeyChecking=yes \
-            -o HostKeyAlgorithms=ssh-ed25519 \
             -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" \
             -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR \
             root@89.125.90.101 'python3 -' <<'PY'
-          import collections, os, pathlib, re, subprocess
-          def command(args, timeout=12):
+          import pathlib,subprocess,re
+          def read(args,timeout=8):
               try:
-                  p = subprocess.run(args, text=True, capture_output=True, timeout=timeout)
-                  return p.stdout if p.returncode == 0 else ''
-              except (OSError, subprocess.TimeoutExpired):
-                  return ''
-          props = command(['systemctl','show','mnebydns-dot.service',
-              '-p','ActiveState','-p','SubState','-p','NRestarts','-p','ExecMainStartTimestamp',
-              '-p','ExecMainStatus'])
-          for line in props.splitlines():
-              if line.startswith(('ActiveState=','SubState=','NRestarts=','ExecMainStartTimestamp=','ExecMainStatus=')):
-                  print('DOT_'+line, flush=True)
-          p=pathlib.Path('/opt/mnebydns-dot/Corefile')
-          if p.exists():
-              stat=p.stat()
-              print('DOT_CORE_FILE_READABLE_BY_GROUP='+str(bool(stat.st_mode & 0o040)))
-              core=p.read_text(encoding='utf-8',errors='replace')
-              print('DOT_RELOAD_DIRECTIVE='+str(bool(re.search(r'(?m)^\s*reload\s+5s\s+1s\s*
-          listening=command(['ss','-Hlntp'])
-          print('DOT_853_LISTEN='+str(any(':853 ' in line and 'coredns' in line.lower() for line in listening.splitlines())))
-          journal=command(['journalctl','-u','mnebydns-dot.service',
-                           '--since','-6 hours','--no-pager','-o','cat'],timeout=15)
-          patterns={'servfail':r'servfail', 'timeout':r'timeout|timed out',
-                    'permission':r'permission denied','restart':r'started|stopping|failed',
-                    'upstream_error':r'plugin/errors|read udp|dial tcp'}
-          for name,pat in patterns.items():
-              count=sum(bool(re.search(pat,ln,re.I)) for ln in journal.splitlines())
-              print('DOT_JOURNAL_6H_'+name.upper()+'='+str(count))
+                  r=subprocess.run(args,capture_output=True,text=True,timeout=timeout)
+                  return r.stdout if r.returncode==0 else ''
+              except Exception:return ''
+          for line in read(['systemctl','show','mnebydns-dot.service',
+                            '-p','ActiveState','-p','SubState','-p','NRestarts',
+                            '-p','ExecMainStatus']).splitlines():
+              print('DOT_'+line[:100])
+          core=pathlib.Path('/opt/mnebydns-dot/Corefile')
+          if core.is_file():
+              print('DOT_COREFILE_READABLE=true')
+              print('DOT_COREFILE_GROUP_READABLE='+str(bool(core.stat().st_mode&0o040)))
+          listeners=read(['ss','-Hlntp'])
+          print('DOT_COREDNS_853_LISTEN='+str(any(
+              ':853 ' in l and 'coredns' in l.lower() for l in listeners.splitlines())))
+          journal=read(['journalctl','-u','mnebydns-dot.service','--since','-6 hours',
+                        '--no-pager','-o','cat'],timeout=15)
+          for name,pattern in {
+              'servfail':'servfail','timeout':'timeout|timed out',
+              'permission':'permission denied',
+              'restart':'started|stopping|failed',
+              'upstream_error':'plugin/errors|read udp|dial tcp'
+          }.items():
+              print('DOT_JOURNAL_6H_'+name.upper()+'='+str(sum(bool(
+                  re.search(pattern,line,re.I)) for line in journal.splitlines())))
           print('DOT_JOURNAL_RAW_CONTENT_NOT_EXPORTED=true')
+          print('AUDIT_PRODUCTION_CHANGES=false')
           PY
-      - name: Store synthetic no-client-data stability report
+      - name: Attach bounded report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mnebydns-oneoff-dot-stability
-          path: speed-readonly-results/
-          if-no-files-found: ignore
-          retention-days: 3
-,core))))
-              print('DOT_QUAD9_PRIMARY='+str('tls://9.9.9.9' in core))
-              print('DOT_QUAD9_SECONDARY='+str('tls://149.112.112.112' in core))
-              print('DOT_SERVFAIL_CACHE_DISABLED='+str(bool(re.search(r'(?m)^\s*servfail\s+0\s*
-          listening=command(['ss','-Hlntp'])
-          print('DOT_853_LISTEN='+str(any(':853 ' in line and 'coredns' in line.lower() for line in listening.splitlines())))
-          journal=command(['journalctl','-u','mnebydns-dot.service',
-                           '--since','-6 hours','--no-pager','-o','cat'],timeout=15)
-          patterns={'servfail':r'servfail', 'timeout':r'timeout|timed out',
-                    'permission':r'permission denied','restart':r'started|stopping|failed',
-                    'upstream_error':r'plugin/errors|read udp|dial tcp'}
-          for name,pat in patterns.items():
-              count=sum(bool(re.search(pat,ln,re.I)) for ln in journal.splitlines())
-              print('DOT_JOURNAL_6H_'+name.upper()+'='+str(count))
-          print('DOT_JOURNAL_RAW_CONTENT_NOT_EXPORTED=true')
-          PY
-      - name: Store synthetic no-client-data stability report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: mnebydns-oneoff-dot-stability
-          path: speed-readonly-results/
-          if-no-files-found: ignore
-          retention-days: 3
-,core))))
-          listening=command(['ss','-Hlntp'])
-          print('DOT_853_LISTEN='+str(any(':853 ' in line and 'coredns' in line.lower() for line in listening.splitlines())))
-          journal=command(['journalctl','-u','mnebydns-dot.service',
-                           '--since','-6 hours','--no-pager','-o','cat'],timeout=15)
-          patterns={'servfail':r'servfail', 'timeout':r'timeout|timed out',
-                    'permission':r'permission denied','restart':r'started|stopping|failed',
-                    'upstream_error':r'plugin/errors|read udp|dial tcp'}
-          for name,pat in patterns.items():
-              count=sum(bool(re.search(pat,ln,re.I)) for ln in journal.splitlines())
-              print('DOT_JOURNAL_6H_'+name.upper()+'='+str(count))
-          print('DOT_JOURNAL_RAW_CONTENT_NOT_EXPORTED=true')
-          PY
-      - name: Store synthetic no-client-data stability report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: mnebydns-oneoff-dot-stability
+          name: mnebydns-dot-stability-report
           path: speed-readonly-results/
           if-no-files-found: ignore
           retention-days: 3
