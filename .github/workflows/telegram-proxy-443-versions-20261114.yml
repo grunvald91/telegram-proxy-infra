@@ -1,0 +1,95 @@
+name: Telegram protocol and port 443 diagnostics 2026-11-14 (read-only)
+"on":
+  push:
+    branches: [diag/telegram-proxy-443-versions-20261114]
+    paths: ['.github/workflows/telegram-proxy-443-versions-20261114.yml']
+permissions:
+  contents: read
+concurrency:
+  group: telegram-443-version-diagnostics-20261114
+  cancel-in-progress: false
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check foreign public 443 and RU fallback from runner
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import socket,ssl,time
+          for label,ip,port in [('RU443','188.120.254.223',443),('RU8443','188.120.254.223',8443),('DE443','89.125.90.101',443),('DE8443','89.125.90.101',8443)]:
+              t=time.monotonic()
+              try:
+                  with socket.create_connection((ip,port),timeout=4):pass
+                  print('RUNNER_'+label+'=OK ms='+str(round((time.monotonic()-t)*1000)),flush=True)
+              except OSError as e:print('RUNNER_'+label+'='+type(e).__name__,flush=True)
+          PY
+      - name: Read exact live SYNACK chain and backend versions on both nodes
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s ops/mnebydns-owner-ssh-known_hosts && test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass >/dev/null
+          check() {
+            local role="$1" host="$2"
+            export SSHPASS="$3"
+            sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR "root@$host" "python3 - '$role'" <<'PY'
+          import sys,subprocess,re,json,pathlib,os,socket
+          role=sys.argv[1]
+          def emit(key,value):print(role+'_'+key+'='+str(value),flush=True)
+          def run(args,timeout=7):
+              try:
+                  p=subprocess.run(args,text=True,capture_output=True,timeout=timeout)
+                  return p.returncode,(p.stdout+'\n'+p.stderr).strip()
+              except Exception:return 255,''
+          for service in ['telegram-nfqws.service','telegram-foreign-nfqws.service','nginx.service','tproxy-server.service','tproxy-server-ru.service','mtproxy.service','mtproxy-ru.service']:
+              code,_=run(['systemctl','is-active','--quiet',service])
+              emit('ACTIVE_'+service,code==0)
+          for binary in ['/usr/bin/telemt','/usr/local/bin/telemt','/usr/local/bin/tproxy-server']:
+              p=pathlib.Path(binary)
+              if p.is_file():
+                  code,s=run([binary,'--version'],4)
+                  versions=re.findall(r'\b\d+\.\d+\.\d+\b',s)
+                  emit('VERSION_'+p.name,versions[0] if versions else 'not_reported')
+          cmd=['nft','-j','-a','list','chain','inet','telegram_nfqws','post']
+          code,s=run(cmd)
+          if code==0:
+              try:
+                  rules=[x['rule'] for x in json.loads(s).get('nftables',[]) if 'rule' in x]
+                  summary=[]
+                  for i,r in enumerate(rules):
+                      expr=r.get('expr',[])
+                      queue=any('queue' in e for e in expr)
+                      flag=any('match' in e and 'tcp' in str(e) and 'flags' in str(e) for e in expr)
+                      if r.get('comment')=='mnebyvpn_standard_synack':summary.append(('SYNACK',i))
+                      elif queue:summary.append(('QUEUE',i))
+                  emit('NFQ_RULES_ORDER',','.join(k+':'+str(i) for k,i in summary) or 'NONE')
+                  emit('NFQ_QUEUE_COUNT',sum(k=='QUEUE' for k,_ in summary))
+                  emit('SYNACK_BEFORE_QUEUE',bool(next((i for k,i in summary if k=='SYNACK'),999)<next((i for k,i in summary if k=='QUEUE'),-1)))
+              except Exception as e:emit('NFQ_PARSE_ERROR',type(e).__name__)
+          else:emit('NFQ_RULES_ORDER','absent_or_denied')
+          conf=pathlib.Path('/etc/zapret2/telegram-nfqws.conf')
+          if conf.is_file():
+              emit('NFQ_SYNACK_SPLIT_CONFIG', 'synack_split' in conf.read_text(errors='replace'))
+          for label,host,port in ([('WG_FOREIGN_443','10.66.77.1',443),('WG_WEB_BRIDGE','10.66.77.1',8082),('FOREIGN_PUBLIC_443','89.125.90.101',443)] if role=='RU' else [('MTPROXY_BACKEND_A','127.0.0.1',2398),('MTPROXY_BACKEND_B','127.0.0.1',2399)]):
+              try:
+                  with socket.create_connection((host,port),timeout=4):emit(label,'CONNECTED')
+              except Exception as e:emit(label,type(e).__name__)
+          for unit in ('telemt-direct-sber.service','telemt.service','tproxy-server.service','tproxy-server-ru.service'):
+              code,logs=run(['journalctl','-u',unit,'--since','-40 minutes','-n','300','-o','cat','--no-pager'],7)
+              if code==0:
+                  emit('LOG_'+unit+'_timeout',len(re.findall(r'timeout|timed out',logs,re.I)))
+                  emit('LOG_'+unit+'_middle_disconnected',len(re.findall(r'disconnected from rpc middle.end',logs,re.I)))
+          emit('READ_ONLY_COMPLETE',True)
+          PY
+          }
+          check RU 188.120.254.223 "$RU_PASS"
+          check DE 89.125.90.101 "$DE_PASS"
+          echo 'DIAG_DONE=true'
