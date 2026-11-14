@@ -75,3 +75,4 @@ jobs:
           path: route-choice-results/
           if-no-files-found: warn
           retention-days: 30
+# Owner-requested read-only end-to-end route/handshake recheck 2026-11-14 21:10 UTC.
