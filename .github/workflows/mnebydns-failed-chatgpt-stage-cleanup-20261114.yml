@@ -1,0 +1,51 @@
+name: MNEBYDNS remove only uncommitted failed ChatGPT staging artifacts
+on:
+  push:
+    branches: [audit/mnebydns-auth60-chatgpt-live-20261114]
+    paths: ['.github/workflows/mnebydns-failed-chatgpt-stage-cleanup-20261114.yml']
+permissions: {contents: read}
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check no live changes, no active rollback, then remove only exact failed staging
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@89.125.90.101 'python3 -' <<'PY'
+          import os,pathlib,subprocess,shutil
+          ident='435819000321'
+          root=pathlib.Path('/opt/mnebydns-owner-domain')/ident
+          work=pathlib.Path('/tmp/mnebydns-owner-domain-'+ident)
+          ck=pathlib.Path(pathlib.Path('/opt/mnebydns-stable-checkpoints/current').read_text().strip())
+          assert ck.is_dir()
+          for kind,path in (('dns','/opt/mnebydns-dot/Corefile'),('nginx','/etc/nginx/nginx.conf'),('proxy','/etc/mnebydns-googlepilot/nginx.conf')):
+              assert (ck/(kind+'.stable')).read_bytes()==pathlib.Path(path).read_bytes()
+          for d in (root,work):
+              assert not d.is_symlink()
+              assert d.parent in (pathlib.Path('/opt/mnebydns-owner-domain'),pathlib.Path('/tmp'))
+          if root.exists():
+              assert not (root/'confirmed').exists()
+              assert not (root/'dns.pilot').exists()
+              assert not (root/'nginx.pilot').exists()
+              assert (root/'dns.before').read_bytes()==pathlib.Path('/opt/mnebydns-dot/Corefile').read_bytes()
+              assert (root/'nginx.before').read_bytes()==pathlib.Path('/etc/nginx/nginx.conf').read_bytes()
+              for suffix in ('timer','service'):
+                  assert not pathlib.Path('/etc/systemd/system/mnebydns-owner-rollback-'+ident+'.'+suffix).exists()
+              shutil.rmtree(root)
+              print('FAILED_CHATGPT_STAGE_UNCOMMITTED_ROOT_REMOVED=true',flush=True)
+          else:print('FAILED_CHATGPT_STAGE_UNCOMMITTED_ROOT_ALREADY_ABSENT=true',flush=True)
+          if work.exists():
+              assert work.is_dir()
+              shutil.rmtree(work)
+              print('FAILED_CHATGPT_STAGE_TEMP_FILES_REMOVED=true',flush=True)
+          else:print('FAILED_CHATGPT_STAGE_TEMP_FILES_ALREADY_ABSENT=true',flush=True)
+          print('CHECKPOINT_UNCHANGED_CORE_AND_NGINX=PASS',flush=True)
+          PY
