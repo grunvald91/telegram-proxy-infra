@@ -1,0 +1,104 @@
+name: "MNEBYDNS first 100 pending research domains live preflight"
+on:
+  push:
+    branches: ["diagnostics/groq-smartdns-readonly-20261115"]
+    paths: [".github/workflows/mnebydns-first100-readonly-20261115.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-first100-readonly-20261115
+  cancel-in-progress: false
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Probe first 100 live PENDING research domains on both servers
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -qq -y sshpass >/dev/null
+          python3 - <<'PY'
+          import sys, pathlib, json, datetime, hashlib, importlib.util, collections
+          root=pathlib.Path.cwd()
+          def load(name,file):
+              spec=importlib.util.spec_from_file_location(name,root/'scripts'/file)
+              mod=importlib.util.module_from_spec(spec);spec.loader.exec_module(mod);return mod
+          p=load('bulk_preflight_first100','mnebydns-bulk-preflight-20261112.py')
+          batch=p.batch; owner=p.owner; scan=p.scanner; render=p.renderer
+          out=root/'first100-results';out.mkdir(exist_ok=True)
+          # DB is authoritative. Selection is deterministic and frozen for the scan.
+          raw=owner.sql("SELECT domain FROM dns_admin_domains WHERE product='Research 2026-11' AND status='PENDING' ORDER BY domain ASC LIMIT 100")
+          names=raw.splitlines()
+          if len(names)!=100 or len(set(names))!=100:raise RuntimeError('FIRST100_SNAPSHOT_INVALID')
+          for h in names: render.validate_domain(h)
+          (out/'first100.txt').write_text('\n'.join(names)+'\n')
+          print('FIRST100_SNAPSHOT_UTC='+datetime.datetime.now(datetime.timezone.utc).isoformat(),flush=True)
+          print('FIRST100_FIRST='+names[0],flush=True)
+          print('FIRST100_LAST='+names[-1],flush=True)
+          print('FIRST100_COUNT='+str(len(names)),flush=True)
+          quiet_before=owner.live_checkpoint_unchanged()
+          print('FIRST100_CHECKPOINT_QUIET_BEFORE='+str(quiet_before),flush=True)
+          core=p.read_exact_remote('de','/opt/mnebydns-dot/Corefile')
+          nginx=p.read_exact_remote('de','/etc/nginx/nginx.conf')
+          states=batch.table()
+          if any(states.get(h,('','',''))[:2]!=('PENDING',batch.PRODUCT) for h in names):
+              raise RuntimeError('DB_SNAPSHOT_STATE_CHANGED')
+          print('FIRST100_REMOTE_MEASUREMENT_START=true',flush=True)
+          de=scan.via_ssh('DE',[{'host':h} for h in names])
+          print('FIRST100_DE_COMPLETE='+str(len(de)),flush=True)
+          ru=scan.via_ssh('RU',[{'host':h,'origin_ipv4':de[h].get('origin_ipv4')} for h in names])
+          print('FIRST100_RU_COMPLETE='+str(len(ru)),flush=True)
+          verdicts=[];eligible=[];stats=collections.Counter();core_new,nginx_new=core,nginx
+          for h in names:
+              a,b=de[h],ru[h]
+              entry={'domain':h,'de':a,'ru':b}
+              if not (a.get('certificate_verified') and isinstance(a.get('http_status'),int) and 200<=a['http_status']<400):
+                  decision='SKIP_NO_VERIFIED_DE_SUCCESS'
+              elif not (b.get('certificate_verified') and b.get('http_status') in (403,451) and b.get('origin_ipv4')==a.get('origin_ipv4')):
+                  decision='SKIP_NO_VERIFIED_RU_403_451'
+              else:
+                  try:
+                      ip=render.validated_public_ip(a['origin_ipv4'])
+                      c=render.core_add(core_new,h)
+                      n=render.nginx_add(nginx_new,h,ip)
+                      core_new,nginx_new=c,n
+                      eligible.append({'domain':h,'ip':ip})
+                      decision='ELIGIBLE_FOR_GUARDED_DEPLOY'
+                  except (ValueError,RuntimeError,AssertionError) as exc:
+                      decision='SKIP_ROUTE_OVERLAP_OR_INVALID'
+                      entry['reason']=type(exc).__name__+': '+str(exc)[:180]
+              entry['decision']=decision
+              stats[decision]+=1
+              verdicts.append(entry)
+          quiet_after=owner.live_checkpoint_unchanged()
+          same_core=p.read_exact_remote('de','/opt/mnebydns-dot/Corefile')==core
+          same_nginx=p.read_exact_remote('de','/etc/nginx/nginx.conf')==nginx
+          unchanged_db=all(batch.table().get(h,('','',''))[:2]==('PENDING',batch.PRODUCT) for h in names)
+          report={'checked_at_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),
+             'total':len(names),'counts':dict(stats),'eligible':eligible,
+             'checkpoint_unchanged_before':quiet_before,'checkpoint_unchanged_after':quiet_after,
+             'core_unchanged':same_core,'nginx_unchanged':same_nginx,'db_unchanged':unchanged_db,
+             'source_sha256':{'core':hashlib.sha256(core.encode()).hexdigest(),'nginx':hashlib.sha256(nginx.encode()).hexdigest()}}
+          (out/'summary.json').write_text(json.dumps(report,indent=2,ensure_ascii=False)+'\n')
+          (out/'verdicts.json').write_text(json.dumps(verdicts,indent=2,ensure_ascii=False)+'\n')
+          print('FIRST100_SUMMARY='+json.dumps({k:v for k,v in report.items() if k!='eligible'},sort_keys=True),flush=True)
+          print('FIRST100_ELIGIBLE='+json.dumps(eligible,ensure_ascii=False),flush=True)
+          if not(same_core and same_nginx and unchanged_db):raise RuntimeError('CONFIG_OR_DB_CHANGED_DURING_PREFLIGHT')
+          PY
+      - name: Publish safe per-host review
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mnebydns-first100-preflight-${{ github.run_id }}
+          path: first100-results/
+          if-no-files-found: warn
+          retention-days: 30
