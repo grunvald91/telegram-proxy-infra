@@ -1,0 +1,95 @@
+name: "MNEBYDNS first100 strictly gated guarded production deploy"
+on:
+  push:
+    branches: ["diagnostics/groq-smartdns-readonly-20261115"]
+    paths:
+      - ".github/workflows/mnebydns-first100-guarded-deploy-20261115.yml"
+      - "scripts/mnebydns-first100-guarded-20261115.py"
+      - "data/mnebydns-first100-activate-once-20261115.txt"
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-google-public-443-change
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify existing production rollout safety
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-first100-guarded-20261115.py
+          python3 scripts/mnebydns-first100-guarded-20261115.py self-test
+          python3 scripts/mnebydns-owner-domain-render-20261110.py self-test
+          bash -n scripts/mnebydns-bulk-stage-20261112.sh
+          bash -n scripts/mnebydns-bulk-compensate-20261112.sh
+          test "$(cat data/mnebydns-batch-auto-enabled-20261112.txt)" = disabled
+          echo 'FIRST100_BOUNDED_OFFLINE_TEST=PASS'
+  guarded:
+    if: github.event.head_commit.message == 'deploy(MNEBYDNS): first100 verified' 
+    needs: offline
+    runs-on: ubuntu-latest
+    timeout-minutes: 58
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Enforce one-shot exact reviewed Git gate
+        run: |
+          set -Eeuo pipefail
+          test "$(cat data/mnebydns-first100-activate-once-20261115.txt)" = "deploy-first100-once-20261115"
+          test "$(cat data/mnebydns-batch-auto-enabled-20261112.txt)" = disabled
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+      - name: Stop if an unrelated Meta routing trial is running
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import json,os,urllib.request
+          url='https://api.github.com/repos/grunvald91/telegram-proxy-infra/actions/workflows/meta-v30-manual-two-server-canary.yml/runs?per_page=20'
+          req=urllib.request.Request(url,headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json'})
+          with urllib.request.urlopen(req,timeout=12) as res: data=json.load(res)
+          busy=[r['id'] for r in data['workflow_runs'] if r['status'] in ('in_progress','queued','pending','requested','waiting')]
+          print('META_CONCURRENT_TRIAL_RUNS='+json.dumps(busy),flush=True)
+          if busy: raise SystemExit('META_TRIAL_BUSY_DO_NOT_CHANGE_DNS')
+          PY
+      - name: Install pinned SSH dependencies
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -qq -y sshpass >/dev/null
+      - name: Perform fresh first100 screening and strictly guarded rollout
+        run: python3 -u scripts/mnebydns-first100-guarded-20261115.py deploy
+      - name: Report exact outcome
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '## First 100 research pending domains'
+            if [ -f first100-deploy-results/summary.json ]; then
+              python3 - <<'PY'
+          import json
+          s=json.load(open('first100-deploy-results/summary.json'))
+          print('Checked: 100. Verified eligible: '+str(s['selected_from_first100']))
+          print('Skipped: '+json.dumps(s['decisions'],ensure_ascii=False))
+          PY
+            fi
+            if [ -f first100-deploy-results/events.jsonl ]; then tail -n 12 first100-deploy-results/events.jsonl; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Archive per-domain evidence without secret server configs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mnebydns-first100-deploy-${{ github.run_id }}
+          path: first100-deploy-results/
+          if-no-files-found: warn
+          retention-days: 30
