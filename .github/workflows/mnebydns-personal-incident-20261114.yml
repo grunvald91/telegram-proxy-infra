@@ -72,6 +72,35 @@ jobs:
                       result[label]={'error':type(exc).__name__}
               print('HOST_A_MAPPING '+host+' '+str(result),flush=True)
           PY
+      - name: Test mapped HTTPS SNI via RU ingress vs DE edge (no changes)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import socket,ssl,re,time
+          names=('claude.ai','api.anthropic.com','gemini.google.com',
+                 'grok.com','x.com','www.youtube.com','chatgpt.com')
+          ctx=ssl.create_default_context()
+          ctx.set_alpn_protocols(['http/1.1'])
+          for name in names:
+              for label,ip in (('RU_INGRESS','188.120.254.223'),
+                               ('DE_EDGE','89.125.90.101')):
+                  started=time.monotonic()
+                  try:
+                      with socket.create_connection((ip,443),timeout=6) as tcp:
+                          tcp.settimeout(7)
+                          with ctx.wrap_socket(tcp,server_hostname=name) as tls:
+                              tls.sendall(('HEAD / HTTP/1.1\r\nHost: '+name+
+                                '\r\nUser-Agent: MNEBYDNS-incident-diagnostic/1.0\r\n'
+                                'Connection: close\r\n\r\n').encode('ascii'))
+                              msg=tls.recv(384)
+                              m=re.match(rb'HTTP/1[.]([01]) ([0-9]{3})',msg)
+                              code=m.group(2).decode() if m else 'NO_HTTP'
+                              print('HTTPS_SNI '+name+' '+label+'='+code+
+                                    ' RTT_MS='+str(round((time.monotonic()-started)*1000)),flush=True)
+                  except Exception as exc:
+                      print('HTTPS_SNI '+name+' '+label+'='+type(exc).__name__,flush=True)
+          PY
       - name: Inspect foreign SNI redirect, watchdog rollback, and private upstream (no writes)
         shell: bash
         run: |
