@@ -86,7 +86,7 @@ def run():
     print('youtube_quic_local_two_hop_UDP_roundtrip=PASS')
     print('youtube_quic_synthetic_v1_v2_7_domains=PASS')
     print('youtube_quic_non_YouTube_rejected=PASS')
-    print('meta_quic_no_user_payloads_or_pcap_in_repo=true')
+    print('youtube_quic_no_user_payloads_or_pcap_in_repo=true')
 
 
 async def test_local_response_path():
@@ -112,7 +112,7 @@ async def test_local_response_path():
             self.data=data
             self.event.set()
 
-    class IsolatedRouter(mod.MetaRouter):
+    class IsolatedRouter(mod.YoutubeRouter):
         def __init__(self, role, destination):
             super().__init__(role, '127.0.0.1', '127.0.0.1')
             self.destination=destination
