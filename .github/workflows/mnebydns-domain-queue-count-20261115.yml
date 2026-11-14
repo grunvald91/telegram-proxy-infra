@@ -1,0 +1,38 @@
+name: "MNEBYDNS production domain queue counts (read-only)"
+on:
+  push:
+    branches: ["diagnostics/groq-smartdns-readonly-20261115"]
+    paths: [".github/workflows/mnebydns-domain-queue-count-20261115.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Read-only status totals and research inventory on RU production
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@188.120.254.223 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          echo "AUDIT_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          docker exec -i mnebyvpn-stage-postgres psql -XqAt -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage <<'SQL'
+          SELECT 'ALL_ROWS|'||COUNT(*) FROM dns_admin_domains;
+          SELECT 'STATUS|'||status||'|'||COUNT(*) FROM dns_admin_domains GROUP BY status ORDER BY status;
+          SELECT 'BY_PRODUCT|'||coalesce(product,'[none]')||'|'||status||'|'||COUNT(*) FROM dns_admin_domains GROUP BY product,status ORDER BY COUNT(*) DESC,product,status LIMIT 60;
+          SELECT 'RESEARCH_ONLY|'||COUNT(*)||'|PENDING='||COUNT(*) FILTER (WHERE status='PENDING')||'|ACTIVE='||COUNT(*) FILTER (WHERE status='ACTIVE')||'|FAILED='||COUNT(*) FILTER (WHERE status='FAILED') FROM dns_admin_domains WHERE product='Research 2026-11';
+          SELECT 'GROQ|'||domain||'|'||status||'|'||coalesce(product,'')||'|'||coalesce(last_error_code,'') FROM dns_admin_domains WHERE domain='groq.com' OR domain LIKE '%.groq.com' ORDER BY domain;
+          SELECT 'RESEARCH_PENDING_SAMPLE|'||string_agg(domain,', ' ORDER BY domain) FROM (SELECT domain FROM dns_admin_domains WHERE product='Research 2026-11' AND status='PENDING' ORDER BY domain LIMIT 25) x;
+          SQL
+          echo "READ_ONLY_DB_INSPECTION=PASS"
+          REMOTE
