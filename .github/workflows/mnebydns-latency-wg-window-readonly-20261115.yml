@@ -37,7 +37,7 @@ jobs:
           o("TIME",datetime.datetime.now(datetime.timezone.utc).isoformat())
           o("LOAD",pathlib.Path("/proc/loadavg").read_text().split()[:3])
           m=pathlib.Path("/proc/meminfo").read_text()
-          v={k:int(x) for k,x in re.findall(r"^(MemTotal|MemAvailable):\\s+(\\d+)",m,re.M)}
+          v={k:int(x) for k,x in re.findall(r"^(MemTotal|MemAvailable):\s+(\d+)",m,re.M)}
           o("MEM_AVAILABLE_PCT",round(100*v.get("MemAvailable",0)/max(1,v.get("MemTotal",1)),1))
           for svc in ("nginx.service","wg-quick@tg-relay.service","mnebydns-dot.service","mneby-meta-v26-ru-window.service","mneby-meta-v26-ru-watchdog.timer"):
               code,data=cmd("systemctl","is-active",svc)
@@ -61,9 +61,13 @@ jobs:
                       counts=[exp["counter"].get("packets",0) for d in j.get("nftables",[]) for exp in d.get("rule",{}).get("expr",[]) if "counter" in exp]
                       o("META_TRIAL_RULE_COUNTS",counts)
                   except Exception:o("META_TRIAL_RULE_COUNTS","UNAVAILABLE")
-              p=cmd("ping","-n","-q","-c","20","-i","0.25","-s","1200","-W","2","10.66.77.1",timeout=15)
-              for line in p[1].splitlines():
-                  if "packet loss" in line or "min/avg/max" in line:o("WG_PING_1200",line.strip())
+              for size in (32,1200,1320):
+                  rc,data=cmd("ping","-n","-q","-M","do","-c","20","-i","0.25","-s",str(size),"-W","2","10.66.77.1",timeout=15)
+                  for line in data.splitlines():
+                      if "packet loss" in line or "min/avg/max" in line:o("WG_PING_DF_"+str(size),line.strip())
+              rc,data=cmd("ping","-n","-q","-c","20","-i","0.25","-s","1200","-W","2","89.125.90.101",timeout=15)
+              for line in data.splitlines():
+                  if "packet loss" in line or "min/avg/max" in line:o("PUBLIC_PING_1200",line.strip())
           PY
           done
           echo MNEBYDNS_LATENCY_CANARY_WG_READONLY=FINISHED
