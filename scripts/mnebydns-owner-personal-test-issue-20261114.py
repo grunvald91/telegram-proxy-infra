@@ -101,7 +101,8 @@ def sqlrun(sql: str) -> list[str]:
         first_error = next((line for line in r.stderr.splitlines()
                             if line.lstrip().startswith(("ERROR:", "psql:"))), "")
         if first_error:
-            first_error = re.sub(r"'[^']*'|\\"[^\\"]*\\"", "[quoted]", first_error)
+            first_error = re.sub(r"'[^']*'", "[quoted]", first_error)
+            first_error = re.sub(r'"[^"]*"', "[quoted]", first_error)
             first_error = re.sub(r"\\b[a-z0-9]{12}\\b", "[label]", first_error)
             first_error = re.sub(r"\\b[0-9a-f]{8}-[0-9a-f-]{27,}\\b", "[uuid]", first_error)
             first_error = re.sub(r"\\b[0-9]{5,}\\b", "[integer]", first_error)
