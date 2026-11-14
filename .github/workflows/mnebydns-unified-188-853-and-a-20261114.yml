@@ -176,13 +176,25 @@ jobs:
           python3 - <<'PY'
           import socket,ssl
           for host in ('chatgpt.com','auth.openai.com','www.youtube.com','youtubei.googleapis.com',
-                       'www.googlevideo.com','api.anthropic.com','claude.ai',
+                       'i.ytimg.com','api.anthropic.com','claude.ai',
                        'cdn.oaistatic.com'):
             with socket.create_connection(('188.120.254.223',443),timeout=8) as raw:
               raw.settimeout(9)
               with ssl.create_default_context().wrap_socket(raw,server_hostname=host) as tls:
                 assert bool(tls.getpeercert())
             print('UNIFIED_RU188_FOREIGN_HTTPS_TLS_VERIFIED='+host,flush=True)
+          PY
+          # Video CDN SNI can vary by caller's network; require TLS validation
+          # from the actual RU ingress VPS as well as the generic public gate.
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@188.120.254.223 'python3 -' <<'PY'
+          import socket,ssl
+          for name in ('www.googlevideo.com','www.youtube.com','youtubei.googleapis.com','i.ytimg.com'):
+              with socket.create_connection(('188.120.254.223',443),timeout=8) as raw:
+                  raw.settimeout(12)
+                  with ssl.create_default_context().wrap_socket(raw,server_hostname=name) as tls:
+                      assert bool(tls.getpeercert())
+              print('RU_ORIGIN_NETWORK_MEDIA_TLS_VERIFIED='+name,flush=True)
           PY
       - name: Confirm stable DE CoreDNS checkpoint (auto-revert disarmed)
         id: de_finalized
