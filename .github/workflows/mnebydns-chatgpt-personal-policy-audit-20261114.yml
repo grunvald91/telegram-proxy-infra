@@ -1,0 +1,64 @@
+name: MNEBYDNS read-only personal ChatGPT policy audit (one-off)
+on:
+  push:
+    branches: [fix/mnebydns-chatgpt-personal-two-20261114]
+    paths: ['.github/workflows/mnebydns-chatgpt-personal-policy-audit-20261114.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Read-only RU personal policy and live containers
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -' <<'PY'
+          import json, pathlib, subprocess, hashlib
+          path=pathlib.Path('/etc/mnebydns/personal-dot/policy.json')
+          assert path.is_file(), 'Personal policy not installed'
+          data=json.loads(path.read_text())
+          assert isinstance(data,list)
+          assert len(data)==len(set(data))
+          assert all(isinstance(s,str) for s in data)
+          names=('chatgpt.com','openai.com','oaistatic.com','oaiusercontent.com',
+                 'ws.chatgpt.com','auth.openai.com','oaistatsig.com')
+          rules=set(data)
+          for name in names:
+              covered=(name in rules or any(name.endswith('.'+s[2:]) for s in rules if s.startswith('*.')))
+              print('RU_PERSONAL_POLICY_'+name.replace('.','_').upper()+'='+('COVERED' if covered else 'MISSING'),flush=True)
+          print('RU_PERSONAL_POLICY_RULE_COUNT='+str(len(rules)),flush=True)
+          print('RU_PERSONAL_POLICY_SHA256='+hashlib.sha256(path.read_bytes()).hexdigest(),flush=True)
+          for c in ('mnebydns-personal-dot','mnebydns-personal-dot-private'):
+              p=subprocess.run(['docker','inspect','--format','{{.State.Running}}|{{.Config.Image}}',c],capture_output=True,text=True)
+              value=p.stdout.strip() if p.returncode==0 else 'NOT_FOUND'
+              print('RU_CONTAINER_'+c.replace('-','_').upper()+'='+value,flush=True)
+          print('RU_PERSONAL_POLICY_READ_ONLY=true',flush=True)
+          PY
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY'
+          import pathlib, subprocess
+          p=pathlib.Path('/opt/mnebydns-dot/Corefile')
+          text=p.read_text().lower()
+          for name in ('chatgpt.com','openai.com','oaistatic.com','oaiusercontent.com'):
+              print('DE_LEGACY_COREFILE_'+name.replace('.','_').upper()+'_TEXT_PRESENT='+str(name in text),flush=True)
+          conf=pathlib.Path('/etc/mnebydns/personal-sni/nginx.conf').read_text()
+          for port in ('8853','8856','8858'):
+              print('DE_PERSONAL_UPSTREAM_'+port+'='+str(('10.66.77.2:'+port+';') in conf),flush=True)
+          print('DE_POLICY_AUDIT_READ_ONLY=true',flush=True)
+          PY
