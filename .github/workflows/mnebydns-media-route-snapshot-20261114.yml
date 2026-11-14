@@ -1,0 +1,30 @@
+name: MNEBYDNS actual media hostname route snapshot read-only
+on:
+  push:
+    branches: [diag/mnebydns-outage-20261114]
+    paths: ['.github/workflows/mnebydns-media-route-snapshot-20261114.yml']
+permissions: {contents: read}
+jobs:
+  media:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Public A for legacy personal wildcard and actual video CDN and SNI TLS
+        run: |
+          python3 - <<'PY'
+          import socket,ssl
+          names=['dns.mnebyvpn.site','aaaaaaaaaaaa.dns.mnebyvpn.site','www.youtube.com','rr1---sn-gxuo03g-ig3s.googlevideo.com','www.googlevideo.com']
+          for name in names:
+            try:
+              addrs=sorted({r[4][0] for r in socket.getaddrinfo(name,443,socket.AF_INET,socket.SOCK_STREAM)})
+              print('PUBLIC_A',name,addrs,flush=True)
+            except Exception as e:print('PUBLIC_ERROR',name,type(e).__name__,flush=True)
+          for name in ['www.youtube.com','rr1---sn-gxuo03g-ig3s.googlevideo.com']:
+            try:
+              with socket.create_connection(('188.120.254.223',443),timeout=8) as raw:
+                raw.settimeout(8)
+                with ssl.create_default_context().wrap_socket(raw,server_hostname=name) as tls:
+                  print('RU188_TCP_TLS',name,'pass',tls.version(),flush=True)
+            except Exception as e:print('RU188_TCP_TLS',name,'fail',type(e).__name__,str(e)[:90],flush=True)
+          PY
