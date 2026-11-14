@@ -1,0 +1,50 @@
+name: MNEBYVPN Smart DNS four Stars offers postdeploy read-only audit
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/mnebyvpn-smartdns-4xtr-postdeploy-readonly-20261114.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      HOST: '188.120.254.223'
+      SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Read-only published source and DNS Stars catalog status
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$SSH_PASSWORD"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          export SSHPASS="$SSH_PASSWORD"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          image="$(docker inspect -f '{{.Config.Image}}' mnebyvpn-bot-info)"
+          [[ "$image" = "mnebyvpn-stage-web:fb895bbc4be5098ab8337e7bd38f92793d509d1b" ]]
+          echo 'bot_release_sha_matches_ci=true'
+          code="$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:8793/readyz)"
+          [[ "$code" = 200 ]]
+          echo 'bot_readyz=200'
+          envs="$(docker inspect --format '{{json .Config.Env}}' mnebyvpn-bot-info)"
+          if [[ "$envs" == *'MNEBYDNS_PERSONAL_DOT_ENABLED=yes'* ]]; then
+            echo 'personal_dot_release_flag=yes'
+          else
+            echo 'personal_dot_release_flag=not_enabled'
+          fi
+          docker exec mnebyvpn-stage-postgres psql -v ON_ERROR_STOP=1 -At -U mnebyvpn_stage -d mnebyvpn_stage <<'SQL'
+          SELECT 'migration_0124_applied='||
+            (SELECT COUNT(*) FROM deployment_schema_migrations
+              WHERE file_name='0124_smart_dns_four_stars_offers.sql');
+          SELECT 'dns_offer|'||id||'|'||duration_seconds||'|'||stars||'|'||
+            dns_quota_queries_per_30d||'|enabled='||enabled
+          FROM billing_plans WHERE id IN (
+            'personal_dns_14d_stars','personal_dns_30d_stars',
+            'personal_dns_60d_stars','personal_dns_90d_stars')
+          ORDER BY duration_seconds;
+          SQL
+          echo 'audit_read_only=true'
+          REMOTE
