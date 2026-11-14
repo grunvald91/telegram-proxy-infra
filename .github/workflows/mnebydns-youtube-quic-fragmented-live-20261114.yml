@@ -1,0 +1,111 @@
+name: Fix YouTube QUIC fragmented video TLS Hello RU188 DE89 guarded live
+on:
+  push:
+    branches: [feat/mnebydns-youtube-quic-ru188-de89-20261114]
+    paths: ['.github/workflows/mnebydns-youtube-quic-fragmented-live-20261114.yml']
+permissions: {contents: read}
+concurrency:
+  group: mnebydns-youtube-quic-udp443-live
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Offline all fixtures and staged rollback shell
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          bash -n scripts/mnebydns-youtube-quic-upgrade-20261114.sh
+          python3 -m py_compile scripts/mnebydns-youtube-quic.py scripts/test-mnebydns-youtube-quic.py
+          python3 scripts/test-mnebydns-youtube-quic.py
+          echo 'YOUTUBE_SPLIT_INITIAL_TWO_HOP_FIXTURES=PASS'
+  live:
+    needs: offline
+    runs-on: ubuntu-latest
+    timeout-minutes: 13
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Pinned SSH
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+      - name: Stage, test, promote new fragmented QUIC with independent rollback timers
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          id="$GITHUB_RUN_ID"
+          [[ "$id" =~ ^[0-9]{9,13}$ ]]
+          work="/tmp/mnebydns-youtube-quic-upgrade-$id"
+          script="$work/upgrade.sh"
+          expiry="$(date -u -d '+20 minutes' +'%Y-%m-%d %H:%M:%S UTC')"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          cp_opts=(-q -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          de() { SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 "$@"; }
+          ru() { SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 "$@"; }
+          undo() {
+            rc=$?
+            trap - EXIT
+            if ((rc!=0));then
+              echo 'YOUTUBE_QUIC_FRAGMENT_UPGRADE_FAILURE_ROLLBACK=true'
+              ru "test ! -s '/opt/mnebydns-youtube-quic-upgrade-ru-$id/upgrade.sh' || bash '/opt/mnebydns-youtube-quic-upgrade-ru-$id/upgrade.sh' rollback ru '$id'" || echo 'RU_ROLLBACK_ATTENTION=true'
+              de "test ! -s '/opt/mnebydns-youtube-quic-upgrade-de-$id/upgrade.sh' || bash '/opt/mnebydns-youtube-quic-upgrade-de-$id/upgrade.sh' rollback de '$id'" || echo 'DE_ROLLBACK_ATTENTION=true'
+            fi
+            exit "$rc"
+          }
+          trap undo EXIT
+          de "test ! -d '$work' && mkdir -m 700 '$work'"
+          ru "test ! -d '$work' && mkdir -m 700 '$work'"
+          for ip in 89.125.90.101 188.120.254.223;do
+            if [[ "$ip" == 89.125.90.101 ]];then export SSHPASS="$DE_PASS";else export SSHPASS="$RU_PASS";fi
+            sshpass -e scp "${cp_opts[@]}" scripts/mnebydns-youtube-quic.py "root@$ip:$work/relay.py"
+            sshpass -e scp "${cp_opts[@]}" scripts/mnebydns-youtube-quic-upgrade-20261114.sh "root@$ip:$work/upgrade.sh"
+            sshpass -e scp "${cp_opts[@]}" scripts/test-mnebydns-youtube-quic.py "root@$ip:$work/test-mnebydns-youtube-quic.py"
+          done
+          de "bash '$script' stage de '$id' '$expiry'"
+          ru "bash '$script' stage ru '$id' '$expiry'"
+          echo 'YOUTUBE_QUIC_FRAGMENT_BOTH_NODES_STAGED=true'
+          ru "python3 - '$work'" <<'PY'
+          import importlib.util,sys,pathlib,socket,time
+          path=pathlib.Path(sys.argv[1])/'test-mnebydns-youtube-quic.py'
+          source=path.parent/'mnebydns-youtube-quic.py'
+          source.write_bytes((path.parent/'relay.py').read_bytes())
+          spec=importlib.util.spec_from_file_location('youtube_fixture',path)
+          module=importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          for version,host in ((1,'www.youtube.com'),(2,'www.googlevideo.com')):
+              with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as s:
+                  s.sendto(module.fixture_sni(host,version,0),('127.0.0.1',443))
+                  time.sleep(.06)
+                  s.sendto(module.fixture_sni(host,version,1),('127.0.0.1',443))
+                  time.sleep(.1)
+              print('SPLIT_QUIC_UDP443_SENT_V'+str(version),flush=True)
+          PY
+          sleep 15
+          ru "journalctl --no-pager -o cat -u mnebydns-youtube-quic-ru-43612369808.service --since '3 minutes ago' | grep -E 'fragmented_admitted=[2-9][0-9]*'"
+          de "journalctl --no-pager -o cat -u mnebydns-youtube-quic-de-43612369808.service --since '3 minutes ago' | grep -E 'fragmented_admitted=[2-9][0-9]*'"
+          echo 'SPLIT_QUIC_ACCEPTED_ON_BOTH_NODES=PASS'
+          # Real YouTube origin with authentic certificate, not only fixture.
+          ru "PYTHONPATH=/tmp/mnebydns-youtube-quic-43612369808/deps YOUTUBE_QUIC_VIA=127.0.0.1 timeout 50s python3 /tmp/mnebydns-youtube-quic-43612369808/http3-probe.py"
+          ru "systemctl is-active --quiet nginx && ss -Hlnt 'sport = :443' | grep -q ."
+          de "systemctl is-active --quiet mnebydns-dot.service && systemctl is-active --quiet mnebydns-googlepilot.service"
+          echo 'YOUTUBE_QUIC_REAL_TLS_HTTP3=PASS'
+          de "bash '/opt/mnebydns-youtube-quic-upgrade-de-$id/upgrade.sh' commit de '$id'"
+          ru "bash '/opt/mnebydns-youtube-quic-upgrade-ru-$id/upgrade.sh' commit ru '$id'"
+          ru "PYTHONPATH=/tmp/mnebydns-youtube-quic-43612369808/deps YOUTUBE_QUIC_VIA=127.0.0.1 timeout 50s python3 /tmp/mnebydns-youtube-quic-43612369808/http3-probe.py"
+          echo 'YOUTUBE_QUIC_SPLIT_CLIENTHELLO_LIVE_FIX=DEPLOYED'
+          echo 'YOUTUBE_QUIC_TCP_AND_DNS_NOT_CHANGED=true'
+          echo 'YOUTUBE_QUIC_PHONE_CLIENT_NOT_VERIFIED=true'
+          trap - EXIT
