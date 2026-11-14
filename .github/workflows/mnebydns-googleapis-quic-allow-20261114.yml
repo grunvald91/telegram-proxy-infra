@@ -1,0 +1,110 @@
+name: MNEBYDNS Google API QUIC allowlist guarded release
+on:
+  push:
+    branches: [fix/mnebydns-googleapis-quic-20261114]
+    paths: ['.github/workflows/mnebydns-googleapis-quic-allow-20261114.yml']
+permissions: {contents: read}
+concurrency:
+  group: mnebydns-youtube-quic-udp443-live
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Verify wildcard boundaries and both UDP relay roles locally
+        run: |
+          set -Eeuo pipefail
+          bash -n scripts/mnebydns-youtube-quic-upgrade-20261114.sh
+          python3 -B scripts/test-mnebydns-youtube-quic.py
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          if ! command -v sshpass >/dev/null;then
+            sudo apt-get update -qq
+            sudo apt-get install -qq -y sshpass >/dev/null
+          fi
+      - name: Guarded synchronized RU DE allowance and genuine Google API HTTP3
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          id="$GITHUB_RUN_ID"
+          [[ "$id" =~ ^[0-9]{9,13}$ ]]
+          work="/tmp/mnebydns-youtube-quic-upgrade-$id"
+          script="$work/upgrade.sh"
+          expiry="$(date -u -d '+10 minutes' +'%Y-%m-%d %H:%M:%S UTC')"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          cp_opts=(-q -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          de() { SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 "$@"; }
+          ru() { SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 "$@"; }
+          undo() {
+            rc=$?
+            trap - EXIT
+            if ((rc!=0));then
+              echo 'GOOGLEAPIS_RELEASE_FAILURE_ROLLBACK=true'
+              ru "test ! -s '/opt/mnebydns-youtube-quic-upgrade-ru-$id/upgrade.sh' || bash '/opt/mnebydns-youtube-quic-upgrade-ru-$id/upgrade.sh' rollback ru '$id'" || echo 'RU_ROLLBACK_ATTENTION=true'
+              de "test ! -s '/opt/mnebydns-youtube-quic-upgrade-de-$id/upgrade.sh' || bash '/opt/mnebydns-youtube-quic-upgrade-de-$id/upgrade.sh' rollback de '$id'" || echo 'DE_ROLLBACK_ATTENTION=true'
+            fi
+            exit "$rc"
+          }
+          trap undo EXIT
+          # Fail on any concurrent source drift; keep the existing stage/checkpoint machinery.
+          for role in de ru;do
+            "$role" "python3 -B -" <<'PY_CHECK'
+          import hashlib,pathlib
+          p=pathlib.Path('/opt/mnebydns-youtube-quic-43612369808/relay.py')
+          assert hashlib.sha256(p.read_bytes()).hexdigest()=='f9c5604943ed973adf1ed34bbd321c4fc1f7c6b459d51c9ce10c35344c559e56','Active relay changed; inspect before deployment'
+          print('GOOGLEAPIS_BASELINE_SOURCE_MATCH=PASS',flush=True)
+          PY_CHECK
+          done
+          de "test ! -d '$work' && mkdir -m 700 '$work'"
+          ru "test ! -d '$work' && mkdir -m 700 '$work'"
+          for ip in 89.125.90.101 188.120.254.223;do
+            if [[ "$ip" == 89.125.90.101 ]];then export SSHPASS="$DE_PASS";else export SSHPASS="$RU_PASS";fi
+            sshpass -e scp "${cp_opts[@]}" scripts/mnebydns-youtube-quic.py "root@$ip:$work/relay.py"
+            sshpass -e scp "${cp_opts[@]}" scripts/mnebydns-youtube-quic-upgrade-20261114.sh "root@$ip:$work/upgrade.sh"
+          done
+          de "bash '$script' stage de '$id' '$expiry'"
+          ru "bash '$script' stage ru '$id' '$expiry'"
+          ru 'PYTHONPATH=/tmp/mnebydns-youtube-quic-43612369808/deps YOUTUBE_QUIC_VIA=127.0.0.1 timeout 95s python3 -B -' <<'PY_H3'
+          import asyncio,runpy
+          p='/tmp/mnebydns-youtube-quic-43612369808/http3-probe.py'
+          once=runpy.run_path(p)['once']
+          async def verify():
+              for host in ['www.googleapis.com','www.youtube.com']:
+                  ok=await asyncio.wait_for(once(host),38)
+                  assert ok,'HTTP3/TLS failed for '+host
+              print('GOOGLEAPIS_RU_WG_DE_GENUINE_HTTP3=PASS',flush=True)
+          asyncio.run(verify())
+          PY_H3
+          for role in de ru;do
+            "$role" "python3 -B - '$work'" <<'PY_POST'
+          import hashlib,importlib.util,pathlib,sys
+          sys.dont_write_bytecode=True
+          live=pathlib.Path('/opt/mnebydns-youtube-quic-43612369808/relay.py')
+          candidate=pathlib.Path(sys.argv[1])/'relay.py'
+          assert live.read_bytes()==candidate.read_bytes()
+          spec=importlib.util.spec_from_file_location('relay_verify',live)
+          m=importlib.util.module_from_spec(spec);sys.modules[spec.name]=m;spec.loader.exec_module(m)
+          assert all(m.allowed(x) for x in ['play.googleapis.com','jnn-pa.googleapis.com','www.googleapis.com'])
+          assert all(not m.allowed(x) for x in ['evilgoogleapis.com','googleapis.com.evil.org','127.0.0.1'])
+          print('GOOGLEAPIS_LIVE_WILDCARD_AND_BOUNDARIES=PASS',flush=True)
+          print('GOOGLEAPIS_LIVE_SHA256='+hashlib.sha256(live.read_bytes()).hexdigest(),flush=True)
+          PY_POST
+          done
+          ru 'systemctl is-active --quiet nginx && ss -Hlnt "sport = :443" | grep -q .'
+          de 'systemctl is-active --quiet mnebydns-dot.service && systemctl is-active --quiet mnebydns-googlepilot.service'
+          de "bash '/opt/mnebydns-youtube-quic-upgrade-de-$id/upgrade.sh' commit de '$id'"
+          ru "bash '/opt/mnebydns-youtube-quic-upgrade-ru-$id/upgrade.sh' commit ru '$id'"
+          echo 'GOOGLEAPIS_QUIC_WILDCARD_RU_DE=DEPLOYED'
+          echo 'GOOGLEAPIS_TCP_DNS_VPN_UNCHANGED=true'
+          echo 'GOOGLEAPIS_ANDROID_PLAYBACK_NOT_YET_CONFIRMED=true'
+          trap - EXIT

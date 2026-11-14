@@ -70,7 +70,8 @@ def fixture_sni(domain: str, version: int = 1, fragment: int | None = None) -> b
 
 def run():
     targets=('youtube.com','www.youtube.com','music.youtube.com','www.googlevideo.com',
-             'r1---sn-test.googlevideo.com','i.ytimg.com','youtubei.googleapis.com')
+             'r1---sn-test.googlevideo.com','i.ytimg.com','youtubei.googleapis.com',
+             'play.googleapis.com','jnn-pa.googleapis.com','www.googleapis.com')
     for host in targets:
         assert mod.allowed(host)
         for version in (1, 2):
@@ -84,7 +85,8 @@ def run():
             data,complete=mod.contiguous_hello(parts)
             assert complete and mod.tls_hello_sni(data)==host,(host,version)
     for host in ('i.instagram.com','graph.instagram.com','graph.facebook.com','evilgooglevideo.com',
-                 'googlevideo.com.evil.org','internal.local','127.0.0.1','foo.telegram.org'):
+                 'googlevideo.com.evil.org','evilgoogleapis.com','googleapis.com.evil.org',
+                 'internal.local','127.0.0.1','foo.telegram.org'):
         assert not mod.allowed(host)
     for invalid in (b'\x00'*1252,fixture_sni('www.youtube.com')[:-1],
                     b'\x11'*999):
@@ -99,9 +101,9 @@ def run():
     import asyncio
     asyncio.run(test_local_response_path())
     print('youtube_quic_local_two_hop_UDP_roundtrip=PASS')
-    print('youtube_quic_fragmented_initial_v1_v2_7_domains=PASS')
-    print('youtube_quic_synthetic_v1_v2_7_domains=PASS')
-    print('youtube_quic_non_YouTube_rejected=PASS')
+    print('youtube_quic_fragmented_initial_v1_v2_'+str(len(targets))+'_domains=PASS')
+    print('youtube_quic_synthetic_v1_v2_'+str(len(targets))+'_domains=PASS')
+    print('youtube_quic_unapproved_hosts_rejected=PASS')
     print('youtube_quic_no_user_payloads_or_pcap_in_repo=true')
 
 
@@ -172,8 +174,9 @@ async def test_local_response_path():
             split_transport,_=await loop.create_datagram_endpoint(
                 lambda:split_client,local_addr=('127.0.0.1',0))
             transports.append(split_transport)
-            initial=fixture_sni('r1---sn-test.googlevideo.com',version,0)
-            followup=fixture_sni('r1---sn-test.googlevideo.com',version,1)
+            host='r1---sn-test.googlevideo.com' if version==1 else 'play.googleapis.com'
+            initial=fixture_sni(host,version,0)
+            followup=fixture_sni(host,version,1)
             split_transport.sendto(initial,ru_transport.get_extra_info('sockname'))
             await asyncio.sleep(.04)
             assert not split_client.event.is_set()
