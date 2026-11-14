@@ -21,7 +21,7 @@ def varint_2(x: int) -> bytes:
     return bytes((0x40 | (x >> 8), x & 255))
 
 
-def fixture_sni(domain: str, version: int = 1) -> bytes:
+def fixture_sni(domain: str, version: int = 1, fragment: int | None = None) -> bytes:
     """Original synthetic ClientHello embedded inside QUIC Initial v1."""
     hostname = domain.encode('ascii')
     server_name = b'\x00' + struct.pack('!H', len(hostname)) + hostname
@@ -31,9 +31,17 @@ def fixture_sni(domain: str, version: int = 1) -> bytes:
             struct.pack('!H', 2) + b'\x13\x01' + b'\x01\x00' +
             struct.pack('!H', len(sni)) + sni)
     handshake = b'\x01' + len(body).to_bytes(3,'big') + body
-    crypto = b'\x06\x00' + varint_2(len(handshake)) + handshake
+    if fragment is None:
+        crypto = b'\x06\x00' + varint_2(len(handshake)) + handshake
+    else:
+        assert fragment in (0, 1)
+        split=len(handshake)//2
+        offset=0 if fragment == 0 else split
+        payload=handshake[:split] if fragment==0 else handshake[split:]
+        qvar=lambda n: bytes((n,)) if n<64 else varint_2(n)
+        crypto=b'\x06'+qvar(offset)+qvar(len(payload))+payload
     dcid = bytes.fromhex('0123456789abcdef')
-    pn = 1
+    pn = 1 if fragment is None else fragment+1
     assert version in (1, 2)
     salt = mod.INITIAL_V1_SALT if version == 1 else mod.INITIAL_V2_SALT
     label = "quic" if version == 1 else "quicv2"
@@ -68,6 +76,13 @@ def run():
         for version in (1, 2):
             result=mod.initial_sni(fixture_sni(host, version))
             assert result==host,(host,version,result)
+            p0=fixture_sni(host,version,0)
+            p1=fixture_sni(host,version,1)
+            assert mod.initial_sni(p0) is None and mod.initial_sni(p1) is None
+            assert mod.initial_crypto_fragments(p0) and mod.initial_crypto_fragments(p1)
+            parts=dict(mod.initial_crypto_fragments(p0)+mod.initial_crypto_fragments(p1))
+            data,complete=mod.contiguous_hello(parts)
+            assert complete and mod.tls_hello_sni(data)==host,(host,version)
     for host in ('i.instagram.com','graph.instagram.com','graph.facebook.com','evilgooglevideo.com',
                  'googlevideo.com.evil.org','internal.local','127.0.0.1','foo.telegram.org'):
         assert not mod.allowed(host)
@@ -84,6 +99,7 @@ def run():
     import asyncio
     asyncio.run(test_local_response_path())
     print('youtube_quic_local_two_hop_UDP_roundtrip=PASS')
+    print('youtube_quic_fragmented_initial_v1_v2_7_domains=PASS')
     print('youtube_quic_synthetic_v1_v2_7_domains=PASS')
     print('youtube_quic_non_YouTube_rejected=PASS')
     print('youtube_quic_no_user_payloads_or_pcap_in_repo=true')
@@ -151,6 +167,22 @@ async def test_local_response_path():
         await asyncio.sleep(.12)
         assert ru.counters['rejected']>=1,ru.counters
         assert ru.counters['admitted']==1,ru.counters
+        for version in (1,2):
+            split_client=Client()
+            split_transport,_=await loop.create_datagram_endpoint(
+                lambda:split_client,local_addr=('127.0.0.1',0))
+            transports.append(split_transport)
+            initial=fixture_sni('r1---sn-test.googlevideo.com',version,0)
+            followup=fixture_sni('r1---sn-test.googlevideo.com',version,1)
+            split_transport.sendto(initial,ru_transport.get_extra_info('sockname'))
+            await asyncio.sleep(.04)
+            assert not split_client.event.is_set()
+            assert ru.counters['admitted']==version,ru.counters
+            split_transport.sendto(followup,ru_transport.get_extra_info('sockname'))
+            await asyncio.wait_for(split_client.event.wait(),3.0)
+            assert split_client.data==mark+initial[:16]
+            assert ru.counters['fragmented_admitted']==version,ru.counters
+            assert de.counters['fragmented_admitted']==version,de.counters
     finally:
         for t in reversed(transports):t.close()
         await asyncio.sleep(.05)
