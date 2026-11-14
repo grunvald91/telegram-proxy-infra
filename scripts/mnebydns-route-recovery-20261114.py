@@ -18,6 +18,7 @@ import sys
 import socket
 import ssl
 import struct
+import time
 
 OLD = Path('/opt/mnebydns-fastpath/43603843149')
 LIVE = Path('/opt/mnebydns-dot/Corefile')
@@ -150,6 +151,58 @@ def dns_answers(ip, host):
     return {'rcode':data[3] & 15,'a':result}
 
 
+def verify(expected):
+    if expected not in ('188.120.254.223','89.125.90.101'):
+        raise ValueError('UNAPPROVED_EXPECTED_ADDRESS')
+    deadline = time.monotonic() + 45
+    last = {}
+    while time.monotonic() < deadline:
+        success = True
+        for ip in ['89.125.90.101','188.120.254.223']:
+            for host in SELECTED:
+                if time.monotonic() >= deadline:
+                    success = False
+                    break
+                try:
+                    value = dns_answers(ip,host)
+                except (OSError,EOFError,ValueError) as error:
+                    value = {'error':type(error).__name__}
+                last[ip + '/' + host] = value
+                if value.get('rcode') != 0 or value.get('a') != [expected]:
+                    success = False
+        if success:
+            print('RECOVERY_BOTH_PUBLIC_DOT_ENDPOINTS_VERIFIED=' + expected, flush=True)
+            return
+        print('RECOVERY_DNS_PROPAGATION=' + json.dumps(last,sort_keys=True), flush=True)
+        time.sleep(2)
+    raise RuntimeError('PUBLIC_DNS_DID_NOT_CONVERGE_' + json.dumps(last,sort_keys=True))
+
+
+def restart_candidate(base):
+    if os.geteuid() != 0 or not re.fullmatch(r'/opt/mnebydns-fastpath/[1-9][0-9]{8,12}',str(base)):
+        raise RuntimeError('INVALID_RESTART_CONTEXT')
+    current = Path('/opt/mnebydns-stable-checkpoints/current').read_text().strip()
+    expected = (base / 'checkpoint.before').read_text().strip()
+    if current != expected or not re.fullmatch(r'/opt/mnebydns-stable-checkpoints/[0-9]+',current):
+        raise RuntimeError('RESTART_REFUSES_CHECKPOINT_DRIFT')
+    stable = Path(current)
+    subprocess.run(['sha256sum','-c','stable-manifest.sha256'],cwd=stable,
+                   capture_output=True,check=True,timeout=10)
+    for name, path in [('dns',base / 'dns.before'),('nginx',Path('/etc/nginx/nginx.conf')),
+                       ('proxy',Path('/etc/mnebydns-googlepilot/nginx.conf'))]:
+        if (stable / (name + '.stable')).read_bytes() != path.read_bytes():
+            raise RuntimeError('RESTART_REFUSES_BASELINE_DRIFT')
+    if LIVE.read_bytes() != (base / 'dns.pilot').read_bytes():
+        raise RuntimeError('RESTART_REFUSES_CANDIDATE_DRIFT')
+    plan_value = json.loads((base / 'plan.json').read_text())
+    if hashlib.sha256(LIVE.read_bytes()).hexdigest() != plan_value['sha_pilot']:
+        raise RuntimeError('RESTART_REFUSES_HASH_DRIFT')
+    subprocess.run(['systemctl','is-active','--quiet','mnebydns-fastpath-rollback-' + base.name + '.timer'],check=True,timeout=5)
+    subprocess.run(['systemctl','restart','mnebydns-dot.service'],check=True,timeout=25)
+    subprocess.run(['systemctl','is-active','--quiet','mnebydns-dot.service'],check=True,timeout=5)
+    print('RECOVERY_OWN_DNS_CONTROLLED_RESTART=COMPLETE',flush=True)
+
+
 def plan(work):
     previous = (OLD / 'dns.before').read_text()
     cutover = (OLD / 'dns.pilot').read_text()
@@ -196,6 +249,10 @@ if __name__ == '__main__':
         selftest()
     elif phase == 'resource' and sys.argv[2] in ('RU', 'DE'):
         resource(sys.argv[2])
+    elif phase == 'verify':
+        verify(sys.argv[2])
+    elif phase == 'restart':
+        restart_candidate(Path(sys.argv[2]))
     elif phase == 'plan':
         folder = Path(sys.argv[2])
         if not re.fullmatch(r'/tmp/mnebydns-fastpath-[1-9][0-9]{8,12}', str(folder)):
