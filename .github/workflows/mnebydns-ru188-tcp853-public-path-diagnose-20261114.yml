@@ -1,0 +1,82 @@
+name: MNEBYDNS troubleshoot outside to RU188 TCP853 versus localhost
+on:
+  push:
+    branches: [audit/mnebydns-unified-ru188-entry-20261114]
+    paths: ['.github/workflows/mnebydns-ru188-tcp853-public-path-diagnose-20261114.yml']
+permissions: {contents: read}
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Install pinned SSH
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS" && test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+      - name: RU firewalls/NAT and kernel port853 listener without changes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@188.120.254.223 'python3 -' <<'PY'
+          import subprocess,os,datetime
+          cmds=[
+            ('LISTEN_853',['ss','-Hlnpt','sport = :853']),
+            ('IPTABLES_FILTER',['iptables','-S']),
+            ('IPTABLES_NAT',['iptables','-t','nat','-S']),
+            ('IPTABLES_MANGLE',['iptables','-t','mangle','-S']),
+            ('NFT_RULES',['nft','-a','list','ruleset']),
+            ('UFW',['ufw','status','verbose']),
+            ('IP_ROUTE_PUBLIC',['ip','-4','route','get','1.1.1.1']),
+          ]
+          for key,cmd in cmds:
+            try:
+              p=subprocess.run(cmd,capture_output=True,text=True,timeout=8)
+              print('RU_'+key+'_RC='+str(p.returncode))
+              a=p.stdout.splitlines()
+              if key.startswith('IPTABLES') or key=='NFT_RULES':
+                a=[x for x in a if ('853' in x or x.startswith('-P ') or 'policy ' in x.lower()
+                                      or 's1_mtproxy' in x or 'REJECT' in x or 'DROP' in x)]
+              for line in a[:45]:print('RU_'+key+'_ITEM='+line[:255])
+            except Exception as e:print('RU_'+key+'_ERROR='+type(e).__name__)
+          PY
+      - name: Connect to public RU188 from GitHub runner, DE89 and RU own public address
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import socket,time
+          for ip,port in [('188.120.254.223',443),('188.120.254.223',853),('89.125.90.101',853)]:
+            t=time.monotonic()
+            try:
+              with socket.create_connection((ip,port),timeout=5):
+                print('RUNNER_TO_PUBLIC_TCP='+ip+':'+str(port)+' OK_MS='+str(round((time.monotonic()-t)*1000)))
+            except Exception as e:print('RUNNER_TO_PUBLIC_TCP='+ip+':'+str(port)+' ERROR='+type(e).__name__)
+          PY
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY'
+          import socket,time
+          for ip,port in [('188.120.254.223',443),('188.120.254.223',853),('10.66.77.2',853)]:
+            t=time.monotonic()
+            try:
+              with socket.create_connection((ip,port),timeout=5):
+                print('DE_TO_RU_TCP='+ip+':'+str(port)+' OK_MS='+str(round((time.monotonic()-t)*1000)))
+            except Exception as e:print('DE_TO_RU_TCP='+ip+':'+str(port)+' ERROR='+type(e).__name__)
+          PY
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -' <<'PY'
+          import socket,time
+          for ip,port in [('127.0.0.1',853),('188.120.254.223',853),('10.66.77.2',853)]:
+            t=time.monotonic()
+            try:
+              with socket.create_connection((ip,port),timeout=5):
+                print('RU_TO_SELF_TCP='+ip+':'+str(port)+' OK_MS='+str(round((time.monotonic()-t)*1000)))
+            except Exception as e:print('RU_TO_SELF_TCP='+ip+':'+str(port)+' ERROR='+type(e).__name__)
+          PY
