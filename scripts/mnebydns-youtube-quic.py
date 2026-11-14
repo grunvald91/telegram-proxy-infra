@@ -211,7 +211,7 @@ class ConnectedDatagram(asyncio.DatagramProtocol):
         self.router.discard(self.client)
 
 
-class MetaRouter(asyncio.DatagramProtocol):
+class YoutubeRouter(asyncio.DatagramProtocol):
     def __init__(self, role: str, peer: str, listen_ip: str):
         self.role, self.peer, self.listen_ip = role, peer, listen_ip
         self.transport = None
@@ -299,7 +299,7 @@ class MetaRouter(asyncio.DatagramProtocol):
                 if now-flow.last>IDLE_SECONDS:
                     self.discard(addr)
                     self.counters['expired']+=1
-            print('meta_quic_'+self.role+'_active='+str(len(self.flows))+' '+
+            print('youtube_quic_'+self.role+'_active='+str(len(self.flows))+' '+
                   ' '.join(f'{k}={v}' for k,v in self.counters.items()),flush=True)
 
 
@@ -315,7 +315,7 @@ async def main():
     if args.role=='ru' and (args.port!=443 or args.peer!='10.66.77.1'):
         parser.error('RU role must use public 443 and DE WG address')
     loop=asyncio.get_running_loop()
-    transport,_=await loop.create_datagram_endpoint(lambda:MetaRouter(args.role,args.peer,args.bind),local_addr=(args.bind,args.port))
+    transport,_=await loop.create_datagram_endpoint(lambda:YoutubeRouter(args.role,args.peer,args.bind),local_addr=(args.bind,args.port))
     try:await asyncio.Event().wait()
     finally:transport.close()
 
