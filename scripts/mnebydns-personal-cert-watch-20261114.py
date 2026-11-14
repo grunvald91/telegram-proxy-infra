@@ -36,9 +36,12 @@ def run():
             result[prefix + "_days_remaining"] = int(days)
             result[prefix + "_sha256"] = fingerprint
             result[prefix + "_expires_utc"] = expires.isoformat()
-        personal = result["personal_days_remaining"]
-        result["level"] = "critical" if personal <= CRITICAL_DAYS else (
-            "warning" if personal <= WARNING_DAYS else "ok")
+        # Both public endpoints must remain valid: the free legacy certificate
+        # expires earlier than the personal wildcard certificate today.
+        soonest = min(result["legacy_days_remaining"], result["personal_days_remaining"])
+        result["earliest_days_remaining"] = soonest
+        result["level"] = "critical" if soonest <= CRITICAL_DAYS else (
+            "warning" if soonest <= WARNING_DAYS else "ok")
     except Exception as exc:
         result["level"] = "critical"
         result["error_class"] = type(exc).__name__
