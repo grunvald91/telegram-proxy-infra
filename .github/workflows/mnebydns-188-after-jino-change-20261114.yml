@@ -1,0 +1,130 @@
+name: MNEBYDNS verify new Jino zone and RU 188 DNS from outside
+on:
+  push:
+    branches: [audit/mnebydns-188-after-jino-change-20261114]
+    paths: ['.github/workflows/mnebydns-188-after-jino-change-20261114.yml']
+permissions: {contents: read}
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    steps:
+      - name: Install DNS test client
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq dnsutils >/dev/null
+      - name: Read authoritative Jino zone from four nameservers
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for host in dns.mnebyvpn.site aaaaaaaaaaaa.dns.mnebyvpn.site;do
+            for ns in ns1.jino.ru ns2.jino.ru ns3.jino.ru ns4.jino.ru;do
+              a="$(dig "@$ns" +time=3 +tries=2 +short "$host" A | sort -u | paste -sd, -)"
+              aaaa="$(dig "@$ns" +time=3 +tries=2 +short "$host" AAAA | sort -u | paste -sd, -)"
+              echo "AUTHORITATIVE_JINO_A host=$host ns=$ns result=${a:-EMPTY}"
+              echo "AUTHORITATIVE_JINO_AAAA host=$host ns=$ns result=${aaaa:-EMPTY}"
+              if [[ "$a" != '188.120.254.223' ]];then
+                echo "AUTHORITATIVE_JINO_NOT_188 host=$host ns=$ns"
+              fi
+            done
+          done
+      - name: Check independent public DNS resolver caches
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for host in dns.mnebyvpn.site aaaaaaaaaaaa.dns.mnebyvpn.site;do
+            for resolver in 1.1.1.1 8.8.8.8 9.9.9.9;do
+              answer="$(dig "@$resolver" +time=3 +tries=2 +short "$host" A | sort -u | paste -sd, -)"
+              echo "PUBLIC_RECURSOR host=$host resolver=$resolver answer=${answer:-EMPTY}"
+            done
+          done
+      - name: Direct DoT to RU188 and old DE89, authenticated TLS and DNS RR verification
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import socket,ssl,struct,secrets,time
+          tests=('chatgpt.com','auth.openai.com','claude.ai','api.anthropic.com',
+                 'www.youtube.com','youtubei.googleapis.com','www.googlevideo.com',
+                 'gemini.google.com','cloud.oracle.com','copilot.microsoft.com')
+          context=ssl.create_default_context()
+          def query(ip,name,qtype):
+              tx=secrets.randbelow(65000)+100
+              wire=struct.pack('!HHHHHH',tx,256,1,0,0,0)+b''.join(bytes((len(x),))+x.encode() for x in name.split('.'))+b'\0'+struct.pack('!HH',qtype,1)
+              t=time.monotonic()
+              with socket.create_connection((ip,853),timeout=7) as raw:
+                  raw.settimeout(9)
+                  with context.wrap_socket(raw,server_hostname='dns.mnebyvpn.site') as tls:
+                      tls.sendall(struct.pack('!H',len(wire))+wire)
+                      prefix=tls.recv(2)
+                      if len(prefix)!=2:raise RuntimeError('DNS response length missing')
+                      size=struct.unpack('!H',prefix)[0]
+                      if not 12<=size<=16384:raise RuntimeError('DNS bad size')
+                      reply=b''
+                      while len(reply)<size:
+                          chunk=tls.recv(size-len(reply))
+                          if not chunk:raise RuntimeError('DNS reply truncated')
+                          reply+=chunk
+              if reply[:2]!=wire[:2]:raise RuntimeError('transaction mismatch')
+              rc=reply[3]&15
+              p=12
+              def skip(pos):
+                  for _ in range(128):
+                      n=reply[pos]
+                      if n&0xc0==0xc0:return pos+2
+                      if n==0:return pos+1
+                      pos+=1+n
+                  raise ValueError('bad encoded name')
+              for _ in range(struct.unpack_from('!H',reply,4)[0]):p=skip(p)+4
+              ips=[]
+              for _ in range(struct.unpack_from('!H',reply,6)[0]):
+                  p=skip(p)
+                  typ,cls,ttl,n=struct.unpack_from('!HHIH',reply,p)
+                  p+=10
+                  if typ==1 and cls==1 and n==4:ips.append(socket.inet_ntoa(reply[p:p+4]))
+                  p+=n
+              return rc,sorted(set(ips)),struct.unpack_from('!H',reply,6)[0],round((time.monotonic()-t)*1000)
+          failures=[]
+          for ip in ('188.120.254.223','89.125.90.101'):
+              for domain in tests:
+                  try:
+                      rc,ips,answer_count,ms=query(ip,domain,1)
+                      print(f"DOT_TEST ip={ip} name={domain} type=A rcode={rc} ipv4={ips} latency_ms={ms}",flush=True)
+                      if rc!=0 or ips!=['188.120.254.223']:failures.append(f'{ip}:{domain}={ips} rcode={rc}')
+                  except Exception as e:
+                      failures.append(f'{ip}:{domain} ERROR {type(e).__name__}')
+                      print(f"DOT_TEST ip={ip} name={domain} type=A ERROR={type(e).__name__}",flush=True)
+              for domain in ('chatgpt.com','www.youtube.com'):
+                  for kind in (28,64,65):
+                      try:
+                          rc,ips,an,ms=query(ip,domain,kind)
+                          print(f"DOT_TEST ip={ip} name={domain} type={kind} rcode={rc} answers={an}",flush=True)
+                          if rc!=0 or an:failures.append(f'{ip}:{domain}:{kind} nonempty')
+                      except Exception as e:
+                          failures.append(f'{ip}:{domain}:{kind} ERROR {type(e).__name__}')
+          for ip in ('188.120.254.223','89.125.90.101'):
+              try:
+                  with socket.create_connection((ip,853),timeout=7) as raw:
+                      raw.settimeout(9)
+                      with context.wrap_socket(raw,server_hostname='aaaaaaaaaaaa.dns.mnebyvpn.site') as tls:
+                          print(f"PERSONAL_DOT_TLS_CERT ip={ip} tls={tls.version()} status=PASS",flush=True)
+              except Exception as e:
+                  failures.append(f'personal TLS {ip} {type(e).__name__}')
+          print('DOT_CHECK_FAILURE_COUNT='+str(len(failures)),flush=True)
+          for failure in failures:print('DOT_FAILURE='+failure,flush=True)
+          if failures:raise SystemExit(2)
+          print('DOT_188_AND_89_BOTH_ROUTES_A_TO_188=PASS',flush=True)
+          PY
+      - name: Require authoritative first hop on RU188
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for host in dns.mnebyvpn.site aaaaaaaaaaaa.dns.mnebyvpn.site;do
+            for ns in ns1.jino.ru ns2.jino.ru ns3.jino.ru ns4.jino.ru;do
+              a="$(dig "@$ns" +time=3 +tries=2 +short "$host" A | sort -u | paste -sd, -)"
+              [[ "$a" == '188.120.254.223' ]] || { echo "JINO_ZONE_NOT_YET_RU188 host=$host ns=$ns current=${a:-NONE}";exit 3; }
+            done
+          done
+          echo 'JINO_AUTHORITATIVE_4_NS_BOTH_HOSTS_RU188=PASS'
