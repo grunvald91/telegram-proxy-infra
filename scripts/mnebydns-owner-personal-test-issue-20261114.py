@@ -55,9 +55,23 @@ def sqlrun(sql: str) -> list[str]:
     )
     if r.returncode:
         # SQLSTATE contains no DNS bearer, user ID or application data.
-        code = re.search(r"(?<![A-Z0-9])[0-9A-Z]{5}(?![A-Z0-9])", r.stderr)
+        code = re.search(r"\\b(?=[A-Z0-9]{5}\\b)(?=[A-Z0-9]*[0-9])[A-Z0-9]{5}\\b", r.stderr)
         print("OWNER_PERSONAL_POSTGRES_SQLSTATE=" + (
             code.group(0) if code else "UNAVAILABLE"), flush=True)
+        safe_messages = {
+            "Owner account missing": "OWNER_NOT_FOUND",
+            "Owner already has active DNS entitlement": "ACTIVE_ACCESS_EXISTS",
+            "Paid plan unexpectedly enabled": "PAID_PLAN_UNEXPECTEDLY_ENABLED",
+            "Personal DNS credential provisioning denied": "CREDENTIAL_PROVISIONING_DENIED",
+            "Personal credential not recognized": "CREDENTIAL_RECOGNITION_FAILED",
+            "violates check constraint": "CHECK_CONSTRAINT_REJECTED",
+            "violates foreign key constraint": "FK_CONSTRAINT_REJECTED",
+            "function": "FUNCTION_OR_SQL_ERROR",
+        }
+        for phrase, reason in safe_messages.items():
+            if phrase in r.stderr:
+                print("OWNER_PERSONAL_POSTGRES_FAILURE_REASON=" + reason, flush=True)
+                break
         raise RuntimeError("POSTGRES_TRANSACTION_FAILED")
     return [v.strip() for v in r.stdout.splitlines() if v.strip()]
 
