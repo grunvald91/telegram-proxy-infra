@@ -225,6 +225,70 @@ jobs:
               print('PERSONAL_POLICY '+name+'='+('PREMIUM' if premium else 'DIRECT'),flush=True)
           print('POLICY_AUDIT_MUTATIONS=false',flush=True)
           PY
+      - name: Verify OpenAI mapped A parity via private WG and public legacy DoT
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS"
+          export SSHPASS="$RU_PASS"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh -T "${opts[@]}" root@188.120.254.223 'python3 -' <<'PY'
+          import socket,ssl,struct,secrets,time
+          def answers(msg):
+              cnt=struct.unpack_from('!H',msg,6)[0]
+              pos=12
+              def skip(p):
+                  for _ in range(130):
+                      n=msg[p]
+                      if n&0xc0==0xc0:return p+2
+                      if n==0:return p+1
+                      if n>63:raise ValueError('bad DNS name')
+                      p+=n+1
+                  raise ValueError('name too long')
+              pos=skip(pos)+4
+              found=[]
+              for _ in range(cnt):
+                  pos=skip(pos)
+                  typ,cl,ttl,size=struct.unpack_from('!HHIH',msg,pos)
+                  pos+=10
+                  if typ==1 and cl==1 and size==4:
+                      found.append(socket.inet_ntoa(msg[pos:pos+4]))
+                  pos+=size
+              return found
+          ctx=ssl.create_default_context()
+          for name in ('chatgpt.com','auth.openai.com','claude.ai','gemini.google.com'):
+              out={}
+              for label,ip,port,sni in (
+                  ('WG_PRIVATE','10.66.77.1',1853,'dns.mnebyvpn.site'),
+                  ('LEGACY_PUBLIC','89.125.90.101',853,'dns.mnebyvpn.site'),
+                  ('ORIGIN_DIRECT','1.1.1.1',853,'one.one.one.one')):
+                  try:
+                      with socket.create_connection((ip,port),timeout=6) as tcp:
+                          tcp.settimeout(7)
+                          with ctx.wrap_socket(tcp,server_hostname=sni) as tls:
+                              tid=secrets.randbelow(65534)+1
+                              wire=struct.pack('!HHHHHH',tid,256,1,0,0,0)
+                              wire+=b''.join(bytes([len(k)])+k.encode() for k in name.split('.'))
+                              wire+=b'\0'+struct.pack('!HH',1,1)
+                              tls.sendall(struct.pack('!H',len(wire))+wire)
+                              hdr=tls.recv(2)
+                              if len(hdr)!=2:raise ValueError('short frame')
+                              size=int.from_bytes(hdr,'big')
+                              if not 12<=size<=16384:raise ValueError('size')
+                              buf=b''
+                              while len(buf)<size:
+                                  block=tls.recv(size-len(buf))
+                                  if not block:raise EOFError('response closed')
+                                  buf+=block
+                              if int.from_bytes(buf[:2],'big')!=tid:raise ValueError('ID')
+                              out[label]=answers(buf)
+                  except Exception as exc:
+                      out[label]=[type(exc).__name__]
+              print('OPENAI_CORE_DOT_PARITY '+name+' '+repr(out),flush=True)
+          print('OPENAI_CORE_DOT_PARITY_MUTATIONS=false',flush=True)
+          PY
       - name: Inspect RU personal service and owner account metering (read-only)
         shell: bash
         run: |
