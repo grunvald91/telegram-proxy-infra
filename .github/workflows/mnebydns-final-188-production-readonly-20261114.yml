@@ -72,7 +72,7 @@ jobs:
           p=subprocess.run(['nginx','-t'],capture_output=True,timeout=7)
           assert p.returncode==0
           p=subprocess.run(['ufw','status'],capture_output=True,text=True,timeout=8)
-          lines=[x for x in p.stdout.splitlines() if '853/tcp' in x]
+          lines=[x for x in p.stdout.splitlines() if ' 853/tcp on ens3 ' in x]
           assert len(lines)==1 and '188.120.254.223' in lines[0] and 'ens3' in lines[0],lines
           assert '(v6)' not in lines[0]
           p=subprocess.run(['systemctl','is-active','mnebydns-unified-188-853-revert-20261114.timer'],capture_output=True,text=True)
