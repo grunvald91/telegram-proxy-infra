@@ -1,0 +1,126 @@
+name: MNEBYDNS 264 legacy DNS domains vs 158 personal entries exact diff
+on:
+  push:
+    branches: [audit/mnebydns-legacy-personal-full-route-diff-20261114]
+    paths: ['.github/workflows/mnebydns-exact-domains-live-set-diff-20261114.yml']
+permissions: {contents: read}
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Get immutable read-only snapshots of actual two live domain lists
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -' > ru-domains.json <<'PY'
+          import json,subprocess,pathlib
+          c=json.loads(subprocess.check_output(['docker','inspect','mnebydns-personal-dot-private'],text=True))[0]
+          assert c['State']['Running']
+          e={s.split('=',1)[0]:s.split('=',1)[1] for s in c['Config']['Env'] if '=' in s}
+          f=pathlib.Path('/etc/mnebydns/personal-dot')/pathlib.Path(e['MNEBYDNS_PERSONAL_DOT_ROUTE_POLICY_FILE']).name
+          data=json.loads(f.read_text())
+          assert len(data)==len(set(data))
+          print(json.dumps(data))
+          PY
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' > de-domains.json <<'PY'
+          import pathlib,json
+          p=pathlib.Path('/opt/mnebydns-dot/Corefile')
+          assert p.is_file()
+          print(json.dumps(p.read_text()))
+          PY
+      - name: Compare actual CoreDNS A zones with personal exact and wildcard policy
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import json,re,pathlib,collections,os
+          personal=json.loads(pathlib.Path('ru-domains.json').read_text())
+          core=json.loads(pathlib.Path('de-domains.json').read_text())
+          headers=re.findall(r'(?m)^\s*template\s+IN\s+A\s+([^\s{]+)\s*\{',core)
+          core_names={s.rstrip('.').lower() for s in headers if s != '.'}
+          nonstandard=sorted(x for x in core_names if not re.fullmatch(r'[a-z0-9-]+(?:\.[a-z0-9-]+)+',x))
+          exact={x for x in personal if not x.startswith('*.')}
+          wild={x[2:] for x in personal if x.startswith('*.')}
+          def premium(name):return name in exact or any(name.endswith('.'+s) for s in wild)
+          core_covered=sorted(x for x in core_names if premium(x))
+          core_not_personal=sorted(x for x in core_names if not premium(x))
+          personal_exact_not_core=sorted(exact-core_names)
+          both_exact=sorted(exact&core_names)
+          wild_contrib={w:sorted(x for x in core_names if x.endswith('.'+w)) for w in sorted(wild)}
+          print('DIFF_CORE_A_HEADER_COUNT='+str(len(headers)))
+          print('DIFF_CORE_A_UNIQUE_ZONE_NAMES='+str(len(core_names)))
+          print('DIFF_CORE_A_NONSTANDARD='+str(nonstandard))
+          print('DIFF_PERSONAL_RULES='+str(len(personal)))
+          print('DIFF_PERSONAL_EXACT='+str(len(exact)))
+          print('DIFF_PERSONAL_WILDCARD='+str(len(wild)))
+          print('DIFF_CORE_COVERED_BY_PERSONAL='+str(len(core_covered)))
+          print('DIFF_CORE_MISSING_IN_PERSONAL='+str(len(core_not_personal)))
+          print('DIFF_PERSONAL_EXACT_NOT_IN_CORE='+str(len(personal_exact_not_core)))
+          print('DIFF_PERSONAL_AND_CORE_EXACT_INTERSECTION='+str(len(both_exact)))
+          for w,names in wild_contrib.items():print('DIFF_WILDCARD_MATCHES='+w+':'+str(len(names))+':'+','.join(names[:20]))
+          for name in core_not_personal:print('DIFF_LEGACY_ONLY='+name)
+          for name in personal_exact_not_core:print('DIFF_PERSONAL_EXACT_ONLY='+name)
+          lines=[
+            '# MNEBYDNS — точное различие активных DNS-списков',
+            '',
+            'Данные сняты с действующих серверов без изменения конфигурации.',
+            '',
+            '| Показатель | Число |',
+            '|---|---:|',
+            f'| Обычный CoreDNS: уникальные имена в шаблонах A | {len(core_names)} |',
+            f'| Персональный DNS: все premium-правила | {len(personal)} |',
+            f'| Из них точные имена | {len(exact)} |',
+            f'| Из них маски поддоменов | {len(wild)} |',
+            f'| Имена обычного CoreDNS, покрываемые персональным premium | {len(core_covered)} |',
+            f'| Имена обычного CoreDNS, отсутствующие в персональном premium | {len(core_not_personal)} |',
+            f'| Точные premium-имена, не перечисленные в CoreDNS A | {len(personal_exact_not_core)} |',
+            '',
+            'Маска *.example.com охватывает только поддомены, не example.com.',
+            '',
+            '## Имена обычного CoreDNS, которых нет в персональном premium',
+            '',
+            *[f'- `{x}`' for x in core_not_personal],
+            '',
+            '## Персональные точные имена, не представленные отдельным A шаблоном CoreDNS',
+            '',
+            *([f'- `{x}`' for x in personal_exact_not_core] or ['Нет.']),
+            '',
+            '## Пять персональных wildcard-правил и фактически покрытые имена CoreDNS',
+            '',
+          ]
+          for w,names in wild_contrib.items():
+            lines += [f'### `*.{w}` — совпадает с {len(names)} отдельными A-именами CoreDNS','']
+            lines += [f'- `{x}`' for x in names] if names else ['В списке A нет соответствующих имён.']
+            lines += ['']
+          lines += ['## Полный список DNS-имён обычного CoreDNS (A)','']
+          lines += [f'- `{x}`' for x in sorted(core_names)]
+          lines += ['','## Полный список премиум-маршрутов персонального DNS','']
+          lines += [f'- `{x}`' for x in sorted(personal)]
+          lines += ['']
+          report='\n'.join(lines)
+          pathlib.Path('mnebydns-active-legacy-vs-personal-exact-domains-20261114.md').write_text(report)
+          if os.environ.get('GITHUB_STEP_SUMMARY'):
+            with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:
+              f.write('\n'.join(lines[:lines.index('## Имена обычного CoreDNS, которых нет в персональном premium')]))
+          assert len(core_names)==len(core_covered)+len(core_not_personal)
+          print('DIFF_LIST_COMPARISON_COMPLETE=PASS')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mnebydns-live-264-vs-158-domain-list-full-diff
+          path: mnebydns-active-legacy-vs-personal-exact-domains-20261114.md
+          if-no-files-found: warn
+          retention-days: 14
