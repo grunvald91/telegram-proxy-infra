@@ -112,6 +112,20 @@ PY
 }
 case "$phase" in
 stage)
+  # Safe idempotence after a previously VERIFIED rollback: no live config
+  # may be overwritten. Keep any unexpected/confirmed state untouched.
+  if [[ -e "$ROOT" || -e "$SCRIPT" ]];then
+    test -s "$ROOT/original.conf"
+    cmp -s "$ROOT/original.conf" "$CONF"
+    test ! -e "$ROOT/confirmed"
+    test ! -e "$ROOT/ufw853-added"
+    ! systemctl is-active --quiet "$TIMER"
+    test ! -f "$CANARY_PID"
+    nginx -t >/dev/null 2>&1
+    rm -rf -- "$ROOT"
+    rm -f -- "$SCRIPT"
+    echo 'UNIFIED_RU853_PRIOR_VERIFIED_ROLLBACK_STAGING_CLEANED=true'
+  fi
   check_old
   install -d -m 700 "$ROOT"
   cp -p "$CONF" "$ROOT/original.conf"
