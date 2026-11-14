@@ -1,0 +1,41 @@
+name: "MNEBYDNS isolated two-host TLS route test (no DNS changes)"
+on:
+  push:
+    branches: ["diagnostics/isolated-two-hosts-20261115"]
+    paths:
+      - ".github/workflows/mnebydns-isolated-two-domain-check-20261115.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-two-hosts-isolated-readonly-20261115
+  cancel-in-progress: false
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Strict two-host isolated SSH tunnels, pinned SNI and TLS
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          python3 -m py_compile scripts/mnebydns-isolated-two-domain-check-20261115.py
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+          python3 scripts/mnebydns-isolated-two-domain-check-20261115.py
+      - name: Preserve safe result only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: isolated-two-hosts-${{ github.run_id }}
+          path: two-isolated-results/summary.json
+          if-no-files-found: ignore
+          retention-days: 14
