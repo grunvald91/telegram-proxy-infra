@@ -10,7 +10,7 @@ RUNID="$2"
 UNIT=telemt-direct-sber.service
 BIN=/opt/telemt-3.5.17/telemt
 UPLOADED=/tmp/telemt-3.5.17-canary-"$RUNID"
-SUM=e5ca8befdc1428fcd66537ef04f3a95e5f278ebf3c3dd0d0909ce25a390f502b
+SUM="${3:-}"
 DROPINDIR=/etc/systemd/system/telemt-direct-sber.service.d
 DROPIN="$DROPINDIR/90-telemt3517-canary.conf"
 FOLDER=/root/proxy-backups/telemt3517-sber-"$RUNID"
@@ -52,6 +52,7 @@ stage() {
     [[ "$original_exec" == *"/usr/bin/telemt"* && "$original_exec" == *"/etc/telemt/direct-sber.toml"* ]] || {
         echo BASELINE_EXECSTART_DRIFT >&2; exit 1;
     }
+    [[ "$SUM" =~ ^[0-9a-f]{64}$ ]] || { echo INVALID_TRUSTED_BINARY_DIGEST >&2; exit 1; }
     [[ -f "$UPLOADED" && ! -L "$UPLOADED" ]] || { echo UPLOAD_MISSING >&2; exit 1; }
     printf '%s  %s\n' "$SUM" "$UPLOADED" | sha256sum --check --status || { echo RELEASE_SHA_MISMATCH >&2; exit 1; }
     install -d -m 0755 /opt/telemt-3.5.17
