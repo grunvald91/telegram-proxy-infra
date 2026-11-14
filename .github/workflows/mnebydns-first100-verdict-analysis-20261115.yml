@@ -1,0 +1,40 @@
+name: "MNEBYDNS first100 inspect completed HTTPS evidence read-only"
+on:
+  push:
+    branches: ["diagnostics/groq-smartdns-readonly-20261115"]
+    paths: [".github/workflows/mnebydns-first100-verdict-analysis-20261115.yml"]
+permissions:
+  actions: read
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Read prior immutable first100 per-domain evidence
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p /tmp/first100-retrieved
+          gh run download 43641349415 --repo grunvald91/telegram-proxy-infra --name mnebydns-first100-preflight-43641349415 --dir /tmp/first100-retrieved
+          python3 - <<'PY'
+          import json,collections,pathlib
+          p=pathlib.Path('/tmp/first100-retrieved')
+          rows=json.loads((p/'verdicts.json').read_text())
+          print('EVIDENCE_ROWS='+str(len(rows)))
+          ct=collections.Counter((r['decision'],r['ru'].get('state'),r['ru'].get('http_status'),r['de'].get('state'),r['de'].get('http_status')) for r in rows)
+          for key,n in ct.most_common():
+              print('EVIDENCE_GROUP='+json.dumps({'count':n,'decision':key[0],'ru_state':key[1],'ru_code':key[2],'de_state':key[3],'de_code':key[4]},sort_keys=True))
+          for r in rows:
+              if r['decision']=='SKIP_ROUTE_OVERLAP_OR_INVALID':
+                  print('EVIDENCE_OVERLAP='+json.dumps({'domain':r['domain'],'reason':r.get('reason'),'ru':r['ru'],'de':r['de']},sort_keys=True))
+          for r in rows:
+              if r['ru'].get('state') in ('TCP_ERROR','TLS_ERROR','UNREACHABLE') and r['de'].get('certificate_verified') and isinstance(r['de'].get('http_status'),int) and 200<=r['de']['http_status']<400:
+                  print('EVIDENCE_TCP_OR_TLS_BLOCK='+json.dumps({'domain':r['domain'],'ru':r['ru'],'de':r['de']},sort_keys=True))
+          print('FIRST100_EVIDENCE_ANALYSIS_READ_ONLY=PASS')
+          PY
