@@ -24,8 +24,8 @@ class V10Window20Review(unittest.TestCase):
 
     def test_exact_hosts_and_boundaries(self):
         v=self.v
-        self.assertEqual(len(v.HOSTS),11)
-        self.assertEqual(len(set(v.HOSTS)),11)
+        self.assertEqual(len(v.HOSTS),12)
+        self.assertEqual(len(set(v.HOSTS)),12)
         self.assertIn("iglite-z.instagram.com",v.HOSTS)
         self.assertIn("i.instagram.com",v.HOSTS)
         self.assertEqual(v.TEST_WINDOW,20)

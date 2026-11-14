@@ -28,10 +28,10 @@ def verified_fixture(hostname, ip):
 class RussianIngressTests(unittest.TestCase):
     def test_round_trip_all_meta_names_and_preserve_unrelated_services(self):
         core,nginx=p.render_existing_servers(original_core=CORE,original_de_nginx=NGINX,origins=ORIGINS,verify_origin=verified_fixture)
-        self.assertEqual(len(p.HOSTS),11)
-        self.assertEqual(core.count('answer "{{ .Name }} 20 IN A '+p.RU_EDGE+'"'),11)
-        self.assertEqual(core.count('rcode NOERROR'),44)
-        self.assertEqual(nginx.count(" 93.184.215.14:443;"),11)
+        self.assertEqual(len(p.HOSTS),12)
+        self.assertEqual(core.count('answer "{{ .Name }} 20 IN A '+p.RU_EDGE+'"'),12)
+        self.assertEqual(core.count('rcode NOERROR'),48)
+        self.assertEqual(nginx.count(" 93.184.215.14:443;"),12)
         self.assertIn("  gemini.google.com 127.0.0.1:15443;",nginx)
         self.assertIn("    template IN A gemini.google.com",core)
         self.assertEqual(core.count("    cache 30\n"),1)

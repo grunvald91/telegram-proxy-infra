@@ -111,7 +111,7 @@ def render(*, corefile: str, phone_ip: str, compiled_plugins: str)->ViewPlan:
     result.verify_rollback()
     if candidate[len(gated)+1:]!=corefile:
         raise RuntimeError("baseline fallback Corefile differs")
-    for host in HOSTS:
-        if duplicate.count('answer "{{ .Name }} 20 IN A '+RU_EDGE+'"')!=len(HOSTS):
-            raise RuntimeError("a Meta route escaped the source-gated block")
+    target_answer='answer "{{ .Name }} 20 IN A '+RU_EDGE+'"'
+    if duplicate.count(target_answer)-block.count(target_answer)!=len(HOSTS):
+        raise RuntimeError("a Meta route escaped the source-gated block")
     return result

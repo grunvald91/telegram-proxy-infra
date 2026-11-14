@@ -190,7 +190,7 @@ def inner():
                 "tcp sport 443 meta mark & 0x40000000 == 0 counter\n")
             run(["nft","-f","-"],input=audit.encode())
             analyzer=LabAnalyzer();ready=threading.Event()
-            capture=subprocess.Popen(["tcpdump","-i","v15srv","-n","-U","-s","1500",
+            capture=subprocess.Popen(["tcpdump","-i","v15srv","-n","-U","-s","1600",
                 "-w","-","tcp port 443"],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
             def consume():
                 try:parse_pcap(capture.stdout,analyzer,ready)
@@ -202,7 +202,7 @@ def inner():
             # Only the capture interface/filter is substituted for this lab;
             # tcpdump, parser, drop checks and finalization are all real.
             from unittest.mock import patch
-            argv=["tcpdump","-i","v15srv","-n","-U","-s","1500","-w","-",
+            argv=["tcpdump","-i","v15srv","-n","-U","-s","1600","-w","-",
                   "ip and src host "+PEER+" and dst host "+EDGE+" and tcp dst port 443"]
             with patch("meta_v31_sni_evidence.capture_command",return_value=argv):
                 evidence=CaptureEvidence("8.8.8.8",Path(td)/"evidence.json")

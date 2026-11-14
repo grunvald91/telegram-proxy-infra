@@ -61,7 +61,8 @@ fi
 if cmp -s "$base/dns.pilot" "$live_dns"; then
   cp -p "$base/dns.before" "$live_dns.owner-rollback-$id"
   mv -f "$live_dns.owner-rollback-$id" "$live_dns"
-  systemctl restart mnebydns-dot.service
+  test -x "$base/reload.sh"
+  bash "$base/reload.sh" "$live_dns"
 fi
 # The rollback is successful only when DoT has re-opened public port 853.
 for attempt in $(seq 1 60); do

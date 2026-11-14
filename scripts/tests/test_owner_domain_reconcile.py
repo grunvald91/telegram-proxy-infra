@@ -47,7 +47,8 @@ class OwnerDomainConfirmContracts(TestCase):
     def test_interrupted_removal_that_committed_does_not_rollback(self):
         statements = []
         row = confirm_row("REMOVING")
-        with patch.object(owner, "is_confirmed", return_value=True), \
+        with patch.object(owner, "RUNID", "428400112231"), \
+             patch.object(owner, "is_confirmed", return_value=True), \
              patch.object(owner, "rollback", side_effect=AssertionError("must not rollback")), \
              patch.object(owner, "verified_live_confirmed"), \
              patch.object(owner, "oracle_canary_check"), \
@@ -57,7 +58,8 @@ class OwnerDomainConfirmContracts(TestCase):
 
     def test_recovered_removal_fails_closed_on_unverified_live_state(self):
         statements = []
-        with patch.object(owner, "is_confirmed", return_value=True), \
+        with patch.object(owner, "RUNID", "428400112231"), \
+             patch.object(owner, "is_confirmed", return_value=True), \
              patch.object(owner, "verified_live_confirmed", side_effect=RuntimeError("drift")), \
              patch.object(owner, "sql", side_effect=lambda q: statements.append(q) or "101"):
             with self.assertRaisesRegex(RuntimeError, "drift"):
@@ -66,7 +68,8 @@ class OwnerDomainConfirmContracts(TestCase):
 
     def test_uncommitted_removal_rolls_back_before_cancelling(self):
         statements = []
-        with patch.object(owner, "is_confirmed", return_value=False), \
+        with patch.object(owner, "RUNID", "428400112231"), \
+             patch.object(owner, "is_confirmed", return_value=False), \
              patch.object(owner, "rollback") as rollback, \
              patch.object(owner, "sql", side_effect=lambda q: statements.append(q) or "101"):
             owner.remove(confirm_row("REMOVING"))
@@ -154,8 +157,24 @@ class OwnerDomainLiveHealthAndSSH(TestCase):
         self.assertEqual(dns.call_args.args, ("www.python.org", True))
         tls.assert_called_once_with("www.python.org")
         self.assertTrue(any("last_error_code=NULL" in q and
-                            "last_error_code='ACTIVE_ROUTE_CHECK_FAILED'" in q for q in statements))
+                            "'ACTIVE_ROUTE_CHECK_FAILED'" in q and
+                            "'ACTIVE_ROUTE_METADATA_INVALID'" in q for q in statements))
         self.assertFalse(any("status='CANCELLED'" in q or "status='FAILED'" in q for q in statements))
+
+    def test_active_health_missing_origin_marks_metadata_not_network(self):
+        statements=[]
+        def query(statement):
+            statements.append(statement)
+            if statement.startswith("SELECT"):
+                return "18|xbox.com||5"
+            return ""
+        with patch.object(owner, "sql", side_effect=query), \
+             patch.object(owner, "live_checkpoint_unchanged", return_value=True), \
+             patch.object(owner, "ssh", side_effect=AssertionError("must not probe unknown origin")):
+            owner.active_health()
+        self.assertTrue(any("last_error_code='ACTIVE_ROUTE_METADATA_INVALID'" in s for s in statements))
+        self.assertFalse(any("ACTIVE_ROUTE_CHECK_FAILED" in s for s in statements))
+        self.assertFalse(any("status='FAILED'" in s for s in statements))
 
     def test_active_health_failure_is_reported_without_dns_mutation(self):
         statements=[]
@@ -178,6 +197,35 @@ class OwnerDomainLiveHealthAndSSH(TestCase):
              patch.object(owner, "sql") as queries:
             owner.active_health()
         queries.assert_not_called()
+
+    def test_active_monitor_runs_with_nonempty_domain_queue(self):
+        task = confirm_row("CANARY")
+        with patch.object(owner, "get_task", return_value=task), \
+             patch.object(owner, "active_health") as health, \
+             patch.object(owner, "cancel_canary", side_effect=AssertionError("must not cancel")), \
+             patch.object(owner.time, "time", return_value=100), \
+             patch.object(owner.sys, "argv", ["controller", "run"]):
+            owner.main()
+        health.assert_called_once()
+
+    def test_active_monitor_still_runs_when_owner_transition_fails(self):
+        task = confirm_row("ROLLBACK_REQUESTED")
+        with patch.object(owner, "get_task", return_value=task), \
+             patch.object(owner, "cancel_canary", side_effect=RuntimeError("transition-failed")), \
+             patch.object(owner, "active_health") as health, \
+             patch.object(owner.sys, "argv", ["controller", "run"]):
+            with self.assertRaisesRegex(RuntimeError, "transition-failed"):
+                owner.main()
+        health.assert_called_once()
+
+    def test_active_monitor_failure_does_not_mask_transition_failure(self):
+        task = confirm_row("ROLLBACK_REQUESTED")
+        with patch.object(owner, "get_task", return_value=task), \
+             patch.object(owner, "cancel_canary", side_effect=RuntimeError("owner-state-failed")), \
+             patch.object(owner, "active_health", side_effect=RuntimeError("monitor-failed")), \
+             patch.object(owner.sys, "argv", ["controller", "run"]):
+            with self.assertRaisesRegex(RuntimeError, "owner-state-failed"):
+                owner.main()
 
     def test_main_idle_work_cycle_invokes_active_monitor(self):
         with patch.object(owner, "get_task", return_value=None), \

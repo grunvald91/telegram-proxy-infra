@@ -1,0 +1,147 @@
+name: Restore MNEBYVPN authenticated 24h VPN trial (guarded)
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebyvpn-email-trial-live-enable.yml'
+      - 'scripts/mnebyvpn-web-email-trial-enable.sh'
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebyvpn-email-trial-live-enable.yml'
+      - 'scripts/mnebyvpn-web-email-trial-enable.sh'
+      - 'scripts/mnebyvpn-auto-web-promote.sh'
+permissions:
+  contents: read
+concurrency:
+  group: mnebyvpn-email-trial-activation
+  cancel-in-progress: false
+jobs:
+  lint:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify bounded release scripts
+        run: |
+          set -euo pipefail
+          bash -n scripts/mnebyvpn-web-email-trial-enable.sh
+          bash -n scripts/mnebyvpn-auto-web-promote.sh
+          grep -Fq "WEB_TRIAL_ENABLED=yes" scripts/mnebyvpn-web-email-trial-enable.sh
+          ! grep -Fq "WEB_TELEGRAM_OIDC_ENABLED=yes" scripts/mnebyvpn-web-email-trial-enable.sh
+  activate:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 19
+    env:
+      SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: infra
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: grunvald91/Mnebyvpn
+          ref: main
+          path: vpn
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify current tested website source and deployment scripts
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SSH_PASSWORD"
+          bash -n infra/scripts/mnebyvpn-web-email-trial-enable.sh
+          bash -n infra/scripts/mnebyvpn-auto-web-promote.sh
+          sha="$(git -C vpn rev-parse HEAD)"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          curl -fsSL --retry 2 --max-time 25 \
+            'https://api.github.com/repos/grunvald91/Mnebyvpn/actions/workflows/offline-contracts.yml/runs?branch=main&status=success&per_page=15' \
+            -o "$RUNNER_TEMP/ci.json"
+          green="$(python3 - "$RUNNER_TEMP/ci.json" <<'PY'
+          import json,sys
+          runs=json.load(open(sys.argv[1])).get('workflow_runs',[])
+          print(next((r['head_sha'] for r in runs if r.get('event')=='push' and
+            r.get('head_branch')=='main' and r.get('conclusion')=='success'), ''))
+          PY
+          )"
+          [[ "$green" =~ ^[0-9a-f]{40}$ ]]
+          git -C vpn merge-base --is-ancestor "$green" "$sha"
+          git -C vpn diff --quiet "$green" "$sha" -- \
+            apps/web packages db package.json tsconfig.json
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "verified_source_sha=$sha" >> "$GITHUB_STEP_SUMMARY"
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Wait for existing guarded website publisher to finish
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$SSH_PASSWORD"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          current=no
+          for attempt in $(seq 1 24); do
+            active="$(sshpass -e ssh "${opts[@]}" root@188.120.254.223 \
+              'cat /opt/mnebyvpn/public/active_sha 2>/dev/null || true')"
+            if [[ "$active" == "${{ steps.source.outputs.sha }}" ]]; then current=yes; break; fi
+            sleep 12
+          done
+          if [[ "$current" != yes ]]; then
+            echo '::error::Website has not been safely promoted to latest tested source; trial unchanged'
+            exit 2
+          fi
+          echo 'website_source_current=true' >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload only scoped trial activator and existing tested promoter
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$SSH_PASSWORD"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          sshpass -e scp "${opts[@]}" \
+            infra/scripts/mnebyvpn-web-email-trial-enable.sh \
+            root@188.120.254.223:/tmp/mnebyvpn-email-trial-enable.sh
+          sshpass -e scp "${opts[@]}" \
+            infra/scripts/mnebyvpn-auto-web-promote.sh \
+            root@188.120.254.223:/tmp/mnebyvpn-email-trial-promote.sh
+      - name: Check worker and canonical offer, enable trial, verify, otherwise rollback
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$SSH_PASSWORD"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 \
+            "bash /tmp/mnebyvpn-email-trial-enable.sh '${{ steps.source.outputs.sha }}' /tmp/mnebyvpn-email-trial-promote.sh"
+          echo '24h_email_trial_activation=verified_by_local_canary_and_api_plans' >> "$GITHUB_STEP_SUMMARY"
+      - name: Audit existing Telegram Stars without charging users
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$SSH_PASSWORD"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          token_configured=no
+          if grep -Eq '^TELEGRAM_TOKEN_BOT=[0-9]{5,20}:[A-Za-z0-9_-]{25,}$' /opt/mnebyvpn/bot/web.env; then
+            token_configured=yes
+          fi
+          ready="$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --max-time 7 http://127.0.0.1:8793/readyz || true)"
+          paid_plans="$(docker exec mnebyvpn-stage-postgres psql -At -X -v ON_ERROR_STOP=1 \
+            -U mnebyvpn_stage -d mnebyvpn_stage -c \
+            "SELECT count(*) FROM billing_plans WHERE product='vpn' AND enabled AND stars IS NOT NULL;")"
+          echo "stars_outbound_token_present=$token_configured"
+          echo "stars_telegram_bot_ready_http=$ready"
+          echo "stars_published_vpn_plans=$paid_plans"
+          echo 'stars_real_transaction_e2e=not_tested'
+          REMOTE
+      - name: Remove only scoped temporary uploads
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "$SSH_PASSWORD" ]]; then
+            export SSHPASS="$SSH_PASSWORD"
+            sshpass -e ssh -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new \
+              -o LogLevel=ERROR root@188.120.254.223 \
+              'rm -f /tmp/mnebyvpn-email-trial-enable.sh /tmp/mnebyvpn-email-trial-promote.sh' || true
+          fi

@@ -1,0 +1,76 @@
+name: MNEBYDNS Microsoft six actual database and live route status (read only)
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths: ['.github/workflows/mnebydns-microsoft-six-live-status-20261111.yml']
+  push:
+    branches: [main]
+    paths: ['.github/workflows/mnebydns-microsoft-six-live-status-20261111.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Read-only canonical RU database and DE live CoreDNS/Nginx status
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          export SSHPASS="$RU_PASS"
+          echo microsoft_db_begin
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 \
+            'docker exec -i mnebyvpn-stage-postgres psql -XqAt -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage' <<'SQL'
+          SELECT domain || '|' || product || '|' || status || '|' ||
+            coalesce(last_error_code, 'none') || '|' ||
+            coalesce(to_char(canary_expires_at AT TIME ZONE 'UTC',
+              'YYYY-MM-DD HH24:MI:SS'), 'none')
+          FROM dns_admin_domains WHERE domain IN
+             ('bing.com','copilot.microsoft.com','microsoft.com',
+              'software-static.download.prss.microsoft.com',
+              'xbox.com','xboxdesignlab.xbox.com')
+          ORDER BY domain;
+          SQL
+          echo microsoft_db_end
+          export SSHPASS="$DE_PASS"
+          echo microsoft_exact_active_route_begin
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY'
+          from pathlib import Path
+          import re
+          names=['bing.com','copilot.microsoft.com','microsoft.com',
+            'software-static.download.prss.microsoft.com','xbox.com','xboxdesignlab.xbox.com']
+          core=Path('/opt/mnebydns-dot/Corefile').read_text()
+          nginx=Path('/etc/nginx/nginx.conf').read_text()
+          for domain in names:
+            mark='MNEBYDNS_OWNER_EXACT_'+domain.replace('.','_')
+            exact_dns=core.count('BEGIN '+mark)==1 and core.count('END '+mark)==1
+            exact_nginx=nginx.count('BEGIN '+mark)==1 and nginx.count('END '+mark)==1
+            print(domain+'|core_exact='+str(exact_dns).lower()+'|nginx_exact='+str(exact_nginx).lower())
+          current=Path('/opt/mnebydns-stable-checkpoints/current').read_text().strip()
+          print('microsoft_current_checkpoint='+current)
+          PY
+          echo microsoft_exact_active_route_end
+          echo microsoft_status_audit_live_mutations=false
+      - name: Offline check basic inventory (PR)
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(grep -c ' ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts)" -eq 2
+          echo microsoft_status_audit_policy=PASS

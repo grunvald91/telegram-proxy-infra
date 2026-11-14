@@ -1,0 +1,114 @@
+name: MNEBYDNS nine differential host exact-route read-only preflight
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebydns-geoblock-nine-preflight-20261111.yml'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebydns-geoblock-nine-preflight-20261111.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-google-public-443-change
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Safe exact-host renderer contracts
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/mnebydns-owner-domain-render-20261110.py self-test
+          test "$(grep -c ' ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts)" -eq 2
+          echo nine_domain_preflight_offline=PASS
+  readonly:
+    if: github.event_name != 'pull_request'
+    needs: offline
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate live DE config baseline and 9 exact-host render candidates
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          test -n "$DE_PASS" && test -n "$RU_PASS"
+          sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -qq -y sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 '
+            set -Eeuo pipefail
+            root="$(cat /opt/mnebydns-stable-checkpoints/current)"
+            [[ "$root" =~ ^/opt/mnebydns-stable-checkpoints/[0-9]+$ ]]
+            (cd "$root" && sha256sum -c stable-manifest.sha256 >/dev/null)
+            cmp -s "$root/dns.stable" /opt/mnebydns-dot/Corefile
+            cmp -s "$root/nginx.stable" /etc/nginx/nginx.conf
+            cmp -s "$root/proxy.stable" /etc/mnebydns-googlepilot/nginx.conf
+            nginx -t >/dev/null 2>&1
+            systemctl is-active --quiet nginx
+            systemctl is-active --quiet mnebydns-dot.service
+            systemctl is-active --quiet mnebydns-googlepilot.service
+            echo stage2_nine_verified_live_stable_baseline=true
+          '
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'cat /opt/mnebydns-dot/Corefile' > "$tmp/Corefile"
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'cat /etc/nginx/nginx.conf' > "$tmp/nginx.conf"
+          echo stage2_nine_canonical_db_status_begin
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 \
+            'docker exec mnebyvpn-stage-postgres psql -XqAt -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage -c "SELECT domain||'\''|'\''||status FROM dns_admin_domains WHERE domain IN ('\''chatgpt.com'\'','\''grok.com'\'','\''app.augmentcode.com'\'','\''deepl.com'\'','\''apt.grafana.com'\'','\''artifacts.elastic.co'\'','\''3dwarehouse.sketchup.com'\'','\''sentry.io'\'','\''console.neon.tech'\'') ORDER BY domain"'
+          echo stage2_nine_canonical_db_status_end
+          export SSHPASS="$DE_PASS"
+          domains=(chatgpt.com grok.com app.augmentcode.com deepl.com apt.grafana.com
+                   artifacts.elastic.co 3dwarehouse.sketchup.com sentry.io console.neon.tech)
+          count_ready=0
+          count_overlap=0
+          count_unverified=0
+          for domain in "${domains[@]}"; do
+            echo "stage2_nine_host=$domain"
+            if ! origin="$(sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
+                python3 - probe --domain "$domain" \
+                < scripts/mnebydns-owner-domain-render-20261110.py 2>/dev/null)"; then
+              echo "stage2_nine_result=$domain:ORIGIN_UNVERIFIED"
+              count_unverified=$((count_unverified+1))
+              continue
+            fi
+            if [[ ! "$origin" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "stage2_nine_result=$domain:ORIGIN_BAD"
+              count_unverified=$((count_unverified+1))
+              continue
+            fi
+            mkdir -m 700 "$tmp/$domain"
+            if python3 scripts/mnebydns-owner-domain-render-20261110.py render-add \
+                --domain "$domain" --ip "$origin" --core "$tmp/Corefile" \
+                --nginx "$tmp/nginx.conf" --out "$tmp/$domain" >/dev/null 2>&1; then
+              echo "stage2_nine_result=$domain:RENDER_ADD_READY_NO_LIVE_CHANGE"
+              count_ready=$((count_ready+1))
+            else
+              echo "stage2_nine_result=$domain:OVERLAP_OR_UNRECOGNIZED_CONFIG"
+              count_overlap=$((count_overlap+1))
+            fi
+          done
+          echo "stage2_nine_render_ready_count=$count_ready"
+          echo "stage2_nine_overlap_or_config_count=$count_overlap"
+          echo "stage2_nine_origin_unverified_count=$count_unverified"
+          echo stage2_nine_live_routes_changed=false

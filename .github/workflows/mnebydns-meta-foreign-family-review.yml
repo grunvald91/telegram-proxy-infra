@@ -1,0 +1,32 @@
+name: MNEBYDNS Meta full-family foreign Google path OFFLINE review
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebydns-meta-foreign-family-review.yml'
+      - 'scripts/mnebydns-meta-foreign-family-render-20261112.py'
+      - 'scripts/tests/test_mnebydns_meta_foreign_family.py'
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-meta-foreign-family-review
+  cancel-in-progress: true
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Read-only render and exact-family isolation regressions
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-meta-foreign-family-render-20261112.py scripts/tests/test_mnebydns_meta_foreign_family.py
+          python3 scripts/mnebydns-meta-foreign-family-render-20261112.py self-test
+          python3 -m unittest discover -s scripts/tests -p test_mnebydns_meta_foreign_family.py -v
+          echo 'meta_foreign_ci=OFFLINE_ONLY' >> "$GITHUB_STEP_SUMMARY"
+          echo 'meta_foreign_live_dns_changed=false' >> "$GITHUB_STEP_SUMMARY"
+          echo 'meta_foreign_end_to_end_android_verified=false' >> "$GITHUB_STEP_SUMMARY"

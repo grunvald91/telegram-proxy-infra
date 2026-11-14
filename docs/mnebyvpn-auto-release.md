@@ -57,3 +57,36 @@ MNEBYVPN main [2262f3dafb66c2f1b73bdd1fb88f55932e6a7d2d](https://github.com/grun
 ## 2026-11-10 · Only one purchase CTA in HTML Bubble
 
 MNEBYVPN main [c86aa2e6953b56afc8bf28bbf6d2c0396e3f9553](https://github.com/grunvald91/Mnebyvpn/commit/c86aa2e6953b56afc8bf28bbf6d2c0396e3f9553), [PR #101](https://github.com/grunvald91/Mnebyvpn/pull/101), [main CI 42884955938](https://github.com/grunvald91/Mnebyvpn/actions/runs/42884955938) success. Fix: live Telegram cabinet `🌐 VPN и тарифы` opens HTML Bubble *without secondary inline tariff buttons*; one internal Stars purchase CTA sends Telegram native invoice via existing credential. Widget payment errors are shown in-card instead of prompting another button. Read-only runtime audit [42884819784](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/42884819784) confirmed existing original outbound bot token configured, Telegram reachable and bot ready. Guarded canary rollout of only the existing MNEBYVPN Telegram bot, with rollback. Do not touch nginx, DNS, Xray or other containers. Native Stars payment confirmation remains mandatory; live charge/E2E has not been exercised.
+
+## 2026-11-11 · New Telegram home menu Bubble and direct Stars invoice links
+
+Source: MNEBYVPN main [1c66aa46de40f1e6394dee6fddb15991d99b3547](https://github.com/grunvald91/Mnebyvpn/commit/1c66aa46de40f1e6394dee6fddb15991d99b3547) via [PR #102](https://github.com/grunvald91/Mnebyvpn/pull/102), full CI [42908560508](https://github.com/grunvald91/Mnebyvpn/actions/runs/42908560508) success. Telegram primary `/start` and `nav:home` now send an actual brand-avatar HTML widget with all normal menu actions, while keeping ONE inline `nav:menu:legacy` fallback for clients without Telegram Widgets. The VPN checkout widget no longer repeats duration/Stars in its caption. It pre-generates user- and offer-bound Telegram Stars `createInvoiceLink` URLs and uses `TelegramWidget.openTelegramLink` on a single pay tap, opening native invoice confirmation without a separate chat invoice. Orders are created only on verified Telegram pre-checkout, by signed per-user link/UUID, with existing durable Stars verification and settlement. Production `TELEGRAM_TOKEN_BOT` presence and Telegram egress were confirmed read-only in [42884819784](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/42884819784). Request isolated guarded Telegram bot deployment on 188 only (canary, rollback, webhook auth). Do not touch VPN/Xray, DNS, networks, TLS, Nginx or unrelated services. No actual charge performed in deployment.
+
+## 2026-11-11 · Microsoft owner DNS panel release
+
+Source: [Mnebyvpn PR #105](https://github.com/grunvald91/Mnebyvpn/pull/105), main commit
+`024b2ae6345d7baacb626f954797658ee18cb349`, green source
+[CI run 43069649971](https://github.com/grunvald91/Mnebyvpn/actions/runs/43069649971).
+The owner-only Telegram panel now exposes a Microsoft group with six exact study
+domains, a read-only product/domain search, pending/active filters, a queue summary,
+per-domain status refresh, and direct card navigation. Each record remains under
+the existing owner-managed 60-minute canary, confirmation and rollback process;
+bulk import is PENDING-only. The canonical Russian PostgreSQL six-name inventory
+was confirmed in [infrastructure intake run 43069532717](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/43069532717).
+Trigger the existing isolated Telegram bot canary/promote action (not website, DNS,
+Nginx, VPN, Xray or payment changes); require current green main and verified webhook
+health before claiming the release is live.
+
+## 2026-11-12 · Smart DNS owner panel metadata warning fix
+
+Release source: [Mnebyvpn PR #115](https://github.com/grunvald91/Mnebyvpn/pull/115), main commit
+`3e8f6f2c97be53f9ecf7c5eca75b4b5df9e8a655`,
+[main CI 43223955403](https://github.com/grunvald91/Mnebyvpn/actions/runs/43223955403)
+SUCCESS. Existing Microsoft admin mistakenly displayed "Маршрут подтверждён" when
+`status='ACTIVE'` with `last_error_code='ACTIVE_ROUTE_METADATA_INVALID'`.
+The owner-only list and card now flag ANY nonempty ACTIVE health error, and do
+not claim that an active exact-host route establishes full Microsoft app
+functionality. Two new Telegram contract tests are green.
+Request only the existing guarded isolated Telegram bot canary/promote
+mechanism on 188, with preserved webhook secret and rollback. **No DNS,
+CoreDNS, Nginx, Xray, VPN, PostgreSQL or other network route changes.**

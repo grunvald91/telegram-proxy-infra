@@ -25,7 +25,7 @@ class SharedTrialTests(unittest.TestCase):
         plan.verify_rollback()
         self.assertNotIn('client_ip()',plan.candidate)
         self.assertEqual(plan.candidate.count('tls://.:853'),1)
-        self.assertEqual(plan.candidate.count('IN A 188.120.254.223'),11)
+        self.assertEqual(plan.candidate.count('IN A 188.120.254.223'),12)
     def test_capture_and_controller_accept_explicit_all_scope(self):
         self.assertEqual(checked_phone_ip('all'),'all')
         cap=CaptureEvidence('all',Path('unused.json'))

@@ -41,7 +41,7 @@ HOSTS = (
     "graph.instagram.com", "z-m-gateway.facebook.com",
     "graph.facebook.com", "www.instagram.com",
     "www.facebook.com", "static.xx.fbcdn.net",
-    "scontent.xx.fbcdn.net",
+    "scontent.xx.fbcdn.net", "scontent.cdninstagram.com",
 )
 TABLE = "mneby_ig_lite_w20_20261111_v10"
 UNIT = "mneby-ig-lite-wifi-20261111-v10"

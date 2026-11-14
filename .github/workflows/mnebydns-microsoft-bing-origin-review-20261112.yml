@@ -1,0 +1,51 @@
+name: MNEBYDNS Microsoft and Bing exact-host TLS origin diagnosis RU DE read only
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebydns-microsoft-bing-origin-review-20261112.yml'
+      - 'scripts/mnebydns-microsoft-bing-origin-review-20261112.py'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebydns-microsoft-bing-origin-review-20261112.yml'
+      - 'scripts/mnebydns-microsoft-bing-origin-review-20261112.py'
+permissions:
+  contents: read
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Read-only diagnostic source sanity and strict DNS client
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-microsoft-bing-origin-review-20261112.py
+          python3 scripts/mnebydns-microsoft-bing-origin-review-20261112.py self-test
+          python3 scripts/mnebydns-owner-domain-controller-20261110.py self-test
+          echo microsoft_bing_readonly_offline=PASS
+  live_readonly:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    needs: offline
+    timeout-minutes: 9
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Inspect canonical queue and compare direct origin TLS from both regions
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -qq -y sshpass >/dev/null
+          python3 scripts/mnebydns-microsoft-bing-origin-review-20261112.py diagnose

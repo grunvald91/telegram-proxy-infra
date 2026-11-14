@@ -1,0 +1,28 @@
+name: MNEBYDNS P1 offline failover readiness gate
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scripts/mnebydns_failover_readiness.py'
+      - 'scripts/tests/test_mnebydns_failover_readiness.py'
+      - '.github/workflows/mnebydns-failover-readiness-offline.yml'
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-p1-readiness-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  offline-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate readiness decision without network, secrets, or server changes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_failover_readiness.py' -v
+          python3 -m py_compile scripts/mnebydns_failover_readiness.py
+          echo 'OFFLINE_ONLY_NO_PRODUCTION_FAILOVER=true'

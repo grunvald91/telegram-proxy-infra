@@ -298,8 +298,13 @@ def status():
         for key,service in (("nginx","nginx.service"),("dns","mnebydns-dot.service")):
             print("meta_v26_de_"+key+"_active="+str(active(service)).lower(),flush=True)
         # A running PID is not proof that the live TLS DNS listener answers.
-        from mnebydns_iglite_dns_wire_checks import read_exact_dot_type,QTYPES
-        read_exact_dot_type(QTYPES["A"],host="www.youtube.com",timeout=4)
+        from mnebydns_iglite_dns_wire_checks import ALLOWED_EDGES, QTYPES, read_exact_dot_type
+        read_exact_dot_type(
+            QTYPES["A"],
+            host="www.youtube.com",
+            timeout=4,
+            allowed_edges=ALLOWED_EDGES,
+        )
         print("meta_v26_de_dot_wire=PASS",flush=True)
 
 if __name__=="__main__":

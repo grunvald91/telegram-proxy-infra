@@ -1,0 +1,112 @@
+name: MNEBYDNS full 523-name RU vs foreign HTTPS diagnostic (read only)
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebydns-full-523-https-screen-20261111.yml'
+      - 'scripts/mnebydns-full-catalog-https-screen-20261111.py'
+      - 'scripts/mnebydns-geoblock-stage2-probe-20261111.py'
+      - 'data/mnebydns-geoblock-research-20261110.tsv'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebydns-full-523-https-screen-20261111.yml'
+      - 'scripts/mnebydns-full-catalog-https-screen-20261111.py'
+      - 'scripts/mnebydns-geoblock-stage2-probe-20261111.py'
+      - 'data/mnebydns-geoblock-research-20261110.tsv'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-full-study-research-readonly
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate the entire immutable research inventory and response classifier
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-full-catalog-https-screen-20261111.py
+          python3 scripts/mnebydns-full-catalog-https-screen-20261111.py --self-test
+          test "$(grep -c ' ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts)" -eq 2
+          ! grep -Eq 'StrictHostKeyChecking=no|accept-new|verify=False|ssl\._create_unverified_context' scripts/mnebydns-full-catalog-https-screen-20261111.py
+          echo full_523_offline_gate=PASS
+  screen:
+    if: github.event_name != 'pull_request'
+    needs: offline
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Same-origin-ip TLS/HTTP comparison, one batch, no live config changes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+          python3 scripts/mnebydns-full-catalog-https-screen-20261111.py --batch ${{ matrix.shard }}
+      - name: Upload verifiable per-batch evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: mnebydns-523-batch-${{ matrix.shard }}
+          path: full-catalog-results/batch-*.json
+          if-no-files-found: error
+          retention-days: 30
+  summarize:
+    if: github.event_name != 'pull_request'
+    needs: screen
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Retrieve all 14 auditable batch payloads
+        uses: actions/download-artifact@v4
+        with:
+          pattern: mnebydns-523-batch-*
+          path: incoming/
+          merge-multiple: true
+      - name: Validate 523 of 523 and save RU HTTP 403/451 separately
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/mnebydns-full-catalog-https-screen-20261111.py --summarize incoming/
+          echo '## Full 523-host research' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Validated all 523 exact names against DE/RU evidence; see downloadable report, grouped 403/451 files and full CSV.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'No production DNS/proxy/DB changes.' >> "$GITHUB_STEP_SUMMARY"
+          cat full-catalog-results/report.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload 403/451 lists, 523-host CSV/JSON and full Markdown report
+        uses: actions/upload-artifact@v4
+        with:
+          name: mnebydns-523-consolidated-ru-403-451
+          path: |
+            full-catalog-results/all-523-results.csv
+            full-catalog-results/all-523-results.json
+            full-catalog-results/ru-http-403-451.csv
+            full-catalog-results/ru-http-403-451.txt
+            full-catalog-results/ru-403-451-de-success.csv
+            full-catalog-results/ru-403-451-de-success.txt
+            full-catalog-results/pending-review-not-active.txt
+            full-catalog-results/context-only-17.csv
+            full-catalog-results/report.md
+          if-no-files-found: error
+          retention-days: 30

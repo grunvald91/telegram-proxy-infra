@@ -22,6 +22,11 @@ from meta_v15_receive_window import HOSTS
 POINT="RU_ENS3_INBOUND_PRE_DNAT"
 COUNTERS=("syn","target_clienthello","sni_split","sni_unsplit",
           "sni_boundary_indeterminate","evictions","payload_without_syn")
+TZ_COUNTERS=(
+    "first_segment_le4","first_segment_le8","multi_segment_hello",
+    "other_sni","other_sni_split","other_sni_unsplit",
+    "other_first_segment_le4","other_first_segment_le8","other_multi_segment_hello",
+)
 
 def final_verdict(report):
     if report.get("final") is not True:
@@ -39,7 +44,7 @@ def final_verdict(report):
         return "SEGMENTATION_INDETERMINATE"
     return "SNI_SEGMENTATION_OBSERVED"
 
-def validate_report(report,*,final=False,now=None):
+def _validate_report_base(report,*,final=False,now=None):
     if (report.get("schema")!=1 or report.get("capture_point")!=POINT
             or type(report.get("worker_pid")) is not int or report["worker_pid"]<=0):
         raise RuntimeError("unrecognized RU packet evidence")
@@ -53,8 +58,33 @@ def validate_report(report,*,final=False,now=None):
     stats=report.get("stats",{})
     if any(type(stats.get(k)) is not int or stats[k]<0 for k in COUNTERS):
         raise RuntimeError("RU packet evidence counters invalid")
+
+def validate_report(report,*,final=False,now=None):
+    _validate_report_base(report,final=final,now=now)
     if final and final_verdict(report)!="SNI_SEGMENTATION_OBSERVED":
         raise RuntimeError("RU SNI measurement: "+final_verdict(report))
+
+def validate_tz_report(report,*,require_split=True,now=None):
+    """Validate finalized capture for phased/off TZ runs (allows unsplit cell C)."""
+    _validate_report_base(report,final=True,now=now)
+    if report.get("final") is not True:
+        raise RuntimeError("RU SNI measurement: CAPTURING")
+    if report.get("kernel_drops")!=0:
+        raise RuntimeError("RU SNI measurement: CAPTURE_INVALID")
+    stats=report["stats"]
+    if stats["sni_boundary_indeterminate"] or stats["evictions"]:
+        raise RuntimeError("RU SNI measurement: SEGMENTATION_INDETERMINATE")
+    if not stats["target_clienthello"]:
+        raise RuntimeError("RU SNI measurement: NO_TARGET_CLIENTHELLO")
+    tz_metrics = report.get("tz_segment_metrics", {})
+    has_split = bool(
+        stats["sni_split"]
+        or tz_metrics.get("first_segment_le8", 0)
+        or tz_metrics.get("first_segment_le4", 0)
+    )
+    if require_split and not has_split:
+        raise RuntimeError("RU SNI measurement: NO_SPLIT_SNI_OBSERVED")
+    return "TZ_PHASED_SNI_SPLIT_OBSERVED" if has_split else "TZ_PHASED_CAPTURE_VALID"
 
 def write_report(path,report):
     # Single owned writer; readers only see whole JSON documents.
@@ -111,6 +141,8 @@ class CaptureEvidence:
                 "updated_at":time.time(),"final":self.finished,
                 "capture_ok":not self.failures and (self.finished or self.healthy()),
                 "kernel_drops":self.drops,"stats":{key:a.stats[key] for key in COUNTERS},
+                "tz_segment_metrics":{key:a.stats[key] for key in TZ_COUNTERS},
+                "flow_details":list(a.flow_details),
                 "hosts":hosts,"per_host_events_limited":len(events)>=512,
                 "incomplete":dict(a.incomplete_diagnostics()) if self.finished else {},
                 "failure_codes":list(self.failures),"pcap_written":False,

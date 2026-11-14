@@ -20,7 +20,7 @@ import ssl
 import subprocess
 import time
 
-from meta_v15_receive_window import nft_rules,verify_queue_exemption
+from meta_v15_receive_window import nft_rules,out_clamp_rule as _base_out_clamp_rule,verify_queue_exemption
 from meta_v23_ru_firsthop_preview import RU_EDGE,WG_BACKEND,RU_INTERFACE,TEST_PORT
 from meta_v15_receive_window import HOSTS
 
@@ -167,7 +167,26 @@ def verify_non_meta_fallback():
         raise RuntimeError("RU own public HTTPS fallback is unreachable") from exc
 
 
-def baseline(peer):
+def out_clamp_rule(peer, *, window=8):
+    return _base_out_clamp_rule(RU_EDGE, checked_peer(peer), port=TEST_PORT, table=TABLE, window=window)
+
+
+def _write_state(name, text):
+    path=ROOT/name
+    if path.is_symlink():
+        raise RuntimeError("refusing symlink state file")
+    tmp=ROOT/(name+".tmp")
+    if tmp.is_symlink():
+        raise RuntimeError("refusing symlink temp state file")
+    fd=os.open(tmp,os.O_WRONLY|os.O_CREAT|os.O_TRUNC|os.O_NOFOLLOW,0o600)
+    with os.fdopen(fd,"w") as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp,path)
+
+
+def baseline(peer, *, window=8, clamp=True):
     cmd(["tcpdump","--version"],timeout=5)
     if not active("wg-quick@tg-relay.service"):
         raise RuntimeError("RU private WireGuard service inactive")
@@ -196,7 +215,8 @@ def baseline(peer):
     cmd(["iptables","-w","5","-S",FIREWALL_CHAIN],timeout=10)
     if firewall_present(peer):
         raise RuntimeError("previous scoped firewall rule was not cleaned up")
-    rules=nft_rules(RU_EDGE,peer,port=TEST_PORT,interface=RU_INTERFACE,table=TABLE)
+    rules=nft_rules(RU_EDGE,peer,port=TEST_PORT,interface=RU_INTERFACE,table=TABLE,
+                    window=window,clamp=clamp)
     # Check parsing/chain collisions without mutating nftables.
     p=cmd(["nft","--check","-f","-"],input=rules)
     return rules
@@ -237,10 +257,12 @@ def rollback():
     if not ROOT.exists():return
     with locked():_rollback_locked()
 
-def start(peer):
+def start(peer, *, window=8, clamp=True):
     owner_flag()
     peer=checked_peer(peer)
-    rules=baseline(peer)
+    if type(window) is not int or window not in (4, 8) or not isinstance(clamp, bool):
+        raise ValueError("invalid window or clamp")
+    rules=baseline(peer, window=window, clamp=clamp)
     with locked():
         # Existing baseline was checked before the state dir was created.
         fd=os.open(ROOT/"peer",os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
@@ -248,6 +270,8 @@ def start(peer):
             target.write(peer)
             target.flush()
             os.fsync(target.fileno())
+        _write_state("window", str(window))
+        _write_state("clamp", "on" if clamp else "off")
         cmd(["systemd-run","--quiet","--collect","--unit",UNIT,
              "--on-active="+str(CLEANUP_SECONDS)+"s","/usr/bin/python3",
              str(Path(__file__).resolve()),"rollback"])
@@ -266,6 +290,7 @@ def start(peer):
                  "--property=KillMode=mixed","--property=TimeoutStopSec=15s",
                  "/usr/bin/python3","-u",str(STAGE/"meta_v15_receive_window.py"),
                  "--peer",peer,"--edge",RU_EDGE,"--port",str(TEST_PORT),
+                 "--window",str(window),
                  "--backend-address",WG_BACKEND,
                  "--non-meta-backend-address",RU_EDGE,
                  "--evidence-file",str(ROOT/"evidence.json"),
@@ -297,6 +322,33 @@ def start(peer):
     print("meta_v26_ru_firewall_scoped=true",flush=True)
     print("meta_v26_ru_wg_tls_verified_hosts="+str(verified),flush=True)
 
+def set_clamp(state, *, window=None):
+    if state not in ("on", "off"):
+        raise ValueError("clamp state must be on or off")
+    owner_flag()
+    if not (ROOT/"armed").is_file():
+        raise RuntimeError("RU experiment not armed")
+    with locked():
+        if not table_exists():
+            raise RuntimeError("RU nft canary table missing")
+        peer=checked_peer((ROOT/"peer").read_text().strip())
+        if window is None:
+            win_file=ROOT/"window"
+            win=int(win_file.read_text().strip()) if win_file.is_file() else 8
+        else:
+            win=window
+        if type(win) is not int or win not in (4, 8):
+            raise ValueError("invalid window")
+        rules=nft_rules(RU_EDGE,peer,port=TEST_PORT,interface=RU_INTERFACE,table=TABLE,
+                        window=win,clamp=(state=="on"))
+        cmd(["nft","--check","-f","-"],input=rules)
+        cmd(["nft","-f","-"],input=f"flush table inet {TABLE}\n"+rules)
+        _write_state("clamp",state)
+        _write_state("window",str(win))
+    print("meta_v26_ru_clamp="+state,flush=True)
+    print("meta_v26_ru_window="+str(win),flush=True)
+
+
 def reset():
     """Remove saved state only after nft removal and worker termination."""
     import shutil
@@ -326,12 +378,15 @@ def status():
 
 if __name__=="__main__":
     p=argparse.ArgumentParser()
-    p.add_argument("mode",choices=("start","rollback","status","reset","evidence"))
+    p.add_argument("mode",choices=("start","rollback","status","reset","evidence","set-clamp-on","set-clamp-off"))
     p.add_argument("--peer")
+    p.add_argument("--window",type=int,choices=(4,8),default=None)
     args=p.parse_args()
     if args.mode=="start":
         if not args.peer:p.error("RU start requires --peer")
-        start(args.peer)
+        start(args.peer,window=args.window or 8)
+    elif args.mode=="set-clamp-on":set_clamp("on",window=args.window)
+    elif args.mode=="set-clamp-off":set_clamp("off",window=args.window)
     elif args.mode=="rollback":rollback()
     elif args.mode=="reset":reset()
     elif args.mode=="evidence":print(json.dumps(read_evidence(required=False),sort_keys=True),flush=True)

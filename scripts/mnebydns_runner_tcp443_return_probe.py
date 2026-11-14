@@ -1,0 +1,200 @@
+#!/usr/bin/env python3
+"""One-off, no-server-access IPv4 TCP/443 return-path observation.
+
+Runs on the *GitHub runner*, not the live server. Records no packet contents,
+addresses, source ports, credentials or subscriber data. Never changes a server.
+"""
+from __future__ import annotations
+
+import ipaddress
+import socket
+import struct
+import threading
+import time
+
+TARGET = "89.125.90.101"
+CONTROL = "example.org"
+
+
+def packet_event(frame: bytes, destinations: dict[bytes, str]):
+    """Return (label, SYN|SYNACK|RST, source_port) for scoped IPv4 traffic."""
+    # AF_PACKET/SOCK_DGRAM returns the IPv4 packet *without* an Ethernet
+    # header, even when the host interface uses a virtual link layer.
+    if len(frame) < 40:
+        return None
+    if frame[0] >> 4 == 4:
+        ip = frame  # Linux cooked AF_PACKET
+    elif len(frame) >= 54 and frame[12:14] == b"\x08\x00":
+        ip = frame[14:]  # Some virtual NICs expose an Ethernet header
+    else:
+        return None
+    if ip[0] >> 4 != 4 or ip[9] != 6:
+        return None
+    hlen = (ip[0] & 0x0F) * 4
+    if hlen < 20 or len(ip) < hlen + 20:
+        return None
+    if struct.unpack_from("!H", ip, 6)[0] & 0x1FFF:
+        return None
+    tcp = ip[hlen:]
+    sport, dport = struct.unpack_from("!HH", tcp)
+    flags = tcp[13]
+    src_ip, dst_ip = ip[12:16], ip[16:20]
+    if dst_ip in destinations and dport == 443 and flags & 0x02 and not flags & 0x10:
+        return (destinations[dst_ip], "SYN", sport)
+    if src_ip in destinations and sport == 443:
+        if flags & 0x12 == 0x12:
+            return (destinations[src_ip], "SYNACK", dport)
+        if flags & 0x04:
+            return (destinations[src_ip], "RST", dport)
+    return None
+
+
+def connect_ipv4(host: str, port: int = 443, timeout: float = 4.0) -> str:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(timeout)
+        try:
+            s.connect((host, port))
+            return "connected"
+        except OSError as exc:
+            return type(exc).__name__
+
+
+def observe() -> None:
+    control_ip = socket.getaddrinfo(CONTROL, 443, socket.AF_INET, socket.SOCK_STREAM)[0][4][0]
+    destinations = {
+        ipaddress.IPv4Address(TARGET).packed: "foreign443",
+        ipaddress.IPv4Address(control_ip).packed: "control443",
+    }
+    if len(destinations) != 2:
+        raise RuntimeError("control and target endpoint must differ")
+
+    # Linux AF_PACKET, no BPF installation, no promiscuous mode, no packet files.
+    with socket.socket(socket.AF_PACKET, socket.SOCK_DGRAM, socket.htons(0x0800)) as sniffer:
+        sniffer.settimeout(0.25)
+        observed: dict[str, dict[str, set[int]]] = {
+            name: {"SYN": set(), "SYNACK": set(), "RST": set()}
+            for name in destinations.values()
+        }
+        results: list[tuple[str, str]] = []
+        captured_ipv4_frames = 0
+        capture_format = {"l3_ipv4": 0, "ethernet_ipv4": 0, "other": 0}
+        scope_counts = {"ip_tcp": 0, "target_ip_match": 0, "control_ip_match": 0,
+                        "target_dport443": 0, "target_sport443": 0,
+                        "control_dport443": 0, "control_sport443": 0,
+                        "matching_syn_flag": 0, "matching_synack_flag": 0,
+                        "valid_tcp_header_offset": 0, "fragment_offset_nonzero": 0}
+        completed = threading.Event()
+
+        def client() -> None:
+            try:
+                for name, host in (("control443", control_ip), ("foreign443", TARGET),
+                                   ("foreign443", TARGET), ("foreign443", TARGET)):
+                    results.append((name, connect_ipv4(host)))
+                    time.sleep(0.20)
+            finally:
+                completed.set()
+
+        th = threading.Thread(target=client, daemon=True)
+        th.start()
+        deadline = time.monotonic() + 24
+        finished_at = None
+        while time.monotonic() < deadline:
+            try:
+                raw = sniffer.recv(65535)
+            except socket.timeout:
+                raw = b""
+            if raw:
+                captured_ipv4_frames += 1
+                if raw[0] >> 4 == 4:
+                    ip = raw
+                    capture_format["l3_ipv4"] += 1
+                elif len(raw) >= 54 and raw[12:14] == b"\x08\x00":
+                    ip = raw[14:]
+                    capture_format["ethernet_ipv4"] += 1
+                else:
+                    ip = b""
+                    capture_format["other"] += 1
+                if len(ip) >= 40 and ip[0] >> 4 == 4 and ip[9] == 6:
+                    scope_counts["ip_tcp"] += 1
+                    if destinations.get(ip[12:16]) == "foreign443" or destinations.get(ip[16:20]) == "foreign443":
+                        scope_counts["target_ip_match"] += 1
+                    if destinations.get(ip[12:16]) == "control443" or destinations.get(ip[16:20]) == "control443":
+                        scope_counts["control_ip_match"] += 1
+                    frag = int.from_bytes(ip[6:8], "big")
+                    if frag & 0x1FFF:
+                        scope_counts["fragment_offset_nonzero"] += 1
+                    hlen = (ip[0] & 0x0F) * 4
+                    if hlen >= 20 and len(ip) >= hlen + 20:
+                        scope_counts["valid_tcp_header_offset"] += 1
+                        sport, dport = struct.unpack_from("!HH", ip, hlen)
+                        flags = ip[hlen + 13]
+                        outgoing = destinations.get(ip[16:20])
+                        incoming = destinations.get(ip[12:16])
+                        if outgoing == "foreign443" and dport == 443:
+                            scope_counts["target_dport443"] += 1
+                        if incoming == "foreign443" and sport == 443:
+                            scope_counts["target_sport443"] += 1
+                        if outgoing == "control443" and dport == 443:
+                            scope_counts["control_dport443"] += 1
+                        if incoming == "control443" and sport == 443:
+                            scope_counts["control_sport443"] += 1
+                        if outgoing and dport == 443 and flags & 2 and not flags & 16:
+                            scope_counts["matching_syn_flag"] += 1
+                        if incoming and sport == 443 and flags & 18 == 18:
+                            scope_counts["matching_synack_flag"] += 1
+            event = packet_event(raw, destinations) if raw else None
+            if event:
+                name, kind, sport = event
+                if len(observed[name]["SYN"]) < 16 or sport in observed[name]["SYN"]:
+                    observed[name][kind].add(sport)
+            if completed.is_set():
+                if finished_at is None:
+                    finished_at = time.monotonic()
+                if time.monotonic() - finished_at >= 0.75:
+                    break
+        th.join(timeout=1)
+        if th.is_alive() or not completed.is_set():
+            raise TimeoutError("local probe thread did not complete")
+
+    print(f"packet_socket_ipv4_frames={captured_ipv4_frames}", flush=True)
+    for key, count in capture_format.items():
+        print(f"capture_format_{key}={count}", flush=True)
+    for key, count in scope_counts.items():
+        print(f"capture_scope_{key}={count}", flush=True)
+    # Some hosted-runner network setups expose only the inbound half of a
+    # handshake to AF_PACKET, even though our direct connect() did send SYN.
+    # Never require an observed outbound packet for a valid inbound SYN-ACK.
+    for name in ("control443", "foreign443"):
+        syn = observed[name]["SYN"]
+        synack = observed[name]["SYNACK"]
+        rst = observed[name]["RST"]
+        attempts = [result for label, result in results if label == name]
+        if synack:
+            classification = "inbound_synack_observed"
+        elif rst:
+            classification = "inbound_rst_observed_no_synack"
+        elif attempts and all(result == "TimeoutError" for result in attempts):
+            classification = "connect_timeouts_no_inbound_synack_observed"
+        elif "connected" in attempts:
+            classification = "connected_but_synack_capture_missing"
+        else:
+            classification = "inconclusive_no_response_class"
+        print(f"{name}_connect_results={','.join(attempts)}", flush=True)
+        print(f"{name}_outbound_syn_visible={len(syn)}", flush=True)
+        print(f"{name}_inbound_synack_flows={len(synack)}", flush=True)
+        print(f"{name}_inbound_rst_flows={len(rst)}", flush=True)
+        print(f"{name}_classification={classification}", flush=True)
+    # Validate the same-direction positive control; otherwise fail closed.
+    if not observed["control443"]["SYNACK"] or not any(
+        label == "control443" and result == "connected" for label, result in results
+    ):
+        raise RuntimeError("inconclusive_probe_control_synack_not_captured")
+    print("control_inbound_synack_capture_validated=true", flush=True)
+    print(f"runner_outbound_syn_capture_visible={bool(observed['control443']['SYN'])}", flush=True)
+    print("vantage=github_runner_only", flush=True)
+    print("no_remote_server_access_or_changes=true", flush=True)
+    print("packet_payload_ip_and_ports_not_logged=true", flush=True)
+
+
+if __name__ == "__main__":
+    observe()

@@ -1,0 +1,96 @@
+name: MNEBYDNS Microsoft code-review live metadata and route audit READ ONLY
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebydns-microsoft-metadata-audit-20261112.yml'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebydns-microsoft-metadata-audit-20261112.yml'
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check trusted tools for exact IP normalization
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import importlib.util
+          spec=importlib.util.spec_from_file_location('owner','scripts/mnebydns-owner-domain-controller-20261110.py')
+          mod=importlib.util.module_from_spec(spec);spec.loader.exec_module(mod)
+          assert mod.pg_inet_host('13.227.192.109/32') == '13.227.192.109'
+          assert mod.pg_inet_host('13.227.192.109') == '13.227.192.109'
+          for value in ('0.0.0.0/0','13.227.192.109/24','::1','10.1.2.3/32','not_an_ip'):
+            try: mod.pg_inet_host(value)
+            except ValueError: pass
+            else: raise AssertionError('Rejected unsafe INET '+value)
+          print('microsoft_inet_parser=PASS')
+          PY
+      - name: Read only canonical DB metadata and exact actual live SNI pin
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+                -o HostKeyAlgorithms=ssh-ed25519
+                -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+                -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          export SSHPASS="$RU_PASS"
+          echo MICROSOFT_DB_REVIEW_BEGIN
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 \
+            'docker exec -i mnebyvpn-stage-postgres psql -XqAt -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage' <<'SQL'
+          SELECT domain || '|' || status || '|' ||
+            coalesce(last_error_code,'none') || '|' ||
+            CASE WHEN verified_origin_ip IS NULL THEN 'NULL'
+              WHEN family(verified_origin_ip)=4 AND masklen(verified_origin_ip)=32
+                THEN 'IPv4_HOST_32'
+              ELSE 'INVALID_MASK_OR_FAMILY' END || '|' ||
+            coalesce(canary_run_id::text,'none')
+          FROM dns_admin_domains WHERE domain IN
+          ('bing.com','copilot.microsoft.com','microsoft.com',
+           'software-static.download.prss.microsoft.com','xbox.com',
+           'xboxdesignlab.xbox.com')
+          ORDER BY domain;
+          SQL
+          echo MICROSOFT_DB_REVIEW_END
+          export SSHPASS="$DE_PASS"
+          echo MICROSOFT_LIVE_REVIEW_BEGIN
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY'
+          from pathlib import Path
+          import re,ipaddress
+          dns=Path('/opt/mnebydns-dot/Corefile').read_text()
+          nginx=Path('/etc/nginx/nginx.conf').read_text()
+          checkpoint=Path('/opt/mnebydns-stable-checkpoints/current').read_text().strip()
+          root=Path(checkpoint)
+          print('checkpoint_core_matches_live='+str((root/'dns.stable').read_bytes()==Path('/opt/mnebydns-dot/Corefile').read_bytes()))
+          print('checkpoint_nginx_matches_live='+str((root/'nginx.stable').read_bytes()==Path('/etc/nginx/nginx.conf').read_bytes()))
+          for host in ('bing.com','copilot.microsoft.com','microsoft.com',
+              'software-static.download.prss.microsoft.com','xbox.com',
+              'xboxdesignlab.xbox.com'):
+            mark='MNEBYDNS_OWNER_EXACT_'+host.replace('.','_')
+            core=dns.count('BEGIN '+mark)==1 and dns.count('END '+mark)==1
+            proxy=nginx.count('BEGIN '+mark)==1 and nginx.count('END '+mark)==1
+            pinned=re.search(r'(?m)^\s*'+re.escape(host)+r'\s+(\d{1,3}(?:\.\d{1,3}){3}):443;',nginx)
+            ip_valid=False
+            if pinned:
+              try: ip_valid=ipaddress.ip_address(pinned.group(1)).is_global
+              except ValueError: pass
+            print('ms_live='+host+'|dns:'+str(core)+'|sni:'+str(proxy)+'|pin_valid:'+str(ip_valid))
+          print('microsoft_live_routes_readonly=true')
+          PY
+          echo MICROSOFT_LIVE_REVIEW_END

@@ -1,0 +1,77 @@
+name: MNEBYDNS diagnose TCP SYN delays on 443 853 8443 (read only)
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - ".github/workflows/mnebydns-tcp-connect-readonly-20261113.yml"
+      - "scripts/mnebydns-tcp-connect-readonly-20261113.py"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/mnebydns-tcp-connect-readonly-20261113.yml"
+      - "scripts/mnebydns-tcp-connect-readonly-20261113.py"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('mnebydns-tcp-offline-{0}',github.ref) || 'mnebydns-tcp-connect-readonly' }}
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify no production writes and percentile tests
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-tcp-connect-readonly-20261113.py
+          python3 scripts/mnebydns-tcp-connect-readonly-20261113.py --self-test
+          test "$(grep -c ' ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts)" -eq 2
+          ! grep -Eq 'systemctl (restart|reload|start|stop)|nft (add|delete|flush)|iptables (-A|-D|-I|-F)|sysctl -w|StrictHostKeyChecking=no|chown|chmod' scripts/mnebydns-tcp-connect-readonly-20261113.py
+          echo TCP_READONLY_OFFLINE=PASS
+  measure:
+    if: github.event_name != 'pull_request'
+    needs: offline
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install secure SSH prerequisites
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -qq -y sshpass >/dev/null
+      - name: Compare bounded serial and burst TCP connects, read kernel drop counters
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/mnebydns-tcp-connect-readonly-20261113.py --run
+      - name: Publish report
+        if: always()
+        shell: bash
+        run: |
+          if [ -s tcp-connect-results/report.md ]; then
+            cat tcp-connect-results/report.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'No verified comparison result produced' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Archive read-only network counters
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mnebydns-tcp-syn-readonly-${{ github.run_id }}
+          path: tcp-connect-results/
+          if-no-files-found: warn
+          retention-days: 30

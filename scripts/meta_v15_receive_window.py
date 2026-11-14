@@ -32,22 +32,42 @@ HOSTS = frozenset(("iglite-z.instagram.com", "i.instagram.com",
     "i-fallback.instagram.com", "test-gateway.instagram.com",
     "graph.instagram.com", "z-m-gateway.facebook.com", "graph.facebook.com",
     "www.instagram.com", "www.facebook.com", "static.xx.fbcdn.net",
-    "scontent.xx.fbcdn.net"))
+    "scontent.xx.fbcdn.net", "scontent.cdninstagram.com"))
 
 
 def ipv4(value):
     return str(ipaddress.IPv4Address(value))
 
 
-def nft_rules(edge, peer, *, port=18443, interface="eth0", table="mneby_meta_v15"):
+def out_clamp_rule(edge, peer, *, port=18443, table="mneby_meta_v15", window=WINDOW):
+    edge=ipv4(edge)
+    shared=peer=="all"
+    peer=None if shared else ipv4(peer)
+    if edge == peer or not 1024 < port < 65536 or port == 443:
+        raise ValueError("invalid canary endpoint")
+    if not re.fullmatch(r"[a-zA-Z0-9_]{1,40}", table):
+        raise ValueError("invalid table")
+    if type(window) is not int or window not in (4, 8):
+        raise ValueError("invalid window")
+    destination="" if shared else f"ip daddr {peer} "
+    return (f"add rule inet {table} out ip saddr {edge} {destination}tcp sport {port} "
+        f"meta mark & {RELEASED:#x} == 0 tcp flags & ack == ack tcp window > {window} "
+        f"counter tcp window set {window}\n")
+
+
+def nft_rules(edge, peer, *, port=18443, interface="eth0", table="mneby_meta_v15",
+              window=WINDOW, clamp=True):
+    if type(window) is not int or window not in (4, 8) or not isinstance(clamp, bool):
+        raise ValueError("invalid window or clamp")
     edge=ipv4(edge)
     shared=peer=="all"
     if shared and (edge!="188.120.254.223" or interface!="ens3"):
         raise ValueError("shared ingress is supported only on reviewed RU ens3")
-    peer=None if shared else ipv4(peer)
-    source="" if shared else f"ip saddr {peer} "
-    destination="" if shared else f"ip daddr {peer} "
-    if edge == peer or not 1024 < port < 65536 or port == 443:
+    peer_str=peer if shared else ipv4(peer)
+    peer_ip=None if shared else peer_str
+    source="" if shared else f"ip saddr {peer_ip} "
+    destination="" if shared else f"ip daddr {peer_ip} "
+    if edge == peer_ip or not 1024 < port < 65536 or port == 443:
         raise ValueError("invalid canary endpoint")
     if not re.fullmatch(r"[a-zA-Z0-9_]{1,40}", table):
         raise ValueError("invalid table")
@@ -58,15 +78,15 @@ def nft_rules(edge, peer, *, port=18443, interface="eth0", table="mneby_meta_v15
     # prevents conntrack from reversing 443 -> 18443 DNAT for SYN-ACK replies.
     # Only mark these reply packets at postrouting priority 100: after conntrack
     # has already run, but before telegram_nfqws NFQUEUE at priority 101.
-    ct_source="" if shared else f"ct original ip saddr {peer} "
+    ct_source="" if shared else f"ct original ip saddr {peer_ip} "
+    clamp_line = (out_clamp_rule(edge, peer_str, port=port, table=table, window=window)
+                  if clamp else "")
     return (f"add table inet {table}\n"
         f"add chain inet {table} pre {{ type nat hook prerouting priority -101; policy accept; }}\n"
         f'add rule inet {table} pre iifname "{interface}" {source}ip daddr {edge} '
         f'tcp dport 443 counter dnat ip to {edge}:{port}\n'
         f"add chain inet {table} out {{ type filter hook output priority -149; policy accept; }}\n"
-        f"add rule inet {table} out ip saddr {edge} {destination}tcp sport {port} "
-        f"meta mark & {RELEASED:#x} == 0 tcp flags & ack == ack tcp window > {WINDOW} "
-        f"counter tcp window set {WINDOW}\n"
+        + clamp_line +
         f"add chain inet {table} post {{ type filter hook postrouting priority 100; policy accept; }}\n"
         f'add rule inet {table} post oifname "{interface}" ip saddr {edge} {destination}'
         f'ct direction reply ct status dnat {ct_source}ct original ip daddr {edge} '
@@ -302,6 +322,7 @@ def main():
     parser.add_argument("--edge",default="89.125.90.101")
     parser.add_argument("--peer",required=True)
     parser.add_argument("--port",type=int,default=18443)
+    parser.add_argument("--window",type=int,choices=(4,8),default=WINDOW)
     parser.add_argument("--max-lifetime",type=int,choices=(1500,2700),default=1500)
     parser.add_argument("--backend-address",choices=("127.0.0.1","10.66.77.1"),default="127.0.0.1")
     parser.add_argument("--non-meta-backend-address",choices=("188.120.254.223",))

@@ -13,6 +13,8 @@ import struct
 
 HOST = "iglite-z.instagram.com"
 EDGE = "89.125.90.101"
+RU_EDGE = "188.120.254.223"
+ALLOWED_EDGES = (EDGE, RU_EDGE)
 DOT_SNI = "dns.mnebyvpn.site"
 QTYPES = {"A": 1, "AAAA": 28, "HTTPS": 65, "SVCB": 64, "CNAME": 5}
 
@@ -65,7 +67,14 @@ def make_question(qtype: int, transaction_id: int, host: str = HOST) -> bytes:
             + wire_name(host) + struct.pack("!HH", qtype, 1))
 
 
-def check_answer(packet: bytes, transaction_id: int, qtype: int, host: str = HOST) -> str:
+def check_answer(
+    packet: bytes,
+    transaction_id: int,
+    qtype: int,
+    host: str = HOST,
+    *,
+    allowed_edges: tuple[str, ...] = (EDGE,),
+) -> str:
     """Require exact question and no alternate usable addresses or aliases."""
     if len(packet) < 12:
         raise ValueError("truncated DNS header")
@@ -111,15 +120,24 @@ def check_answer(packet: bytes, transaction_id: int, qtype: int, host: str = HOS
         owner, kind, klass, value = answers[0]
         if owner != host + "." or kind != 1 or klass != 1 or len(value) != 4:
             raise ValueError("unexpected A alias / answer record")
-        if socket.inet_ntoa(value) != EDGE:
-            raise ValueError("A did not resolve to DE edge")
-        return "A_EXACT_DE"
+        resolved = socket.inet_ntoa(value)
+        if resolved not in allowed_edges:
+            if allowed_edges == (EDGE,):
+                raise ValueError("A did not resolve to DE edge")
+            raise ValueError("A did not resolve to allowed edge")
+        return "A_EXACT_DE" if resolved == EDGE else "A_EXACT_EDGE"
     if answers:
         raise ValueError("non-A DNS type returned records that could bypass edge")
     return "NO_ALIAS_OR_IPV6"
 
 
-def read_exact_dot_type(qtype: int, *, timeout: float = 5, host: str = HOST) -> str:
+def read_exact_dot_type(
+    qtype: int,
+    *,
+    timeout: float = 5,
+    host: str = HOST,
+    allowed_edges: tuple[str, ...] = (EDGE,),
+) -> str:
     tid = secrets.randbelow(65536)
     question = make_question(qtype, tid, host)
 
@@ -140,7 +158,13 @@ def read_exact_dot_type(qtype: int, *, timeout: float = 5, host: str = HOST) -> 
             size = struct.unpack("!H", header)[0]
             if size > 4096:
                 raise ValueError("unexpectedly large DoT response")
-            return check_answer(recvall(tls, size), tid, qtype, host)
+            return check_answer(
+                recvall(tls, size),
+                tid,
+                qtype,
+                host,
+                allowed_edges=allowed_edges,
+            )
 
 
 def check_exact_types(host: str = HOST) -> dict[str, str]:

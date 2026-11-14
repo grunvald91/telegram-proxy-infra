@@ -7,6 +7,7 @@ Root SSH secrets exist only in the CI job. No arbitrary SQL or shell values.
 """
 from __future__ import annotations
 import datetime as dt
+import ipaddress
 import os
 import re
 import shlex
@@ -36,12 +37,30 @@ BASE="/opt/mnebydns-owner-domain"
 WORK="/tmp/mnebydns-owner-domain-"+RUNID
 FILES=(
     "mnebydns-owner-domain-render-20261110.py",
+    "mnebydns-dot-config-change-20261111.sh",
     "mnebydns-owner-domain-stage-20261110.sh",
     "mnebydns-owner-domain-rollback-20261110.sh",
     "mnebydns-owner-domain-confirm-20261110.sh",
     "mnebydns-owner-domain-remove-20261110.sh",
 )
 TIMEOUT=90
+
+
+def pg_inet_host(raw: str) -> str:
+    """Interpret PostgreSQL INET::text safely as IPv4 host only.
+
+    PostgreSQL may return 13.227.192.109/32 instead of 13.227.192.109.
+    Reject IPv4 subnets with a broader mask, IPv6, internal/own IPs.
+    """
+    if not isinstance(raw,str):
+        raise ValueError("Origin inet must be a string")
+    try:
+        iface=ipaddress.ip_interface(raw)
+    except ValueError as exc:
+        raise ValueError("Unrecognized PostgreSQL INET origin") from exc
+    if iface.version!=4 or iface.network.prefixlen!=32:
+        raise ValueError("Origin metadata is not an exact IPv4 host")
+    return _render.validated_public_ip(str(iface.ip))
 
 
 def cmd(args:list[str], password:str|None=None, timeout=TIMEOUT,
@@ -201,7 +220,10 @@ def oracle_canary_check(domain:str,expect_rewrite:bool)->None:
         rc,ips=dns_q(host)
         if rc!=0 or ips!=[EDGE]:
             raise RuntimeError("STABLE_SERVICE_DOT_REGRESSION_"+host)
-    for host in ("i.instagram.com","graph.instagram.com","api.telegram.org"):
+    # Meta was originally a direct-only control. The owner may enable Meta
+    # SmartDNS as a separate product policy, so never hard-code it as excluded.
+    # Keep ordinary-web and Telegram as stable direct-only controls.
+    for host in ("example.org","api.telegram.org","t.me"):
         rc,ips=dns_q(host)
         if rc!=0 or EDGE in ips or RU in ips:
             raise RuntimeError("EXCLUDED_DOMAIN_REWRITTEN_"+host)
@@ -521,8 +543,16 @@ def active_health():
        not re.fullmatch(r"[1-9][0-9]{0,14}",rev):
         raise RuntimeError("Invalid ACTIVE row identifier")
     domain=_render.validate_domain(domain)
+    # Distinguish missing/invalid stored origin metadata from network failure.
+    # Never invent an origin IP, change routing, or clear an ACTIVE state.
     try:
-        _render.validated_public_ip(ip)
+        ip=pg_inet_host(ip)
+    except ValueError:
+        sql("UPDATE dns_admin_domains SET last_error_code='ACTIVE_ROUTE_METADATA_INVALID'"
+            " WHERE id="+id+" AND revision="+rev+" AND status='ACTIVE'")
+        print("owner_domain_ACTIVE_metadata_invalid="+domain,flush=True)
+        return
+    try:
         tag=_render.mark(domain)
         probe=(
             "set -Eeuo pipefail; "
@@ -563,7 +593,8 @@ def active_health():
         return
     sql("UPDATE dns_admin_domains SET last_error_code=NULL"
         " WHERE id="+id+" AND revision="+rev+" AND status='ACTIVE'"
-        " AND last_error_code='ACTIVE_ROUTE_CHECK_FAILED'")
+        " AND last_error_code IN ('ACTIVE_ROUTE_CHECK_FAILED',"
+        "'ACTIVE_ROUTE_METADATA_INVALID')")
     print("owner_domain_ACTIVE_health_verified="+domain,flush=True)
 
 
@@ -581,33 +612,43 @@ def main():
         print("owner_domain_queue_empty=true",flush=True)
         active_health()
         return
-    status=item["status"]
-    print("owner_domain_queue_action="+status,flush=True)
-    if status=="APPLY_REQUESTED":
-        apply(item)
-    elif status in ("CONFIRM_REQUESTED","CONFIRMING"):
-        confirm(item)
-    elif status=="ROLLBACK_REQUESTED":
-        cancel_canary(item)
-    elif status=="CANARY":
-        if int(item["expires"] or 0)<int(time.time()):
-            cancel_canary(item,expired=True)
+    # A non-empty owner queue must not starve the ACTIVE-route monitor.
+    # Only read/inspect: active_health() refuses to touch routes while the
+    # shared live checkpoint differs from its committed baseline.
+    # Never let a health-monitor failure conceal a domain transition failure.
+    try:
+        status=item["status"]
+        print("owner_domain_queue_action="+status,flush=True)
+        if status=="APPLY_REQUESTED":
+            apply(item)
+        elif status in ("CONFIRM_REQUESTED","CONFIRMING"):
+            confirm(item)
+        elif status=="ROLLBACK_REQUESTED":
+            cancel_canary(item)
+        elif status=="CANARY":
+            if int(item["expires"] or 0)<int(time.time()):
+                cancel_canary(item,expired=True)
+            else:
+                print("owner_domain_canary_wait_for_user=true",flush=True)
+        elif status=="PROBING":
+            # Crash recovery: never accept orphaned tests as permanent.
+            if int(time.time())-int(item["updated"] or 0)>12*60:
+                if item["run"]:
+                    rollback_or_unchanged(item["run"])
+                elif not live_checkpoint_unchanged():
+                    raise RuntimeError("INTERRUPTED_OWNER_DEPLOY_ROLLBACK_UNVERIFIED")
+                update_error(item,"INTERRUPTED_OWNER_DEPLOY")
+            else:
+                print("owner_domain_probe_in_progress=true",flush=True)
+        elif status in ("REMOVAL_PENDING","REMOVING"):
+            remove(item)
         else:
-            print("owner_domain_canary_wait_for_user=true",flush=True)
-    elif status=="PROBING":
-        # Crash recovery: never accept orphaned tests as permanent.
-        if int(time.time())-int(item["updated"] or 0)>12*60:
-            if item["run"]:
-                rollback_or_unchanged(item["run"])
-            elif not live_checkpoint_unchanged():
-                raise RuntimeError("INTERRUPTED_OWNER_DEPLOY_ROLLBACK_UNVERIFIED")
-            update_error(item,"INTERRUPTED_OWNER_DEPLOY")
-        else:
-            print("owner_domain_probe_in_progress=true",flush=True)
-    elif status in ("REMOVAL_PENDING","REMOVING"):
-        remove(item)
-    else:
-        raise RuntimeError("Unsupported job state")
+            raise RuntimeError("Unsupported job state")
+    finally:
+        try:
+            active_health()
+        except Exception as exc:
+            print("owner_domain_active_audit_exception="+type(exc).__name__,flush=True)
 
 
 if __name__=="__main__":

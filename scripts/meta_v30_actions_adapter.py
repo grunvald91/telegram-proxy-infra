@@ -16,7 +16,7 @@ import subprocess
 import tarfile
 import time
 from meta_v29_two_server_sequence import Trial, checked_phone_ip, RU, DE
-from meta_v31_sni_evidence import validate_report,write_report
+from meta_v31_sni_evidence import validate_report,validate_tz_report,write_report
 
 ROOT=Path(__file__).resolve().parents[1]
 STAGE="/usr/local/libexec/mneby-meta-v26"
@@ -35,7 +35,7 @@ SECRETS={"de":"RELAY89_SSH_PASSWORD","ru":"SERVER188_SSH_PASSWORD"}
 SCRIPTS={"de":"meta_v26_de_stage.py","ru":"meta_v26_ru_stage.py"}
 COMMANDS={
     "de":frozenset(("stage","enable-dns","disable-dns","status","rollback","reset")),
-    "ru":frozenset(("start","status","rollback","reset","evidence")),
+    "ru":frozenset(("start","status","rollback","reset","evidence","set-clamp-on","set-clamp-off")),
 }
 APPROVAL="CONFIRM_CURRENT_PHONE_IP_AND_SNI_TEST"
 HEALTH={
@@ -88,16 +88,18 @@ def cancel_trial(signum,frame):
 def check_approval(phone_ip,approved,event):
     peer=checked_phone_ip(phone_ip)
     owner_oneoff=(event=="push" and
-                  os.environ.get("MNEBY_META_V30_ONEOFF_RELEASE")==
-                      "run-15m-all-clients-sni-20261113-retry1")
+                  os.environ.get("MNEBY_META_V30_ONEOFF_RELEASE")=="run-15m-all-clients-sni-20261113-retry1")
     if approved!=APPROVAL or not (event=="workflow_dispatch" or owner_oneoff):
         raise PermissionError("manual dispatch or explicit Git-controlled one-off required")
     return peer
 
 class Remote:
-    def __init__(self,*,repo_root=ROOT,env=None):
+    def __init__(self,*,repo_root=ROOT,env=None,window=8):
         self.root=repo_root
         self.env=dict(os.environ if env is None else env)
+        if type(window) is not int or window not in (4,8):
+            raise ValueError("window must be 4 or 8")
+        self.window=window
         validate_manifest(repo_root)
         self.known=repo_root/"ops/mnebydns-owner-ssh-known_hosts"
         self.payload=bundle(repo_root)
@@ -170,6 +172,9 @@ class Remote:
         command=("MNEBY_META_V26_APPROVED=YES /usr/bin/python3 "
                  +shlex.quote(script)+" "+shlex.quote(action))
         if needs_peer:command+=" --peer "+shlex.quote(checked_phone_ip(peer))
+        window=getattr(self,"window",8)
+        if role=="ru" and action in ("start","set-clamp-on","set-clamp-off") and window!=8:
+            command+=" --window "+str(window)
         return self.call(role,command,timeout=145 if needs_peer else 70)
 
     def verify_health(self):
@@ -193,14 +198,9 @@ class Remote:
         if require_success:validate_report(report,final=final)
         return report
 
-    def active_window(self,seconds):
-        self.verify_health()
-        self.collect_evidence(require_success=True)
-        print("meta_v30_phone_test_ready=true",flush=True)
-        print("meta_v30_test_window_started=true",flush=True)
-        print("meta_v30_test_window_seconds="+str(seconds),flush=True)
+    def _wait_health_loop(self,seconds,*,checks_start=0):
         until=time.monotonic()+seconds
-        checks=0
+        checks=checks_start
         while True:
             self.verify_health()
             self.collect_evidence(require_success=True)
@@ -208,9 +208,34 @@ class Remote:
             print("meta_v30_health_check_count="+str(checks),flush=True)
             remaining=until-time.monotonic()
             if remaining<=0:
-                print("meta_v30_test_window_completed=true",flush=True)
-                return
+                return checks
             time.sleep(min(15,remaining))
+
+    def active_window(self,seconds,*,clamp_mode="on",unclamped_seconds=540):
+        if clamp_mode not in ("on","off","phased"):
+            raise ValueError("invalid clamp_mode")
+        if clamp_mode=="off":
+            self.run("ru","set-clamp-off")
+            print("meta_v30_clamp_phase=OFF",flush=True)
+        elif clamp_mode=="phased":
+            self.run("ru","set-clamp-off")
+            print("meta_v30_clamp_phase=OFF_FOR_CELLS_A_C",flush=True)
+        self.verify_health()
+        self.collect_evidence(require_success=True)
+        print("meta_v30_phone_test_ready=true",flush=True)
+        print("meta_v30_test_window_started=true",flush=True)
+        print("meta_v30_test_window_seconds="+str(seconds),flush=True)
+        if clamp_mode=="phased":
+            phase1=min(max(1,unclamped_seconds),max(1,seconds//2))
+            phase2=max(0,seconds-phase1)
+            checks=self._wait_health_loop(phase1,checks_start=0)
+            self.run("ru","set-clamp-on")
+            print("meta_v30_clamp_phase=ON_FOR_CELLS_B_D_E",flush=True)
+            if phase2>0:
+                self._wait_health_loop(phase2,checks_start=checks)
+        else:
+            self._wait_health_loop(seconds,checks_start=0)
+        print("meta_v30_test_window_completed=true",flush=True)
 
     def reset(self,role):
         self.run(role,"reset")
@@ -227,6 +252,9 @@ def main(argv=None):
     p.add_argument("--mode",choices=("validate","preflight","activate"),required=True)
     p.add_argument("--phone-ip")
     p.add_argument("--minutes",type=int,default=30)
+    p.add_argument("--clamp-mode",choices=("on","off","phased"),default="on")
+    p.add_argument("--unclamped-seconds",type=int,default=540)
+    p.add_argument("--window",type=int,choices=(4,8),default=8)
     args=p.parse_args(argv)
     if args.mode=="validate":
         validate_manifest()
@@ -242,7 +270,7 @@ def main(argv=None):
     if args.mode=="activate":
         signal.signal(signal.SIGTERM,cancel_trial)
         signal.signal(signal.SIGINT,cancel_trial)
-    adapter=Remote()
+    adapter=Remote() if args.window==8 else Remote(window=args.window)
     for role in ("de","ru"):
         adapter.preflight(role)
         print("meta_v30_"+role+"_preflight=PASS",flush=True)
@@ -257,11 +285,21 @@ def main(argv=None):
             adapter.stage_files(role)
             installed.append(role)
         attempted=True
-        Trial(adapter.run,adapter.active_window).run(peer,seconds=args.minutes*60)
+        window_fn=(adapter.active_window if args.clamp_mode=="on"
+                   else lambda secs: adapter.active_window(
+                       secs,clamp_mode=args.clamp_mode,
+                       unclamped_seconds=args.unclamped_seconds))
+        Trial(adapter.run,window_fn).run(peer,seconds=args.minutes*60)
     except BaseException as exc:
         failure=exc
     if attempted:
-        try:adapter.collect_evidence(final=True,require_success=failure is None)
+        try:
+            if args.clamp_mode=="on":
+                adapter.collect_evidence(final=True,require_success=failure is None)
+            else:
+                report=adapter.collect_evidence(final=True,require_success=False)
+                if failure is None:
+                    validate_tz_report(report,require_split=(args.clamp_mode=="phased"))
         except BaseException as exc:
             if failure is None:failure=exc
     cleanup_errors=[]
@@ -274,7 +312,8 @@ def main(argv=None):
     if failure:
         raise RuntimeError("v30 trial failed; cleanup verified") from failure
     print("meta_v30_trial_finished_cleanup_verified=true",flush=True)
-    print("meta_v31_phone_sni_segmentation=OBSERVED",flush=True)
+    seg_status="NOT_TESTED_CLAMP_OFF" if args.clamp_mode=="off" else "OBSERVED"
+    print("meta_v31_phone_sni_segmentation="+seg_status,flush=True)
     print("meta_v30_instagram_android_works=NOT_PROVEN",flush=True)
 
 if __name__=="__main__":

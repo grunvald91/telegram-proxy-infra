@@ -31,6 +31,7 @@ for service in nginx mnebydns-dot.service mnebydns-googlepilot.service xray.serv
 done
 test -s "$work/mnebydns-owner-domain-render-20261110.py"
 test -s "$work/mnebydns-owner-domain-rollback-20261110.sh"
+test -s "$work/mnebydns-dot-config-change-20261111.sh"
 exec 9>/run/lock/mnebyvpn-public-route.lock
 flock -w 30 9 || exit 3
 test ! -e "$base"
@@ -49,6 +50,7 @@ for kind in dns nginx; do
 done
 nginx -t -c "$base/nginx.pilot" >/dev/null 2>&1
 install -m 700 "$work/mnebydns-owner-domain-rollback-20261110.sh" "$base/rollback.sh"
+install -m 700 "$work/mnebydns-dot-config-change-20261111.sh" "$base/reload.sh"
 install -m 700 "$work/mnebydns-owner-domain-confirm-20261110.sh" "$base/confirm.sh"
 cat > "$base/$name.service" <<UNIT
 [Unit]
@@ -89,7 +91,7 @@ systemctl reload nginx
 cmp -s "$base/nginx.pilot" "$nginx"
 cp -p "$base/dns.pilot" "$dns.owner-remove-$id"
 mv -f "$dns.owner-remove-$id" "$dns"
-systemctl restart mnebydns-dot.service
+bash "$base/reload.sh" "$dns"
 # systemctl active may precede bind(:853); don't test DNS/TLS during that gap.
 for attempt in $(seq 1 60); do
   if systemctl is-active --quiet mnebydns-dot.service &&

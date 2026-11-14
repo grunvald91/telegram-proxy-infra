@@ -1,0 +1,103 @@
+name: MNEBYDNS scan all 108 reviewed exact domains RU vs DE (read-only)
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - ".github/workflows/mnebydns-108-mass-readonly-20261112.yml"
+      - "scripts/mnebydns-108-mass-readonly-20261112.py"
+      - "data/mnebydns-108-canary-review-20261111.txt"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/mnebydns-108-mass-readonly-20261112.yml"
+      - "scripts/mnebydns-108-mass-readonly-20261112.py"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('mnebydns-mass-108-offline-{0}', github.ref) || 'mnebydns-google-public-443-change' }}
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate exact 108-host inventory and read-only code offline
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-108-mass-readonly-20261112.py
+          python3 scripts/mnebydns-108-mass-readonly-20261112.py --self-test
+          test "$(grep -c ' ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts)" -eq 2
+          ! grep -Eq 'StrictHostKeyChecking=no|accept-new|verify=False|check_hostname=False|systemctl (restart|reload)|INSERT INTO|UPDATE dns_admin_domains' scripts/mnebydns-108-mass-readonly-20261112.py
+          echo MASS_108_OFFLINE=PASS
+  scan:
+    if: github.event_name != 'pull_request'
+    needs: offline
+    runs-on: ubuntu-latest
+    timeout-minutes: 27
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install SSH and enforce preconditions
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+      - name: Read current 108-host DB and production route statuses (no writes)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if python3 scripts/mnebydns-batch-108-live-status-20261112.py inspect; then
+            echo LIVE_108_PRE_SCAN=VERIFIED
+          else
+            echo 'LIVE_108_PRE_SCAN=UNVERIFIED; network probe continues read-only' 
+          fi
+      - name: Probe all 108 exact hosts from DE and RU (same pinned IP, valid TLS, GET /)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/mnebydns-108-mass-readonly-20261112.py --run
+          python3 - <<'PY'
+          import csv, json
+          from pathlib import Path
+          root = Path('mass-108-results')
+          data = json.loads((root/'differential.json').read_text())
+          rows = data['observations']
+          assert len(rows) == 108, 'not all 108 domains were reported'
+          assert len({row['host'] for row in rows}) == 108, 'duplicate hosts'
+          with (root/'observations.csv').open(newline='') as f:
+              items = list(csv.DictReader(f))
+          assert len(items) == 108
+          assert all(row['host'] == item['domain'] for row, item in zip(rows,items))
+          print('MASS_108_COMPLETE=108')
+          PY
+      - name: Attach readable summary and counts
+        if: always()
+        shell: bash
+        run: |
+          if [ -f mass-108-results/report.md ]; then
+            cat mass-108-results/report.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'Mass scan did not produce a complete report; do not claim success' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Archive full per-host JSON CSV and Markdown reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mnebydns-mass-108-readonly-${{ github.run_id }}
+          path: |
+            mass-108-results/
+            mnebydns-108-live-status/
+          if-no-files-found: warn
+          retention-days: 30

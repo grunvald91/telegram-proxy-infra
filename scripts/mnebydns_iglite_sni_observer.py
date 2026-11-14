@@ -160,6 +160,8 @@ class Flow:
         self.buf=bytearray(LIMIT)
         self.covered=bytearray(LIMIT)
         self.ranges=set()
+        self.first_segment_len=None
+        self.segment_count=0
         # A truncated capture does not reveal the actual TCP segment boundary.
         # Such a flow cannot be classified as SNI-split or unsplit reliably.
         self.segment_boundary_unknown=False
@@ -188,6 +190,9 @@ class Flow:
         if fresh and overlap:
             self.segment_boundary_unknown=True
         if fresh and wire_len>0:
+            self.segment_count+=1
+            if offset==0 and self.first_segment_len is None:
+                self.first_segment_len=min(wire_len,len(payload))
             # Never infer a captured segment boundary past captured bytes.
             self.ranges.add((offset,offset+min(wire_len,len(payload))))
     def contiguous_prefix(self):
@@ -213,8 +218,21 @@ class Analyzer:
         self.stats=Counter()
         self.host_counts=Counter()
         self.events=[]
+        self.flow_details=[]
         self.peer_index={}
         self.uncovered_meta=set()
+    def _record_segment_metrics(self,prefix,flow,split):
+        if flow.segment_boundary_unknown:
+            return
+        first_len=flow.first_segment_len
+        if first_len is not None and first_len<=4:
+            self.stats[prefix+'first_segment_le4']+=1
+        if first_len is not None and first_len<=8:
+            self.stats[prefix+'first_segment_le8']+=1
+        if flow.segment_count>=2:
+            self.stats[prefix+'multi_segment_hello']+=1
+        if prefix:
+            self.stats['other_sni_split' if split else 'other_sni_unsplit']+=1
     def tcp(self,ip,port,seq,syn,payload,wire_len=None,timestamp=None):
         key=(ip,port)
         if syn:
@@ -238,9 +256,21 @@ class Analyzer:
             self.stats['no_sni']+=1
             return
         host,begin,end=info
-        if host not in self.hosts:
+        is_target=host in self.hosts
+        split=None if flow.segment_boundary_unknown else any(begin<b<end for a,b in flow.ranges)
+        if len(self.flow_details)<512:
+            self.flow_details.append({
+                'utc_epoch':int(timestamp or 0),
+                'host':host,
+                'target':is_target,
+                'split':split,
+                'first_segment_len':flow.first_segment_len,
+                'segments':flow.segment_count,
+            })
+        if not is_target:
             self.stats['other_sni']+=1
-            if host.endswith(('.instagram.com','.facebook.com','.fbcdn.net')):
+            self._record_segment_metrics('other_',flow,split)
+            if host.endswith(('.instagram.com','.facebook.com','.fbcdn.net','.cdninstagram.com')):
                 if len(self.uncovered_meta)<40:
                     self.uncovered_meta.add(host)
             return
@@ -251,7 +281,7 @@ class Analyzer:
             # actual segment boundary was not fully observed. Fail closed.
             self.stats['sni_boundary_indeterminate']+=1
             return
-        split=any(begin<b<end for a,b in flow.ranges)
+        self._record_segment_metrics('',flow,split)
         self.stats['sni_split' if split else 'sni_unsplit']+=1
         if ip not in self.peer_index:
             self.peer_index[ip]=len(self.peer_index)+1
@@ -361,7 +391,7 @@ def capture_command(*, edge="89.125.90.101", interface=None, peer=None):
         if not parsed.is_global or str(parsed)==edge:
             raise ValueError("invalid capture client peer")
         capture_filter+=' and src host '+str(parsed)
-    return ['tcpdump','-i',interface,'-n','-U','-s','1500','-w','-',capture_filter]
+    return ['tcpdump','-i',interface,'-n','-U','-s','1600','-w','-',capture_filter]
 
 
 def begin(hosts,peer=None,*,edge="89.125.90.101",interface=None):

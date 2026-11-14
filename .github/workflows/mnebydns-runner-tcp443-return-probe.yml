@@ -1,0 +1,36 @@
+name: MNEBYDNS runner-only TCP443 SYN-ACK comparison (read-only)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebydns-runner-tcp443-return-probe.yml'
+      - 'scripts/mnebydns_runner_tcp443_return_probe.py'
+      - 'scripts/tests/test_mnebydns_runner_tcp443_return_probe.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mnebydns-runner-tcp443-return
+  cancel-in-progress: false
+
+jobs:
+  observe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify IPv4 packet parser with synthetic packets
+        run: |
+          set -Eeuo pipefail
+          python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_runner_tcp443_return_probe.py' -v
+          python3 -m py_compile scripts/mnebydns_runner_tcp443_return_probe.py
+      - name: Capture only our own test TCP headers on the runner, not on VPS
+        run: |
+          set -Eeuo pipefail
+          sudo -n timeout 35s python3 scripts/mnebydns_runner_tcp443_return_probe.py
+          echo "NO_SERVER_SSH_NFT_FIREWALL_OR_ROUTE_CHANGES=true"

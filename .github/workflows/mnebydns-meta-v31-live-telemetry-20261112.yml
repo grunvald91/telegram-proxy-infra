@@ -1,0 +1,233 @@
+name: MNEBYDNS Instagram TCP/SNI diagnostic (no false-green live result)
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/mnebydns-meta-v31-live-telemetry-20261112.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-meta-v31-live-telemetry-only
+  cancel-in-progress: false
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install SSH client helper
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          if ! command -v sshpass >/dev/null; then
+            timeout 35s sudo apt-get -o Acquire::Retries=0 -o Acquire::http::Timeout=7 update -qq || true
+            timeout 55s sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+          fi
+      - name: Read current Russian ingress and real packet evidence (no raw packets)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -' <<'PY' | tee "$RUNNER_TEMP/ru-live-evidence.txt" | tee -a "$GITHUB_STEP_SUMMARY"
+          import datetime,json,pathlib,subprocess,time
+          def command(*args,timeout=6):
+              try:
+                  p=subprocess.run(args,capture_output=True,text=True,timeout=timeout)
+                  return p.returncode,p.stdout.strip()
+              except Exception:return 127,""
+          print("monitor_utc="+datetime.datetime.now(datetime.timezone.utc).isoformat(),flush=True)
+          print("node=RU188",flush=True)
+          for service in ('wg-quick@tg-relay.service','nginx.service','mneby-meta-v26-ru-window.service','mneby-meta-v26-ru-watchdog.timer'):
+              code,_=command('systemctl','is-active','--quiet',service)
+              print("ru_service_"+service+"="+("active" if code==0 else "inactive"),flush=True)
+          root=pathlib.Path('/var/lib/mneby-meta-v26-ru')
+          print("ru_trial_state_dir="+str(root.is_dir()).lower(),flush=True)
+          code,data=command('nft','-j','list','table','inet','mneby_meta_v26_ru')
+          print("ru_trial_nft_active="+str(code==0).lower(),flush=True)
+          if code==0:
+              try:
+                  j=json.loads(data)
+                  rules=[x['rule'] for x in j.get('nftables',[]) if 'rule' in x]
+                  counts=[e['counter']['packets'] for x in rules for e in x.get('expr',[]) if 'counter' in e]
+                  print("ru_nft_rule_counters="+json.dumps(counts),flush=True)
+              except Exception:print('ru_nft_counter_parse=FAILED',flush=True)
+          code,data=command('ss','-H','-lnt','sport','=',' :18443'.strip())
+          print('ru_test_listener_18443='+str(bool(data)).lower(),flush=True)
+          peer_file=root/'peer'
+          marker_file=root/'firewall-pending'
+          print('ru_firewall_marker_present='+str(marker_file.is_file()).lower(),flush=True)
+          if peer_file.is_file():
+              peer=peer_file.read_text().strip()
+              if peer!='all':
+                  args=('iptables','-w','5','-C','ufw-user-input','-s',peer+'/32',
+                        '-d','188.120.254.223/32','-p','tcp','--dport','18443',
+                        '-m','comment','--comment','mneby-meta-v26-scoped-tcp18443',
+                        '-j','ACCEPT')
+                  code,_=command(*args)
+                  print('ru_ufw_owned_18443_allow_active='+str(code==0).lower(),flush=True)
+          report=root/'evidence.json'
+          print('ru_packet_evidence_exists='+str(report.is_file()).lower(),flush=True)
+          if report.is_file():
+              try:
+                  j=json.loads(report.read_text())
+                  print('ru_evidence_age_seconds='+str(round(time.time()-j.get('updated_at',0))),flush=True)
+                  for key in ('capture_point','final','capture_ok','verdict','kernel_drops','android_login_feed','failure_codes','uncovered_meta_hosts'):
+                      print('ru_evidence_'+key+'='+json.dumps(j.get(key)),flush=True)
+                  for k,v in sorted(j.get('stats',{}).items()):
+                      print('ru_evidence_stat_'+k+'='+str(v),flush=True)
+                  for k,v in sorted(j.get('proxy',{}).items()):
+                      if isinstance(v,(int,float,bool)):
+                          print('ru_proxy_'+k+'='+str(v),flush=True)
+                  for host,stats in sorted(j.get('hosts',{}).items()):
+                      if stats.get('hello',0)>0:
+                          print('ru_seen_host='+host+' count='+str(stats['hello'])+' split='+str(stats.get('split',0)),flush=True)
+              except Exception as exc:print('ru_evidence_error='+type(exc).__name__,flush=True)
+          code,data=command('ip','-j','route','get','10.66.77.1')
+          if code==0:
+              try:print('ru_wg_route_dev='+str(json.loads(data)[0].get('dev')),flush=True)
+              except Exception:pass
+          PY
+      - name: Observe exact phone TCP443 SYN, SYNACK and TLS packet directions for 20 seconds (read-only)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -' <<'PY' | tee "$RUNNER_TEMP/phone-packets.txt" | tee -a "$GITHUB_STEP_SUMMARY"
+          import collections,pathlib,socket,struct,time
+          root=pathlib.Path('/var/lib/mneby-meta-v26-ru')
+          pf=root/'peer'
+          if not pf.is_file():print('phone_packet_probe=NO_ACTIVE_TRIAL');raise SystemExit(0)
+          peer=pf.read_text().strip()
+          if peer!='all':
+              peer=socket.inet_aton(peer)
+          ru=socket.inet_aton('188.120.254.223')
+          stats=collections.Counter();windows=[]
+          sock=socket.socket(socket.AF_PACKET,socket.SOCK_RAW,socket.htons(0x0800))
+          sock.bind(('ens3',0));sock.settimeout(.4)
+          end=time.monotonic()+20
+          try:
+              while time.monotonic()<end:
+                  try:frame=sock.recv(2048)
+                  except socket.timeout:continue
+                  if len(frame)<54 or frame[12:14]!=b'\x08\x00':continue
+                  ip=frame[14:]
+                  n=(ip[0]&15)*4
+                  if ip[0]>>4!=4 or ip[9]!=6 or n<20 or len(ip)<n+20:continue
+                  src,dst=ip[12:16],ip[16:20]
+                  if peer!='all' and src!=peer and dst!=peer:continue
+                  direction='in' if dst==ru else ('out' if src==ru else None)
+                  if not direction:continue
+                  tcp=ip[n:]
+                  sport,dport=struct.unpack_from('!HH',tcp)
+                  # Observe both pre/post-DNAT locally, and on-wire 443.
+                  if direction=='in' and dport not in (443,18443):continue
+                  if direction=='out' and sport not in (443,18443):continue
+                  flags=tcp[13];header=(tcp[12]>>4)*4
+                  if len(tcp)<header or header<20:continue
+                  payload=tcp[header:]
+                  stats[direction+'_total']+=1
+                  if (flags&0x12)==0x02:stats[direction+'_syn']+=1
+                  if (flags&0x12)==0x12:stats[direction+'_synack']+=1
+                  if (flags&0x10) and not(flags&0x02):stats[direction+'_ack']+=1
+                  if flags&0x04:stats[direction+'_rst']+=1
+                  if payload:stats[direction+'_payload']+=1
+                  if payload[:1]==b'\x16':stats[direction+'_tls_record_start']+=1
+                  if direction=='out' and (flags&0x12)==0x12 and len(windows)<20:
+                      windows.append(struct.unpack_from('!H',tcp,14)[0])
+          finally:sock.close()
+          print('phone_packet_monitor_seconds=20',flush=True)
+          print('phone_peer_scope='+('all' if peer=='all' else 'configured_phone_ip'),flush=True)
+          for k,v in sorted(stats.items()):print('phone_packet_'+k+'='+str(v),flush=True)
+          if windows:print('phone_synack_advertised_windows='+str(windows[:20]),flush=True)
+          PY
+      - name: Read current foreign DNS and Nginx Meta route status
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import datetime,pathlib,subprocess
+          def cmd(*args,timeout=15):
+              try:
+                  p=subprocess.run(args,text=True,capture_output=True,timeout=timeout)
+                  return p.returncode,p.stdout.strip()
+              except Exception:return 127,''
+          print('node=DE89')
+          print('monitor_utc='+datetime.datetime.now(datetime.timezone.utc).isoformat())
+          for s in ('nginx.service','mnebydns-dot.service','mnebydns-googlepilot.service','mneby-meta-v26-de-watchdog.timer'):
+              r,_=cmd('systemctl','is-active','--quiet',s)
+              print('de_service_'+s+'='+('active' if r==0 else 'inactive'))
+          stage=pathlib.Path('/usr/local/libexec/mneby-meta-v26/meta_v26_de_stage.py')
+          print('de_trial_stage_present='+str(stage.is_file()).lower())
+          if stage.is_file():
+              r,data=cmd('python3',str(stage),'status')
+              print('de_trial_status_exit='+str(r))
+              for line in data.splitlines():
+                  if line.startswith('meta_v26_de_'):print(line)
+          core=pathlib.Path('/opt/mnebydns-dot/Corefile').read_text()
+          print('de_scoped_client_dns_view_present='+str('view mneby_meta_phone' in core).lower())
+          print('de_instagram_a_template_count='+str(core.count('template IN A i.instagram.com {')))
+          print('de_google_template_still_present='+str('template IN A gemini.google.com {' in core).lower())
+          PY
+      - name: "Gate active-trial verdict: zero confirmed SNI is not a successful test"
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import json,os,sys
+          root=Path(os.environ["RUNNER_TEMP"])
+          def read(name):
+              path=root/name
+              if not path.is_file():
+                  raise RuntimeError("missing required telemetry: "+name)
+              items={}
+              for line in path.read_text().splitlines():
+                  key,sep,value=line.partition("=")
+                  if sep:items[key]=value
+              return items
+          ru=read("ru-live-evidence.txt")
+          packets=read("phone-packets.txt")
+          active=ru.get("ru_trial_nft_active")=="true" and ru.get("ru_test_listener_18443")=="true"
+          if not active:
+              print("SNI_DIAGNOSTIC=NO_ACTIVE_TRIAL; no segmentation result claimed")
+              print("::notice title=No live SNI trial::Read-only diagnostics succeeded; SNI was not tested.")
+              raise SystemExit(0)
+          incoming=int(packets.get("phone_packet_in_syn","0"))
+          outgoing=int(packets.get("phone_packet_out_synack","0"))
+          split=int(ru.get("ru_evidence_stat_sni_split","0"))
+          hello=int(ru.get("ru_evidence_stat_target_clienthello","0"))
+          verdict=json.loads(ru.get("ru_evidence_verdict",'null'))
+          final=json.loads(ru.get("ru_evidence_final",'false'))
+          print("SNI_DIAGNOSTIC_SYN="+str(incoming))
+          print("SNI_DIAGNOSTIC_SYNACK="+str(outgoing))
+          print("SNI_DIAGNOSTIC_TARGET_CLIENTHELLO="+str(hello))
+          print("SNI_DIAGNOSTIC_CONFIRMED_SPLITS="+str(split))
+          print("SNI_DIAGNOSTIC_FINAL="+str(final))
+          if incoming>0 and outgoing==0:
+              print("::error title=TCP handshake not completed::Phone SYN reached RU, but no SYN-ACK left RU during capture; SNI cannot yet be evaluated.")
+              raise SystemExit(1)
+          if split==0 or hello==0:
+              print("::error title=No confirmed SNI segmentation::A live experiment cannot pass with zero packet-confirmed SNI splits.")
+              raise SystemExit(1)
+          if not final or verdict!="SNI_SEGMENTATION_OBSERVED":
+              print("::error title=SNI not finally verified::Preliminary packet counts are not a final SNI success verdict.")
+              raise SystemExit(1)
+          print("SNI_DIAGNOSTIC=FINAL_PACKET_SEGMENTATION_CONFIRMED")
+          print("ANDROID_INSTAGRAM_E2E=NOT_TESTED_BY_TELEMETRY")
+          PY

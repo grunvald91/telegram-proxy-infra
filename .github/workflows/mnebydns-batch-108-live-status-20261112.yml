@@ -1,0 +1,77 @@
+name: MNEBYDNS 108-domain live queue and production route snapshot (read-only)
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - ".github/workflows/mnebydns-batch-108-live-status-20261112.yml"
+      - "scripts/mnebydns-batch-108-live-status-20261112.py"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/mnebydns-batch-108-live-status-20261112.yml"
+      - "scripts/mnebydns-batch-108-live-status-20261112.py"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('mnebydns-108-status-offline-{0}',github.ref) || 'mnebydns-google-public-443-change' }}
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate read-only inventory and source code
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-batch-108-live-status-20261112.py
+          python3 scripts/mnebydns-batch-108-live-status-20261112.py self-test
+          python3 scripts/mnebydns-batch-108-canary-20261112.py self-test
+          echo MNEBYDNS_108_STATUS_OFFLINE=PASS
+  inspect:
+    if: github.event_name != 'pull_request'
+    needs: offline
+    runs-on: ubuntu-latest
+    timeout-minutes: 11
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install pinned SSH transport prerequisites
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          test "$(grep -c ' ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts)" -eq 2
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+      - name: Snapshot production status and exact-host routes without mutations
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/mnebydns-batch-108-live-status-20261112.py inspect
+      - name: Readable status summary
+        if: always()
+        shell: bash
+        run: |
+          if [ -f mnebydns-108-live-status/report.md ]; then
+            cat mnebydns-108-live-status/report.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Failed before a verified status report could be produced" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Archive verified live status
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mnebydns-108-live-queue-${{ github.run_id }}
+          path: mnebydns-108-live-status/
+          if-no-files-found: warn
+          retention-days: 30
