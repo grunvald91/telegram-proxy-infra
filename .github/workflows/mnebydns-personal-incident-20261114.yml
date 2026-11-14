@@ -50,6 +50,28 @@ jobs:
           for n in ('dns.mnebyvpn.site','aaaaaaaaaaaa.dns.mnebyvpn.site'):
               get(n)
           PY
+      - name: Diagnose exact foreign DoT A mappings vs direct resolver without modifications
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,'scripts')
+          from mnebydns_reliability_monitor import dot_query
+          hosts=('chatgpt.com','auth.openai.com','claude.ai','api.anthropic.com',
+                 'gemini.google.com','grok.com','x.com','www.tiktok.com',
+                 'api.tiktokv.com','www.youtube.com')
+          for host in hosts:
+              result={}
+              for label,ip,sni in (('MAPPED','89.125.90.101','dns.mnebyvpn.site'),
+                                    ('DIRECT','1.1.1.1','one.one.one.one')):
+                  try:
+                      answer=dot_query(ip,sni,host,1)
+                      result[label]={'rcode':answer.rcode,'A':list(answer.addresses)[:6]}
+                  except Exception as exc:
+                      result[label]={'error':type(exc).__name__}
+              print('HOST_A_MAPPING '+host+' '+str(result),flush=True)
+          PY
       - name: Inspect foreign SNI redirect, watchdog rollback, and private upstream (no writes)
         shell: bash
         run: |
