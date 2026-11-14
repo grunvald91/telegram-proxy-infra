@@ -72,6 +72,32 @@ def sqlrun(sql: str) -> list[str]:
             if phrase in r.stderr:
                 print("OWNER_PERSONAL_POSTGRES_FAILURE_REASON=" + reason, flush=True)
                 break
+        known = [
+            ("authentication failed", "DB_AUTH_FAILED"),
+            ("connection refused", "DB_CONNECT_REFUSED"),
+            ("unrecognized value", "PSQL_OPTION_INVALID"),
+            ("unrecognized option", "PSQL_OPTION_INVALID"),
+            ("syntax error", "SQL_SYNTAX"),
+            ("null value in column", "SQL_NOT_NULL"),
+            ("violates check constraint", "SQL_CHECK"),
+            ("violates foreign key constraint", "SQL_FOREIGN_KEY"),
+            ("duplicate key value", "SQL_DUPLICATE"),
+            ("Owner account missing", "OWNER_ACCOUNT_MISSING"),
+            ("Owner already has active", "OWNER_ALREADY_ACTIVE"),
+            ("Paid plan unexpectedly enabled", "STARS_PLAN_ENABLED"),
+            ("Personal DNS credential provisioning denied", "ISSUE_FUNCTION_DENIED"),
+            ("Personal credential not recognized", "RECOGNITION_NOT_VISIBLE"),
+            ("permission denied", "SQL_PERMISSION_DENIED"),
+            ("function issue_personal_dns_credential", "SQL_FUNCTION_MISSING"),
+            ("ERROR:", "PG_ERROR_OTHER"),
+            ("psql: error:", "PG_CLIENT_ERROR"),
+        ]
+        status = next((code for needle, code in known if needle in r.stderr), "UNKNOWN_ERROR")
+        print("OWNER_PERSONAL_POSTGRES_FAILURE_CATEGORY=" + status, flush=True)
+        safe_tags = [x for x in r.stdout.splitlines()
+                     if x.strip() in ("BEGIN", "COMMIT", "ROLLBACK", "DO", "t")]
+        print("OWNER_PERSONAL_POSTGRES_COMMAND_TAGS=" +
+              ",".join(safe_tags[:9]), flush=True)
         raise RuntimeError("POSTGRES_TRANSACTION_FAILED")
     return [v.strip() for v in r.stdout.splitlines() if v.strip()]
 
