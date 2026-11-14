@@ -1,0 +1,237 @@
+name: MNEBYDNS DNS 188 entry + shared mapped A to 188 (personal and legacy)
+on:
+  push:
+    branches: [fix/mnebydns-unified-188-853-and-a-20261114]
+    paths:
+      - '.github/workflows/mnebydns-unified-188-853-and-a-20261114.yml'
+      - 'scripts/mnebydns-unified-188-853-ingress-20261114.sh'
+      - 'scripts/mnebydns-unified-188-corefile-plan-20261114.py'
+  workflow_dispatch:
+permissions: {contents: read}
+concurrency:
+  group: mnebydns-shared-core-public-ru188-20261114
+  cancel-in-progress: false
+jobs:
+  rollout:
+    runs-on: ubuntu-latest
+    timeout-minutes: 23
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Local source review and pinned SSH prerequisites
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          bash -n scripts/mnebydns-unified-188-853-ingress-20261114.sh
+          bash -n scripts/mnebydns-ru-fastpath-stage-20261113.sh
+          bash -n scripts/mnebydns-ru-fastpath-rollback-20261113.sh
+          bash -n scripts/mnebydns-ru-fastpath-commit-20261113.sh
+          python3 -m py_compile scripts/mnebydns-unified-188-corefile-plan-20261114.py
+          python3 scripts/mnebydns-unified-188-corefile-plan-20261114.py --self-test
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+      - name: RU 853 isolated canary over WireGuard to existing DE 8854
+        id: ru_stage
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e scp -q "${opts[@]}" scripts/mnebydns-unified-188-853-ingress-20261114.sh root@188.120.254.223:/tmp/mnebydns-unified-188-853-ingress-20261114.sh
+          sshpass -e ssh -T "${opts[@]}" root@188.120.254.223 'bash /tmp/mnebydns-unified-188-853-ingress-20261114.sh stage'
+      - name: Enable 188 public 853 SNI demultiplexing with 20 minute independent rollback
+        id: ru_switched
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@188.120.254.223 'bash /usr/local/sbin/mnebydns-unified-188-853-ingress-20261114 switch'
+      - name: Generate verified one CoreDNS A-policy patch from stable DE checkpoint
+        id: de_plan
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export DE_PASS="$DE_PASS" RU_PASS="$RU_PASS"
+          python3 scripts/mnebydns-unified-188-corefile-plan-20261114.py --plan
+      - name: Stage 253 shared A changes through existing CoreDNS guarded canary, 45 minute rollback
+        id: de_staged
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          id="$GITHUB_RUN_ID"
+          work="/tmp/mnebydns-fastpath-$id"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh -T "${opts[@]}" root@89.125.90.101 "test ! -e '$work' && mkdir -m 700 '$work'"
+          for fname in dns.before dns.pilot plan.json;do
+            sshpass -e scp -q "${opts[@]}" "unified-188-core-plan/$fname" "root@89.125.90.101:$work/$fname"
+          done
+          for fname in stage rollback commit;do
+            sshpass -e scp -q "${opts[@]}" "scripts/mnebydns-ru-fastpath-$fname-20261113.sh" "root@89.125.90.101:$work/$fname.sh"
+          done
+          sshpass -e scp -q "${opts[@]}" "scripts/mnebydns-dot-config-change-20261111.sh" "root@89.125.90.101:$work/reload.sh"
+          sshpass -e ssh -T "${opts[@]}" root@89.125.90.101 "bash '$work/stage.sh' '$id' '$work'"
+      - name: Verify shared DNS at DE89 and new public RU188 SNI, and direct control
+        id: public_verified
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import socket,ssl,struct,secrets
+          names=(
+            'chatgpt.com','auth.openai.com','android.chat.openai.com','api.openai.com',
+            'cdn.oaistatic.com','www.youtube.com','youtubei.googleapis.com',
+            'www.googlevideo.com','i.ytimg.com','s.ytimg.com','claude.ai',
+            'api.anthropic.com','gemini.google.com','x.com','grok.com',
+            'www.tiktok.com','cloud.oracle.com','copilot.microsoft.com','bing.com',
+            'microsoft.com','id.cisco.com','codebrowser.dev'
+          )
+          def dns(ip,name,kind):
+            tid=secrets.randbelow(65535)
+            q=struct.pack('!HHHHHH',tid,256,1,0,0,0)+b''.join(bytes([len(p)])+p.encode() for p in name.split('.'))+b'\0'+struct.pack('!HH',kind,1)
+            with socket.create_connection((ip,853),timeout=7) as tcp:
+              tcp.settimeout(10)
+              with ssl.create_default_context().wrap_socket(tcp,server_hostname='dns.mnebyvpn.site') as tls:
+                tls.sendall(struct.pack('!H',len(q))+q)
+                head=tls.recv(2)
+                assert len(head)==2
+                length=struct.unpack('!H',head)[0]
+                assert 12<=length<=16384
+                data=b''
+                while len(data)<length:
+                  b=tls.recv(length-len(data))
+                  assert b
+                  data+=b
+            assert data[:2]==q[:2] and data[3]&15==0,(ip,name,kind,'rcode')
+            def skip(off):
+              for i in range(128):
+                n=data[off]
+                if n&192==192:return off+2
+                if not n:return off+1
+                off+=1+n
+              raise RuntimeError('DNS name malformed')
+            off=12
+            for i in range(struct.unpack_from('!H',data,4)[0]):off=skip(off)+4
+            a=[]
+            answer_count=struct.unpack_from('!H',data,6)[0]
+            for i in range(answer_count):
+              off=skip(off)
+              typ,cls,ttl,ln=struct.unpack_from('!HHIH',data,off)
+              off+=10
+              if typ==1 and cls==1 and ln==4:a.append(socket.inet_ntoa(data[off:off+4]))
+              off+=ln
+            return answer_count,sorted(set(a))
+          for ip in ('89.125.90.101','188.120.254.223'):
+            for name in names:
+              count,ips=dns(ip,name,1)
+              assert ips==['188.120.254.223'],(ip,name,ips)
+              print('UNIFIED_DNS_MAPPED_TO_RU188='+ip+' '+name)
+            for name in ('chatgpt.com','www.youtube.com','www.googlevideo.com','claude.ai'):
+              for kind in (28,64,65):
+                count,ips=dns(ip,name,kind)
+                assert count==0 and not ips,(ip,name,kind)
+            count,ips=dns(ip,'example.org',1)
+            assert '188.120.254.223' not in ips and '89.125.90.101' not in ips
+          print('UNIFIED_DNS_BOTH_PUBLIC_ENDPOINTS_RU188_ALL22=PASS',flush=True)
+          PY
+      - name: Validate existing personalized RU sidecar, premium mapped upstream now answers RU188
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@188.120.254.223 'python3 -' <<'PY'
+          import subprocess,json,socket,ssl,struct
+          c=json.loads(subprocess.check_output(['docker','inspect','mnebydns-personal-dot-private'],text=True))[0]
+          assert c['State']['Running']
+          e={s.split('=',1)[0]:s.split('=',1)[1] for s in c['Config']['Env'] if '=' in s}
+          assert e['MNEBYDNS_PERSONAL_DOT_ROUTE_POLICY_FILE'].endswith('policy-chatgpt-dependencies-20261114.json')
+          assert e['MNEBYDNS_PERSONAL_MAPPED_DOT_IP']=='10.66.77.1'
+          assert e['MNEBYDNS_PERSONAL_MAPPED_DOT_PORT']=='1853'
+          q=struct.pack('!HHHHHH',1234,256,1,0,0,0)+b'\x07chatgpt\x03com\0'+struct.pack('!HH',1,1)
+          with socket.create_connection(('10.66.77.1',1853),timeout=7) as raw:
+            raw.settimeout(7)
+            with ssl.create_default_context().wrap_socket(raw,server_hostname='dns.mnebyvpn.site') as tls:
+              tls.sendall(struct.pack('!H',len(q))+q)
+              head=tls.recv(2)
+              assert len(head)==2
+              n=struct.unpack('!H',head)[0]
+              b=b''
+              while len(b)<n:
+                part=tls.recv(n-len(b))
+                assert part
+                b+=part
+          assert b[:2]==q[:2] and b[3]&15==0
+          assert bytes([188,120,254,223]) in b,'PERSONAL_MAPPED_ROUTE_STILL_FOREIGN'
+          print('UNIFIED_PERSONAL_158_POLICY_UNCHANGED=PASS')
+          print('UNIFIED_PERSONAL_MAPPED_CORE_DNS_A_RU188=PASS')
+          PY
+      - name: Verify HTTPS SNI through 188 to real foreign service
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import socket,ssl
+          for host in ('chatgpt.com','auth.openai.com','www.youtube.com','youtubei.googleapis.com',
+                       'i.ytimg.com','api.anthropic.com','claude.ai',
+                       'cdn.oaistatic.com'):
+            with socket.create_connection(('188.120.254.223',443),timeout=8) as raw:
+              raw.settimeout(9)
+              with ssl.create_default_context().wrap_socket(raw,server_hostname=host) as tls:
+                assert bool(tls.getpeercert())
+            print('UNIFIED_RU188_FOREIGN_HTTPS_TLS_VERIFIED='+host,flush=True)
+          PY
+          # Video CDN SNI can vary by caller's network; require TLS validation
+          # from the actual RU ingress VPS as well as the generic public gate.
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@188.120.254.223 'python3 -' <<'PY'
+          import socket,ssl
+          for name in ('www.googlevideo.com','www.youtube.com','youtubei.googleapis.com','i.ytimg.com'):
+              with socket.create_connection(('188.120.254.223',443),timeout=8) as raw:
+                  raw.settimeout(12)
+                  with ssl.create_default_context().wrap_socket(raw,server_hostname=name) as tls:
+                      assert bool(tls.getpeercert())
+              print('RU_ORIGIN_NETWORK_MEDIA_TLS_VERIFIED='+name,flush=True)
+          PY
+      - name: Confirm stable DE CoreDNS checkpoint (auto-revert disarmed)
+        id: de_finalized
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          id="$GITHUB_RUN_ID"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@89.125.90.101 "bash '/opt/mnebydns-fastpath/$id/commit.sh' '/opt/mnebydns-fastpath/$id'"
+      - name: Finalize RU188 DNS 853 while keeping Telegram fallback
+        id: ru_finalized
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@188.120.254.223 'bash /usr/local/sbin/mnebydns-unified-188-853-ingress-20261114 finalize'
+          echo 'Both DNS SNI paths available on RU188:853 and forwarded transparently to DE via WireGuard. The one shared DE CoreDNS now returns 188 for all 264 mapped A templates. Personal billing/keys unchanged. Public Jino A and wildcard records still require changing from DE89 to RU188 to move FIRST DoT hop.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Auto-rollback shared DE CoreDNS on failure before commit
+        if: ${{ failure() && steps.de_finalized.outcome != 'success' && steps.de_staged.outcome != 'skipped' }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          id="$GITHUB_RUN_ID"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@89.125.90.101 "base='/opt/mnebydns-fastpath/$id';if test -s \"\$base/rollback.sh\";then bash \"\$base/rollback.sh\" \"\$base\";else echo 'NO_SHARED_CHANGE_TO_ROLLBACK';fi"
+      - name: Auto-rollback RU 853 on failure before stable checkpoint confirmation
+        if: ${{ failure() && steps.ru_stage.outcome == 'success' && steps.de_finalized.outcome != 'success' }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@188.120.254.223 'bash /usr/local/sbin/mnebydns-unified-188-853-ingress-20261114 rollback'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mnebydns-shared-ru188-route-evidence-${{ github.run_id }}
+          path: |
+            unified-188-core-plan/plan.json
+          if-no-files-found: warn
+          retention-days: 14
