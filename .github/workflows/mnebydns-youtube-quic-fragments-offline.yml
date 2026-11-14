@@ -1,0 +1,19 @@
+name: MNEBYDNS YouTube QUIC fragmented ClientHello v1/v2 regression
+on:
+  push:
+    branches: [feat/mnebydns-youtube-quic-ru188-de89-20261114]
+    paths: ['.github/workflows/mnebydns-youtube-quic-fragments-offline.yml']
+permissions: {contents: read}
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Validate relay and synthetic separate CRYPTO frames over two UDP hops
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-youtube-quic.py scripts/test-mnebydns-youtube-quic.py
+          python3 scripts/test-mnebydns-youtube-quic.py
+          echo 'QUIC_INITIAL_FRAGMENTATION_OFFLINE=PASS'
