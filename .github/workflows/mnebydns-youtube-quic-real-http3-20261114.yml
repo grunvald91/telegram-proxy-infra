@@ -1,0 +1,62 @@
+name: MNEBYDNS verified real YouTube HTTP3 through running RU UDP443 WG DE
+on:
+  push:
+    branches: [feat/mnebydns-youtube-quic-ru188-de89-20261114]
+    paths: ['.github/workflows/mnebydns-youtube-quic-real-http3-20261114.yml']
+permissions: {contents: read}
+concurrency:
+  group: mnebydns-youtube-quic-udp443-live
+  cancel-in-progress: false
+jobs:
+  h3:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Prepare offline dependency delivery with pinned SSH
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -s ops/mnebydns-owner-ssh-known_hosts
+          python3 -m py_compile scripts/mnebydns-youtube-quic-http3-probe.py
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+      - name: Install temporary H3 probe dependencies on RU without touching services
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          pilot=43612369808
+          work="/tmp/mnebydns-youtube-quic-$pilot"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          cp_opts=(-q -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          ru() { SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 "$@"; }
+          ru "systemctl is-active --quiet 'mnebydns-youtube-quic-ru-$pilot.service'"
+          version="$(ru 'python3 -c "import sys;print(str(sys.version_info.major)+\".\"+str(sys.version_info.minor))"')"
+          [[ "$version" =~ ^3\.(10|11|12|13)$ ]] || { echo "RU_PYTHON_VERSION_UNSUPPORTED=$version"; exit 2; }
+          echo "RU_TEMP_H3_PYTHON_VERSION=$version"
+          mkdir -p "$RUNNER_TEMP/youtube-wheels"
+          python3 -m pip download --disable-pip-version-check --quiet --only-binary=:all: --platform manylinux2014_x86_64 --implementation cp --python-version "$version" --dest "$RUNNER_TEMP/youtube-wheels" aioquic==1.2.0
+          python3 -m pip download --disable-pip-version-check --quiet --no-deps --dest "$RUNNER_TEMP" pip==24.3.1
+          test -s "$RUNNER_TEMP/pip-24.3.1-py3-none-any.whl"
+          ru "test -d '$work' && mkdir -p '$work/wheels'"
+          tar -czf - -C "$RUNNER_TEMP/youtube-wheels" . | SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 "tar -xzf - -C '$work/wheels'"
+          SSHPASS="$RU_PASS" sshpass -e scp "${cp_opts[@]}" "$RUNNER_TEMP/pip-24.3.1-py3-none-any.whl" "root@188.120.254.223:$work/pip.whl"
+          SSHPASS="$RU_PASS" sshpass -e scp "${cp_opts[@]}" scripts/mnebydns-youtube-quic-http3-probe.py "root@188.120.254.223:$work/http3-probe.py"
+          ru "PYTHONPATH='$work/pip.whl' python3 -m pip install --disable-pip-version-check --no-index --find-links '$work/wheels' --target '$work/deps' --no-cache-dir --no-input --quiet 'aioquic==1.2.0'"
+          echo 'RU_TEMP_H3_DEPENDENCIES_INSTALLED=true'
+      - name: Verify authentic YouTube TLS and HTTP3 via RU127.0.0.1 UDP443 WireGuard DE real origin
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          pilot=43612369808
+          work="/tmp/mnebydns-youtube-quic-$pilot"
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@188.120.254.223 "PYTHONPATH='$work/deps' YOUTUBE_QUIC_VIA=127.0.0.1 timeout 60s python3 '$work/http3-probe.py'"
+          echo 'YOUTUBE_REAL_HTTP3_FROM_RU_WG_DE=PASS'
+          echo 'YOUTUBE_ANDROID_CLIENT_NETWORK_NOT_TESTED=true'
