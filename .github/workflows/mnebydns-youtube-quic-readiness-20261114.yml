@@ -76,3 +76,5 @@ jobs:
           PY
 
 # v1-v2 synthetic recheck after router class naming repair
+
+# recheck after all legacy router test references were updated
