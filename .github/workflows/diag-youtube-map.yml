@@ -1,0 +1,48 @@
+name: Inspect ordinary DNS TCP route mapping without changes
+on:
+  push:
+    branches: [diag/ordinary-dns-youtube-20261114]
+    paths: ['.github/workflows/diag-youtube-map.yml']
+permissions: {contents: read}
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Install SSH tool
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+      - name: RU actual stream configuration for upstream TCP443
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o LogLevel=ERROR root@188.120.254.223 'python3 -' <<'PY'
+          from pathlib import Path
+          for name in ['/etc/nginx/streams.d/01-mtproxy-443.conf']:
+              s=Path(name).read_text()
+              for line in s.splitlines():
+                  if 'default ' in line or 'proxy_pass ' in line or '10.66.77.1:' in line or 'ssl_preread' in line:
+                      print('RU_ROUTE='+line.strip()[:180])
+          PY
+      - name: DE backend for Google video
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o LogLevel=ERROR root@89.125.90.101 'python3 -' <<'PY'
+          from pathlib import Path
+          for path in ['/etc/nginx/streams.d/01-mtproxy-443.conf']:
+              p=Path(path)
+              if not p.exists():continue
+              for line in p.read_text().splitlines():
+                  if 'googlevideo' in line or '15449' in line or 'default ' in line or 'proxy_pass ' in line:
+                      print('DE_ROUTE='+line.strip()[:180])
+          PY
