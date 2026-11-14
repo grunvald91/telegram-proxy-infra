@@ -2,7 +2,9 @@ name: MNEBYDNS issue one real 24h personal DoT key privately to verified owner
 on:
   push:
     branches: [feat/mnebydns-owner-personal-test-key-20261114]
-    paths: ['.github/workflows/mnebydns-owner-personal-test-issue-20261114.yml']
+    paths:
+      - '.github/workflows/mnebydns-owner-personal-test-issue-20261114.yml'
+      - 'scripts/mnebydns-owner-personal-test-issue-20261114.py'
 permissions:
   contents: read
 concurrency:
