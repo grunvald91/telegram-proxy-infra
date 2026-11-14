@@ -1,4 +1,4 @@
-name: MNEBYDNS correlated YouTube session and actual media (read only)
+name: MNEBYDNS actual video CDN QUIC origin comparison (read only)
 on:
   push:
     branches: [feat/mnebydns-youtube-quic-ru188-de89-20261114]
@@ -10,91 +10,48 @@ concurrency:
 jobs:
   observe:
     runs-on: ubuntu-latest
-    timeout-minutes: 6
+    timeout-minutes: 3
     env:
       RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
-      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
         with: {persist-credentials: false}
-      - name: Local script validation and pinned SSH prerequisite
+      - name: Prepare pinned SSH
         run: |
           set -Eeuo pipefail
-          python3 - <<'PY'
-          import ast,pathlib
-          ast.parse(pathlib.Path('scripts/mnebydns-youtube-session-readonly.py').read_text())
-          print('READONLY_SCRIPT_SYNTAX=PASS')
-          PY
-          test -n "$RU_PASS" && test -n "$DE_PASS"
+          test -n "$RU_PASS"
           test -s ops/mnebydns-owner-ssh-known_hosts
           if ! command -v sshpass >/dev/null; then
             sudo apt-get update -qq
             sudo apt-get install -qq -y sshpass >/dev/null
           fi
-      - name: Observe both nodes for 15 seconds after concurrent Google API release
+      - name: Compare actual CDN QUIC from RU via DE and directly to the origin
         run: |
           set -Eeuo pipefail
-          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
-            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
-            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
-          SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 \
-            'python3 - RU 15' < scripts/mnebydns-youtube-session-readonly.py &
-          ru_pid=$!
-          SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
-            'python3 - DE 15' < scripts/mnebydns-youtube-session-readonly.py &
-          de_pid=$!
-          status=0
-          wait "$ru_pid" || status=1
-          wait "$de_pid" || status=1
-          exit "$status"
-      - name: Obtain test video URL on the actual DE egress and compare 128 KiB media ranges
-        run: |
-          set -Eeuo pipefail
-          id="$GITHUB_RUN_ID"
-          [[ "$id" =~ ^[0-9]{9,13}$ ]]
-          root="/tmp/mnebydns-media-readonly-$id"
-          local_probe="$RUNNER_TEMP/mnebydns-media-readonly-$id"
-          mkdir -m 700 "$local_probe"
-          python3 -m pip download --disable-pip-version-check --no-deps --only-binary=:all: \
-            --quiet --dest "$local_probe" yt-dlp
-          sha256sum "$local_probe"/yt_dlp-*.whl
-          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
-            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
-            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
-          cp_opts=(-q -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
-            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
-            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
-          de() { SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 "$@"; }
-          ru() { SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 "$@"; }
-          cleanup() {
-            de "rm -rf -- '$root'" || true
-            ru "rm -rf -- '$root'" || true
-            ssh "${opts[@]}" -S "$local_probe/ssh-control" -O exit root@89.125.90.101 2>/dev/null || true
-            rm -rf -- "$local_probe"
-          }
-          trap cleanup EXIT
-          # Use the runner's supported Python, with all YouTube connections
-          # tunneled over authenticated SSH to the actual DE egress.
-          SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" -fN -M \
-            -S "$local_probe/ssh-control" -D 127.0.0.1:18089 \
-            -o ExitOnForwardFailure=yes root@89.125.90.101
-          MNEBY_MEDIA_SOCKS=socks5h://127.0.0.1:18089 timeout 75s \
-            python3 scripts/mnebydns-youtube-real-media-readonly.py extract "$local_probe" || \
-            echo 'DE_MEDIA_METADATA_PROCESS_TIMEOUT_OR_ERROR=true'
-          if ! test -s "$local_probe/media.json"; then
-            echo 'ACTUAL_MEDIA_TEST=INCONCLUSIVE_NO_URL'
-            exit 0
-          fi
-          de "test ! -e '$root' && mkdir -m 700 '$root'"
-          SSHPASS="$DE_PASS" sshpass -e scp "${cp_opts[@]}" \
-            scripts/mnebydns-youtube-real-media-readonly.py "root@89.125.90.101:$root/probe.py"
-          SSHPASS="$DE_PASS" sshpass -e scp "${cp_opts[@]}" \
-            "$local_probe/media.json" "root@89.125.90.101:$root/media.json"
-          de "python3 '$root/probe.py' probe '$root' DE"
-          ru "test ! -e '$root' && mkdir -m 700 '$root'"
-          SSHPASS="$RU_PASS" sshpass -e scp "${cp_opts[@]}" \
-            "$local_probe/media.json" "root@188.120.254.223:$root/media.json"
-          SSHPASS="$RU_PASS" sshpass -e scp "${cp_opts[@]}" \
-            scripts/mnebydns-youtube-real-media-readonly.py "root@188.120.254.223:$root/probe.py"
-          ru "python3 '$root/probe.py' probe '$root' RU"
-          echo 'ACTUAL_MEDIA_RANGE_COMPARISON_COMPLETE=true'
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR \
+            root@188.120.254.223 \
+            'PYTHONPATH=/tmp/mnebydns-youtube-quic-43612369808/deps timeout 65s python3 -B -' <<'PY_PROBE'
+          import asyncio,os,runpy,socket,ipaddress
+          module=runpy.run_path('/tmp/mnebydns-youtube-quic-43612369808/http3-probe.py')
+          cdn='rr1---sn-gxuo03g-ig3s.googlevideo.com'
+          async def one(label,host,via):
+              os.environ['YOUTUBE_QUIC_VIA']=via
+              try:
+                  result=await asyncio.wait_for(module['once'](host),16)
+                  print('ACTUAL_CDN_'+label+'='+str(result),flush=True)
+              except TimeoutError:
+                  print('ACTUAL_CDN_'+label+'=TIMEOUT',flush=True)
+          async def main():
+              # Sequential so the explicit destination environment cannot race.
+              await one('YOUTUBE_CONTROL','www.youtube.com','127.0.0.1')
+              await one('VIA_RU_WG_DE',cdn,'127.0.0.1')
+              origins=socket.getaddrinfo(cdn,443,socket.AF_INET,socket.SOCK_DGRAM)
+              ip=next(x[4][0] for x in origins if ipaddress.ip_address(x[4][0]).is_global
+                      and x[4][0] not in ('188.120.254.223','89.125.90.101'))
+              await one('DIRECT_ORIGIN_FROM_RU',cdn,ip)
+              print('ACTUAL_CDN_ORIGIN_PROBE_READONLY_COMPLETE=true',flush=True)
+          asyncio.run(main())
+          PY_PROBE
