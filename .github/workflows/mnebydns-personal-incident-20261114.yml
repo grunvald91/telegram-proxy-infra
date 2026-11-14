@@ -149,6 +149,57 @@ jobs:
                   print(label+'='+type(e).__name__,flush=True)
           PY
           REMOTE
+      - name: Compare RU vantage three bounded DNS-over-TLS upstream paths (no keys)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS"
+          export SSHPASS="$RU_PASS"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh -T "\${opts[@]}" root@188.120.254.223 'python3 -' <<'PY'
+          import socket,ssl,struct,secrets,time,statistics
+          ctx=ssl.create_default_context()
+          endpoints=(
+              ('LEGACY_DE_PUBLIC','89.125.90.101',853,'dns.mnebyvpn.site'),
+              ('PERSONAL_MAPPED_VIA_WG','10.66.77.1',1853,'dns.mnebyvpn.site'),
+              ('PERSONAL_DIRECT_CLOUDFLARE','1.1.1.1',853,'one.one.one.one'),
+          )
+          hosts=('example.org','claude.ai','gemini.google.com')
+          for label,ip,port,sni in endpoints:
+              times=[]
+              for host in hosts:
+                  try:
+                      start=time.monotonic()
+                      with socket.create_connection((ip,port),timeout=5) as tcp:
+                          tcp.settimeout(7)
+                          with ctx.wrap_socket(tcp,server_hostname=sni) as tls:
+                              handshake=round((time.monotonic()-start)*1000)
+                              uid=secrets.randbelow(65534)+1
+                              q=struct.pack('!HHHHHH',uid,256,1,0,0,0)+b''.join(bytes([len(x)])+x.encode('ascii') for x in host.split('.'))+b'\0'+struct.pack('!HH',1,1)
+                              tls.sendall(struct.pack('!H',len(q))+q)
+                              h=tls.recv(2)
+                              if len(h)!=2:raise ValueError('bad length prefix')
+                              n=int.from_bytes(h,'big')
+                              if not 12<=n<=16384:raise ValueError('bad DNS size')
+                              result=b''
+                              while len(result)<n:
+                                  part=tls.recv(n-len(result))
+                                  if not part:raise EOFError('truncated DNS answer')
+                                  result+=part
+                              if int.from_bytes(result[:2],'big')!=uid or (result[2]&128)==0:raise ValueError('bad DNS ID')
+                              total=round((time.monotonic()-start)*1000)
+                              times.append(total)
+                              print('PATH '+label+' HOST='+host+' HANDSHAKE_MS='+str(handshake)+' TOTAL_MS='+str(total)+' RCODE='+str(result[3]&15),flush=True)
+                  except Exception as e:
+                      print('PATH '+label+' HOST='+host+' ERROR='+type(e).__name__,flush=True)
+              if times:
+                  print('PATH_SUMMARY '+label+' MEDIAN_TOTAL_MS='+str(round(statistics.median(times)))+' N='+str(len(times)),flush=True)
+              else:
+                  print('PATH_SUMMARY '+label+' UNREACHABLE=true',flush=True)
+          print('UPSTREAM_COMPARISON_MUTATIONS=false',flush=True)
+          PY
       - name: Inspect RU personal service and owner account metering (read-only)
         shell: bash
         run: |
