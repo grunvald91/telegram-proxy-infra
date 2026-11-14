@@ -1,0 +1,177 @@
+name: MNEBYDNS guarded ordinary DNS mapped routes via 188 (personal unchanged)
+on:
+  push:
+    branches: [fix/mnebydns-legacy-isolated-ru188-20261114]
+    paths:
+      - 'scripts/mnebydns-legacy-ru188-isolated-cutover-20261114.sh'
+      - '.github/workflows/mnebydns-legacy-188-isolated-guarded-rollout-20261114.yml'
+  workflow_dispatch:
+permissions: {contents: read}
+concurrency:
+  group: mnebydns-legacy-188-only-20261114
+  cancel-in-progress: false
+jobs:
+  guarded:
+    runs-on: ubuntu-latest
+    timeout-minutes: 17
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Review shell syntax, prerequisites and pinned SSH connection
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          bash -n scripts/mnebydns-legacy-ru188-isolated-cutover-20261114.sh
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          test -n "$DE_PASS" && test -n "$RU_PASS"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+      - name: Verify existing personal 188->89 mapped DNS stays on its old path
+        id: baseline
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@188.120.254.223 'python3 -' <<'PY'
+          import subprocess,json,socket,ssl,struct
+          c=json.loads(subprocess.check_output(['docker','inspect','mnebydns-personal-dot-private'],text=True))[0]
+          assert c['State']['Running']
+          print('EXISTING_PERSONAL_RU_PRIVATE_CONTAINER_UNCHANGED_RUNNING=PASS',flush=True)
+          q=struct.pack('!HHHHHH',1759,256,1,0,0,0)+b'\x07chatgpt\x03com\0'+struct.pack('!HH',1,1)
+          with socket.create_connection(('10.66.77.1',1853),timeout=7) as s:
+            s.settimeout(7)
+            with ssl.create_default_context().wrap_socket(s,server_hostname='dns.mnebyvpn.site') as tls:
+              tls.sendall(struct.pack('!H',len(q))+q)
+              head=tls.recv(2)
+              assert len(head)==2
+              n=struct.unpack('!H',head)[0]
+              b=b''
+              while len(b)<n:
+                p=tls.recv(n-len(b))
+                assert p
+                b+=p
+          assert b[:2]==q[:2] and b[3]&15==0
+          assert bytes([89,125,90,101]) in b,'Personal mapped DNS preflight drifted'
+          print('PERSONAL_PREEXISTING_MAPPED_UPSTREAM_CHATGPT=DE89',flush=True)
+          PY
+      - name: Prepare isolated DE loopback CoreDNS, do not switch public users
+        id: stage
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e scp -q "${opts[@]}" scripts/mnebydns-legacy-ru188-isolated-cutover-20261114.sh root@89.125.90.101:/tmp/mnebydns-legacy-ru188-isolated-cutover-20261114.sh
+          sshpass -e ssh -T "${opts[@]}" root@89.125.90.101 'bash /tmp/mnebydns-legacy-ru188-isolated-cutover-20261114.sh stage'
+      - name: Switch ONLY default public legacy 853 SNI upstream, arm independent rollback
+        id: switched
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@89.125.90.101 'bash /usr/local/sbin/mnebydns-legacy-ru188-isolated-cutover-20261114 switch'
+      - name: Validate actual legacy public DNS A and secure supplemental records
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import socket,ssl,struct,secrets
+          def query(name,kind):
+            tid=secrets.randbelow(65535)
+            q=struct.pack('!HHHHHH',tid,256,1,0,0,0)+b''.join(bytes([len(x)])+x.encode() for x in name.split('.'))+b'\0'+struct.pack('!HH',kind,1)
+            with socket.create_connection(('89.125.90.101',853),timeout=8) as s:
+              s.settimeout(9)
+              with ssl.create_default_context().wrap_socket(s,server_hostname='dns.mnebyvpn.site') as tls:
+                tls.sendall(struct.pack('!H',len(q))+q)
+                head=tls.recv(2)
+                assert len(head)==2
+                n=struct.unpack('!H',head)[0]
+                assert 12<=n<=16384
+                b=b''
+                while len(b)<n:
+                  p=tls.recv(n-len(b))
+                  assert p
+                  b+=p
+            assert b[:2]==q[:2] and b[3]&15==0,(name,kind)
+            return b
+          names=[
+            'chatgpt.com','auth.openai.com','www.chatgpt.com','claude.ai',
+            'api.anthropic.com','gemini.google.com','www.youtube.com','youtubei.googleapis.com',
+            'www.googlevideo.com','i.ytimg.com','s.ytimg.com','cdn.oaistatic.com',
+            'www.tiktok.com','x.com','grok.com','cloud.oracle.com','copilot.microsoft.com',
+            'codebrowser.dev','id.cisco.com','bing.com'
+          ]
+          for name in names:
+            res=query(name,1)
+            assert bytes([188,120,254,223]) in res,(name,'not routed via RU188')
+            for t in (28,64,65):
+              alt=query(name,t)
+              assert int.from_bytes(alt[6:8],'big')==0,(name,t,'alternative bypass')
+            print('PUBLIC_LEGACY_RU188_MAPPED='+name,flush=True)
+          direct=query('example.org',1)
+          assert bytes([188,120,254,223]) not in direct
+          print('PUBLIC_LEGACY_DIRECT_CONTROL_UNMODIFIED=PASS')
+          print('PUBLIC_LEGACY_20_MAPPED_HOSTS_RU188=PASS')
+          PY
+      - name: Verify personal mapped resolver remains DE89 and original personal port active
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@188.120.254.223 'python3 -' <<'PY'
+          import subprocess,json,socket,ssl,struct
+          c=json.loads(subprocess.check_output(['docker','inspect','mnebydns-personal-dot-private'],text=True))[0]
+          assert c['State']['Running']
+          env={s.split('=',1)[0]:s.split('=',1)[1] for s in c['Config']['Env'] if '=' in s}
+          assert env['MNEBYDNS_PERSONAL_DOT_PORT']=='8856'
+          assert env['MNEBYDNS_PERSONAL_MAPPED_DOT_PORT']=='1853'
+          q=struct.pack('!HHHHHH',6792,256,1,0,0,0)+b'\x07chatgpt\x03com\0'+struct.pack('!HH',1,1)
+          with socket.create_connection(('10.66.77.1',1853),timeout=8) as s:
+            s.settimeout(9)
+            with ssl.create_default_context().wrap_socket(s,server_hostname='dns.mnebyvpn.site') as tls:
+              tls.sendall(struct.pack('!H',len(q))+q)
+              h=tls.recv(2)
+              assert len(h)==2
+              n=struct.unpack('!H',h)[0]
+              b=b''
+              while len(b)<n:
+                p=tls.recv(n-len(b))
+                assert p
+                b+=p
+          assert b[:2]==q[:2] and b[3]&15==0
+          assert bytes([89,125,90,101]) in b,'Personal policy unexpectedly changed'
+          print('PERSONAL_MAPPED_DNS_OLD_DE89_STILL_UNCHANGED=PASS')
+          print('PERSONAL_RU_8856_STILL_RUNNING=PASS')
+          PY
+      - name: Validate HTTPS transport of key app and video hosts to RU188
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import ssl,socket
+          for host in ('chatgpt.com','auth.openai.com','www.youtube.com','youtubei.googleapis.com',
+                       'www.googlevideo.com','claude.ai','api.anthropic.com','cdn.oaistatic.com'):
+              with socket.create_connection(('188.120.254.223',443),timeout=9) as raw:
+                  raw.settimeout(9)
+                  with ssl.create_default_context().wrap_socket(raw,server_hostname=host) as tls:
+                      assert tls.getpeercert(),host
+              print('RU188_PUBLIC_HTTPS_TLS_VALID='+host)
+          print('RU188_HTTPS_TRANSPORT_SMOKE=PASS')
+          PY
+      - name: Finalize separate legacy DNS after public and personal regression tests
+        id: finalized
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@89.125.90.101 'bash /usr/local/sbin/mnebydns-legacy-ru188-isolated-cutover-20261114 finalize'
+          echo 'Legacy default public DoT now uses isolated DE loopback CoreDNS returning RU188 for 253 formerly DE89 mapped A routes. Personal SNI/old DE CoreDNS untouched; existing 188:443 forwards to DE via WireGuard. Original public DNS hostname still active.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Restore previous public DNS if any rollout test fails
+        if: ${{ failure() && steps.stage.outcome == 'success' && steps.finalized.outcome != 'success' }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@89.125.90.101 'bash /usr/local/sbin/mnebydns-legacy-ru188-isolated-cutover-20261114 rollback'
