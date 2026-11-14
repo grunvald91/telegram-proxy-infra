@@ -1,0 +1,23 @@
+name: MNEBYDNS personal DNS from ordinary CoreDNS offline contracts
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - scripts/mnebydns-personal-shared-policy-generate-20261114.py
+      - scripts/test_mnebydns_personal_shared_policy_generate_20261114.py
+      - .github/workflows/mnebydns-personal-policy-single-source-offline-20261114.yml
+permissions: {contents: read}
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate single-source policy generator offline
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-personal-shared-policy-generate-20261114.py
+          python3 -m py_compile scripts/test_mnebydns_personal_shared_policy_generate_20261114.py
+          python3 scripts/test_mnebydns_personal_shared_policy_generate_20261114.py
