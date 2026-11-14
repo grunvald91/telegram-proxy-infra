@@ -8,7 +8,7 @@ concurrency:
   group: mnebydns-shared-core-public-ru188-20261114
   cancel-in-progress: false
 env:
-  RECOVERY_PHASE: stage
+  RECOVERY_PHASE: inspect
   RECOVERY_RUN_ID: '0'
 jobs:
   recover:
@@ -23,7 +23,7 @@ jobs:
       - name: Validate exact reverse plan and guarded scripts
         run: |
           set -Eeuo pipefail
-          [[ "$RECOVERY_PHASE" == stage || "$RECOVERY_PHASE" == commit || "$RECOVERY_PHASE" == rollback ]]
+          [[ "$RECOVERY_PHASE" == inspect || "$RECOVERY_PHASE" == stage || "$RECOVERY_PHASE" == commit || "$RECOVERY_PHASE" == rollback ]]
           python3 -B scripts/mnebydns-route-recovery-20261114.py selftest
           for f in stage rollback commit; do
             bash -n "scripts/mnebydns-ru-fastpath-$f-20261113.sh"
@@ -36,7 +36,7 @@ jobs:
             sudo apt-get install -qq -y sshpass >/dev/null
           fi
       - name: Inspect both node resources and owned VPN configuration shape
-        if: env.RECOVERY_PHASE == 'stage'
+        if: env.RECOVERY_PHASE == 'stage' || env.RECOVERY_PHASE == 'inspect'
         run: |
           set -Eeuo pipefail
           opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
@@ -96,7 +96,7 @@ jobs:
           echo 'RECOVERY_INDEPENDENT_REVERT_AFTER_45_MINUTES=true'
           trap - EXIT
       - name: Commit only the already tested recovery or restore its prior state
-        if: env.RECOVERY_PHASE != 'stage'
+        if: env.RECOVERY_PHASE == 'commit' || env.RECOVERY_PHASE == 'rollback'
         run: |
           set -Eeuo pipefail
           [[ "$RECOVERY_RUN_ID" =~ ^[1-9][0-9]{8,12}$ ]]
@@ -107,7 +107,7 @@ jobs:
             -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR \
             root@89.125.90.101 "bash '$base/$RECOVERY_PHASE.sh' '$base'"
       - name: Verify legacy DoT through both public ingress addresses after staging or commit
-        if: env.RECOVERY_PHASE != 'rollback'
+        if: env.RECOVERY_PHASE == 'stage' || env.RECOVERY_PHASE == 'commit'
         run: |
           set -Eeuo pipefail
           export SSHPASS="$DE_PASS"

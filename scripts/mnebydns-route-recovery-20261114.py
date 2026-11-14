@@ -15,6 +15,9 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import socket
+import ssl
+import struct
 
 OLD = Path('/opt/mnebydns-fastpath/43603843149')
 LIVE = Path('/opt/mnebydns-dot/Corefile')
@@ -71,6 +74,64 @@ def resource(role):
             except ValueError:
                 pass
     print(role + '_PROCESSES=' + json.dumps(sorted(rows, key=lambda x: x['cpu_percent'], reverse=True)[:12]), flush=True)
+    if role == 'DE':
+        pid = int(subprocess.check_output(['systemctl','show','--value','-p','MainPID','mnebydns-dot.service'],text=True).strip())
+        args = Path('/proc/' + str(pid) + '/cmdline').read_bytes().split(b'\0')
+        args = [x.decode() for x in args if x]
+        if '-conf' in args:
+            config = Path(args[args.index('-conf') + 1])
+            if not config.is_absolute():
+                config = Path('/proc/' + str(pid) + '/cwd').resolve() / config
+        else:
+            config = Path('/proc/' + str(pid) + '/cwd').resolve() / 'Corefile'
+        print('DE_COREDNS_CONFIG_SOURCE=' + str(config), flush=True)
+        print('DE_COREDNS_CONFIG_MATCHES_MANAGED_FILE=' + str(config.samefile(LIVE)), flush=True)
+        print('DE_COREDNS_MANAGED_SHA256=' + hashlib.sha256(LIVE.read_bytes()).hexdigest(), flush=True)
+        journal = subprocess.run(['journalctl','--no-pager','-o','cat','-u','mnebydns-dot.service',
+                                  '--since','25 minutes ago','-n','150'],capture_output=True,text=True,timeout=10).stdout
+        for line in journal.splitlines():
+            if 'plugin/reload' in line:
+                print('DE_COREDNS_RELOAD=' + line[:500], flush=True)
+        for ip in ['89.125.90.101','188.120.254.223']:
+            print('DE_CURRENT_PUBLIC_DNS=' + json.dumps({'ingress':ip,'answers': dns_answers(ip,'www.youtube.com')}), flush=True)
+
+
+def dns_answers(ip, host):
+    def exact(s, n):
+        value = b''
+        while len(value) < n:
+            block = s.recv(n - len(value))
+            if not block:
+                raise EOFError('short DNS response')
+            value += block
+        return value
+    q = struct.pack('!HHHHHH', 0x4987, 256, 1, 0, 0, 0) + b''.join(bytes([len(x)]) + x.encode() for x in host.split('.')) + b'\0' + struct.pack('!HH', 1, 1)
+    with socket.create_connection((ip,853),timeout=6) as raw:
+        raw.settimeout(8)
+        with ssl.create_default_context().wrap_socket(raw,server_hostname='dns.mnebyvpn.site') as tls:
+            tls.sendall(len(q).to_bytes(2,'big') + q)
+            data = exact(tls,int.from_bytes(exact(tls,2),'big'))
+    def skip(off):
+        for _ in range(128):
+            n = data[off]
+            if n & 192 == 192:
+                return off + 2
+            if n == 0:
+                return off + 1
+            off += n + 1
+        raise ValueError('bad DNS name')
+    off = 12
+    for _ in range(struct.unpack_from('!H',data,4)[0]):
+        off = skip(off) + 4
+    result = []
+    for _ in range(struct.unpack_from('!H',data,6)[0]):
+        off = skip(off)
+        kind, cls, ttl, n = struct.unpack_from('!HHIH',data,off)
+        off += 10
+        if kind == 1 and cls == 1 and n == 4:
+            result.append(socket.inet_ntoa(data[off:off+n]))
+        off += n
+    return {'rcode':data[3] & 15,'a':result}
 
 
 def plan(work):
