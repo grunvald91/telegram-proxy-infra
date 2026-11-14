@@ -1,0 +1,164 @@
+name: MNEBYVPN live non-invasive REALITY vs WS and DoT E2E 20261114
+on:
+  push:
+    branches: ['diag/mnebyvpn-reality-dot-20261114']
+    paths: ['.github/workflows/mnebyvpn-reality-dot-e2e-20261114.yml']
+permissions:
+  contents: read
+concurrency:
+  group: mnebyvpn-reality-dot-e2e-20261114
+  cancel-in-progress: false
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      FOREIGN_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Read existing active credential in memory, verify authentic tunnels and DoT
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$FOREIGN_PASSWORD"
+          if ! command -v sshpass >/dev/null; then sudo apt-get update -qq && sudo apt-get install -qq -y sshpass; fi
+          export SSHPASS="$FOREIGN_PASSWORD"
+          SSHOPTS="-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR"
+          TMP="$(mktemp -d)"
+          trap 'rm -rf "$TMP"' EXIT
+          # The server's existing active credential is read, never changed or printed.
+          AUTH_JSON="$(sshpass -e ssh $SSHOPTS root@cdn.servgo.ru 'python3 -' <<'REMOTE'
+          import pathlib,json,datetime,uuid,sys
+          state=json.loads(pathlib.Path('/var/lib/mnebyvpn-vpn/state.json').read_text())
+          x=json.loads(pathlib.Path('/etc/mnebyvpn/xray-canary.json').read_text())
+          public=json.loads(pathlib.Path('/etc/mnebyvpn/reality-public.json').read_text())
+          assert len(x['inbounds'])==2
+          assert x['inbounds'][0]['streamSettings']['network']=='ws'
+          assert x['inbounds'][1]['streamSettings']['security']=='reality'
+          assert x['inbounds'][1]['streamSettings']['realitySettings']['shortIds']==[public['shortId']]
+          ws={v['id'] for v in x['inbounds'][0]['settings']['clients']}
+          reality={v['id'] for v in x['inbounds'][1]['settings']['clients'] if v.get('flow')=='xtls-rprx-vision'}
+          now=datetime.datetime.now(datetime.timezone.utc)
+          candidates=[]
+          for entry in state.values():
+              if entry.get('enabled') and entry.get('credential') in ws & reality:
+                  expiry=datetime.datetime.fromisoformat(entry['expiresAt'].replace('Z','+00:00'))
+                  if expiry>now: candidates.append(entry['credential'])
+          if not candidates: sys.exit('no_shared_active_credential')
+          chosen=str(uuid.UUID(sorted(candidates)[0]))
+          print(json.dumps({'credential':chosen,'publicKey':public['publicKey'],'shortId':public['shortId']}))
+          REMOTE
+          )"
+          export AUTH_JSON
+          CREDENTIAL="$(python3 -c 'import json,os;print(json.loads(os.environ["AUTH_JSON"])["credential"])')"
+          echo "::add-mask::$CREDENTIAL"
+          unset CREDENTIAL
+          echo "existing_active_profile_read_without_provisioning=true"
+          sshpass -e scp -q $SSHOPTS root@cdn.servgo.ru:/opt/xray/xray "$TMP/xray"
+          chmod 700 "$TMP/xray"
+          python3 - "$TMP/xray" <<'PY'
+          import os,sys,json,tempfile,pathlib,subprocess,time,statistics,socket,ssl,struct
+          auth=json.loads(os.environ['AUTH_JSON'])
+          credential=auth['credential']
+          pub=auth['publicKey']
+          sid=auth['shortId']
+          assert len(pub)==43 and len(sid)==16
+          xray=sys.argv[1]
+          specs=[
+              ('ws',19083,'cdn.servgo.ru',8443,'ws',''),
+              ('reality_chrome_ip',19084,'89.125.90.101',2053,'reality','chrome'),
+              ('reality_firefox_domain',19085,'cdn.servgo.ru',2053,'reality','firefox'),
+          ]
+          children=[]
+          failures=[]
+          def read_exact(s,n):
+              out=b''
+              while len(out)<n:
+                  t=s.recv(n-len(out))
+                  if not t: raise EOFError('short_socket_response')
+                  out+=t
+              return out
+          def dot_via_socks(port,host):
+              s=socket.create_connection(('127.0.0.1',port),timeout=6)
+              s.settimeout(7)
+              try:
+                  s.sendall(b'\x05\x01\x00')
+                  if read_exact(s,2)!=b'\x05\x00':raise RuntimeError('socks_handshake')
+                  h=host.encode('ascii')
+                  s.sendall(b'\x05\x01\x00\x03'+bytes([len(h)])+h+struct.pack('!H',853))
+                  header=read_exact(s,4)
+                  if header[1]!=0:raise RuntimeError('socks_connect_status_'+str(header[1]))
+                  if header[3]==1:read_exact(s,4)
+                  elif header[3]==3:read_exact(s,read_exact(s,1)[0])
+                  elif header[3]==4:read_exact(s,16)
+                  else:raise RuntimeError('socks_response_address')
+                  read_exact(s,2)
+                  with ssl.create_default_context().wrap_socket(s,server_hostname=host) as tls:
+                      protocol=tls.version()
+                      mid=secrets.randbits(16)
+                      q=struct.pack('!HHHHHH',mid,0x0100,1,0,0,0)
+                      for label in 'example.com'.split('.'):
+                          q+=bytes([len(label)])+label.encode()
+                      q+=b'\x00'+struct.pack('!HH',1,1)
+                      tls.sendall(struct.pack('!H',len(q))+q)
+                      length=struct.unpack('!H',read_exact(tls,2))[0]
+                      ans=read_exact(tls,length)
+                      valid=len(ans)>=12 and struct.unpack('!H',ans[:2])[0]==mid
+                      rcode=ans[3]&15 if valid else -1
+                      return ('tls='+str(bool(protocol))+' dns_rcode='+str(rcode)+' response_bytes='+str(len(ans)))
+              finally:
+                  s.close()
+          import secrets
+          try:
+              with tempfile.TemporaryDirectory() as temp:
+                  for name,port,remote,serverport,network,fp in specs:
+                      settings={'vnext':[{'address':remote,'port':serverport,
+                           'users':[{'id':credential,'encryption':'none',**({'flow':'xtls-rprx-vision'} if network=='reality' else {})}]}]}
+                      if network=='ws':
+                          stream={'network':'ws','security':'tls',
+                              'tlsSettings':{'serverName':'cdn.servgo.ru','allowInsecure':False},
+                              'wsSettings':{'path':'/mnebyvpn-vpn/ws','headers':{'Host':'cdn.servgo.ru'}}}
+                      else:
+                          stream={'network':'tcp','security':'reality',
+                              'realitySettings':{'serverName':'www.cloudflare.com','fingerprint':fp,
+                                'password':pub,'shortId':sid,'spiderX':'/'}}
+                      config={'log':{'loglevel':'warning'},
+                          'inbounds':[{'listen':'127.0.0.1','port':port,'protocol':'socks',
+                                       'settings':{'auth':'noauth','udp':False}}],
+                          'outbounds':[{'protocol':'vless','settings':settings,'streamSettings':stream}]}
+                      path=pathlib.Path(temp)/('client-'+name+'.json')
+                      path.write_text(json.dumps(config))
+                      test=subprocess.run([xray,'run','-test','-config',str(path)],capture_output=True,timeout=12)
+                      print('profile_'+name+'_config_valid='+str(test.returncode==0).lower())
+                      if test.returncode!=0:
+                          failures.append(name+':config');continue
+                      logfile=(pathlib.Path(temp)/('client-'+name+'.log')).open('wb')
+                      p=subprocess.Popen([xray,'run','-config',str(path)],stdout=logfile,stderr=subprocess.STDOUT)
+                      children.append((p,logfile))
+                  time.sleep(2)
+                  for name,port,_,_,_,_ in specs:
+                      times=[]
+                      for i in range(2):
+                          t=time.monotonic()
+                          result=subprocess.run(['curl','--noproxy','','--proxy','socks5h://127.0.0.1:'+str(port),
+                             '--connect-timeout','6','--max-time','14','-sS','-o','/dev/null','-w','%{http_code}',
+                             'https://www.cloudflare.com/cdn-cgi/trace'],capture_output=True,text=True,timeout=18)
+                          if result.returncode==0 and result.stdout.strip()=='200':times.append(round((time.monotonic()-t)*1000))
+                      print('profile_'+name+'_https_200_success='+str(len(times))+'/2')
+                      if times:print('profile_'+name+'_median_total_ms='+str(round(statistics.median(times))))
+                      if len(times)!=2:failures.append(name+':https')
+                      for host in ('dns.myvpn.site','dns.mnebyvpn.site'):
+                          try:
+                              outcome=dot_via_socks(port,host)
+                              print('profile_'+name+'_dot_'+host.replace('.','_')+'='+outcome)
+                          except Exception as exc:
+                              print('profile_'+name+'_dot_'+host.replace('.','_')+'_error='+type(exc).__name__)
+                  print('read_only_no_server_service_or_identity_changes=true')
+                  print('profile_e2e_failed='+str(bool(failures)).lower())
+          finally:
+              for p,log in children:
+                  p.terminate()
+                  try:p.wait(timeout=3)
+                  except subprocess.TimeoutExpired:p.kill();p.wait()
+                  log.close()
+          if failures:sys.exit(2)
+          PY
