@@ -1,0 +1,119 @@
+name: MNEBYDNS blue-green personal DNS private upstream cutover - free DNS unchanged
+on:
+  push:
+    branches: [fix/mnebydns-personal-postlaunch-hardening-20261114]
+    paths: ['.github/workflows/mnebydns-personal-private-sidecar-cutover-20261114.yml']
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-personal-private-sidecar-bluegreen
+  cancel-in-progress: false
+jobs:
+  switch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 16
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Static guard checks and tools
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          bash -n scripts/mnebydns-personal-private-canary-20261114.sh
+          bash -n scripts/mnebydns-personal-private-sni-switch-20261114.sh
+          test -n "$DE_PASS" && test -n "$RU_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          ! grep -Eq 'systemctl (stop|restart) mnebydns-dot' scripts/mnebydns-personal-private-sni-switch-20261114.sh
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass >/dev/null
+      - name: Stage additional RU sidecar with only private WireGuard mapped origin
+        id: stage
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e scp -q "${opts[@]}" scripts/mnebydns-personal-private-canary-20261114.sh \
+            root@188.120.254.223:/tmp/mnebydns-personal-private-canary-20261114.sh
+          sshpass -e ssh -T "${opts[@]}" root@188.120.254.223 \
+            'bash /tmp/mnebydns-personal-private-canary-20261114.sh stage'
+      - name: Switch only personal SNI target in Nginx, legacy default untouched
+        id: switch
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e scp -q "${opts[@]}" scripts/mnebydns-personal-private-sni-switch-20261114.sh \
+            root@89.125.90.101:/tmp/mnebydns-personal-private-sni-switch-20261114.sh
+          sshpass -e ssh -T "${opts[@]}" root@89.125.90.101 \
+            'bash /tmp/mnebydns-personal-private-sni-switch-20261114.sh switch'
+      - name: Public strict TLS and legacy real DNS query unchanged
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import socket,ssl,struct,secrets
+          for host in ('dns.mnebyvpn.site','aaaaaaaaaaaa.dns.mnebyvpn.site'):
+              with socket.create_connection(('89.125.90.101',853),timeout=9) as raw:
+                  raw.settimeout(9)
+                  with ssl.create_default_context().wrap_socket(raw,server_hostname=host) as tls:
+                      assert bool(tls.getpeercert())
+                      if host.startswith('aaaaaaaaaaaa.'):
+                          print('PERSONAL_PRIVATE_CUTOVER_PUBLIC_TLS=PASS')
+                          continue
+                      tid=secrets.randbelow(65534)+1
+                      q=struct.pack('!HHHHHH',tid,256,1,0,0,0)+b'\x07example\x03com\x00'+struct.pack('!HH',1,1)
+                      tls.sendall(struct.pack('!H',len(q))+q)
+                      header=tls.recv(2)
+                      assert len(header)==2
+                      n=struct.unpack('!H',header)[0]
+                      assert 12<=n<=65535
+                      answer=b''
+                      while len(answer)<n:
+                          part=tls.recv(n-len(answer))
+                          assert part
+                          answer+=part
+                      assert int.from_bytes(answer[:2],'big')==tid and answer[2]&128
+                      print('LEGACY_DNS_AFTER_PERSONAL_CUTOVER=PASS')
+          PY
+      - name: Verify active personal upstream private and original sidecar preserved
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
+            'bash /tmp/mnebydns-personal-private-sni-switch-20261114.sh status'
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 \
+            'test "$(docker inspect -f "{{.State.Running}}" mnebydns-personal-dot)" = true; test "$(docker inspect -f "{{.State.Running}}" mnebydns-personal-dot-private)" = true; docker inspect -f "{{range .Config.Env}}{{println .}}{{end}}" mnebydns-personal-dot-private | grep -Fxq MNEBYDNS_PERSONAL_MAPPED_DOT_IP=10.66.77.1; docker inspect -f "{{range .Config.Env}}{{println .}}{{end}}" mnebydns-personal-dot-private | grep -Fxq MNEBYDNS_PERSONAL_MAPPED_DOT_PORT=1853; echo "OLD_AND_NEW_PERSONAL_CONTAINERS_RUNNING=true"; echo "PRIVATE_MAPPED_ORIGIN_CONFIG=VERIFIED"'
+      - name: Revert only personal SNI to original private sidecar if canary fails
+        if: ${{ failure() && steps.switch.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR \
+            root@89.125.90.101 'bash /tmp/mnebydns-personal-private-sni-switch-20261114.sh rollback'
+      - name: Remove only additional RU sidecar if canary fails
+        if: ${{ failure() && steps.stage.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR \
+            root@188.120.254.223 'bash /tmp/mnebydns-personal-private-canary-20261114.sh rollback'
