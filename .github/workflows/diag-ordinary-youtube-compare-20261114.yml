@@ -1,0 +1,71 @@
+name: Compare ordinary YouTube video TLS inside and outside RU188
+on:
+  push:
+    branches: [diag/ordinary-dns-youtube-20261114]
+    paths: ['.github/workflows/diag-ordinary-youtube-compare-20261114.yml']
+permissions: {contents: read}
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Tools
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          test -n "$RU_PASS" && test -n "$DE_PASS" && test -s ops/mnebydns-owner-ssh-known_hosts
+      - name: Compare same SNI from GitHub runner to both public nodes
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import socket,ssl
+          for ip in ('188.120.254.223','89.125.90.101'):
+              for host in ('www.googlevideo.com','www.youtube.com'):
+                  try:
+                      with socket.create_connection((ip,443),timeout=5) as tcp:
+                          tcp.settimeout(5)
+                          with ssl.create_default_context().wrap_socket(tcp,server_hostname=host) as s:
+                              print('EXT_TLS_'+ip+'_'+host+'=PASS_TLS_'+s.version(),flush=True)
+                  except Exception as e:
+                      print('EXT_TLS_'+ip+'_'+host+'=FAIL_'+type(e).__name__,flush=True)
+          PY
+      - name: Compare same SNI FROM RU through all local and foreign hops
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@188.120.254.223 'python3 -' <<'PY'
+          import socket,ssl
+          for ip in ('127.0.0.1','188.120.254.223','10.66.77.1','89.125.90.101'):
+              for host in ('www.googlevideo.com','www.youtube.com'):
+                  try:
+                      with socket.create_connection((ip,443),timeout=5) as tcp:
+                          tcp.settimeout(5)
+                          with ssl.create_default_context().wrap_socket(tcp,server_hostname=host) as s:
+                              print('RU_TLS_'+ip+'_'+host+'=PASS_TLS_'+s.version(),flush=True)
+                  except Exception as e:
+                      print('RU_TLS_'+ip+'_'+host+'=FAIL_'+type(e).__name__,flush=True)
+          PY
+      - name: Compare FROM DE same SNI via public RU to exclude host routing issues
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@89.125.90.101 'python3 -' <<'PY'
+          import socket,ssl
+          for ip in ('127.0.0.1','89.125.90.101'):
+              for host in ('www.googlevideo.com','www.youtube.com'):
+                  try:
+                      with socket.create_connection((ip,443),timeout=5) as tcp:
+                          tcp.settimeout(5)
+                          with ssl.create_default_context().wrap_socket(tcp,server_hostname=host) as s:
+                              print('DE_TLS_'+ip+'_'+host+'=PASS_TLS_'+s.version(),flush=True)
+                  except Exception as e:
+                      print('DE_TLS_'+ip+'_'+host+'=FAIL_'+type(e).__name__,flush=True)
+          print('PRODUCTION_CONFIG_MODIFIED=NO')
+          PY
