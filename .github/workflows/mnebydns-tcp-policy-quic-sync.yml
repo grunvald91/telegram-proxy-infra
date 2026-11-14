@@ -1,0 +1,30 @@
+name: MNEBYDNS copy complete DE89 TCP allowlist to QUIC
+on:
+  push:
+    branches: [fix/mnebydns-full-tcp-allowlist-quic-20261114]
+    paths: ['.github/workflows/mnebydns-tcp-policy-quic-sync.yml']
+permissions: {contents: read}
+concurrency:
+  group: mnebydns-youtube-quic-udp443-live
+  cancel-in-progress: false
+jobs:
+  inventory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Read live explicit TCP domain rules without copying configurations or client data
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS" && test -s ops/mnebydns-owner-ssh-known_hosts
+          if ! command -v sshpass >/dev/null;then
+            sudo apt-get update -qq
+            sudo apt-get install -qq -y sshpass >/dev/null
+          fi
+          SSHPASS="$DE_PASS" sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR \
+            root@89.125.90.101 'python3 -B - /etc/nginx/nginx.conf' < scripts/mnebydns-extract-tcp-policy.py
