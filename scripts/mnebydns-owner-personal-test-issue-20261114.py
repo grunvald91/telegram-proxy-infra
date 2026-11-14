@@ -98,6 +98,14 @@ def sqlrun(sql: str) -> list[str]:
                      if x.strip() in ("BEGIN", "COMMIT", "ROLLBACK", "DO", "t")]
         print("OWNER_PERSONAL_POSTGRES_COMMAND_TAGS=" +
               ",".join(safe_tags[:9]), flush=True)
+        first_error = next((line for line in r.stderr.splitlines()
+                            if line.lstrip().startswith(("ERROR:", "psql:"))), "")
+        if first_error:
+            first_error = re.sub(r"'[^']*'|\\"[^\\"]*\\"", "[quoted]", first_error)
+            first_error = re.sub(r"\\b[a-z0-9]{12}\\b", "[label]", first_error)
+            first_error = re.sub(r"\\b[0-9a-f]{8}-[0-9a-f-]{27,}\\b", "[uuid]", first_error)
+            first_error = re.sub(r"\\b[0-9]{5,}\\b", "[integer]", first_error)
+            print("OWNER_PERSONAL_POSTGRES_SAFE_ERROR=" + first_error[:180], flush=True)
         raise RuntimeError("POSTGRES_TRANSACTION_FAILED")
     return [v.strip() for v in r.stdout.splitlines() if v.strip()]
 
