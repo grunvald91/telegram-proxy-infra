@@ -1,0 +1,85 @@
+name: MNEBYDNS YouTube historical Nginx mapping and direct TLS
+on:
+  push:
+    branches: [diag/mnebydns-live-video-stall-20261115]
+    paths: [.github/workflows/mnebydns-youtube-route-loop-inspect-20261115.yml]
+permissions: {contents: read}
+jobs:
+  readonly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Read-only comparison of historical and live Nginx routes with direct TLS
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          cat > /tmp/inspect.py <<'PY'
+          import subprocess,re,hashlib,datetime,sys,ssl,socket,collections,pathlib,time
+          role=sys.argv[1]
+          def run(cmd,timeout=14):
+            try:
+              p=subprocess.run(cmd,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,timeout=timeout)
+              return p.stdout,p.returncode
+            except Exception:return "",999
+          def emit(k,v):print("ROUTE_"+role+"_"+k+"="+str(v),flush=True)
+          emit("UTC",datetime.datetime.now(datetime.timezone.utc).isoformat())
+          live,rc=run(["nginx","-T"],16)
+          emit("NGINX_T_RC",rc)
+          emit("NGINX_T_BYTES",len(live))
+          emit("NGINX_BASE_SHA16",hashlib.sha256(pathlib.Path("/etc/nginx/nginx.conf").read_bytes()).hexdigest()[:16])
+          files=pathlib.Path("/opt/mnebydns-stable-checkpoints/1794520280")
+          historic=(files/"nginx.stable").read_text() if role=="DE89" and (files/"nginx.stable").exists() else None
+          match=re.compile(r"youtube|googlevideo|ytimg|ggpht|gstatic|googleapis|proxy_pass|proxy_connect_timeout|proxy_timeout|ssl_preread|^\s*map\s|^\s*upstream\s|^\s*listen\s[^;]*443\b",re.I)
+          def filtered(s):
+            out=[]
+            for i,line in enumerate(s.splitlines(),1):
+              if match.search(line) and not re.search(r"password|token|secret|authorization|cookie|keyfile",line,re.I):
+                out.append((i,line.strip()[:220]))
+            return out
+          for label,txt in (("OLD_NGINX",historic),("LIVE_NGINX_BASE",pathlib.Path("/etc/nginx/nginx.conf").read_text()),("LIVE_NGINX_FULL",live)):
+            if txt is None:continue
+            selected=filtered(txt)
+            emit(label+"_SELECTED_LINES",len(selected))
+            for n,line in selected[:110]:emit(label+"_LINE",str(n)+" "+line)
+          if historic is not None:
+            oldset={x[1] for x in filtered(historic)}
+            newset={x[1] for x in filtered(pathlib.Path("/etc/nginx/nginx.conf").read_text())}
+            for x in sorted(oldset-newset)[:25]:emit("HISTORIC_ROUTING_REMOVED",x)
+            for x in sorted(newset-oldset)[:25]:emit("HISTORIC_ROUTING_ADDED",x)
+          for ip in ["89.125.90.101","188.120.254.223","10.66.77.1","10.66.77.2"]:
+            x,_=run(["ip","-o","route","get",ip],4)
+            if x:
+              y=re.sub(r"\bsrc\s+\S+","src [redacted]",x.strip())
+              emit("ROUTE_GET_"+ip,y[:170])
+          for host in ("www.youtube.com","rr1---sn-gxuo03g-ig3s.googlevideo.com"):
+            st=time.monotonic()
+            try:
+              ctx=ssl.create_default_context()
+              with socket.create_connection(("89.125.90.101",443),timeout=5) as raw:
+                raw.settimeout(5)
+                with ctx.wrap_socket(raw,server_hostname=host) as tls:
+                  emit("TLS_"+host,"OK "+tls.version()+" "+str(round((time.monotonic()-st)*1000))+"ms")
+            except Exception as ex:emit("TLS_"+host,type(ex).__name__+" "+str(round((time.monotonic()-st)*1000))+"ms")
+          emit("READONLY_COMPLETED",True)
+          PY
+          SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 - DE89' < /tmp/inspect.py > de.log 2>&1 &
+          pidde=$!
+          SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 - RU188' < /tmp/inspect.py > ru.log 2>&1 &
+          pidru=$!
+          fail=0
+          wait "$pidde" || fail=1
+          wait "$pidru" || fail=1
+          echo DE_NGINX_INSPECT_BEGIN;cat de.log;echo DE_NGINX_INSPECT_END
+          echo RU_NGINX_INSPECT_BEGIN;cat ru.log;echo RU_NGINX_INSPECT_END
+          test "$fail" -eq 0
+          grep -q "ROUTE_DE89_READONLY_COMPLETED=True" de.log
+          grep -q "ROUTE_RU188_READONLY_COMPLETED=True" ru.log
