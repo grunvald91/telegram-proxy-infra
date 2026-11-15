@@ -1,0 +1,59 @@
+name: MNEBYVPN after-WireGuard-repair VPN and DNS bridge independent read-only verification
+on:
+  push:
+    branches: [diag/wg-altport-isolated-20261115]
+    paths: ['.github/workflows/mnebyvpn-post-wg-transport-readonly-20261115.yml']
+permissions: {contents: read}
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Verify foreign Xray and RU-to-DE private backend control paths without mutation
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -qq -y sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 'bash -se' <<'SH'
+          set -Eeuo pipefail
+          echo "POSTFIX_DE_WG_PORT=$(wg show tg-relay listen-port)"
+          test "$(wg show tg-relay listen-port)" = 56781
+          systemctl is-active --quiet wg-quick@tg-relay.service
+          systemctl is-active --quiet xray.service
+          echo POSTFIX_DE_XRAY_ACTIVE=true
+          test "$(ss -H -lnt 'sport = :2053' | wc -l)" -gt 0
+          echo POSTFIX_DE_REALITY_2053_LISTENING=true
+          grep -Eq '^ListenPort[[:space:]]*=[[:space:]]*56781$' /etc/wireguard/tg-relay.conf
+          grep -Eq '^PostUp[[:space:]]*=.*--dport 56781' /etc/wireguard/tg-relay.conf
+          grep -Eq '^PostDown[[:space:]]*=.*--dport 56781' /etc/wireguard/tg-relay.conf
+          iptables -C INPUT -s 188.120.254.223 -p udp --dport 56781 -j ACCEPT
+          iptables -C INPUT -p udp --dport 56781 -j DROP
+          echo POSTFIX_DE_PERSISTED_FIREWALL_AND_CONFIG=true
+          SH
+          SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 'bash -se' <<'SH'
+          set -Eeuo pipefail
+          echo "POSTFIX_RU_WG_PORT=$(wg show tg-relay listen-port)"
+          test "$(wg show tg-relay listen-port)" = 56782
+          systemctl is-active --quiet wg-quick@tg-relay.service
+          grep -Eq '^ListenPort[[:space:]]*=[[:space:]]*56782$' /etc/wireguard/tg-relay.conf
+          grep -Eq '^Endpoint[[:space:]]*=[[:space:]]*89[.]125[.]90[.]101:56781$' /etc/wireguard/tg-relay.conf
+          ufw status | grep -Eq '56782/udp|56782[[:space:]]'
+          echo POSTFIX_RU_PERSISTED_FIREWALL_AND_CONFIG=true
+          echo "POSTFIX_RU_PRIVATE_VPN_NODE_HEALTH_HTTP=$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 10 http://10.66.77.1:18944/healthz || true)"
+          python3 - <<'PY'
+          import ssl,socket
+          with socket.create_connection(('10.66.77.1',443),timeout=7) as sock:
+              with ssl.create_default_context().wrap_socket(sock,server_hostname='www.youtube.com') as tls:
+                  assert tls.getpeercert()
+                  print('POSTFIX_RU_YOUTUBE_ORIGINAL_SNI_TLS='+tls.version(),flush=True)
+          PY
+          echo POSTFIX_CHECK_READONLY_FINISHED=true
+          SH
