@@ -1,0 +1,77 @@
+name: MNEBYDNS one-flow bounded NFQUEUE media root-cause A/B diagnostic
+on:
+  push:
+    branches: [diag/mnebydns-media-nfqueue-oneflow-20261115]
+    paths:
+      - '.github/workflows/mnebydns-media-nfqueue-oneflow-20261115.yml'
+permissions: {contents: read}
+concurrency:
+  group: mnebydns-one-flow-nfqueue-test-20261115
+  cancel-in-progress: false
+jobs:
+  diff:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Exact one-flow canary preflight and two synthetic TLS probes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS" && test -n "$RU_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          python3 -m py_compile scripts/mnebydns-nfqueue-media-oneflow-20261115.py
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          copts=(-q -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          de() { SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 "$@"; }
+          ru_probe() {
+            local port="$1" label="$2"
+            SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 "python3 - $port $label" <<'PY'
+          import json,socket,ssl,sys,time
+          port=int(sys.argv[1]);label=sys.argv[2]
+          host='rr1---sn-gxuo03g-ig3s.googlevideo.com'
+          report={'label':label,'source_port':port}
+          start=time.monotonic()
+          try:
+            with socket.socket(socket.AF_INET,socket.SOCK_STREAM) as sock:
+              sock.settimeout(6)
+              sock.bind(('0.0.0.0',port))
+              sock.connect(('89.125.90.101',443))
+              report['tcp']='PASS'
+              with ssl.create_default_context().wrap_socket(sock,server_hostname=host) as tls:
+                report['tls']=tls.version()
+                tls.settimeout(5)
+                tls.sendall(('GET / HTTP/1.1\r\nHost: '+host+'\r\nConnection: close\r\n\r\n').encode())
+                try:report['http_status']=tls.recv(100).split(b'\r\n')[0].decode('ascii','replace')[:80]
+                except Exception as exc:report['http_error']=type(exc).__name__
+          except Exception as exc:report['error']=type(exc).__name__
+          report['elapsed_ms']=round((time.monotonic()-start)*1000)
+          print('NFQ_MEDIA_AB='+json.dumps(report,sort_keys=True),flush=True)
+          PY
+          }
+          export SSHPASS="$DE_PASS"
+          sshpass -e scp "${copts[@]}" scripts/mnebydns-nfqueue-media-oneflow-20261115.py root@89.125.90.101:/tmp/mnebydns-nfqueue-oneflow-canary-20261115.py
+          de 'python3 -B /tmp/mnebydns-nfqueue-oneflow-canary-20261115.py preflight'
+          echo NFQ_MEDIA_BASELINE_WITH_NORMAL_QUEUE
+          ru_probe 43160 normal
+          cleanup() {
+            code=$?
+            trap - EXIT
+            de 'python3 -B /tmp/mnebydns-nfqueue-oneflow-canary-20261115.py cleanup' || echo 'NFQ_ONEFLOW_INDEPENDENT_WATCHDOG_WILL_CLEANUP=true'
+            exit "$code"
+          }
+          trap cleanup EXIT
+          de 'python3 -B /tmp/mnebydns-nfqueue-oneflow-canary-20261115.py arm'
+          echo NFQ_MEDIA_TEST_WITH_EXACT_SCOPED_QUEUE_BYPASS
+          ru_probe 43161 bypass
+          echo NFQ_MEDIA_ONEFLOW_TEST_COMPLETE=true
