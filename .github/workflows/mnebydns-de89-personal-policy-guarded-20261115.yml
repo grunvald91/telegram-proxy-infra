@@ -1,0 +1,134 @@
+name: MNEBYDNS guarded personal DNS inheritance from shared DE89 CoreDNS
+on:
+  push:
+    branches: [restore/mnebydns-de89-20261115]
+    paths:
+      - .github/workflows/mnebydns-de89-personal-policy-guarded-20261115.yml
+      - data/mnebydns-de89-personal-policy-mode-20261115.txt
+      - scripts/mnebydns-de89-personal-policy-sync-20261115.sh
+permissions: {contents: read}
+concurrency:
+  group: mnebydns-de89-personal-policy-guarded-20261115
+  cancel-in-progress: false
+jobs:
+  personal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 14
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Validate guarded script and current generator using offline contracts
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mode="$(cat data/mnebydns-de89-personal-policy-mode-20261115.txt)"
+          [[ "$mode" == stage || "$mode" == apply ]]
+          test -n "$DE_PASS" && test -n "$RU_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          bash -n scripts/mnebydns-de89-personal-policy-sync-20261115.sh
+          python3 scripts/test_mnebydns_personal_shared_policy_generate_20261114.py
+          sudo apt-get -qq update
+          sudo apt-get -qq install -y sshpass >/dev/null
+      - name: Derive new personal policy from current shared DE89 CoreDNS and existing RU policy
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          install -d -m 700 "$RUNNER_TEMP/mnebydns-personal-de89"
+          cd "$RUNNER_TEMP/mnebydns-personal-de89"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$GITHUB_WORKSPACE/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -T "${opts[@]}" root@89.125.90.101 'cat /opt/mnebydns-dot/Corefile' > source.Corefile
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T "${opts[@]}" root@188.120.254.223 'cat /etc/mnebydns/personal-dot/policy-chatgpt-dependencies-20261114.json' > personal.previous.json
+          python3 "$GITHUB_WORKSPACE/scripts/mnebydns-personal-shared-policy-generate-20261114.py" source.Corefile personal.previous.json derived/new.json
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          manifest=json.loads(pathlib.Path('derived/manifest.json').read_text())
+          assert manifest['original_policy_count']==158
+          assert manifest['core_a_templates']>=264
+          assert manifest['new_policy_count']>158
+          assert manifest['obsolete_personal_only_entries']==0
+          assert manifest['sha256']==hashlib.sha256(pathlib.Path('derived/new.json').read_bytes()).hexdigest()
+          pathlib.Path('source.sha256').write_text(hashlib.sha256(pathlib.Path('source.Corefile').read_bytes()).hexdigest()+'\n')
+          print('PERSONAL_CANONICAL_DOMAIN_COUNT='+str(manifest['new_policy_count']))
+          print('PERSONAL_CANONICAL_SNAPSHOT_SHA='+manifest['sha256'])
+          PY
+      - name: Validate canonical DE CoreDNS has not drifted while generating policy
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          live="$(sshpass -e ssh -T "${opts[@]}" root@89.125.90.101 'sha256sum /opt/mnebydns-dot/Corefile' | cut -d ' ' -f1)"
+          expected="$(cat "$RUNNER_TEMP/mnebydns-personal-de89/source.sha256")"
+          test "$live" = "$expected"
+          echo 'PERSONAL_CANONICAL_SHARED_CORE_STILL_STABLE=PASS'
+      - name: STAGE only - install derived policy but do not restart old personalized container
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if [[ "$(cat data/mnebydns-de89-personal-policy-mode-20261115.txt)" != stage ]];then
+            echo 'ALREADY_STAGED_IN_PREVIOUS_VERIFIED_RUN'
+            exit 0
+          fi
+          export SSHPASS="$RU_PASS"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e scp -q "${opts[@]}" scripts/mnebydns-de89-personal-policy-sync-20261115.sh root@188.120.254.223:/tmp/mnebydns-de89-personal-policy-sync-20261115.sh
+          sshpass -e scp -q "${opts[@]}" "$RUNNER_TEMP/mnebydns-personal-de89/derived/new.json" root@188.120.254.223:/tmp/mnebydns-de89-personal-policy-20261115.json
+          sshpass -e scp -q "${opts[@]}" "$RUNNER_TEMP/mnebydns-personal-de89/derived/manifest.json" root@188.120.254.223:/tmp/mnebydns-de89-personal-policy-20261115.manifest.json
+          sshpass -e ssh -T "${opts[@]}" root@188.120.254.223 'bash /tmp/mnebydns-de89-personal-policy-sync-20261115.sh stage'
+      - name: APPLY only - require original staged policy bytes and current canonical source parity
+        id: compare
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if [[ "$(cat data/mnebydns-de89-personal-policy-mode-20261115.txt)" != apply ]];then exit 0;fi
+          export SSHPASS="$RU_PASS"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          expected="$(sha256sum "$RUNNER_TEMP/mnebydns-personal-de89/derived/new.json" | cut -d ' ' -f1)"
+          actual="$(sshpass -e ssh -T "${opts[@]}" root@188.120.254.223 'sha256sum /etc/mnebydns/personal-dot/policy-derived-from-de89-20261115.json' | cut -d ' ' -f1)"
+          test "$expected" = "$actual"
+          echo 'PERSONAL_LIVE_SHARED_POLICY_SHA_MATCHES_STAGED=PASS'
+      - name: APPLY only - in-place original container replacement with independent 10-minute rollback
+        id: replaced
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if [[ "$(cat data/mnebydns-de89-personal-policy-mode-20261115.txt)" != apply ]];then exit 0;fi
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@188.120.254.223 'bash /usr/local/sbin/mnebydns-de89-personal-policy-sync-20261115 replace'
+      - name: APPLY only - live strict TLS, readyz and exact pinned personal routing file
+        id: verified
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if [[ "$(cat data/mnebydns-de89-personal-policy-mode-20261115.txt)" != apply ]];then exit 0;fi
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@188.120.254.223 'bash /usr/local/sbin/mnebydns-de89-personal-policy-sync-20261115 status'
+          python3 - <<'PY'
+          import socket,ssl
+          for address in ('89.125.90.101','188.120.254.223'):
+            with socket.create_connection((address,853),timeout=8) as raw:
+              raw.settimeout(8)
+              with ssl.create_default_context().wrap_socket(raw,server_hostname='aaaaaaaaaaaa.dns.mnebyvpn.site') as tls:
+                assert tls.getpeercert()
+            print('PERSONAL_EXISTING_SNI_TLS_STRICT_VALID='+address)
+          PY
+      - name: APPLY only - finalize new container, preserve original policy file and database
+        id: finalized
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if [[ "$(cat data/mnebydns-de89-personal-policy-mode-20261115.txt)" != apply ]];then exit 0;fi
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@188.120.254.223 'bash /usr/local/sbin/mnebydns-de89-personal-policy-sync-20261115 finalize'
+      - name: Failure before confirmed personal release - restore original live container
+        if: ${{ failure() && steps.replaced.outcome == 'success' && steps.finalized.outcome != 'success' }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@188.120.254.223 'bash /usr/local/sbin/mnebydns-de89-personal-policy-sync-20261115 rollback'
