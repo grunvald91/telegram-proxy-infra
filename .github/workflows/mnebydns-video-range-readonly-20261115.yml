@@ -53,3 +53,23 @@ jobs:
               echo "X_MEDIA_SAMPLE=$i ROUTE=$route RESULT=$result"
             done
           done
+
+      - name: Compare external IP-checker DNS records to selective SmartDNS routes
+        run: |
+          python3 - <<'PY'
+          import json,sys
+          sys.path.insert(0,'scripts')
+          from mnebydns_reliability_monitor import dot_query
+          sites=['api.ipify.org','ipinfo.io','ifconfig.me','2ip.ru',
+                 'browserleaks.com','www.youtube.com','video.twimg.com']
+          for host in sites:
+            try:
+              a=dot_query('89.125.90.101','dns.mnebyvpn.site',host,1,timeout=5)
+              print('IPCHECKER_DOT='+json.dumps({'host':host,'rcode':a.rcode,'a':list(a.addresses)[:5]},sort_keys=True),flush=True)
+            except Exception as ex:
+              print('IPCHECKER_DOT_ERROR='+host+':'+type(ex).__name__,flush=True)
+          PY
+          echo RUNNER_PUBLIC_IP_BEGIN
+          curl -4 -sS --max-time 7 https://api.ipify.org || true
+          echo
+          echo RUNNER_PUBLIC_IP_END
