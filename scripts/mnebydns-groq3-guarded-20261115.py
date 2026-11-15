@@ -141,6 +141,7 @@ def deploy():
 def selftest():
     bulk.offline_test()
     assert len(TARGETS)==3 and len(set(TARGETS))==3
+    assert TARGETS==("groq.com","chat.groq.com","console.groq.com")
     assert render.DNS_INGRESS==owner.RU and owner.RU!=owner.EDGE
     for h in TARGETS:render.validate_domain(h)
     print("GROQ3_SELFTEST=PASS",flush=True)
