@@ -47,6 +47,15 @@ jobs:
             o=(b/(name+'.stable')).read_bytes();n=p.read_bytes()
             blocks=[(op,i,j,k,l) for op,i,j,k,l in difflib.SequenceMatcher(None,o.decode().splitlines(),n.decode().splitlines(),autojunk=False).get_opcodes() if op!='equal']
             say(name.upper(),{'same':o==n,'old_sha':sha(o),'new_sha':sha(n),'line_change_hunks':blocks[:25],'hunks_total':len(blocks)})
+          old_nginx=(b/'nginx.stable').read_text().splitlines()
+          new_nginx=pathlib.Path('/etc/nginx/nginx.conf').read_text().splitlines()
+          inserted=[]
+          for op,i,j,k,l in difflib.SequenceMatcher(None,old_nginx,new_nginx,autojunk=False).get_opcodes():
+            if op=='insert':
+              for x in new_nginx[k:l]:
+                if any(z in x.lower() for z in ('password','secret','token','private_key','auth_basic')):continue
+                inserted.append(x.strip()[:190])
+          say('NGINX_ADDED_BLOCK',{'lines':len(inserted),'content':inserted[:75]})
           svcs=['nginx','mnebydns-dot','mnebydns-googlepilot','mnebydns-de89-public-quic-20261115','mnebydns-youtube-quic-de-43612369808','telegram-foreign-nfqws','xray']
           def active(n):
             p=subprocess.run(['systemctl','is-active',n],capture_output=True,text=True,timeout=6)
