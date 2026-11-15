@@ -13,7 +13,7 @@ CHECKPOINT=CPROOT/"current"
 NGINX=pathlib.Path("/etc/nginx/nginx.conf")
 PROXY=pathlib.Path("/etc/mnebydns-googlepilot/nginx.conf")
 UNIT="mnebydns-youtube-morning-revert-20261115"
-PATT=re.compile(r"(?ms)^template IN A www\.youtube\.com \{\n.*?^\}")
+PATT=re.compile(r"(?ms)^[ \\t]*template IN A www\\.youtube\\.com[ \\t]*\\{[ \\t]*\\n.*?^[ \\t]*\\}")
 OLDIP="188.120.254.223"; NEWIP="89.125.90.101"
 def emit(k,v):print("YT_MORNING_"+k+"="+str(v),flush=True)
 def sha(data):return hashlib.sha256(data).hexdigest()
