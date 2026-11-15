@@ -66,6 +66,33 @@ jobs:
               report['personal_container_error']=type(exc).__name__
           print('RU188_READONLY_INVENTORY='+json.dumps(report,sort_keys=True))
           PY
+      - name: Read-only DE89 CoreDNS owner-rule to SNI map parity
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@89.125.90.101 'python3 -' <<'PY'
+          import json,re,pathlib,socket,ssl
+          dns=pathlib.Path('/opt/mnebydns-dot/Corefile').read_text()
+          nginx=pathlib.Path('/etc/nginx/nginx.conf').read_text()
+          pat=r'# BEGIN MNEBYDNS_OWNER_EXACT_([a-zA-Z0-9_]+)'
+          dc=set(re.findall(pat,dns))
+          nc=set(re.findall(pat,nginx))
+          missing=sorted(dc-nc)
+          result={'core_owner_routes':len(dc),'nginx_owner_routes':len(nc),'core_only_routes':len(missing),'core_only_samples':missing[:24],'nginx_only_samples':sorted(nc-dc)[:10]}
+          probes=[]
+          for token in missing[:4]:
+              hostname=token.replace('_','.')
+              try:
+                  with socket.create_connection(('89.125.90.101',443),timeout=4) as raw:
+                      raw.settimeout(5)
+                      with ssl.create_default_context().wrap_socket(raw,server_hostname=hostname) as tls:
+                          probes.append({'name':hostname,'tls':'valid'})
+              except Exception as e:
+                  probes.append({'name':hostname,'tls':type(e).__name__})
+          result['core_only_tls_probes']=probes
+          print('DE89_OWNER_SNI_PARITY='+json.dumps(result,sort_keys=True))
+          PY
       - name: Read-only public DoT and current authoritative name resolution
         shell: bash
         run: |
