@@ -94,7 +94,6 @@ rm -rf -- "\$root"
 ROLLBACK
 # Fix destination to the exact public address rather than hostname-derived interfaces.
 selfip="188.120.254.223"; if [ "$side" = DE ]; then selfip="89.125.90.101"; fi
-sed -i "s|\\$(hostname -I | awk '{print \\$1}')|$selfip|" "$root/rollback.sh" 2>/dev/null || true
 chmod 700 "$root/rollback.sh"
 systemd-run --quiet --unit="mnebywgfix-$tag-revert" --on-active=480s --collect /bin/bash "$root/rollback.sh"
 ufw allow in on "$wan" from "$other" to "$selfip" port "$new" proto udp comment "MNEBYVPN WG verified port repair" >/dev/null
@@ -175,7 +174,7 @@ set +e
 tag="$1"
 [[ "$tag" =~ ^[0-9]{6}$ ]] || exit 3
 root="/run/mnebywgfix-$tag"
-if [ -f "$root/confirmed" ]; then echo WG_FIX_ALREADY_CONFIRMED=yes; exit 0; fi
+if [ -f "$root/confirmed" ]; then rm -f "$root/confirmed"; fi
 if [ -s "$root/rollback.sh" ]; then bash "$root/rollback.sh"; fi
 echo WG_FIX_ROLLBACK_ATTEMPTED=yes
 """
@@ -189,9 +188,17 @@ test "$(wg show tg-relay listen-port)" = "$new"
 wg show tg-relay endpoints | grep -Fq "$other:$othernew"
 cmp -s "$root/candidate.file" /etc/wireguard/tg-relay.conf
 touch "$root/confirmed"
+echo WG_FIX_CONFIRMED=yes
+"""
+FINALIZE=r"""
+set -Eeuo pipefail
+tag="$1"
+[[ "$tag" =~ ^[0-9]{6}$ ]]
+root="/run/mnebywgfix-$tag"
+test -f "$root/confirmed"
 systemctl stop "mnebywgfix-$tag-revert.timer" >/dev/null 2>&1 || true
 rm -rf -- "$root"
-echo WG_FIX_CONFIRMED=yes
+echo WG_FIX_CLEANED=yes
 """
 
 def args(role):
@@ -250,6 +257,12 @@ def main():
         confirmed=True
         print("WG_FIX_NEW_PORTS_APPLIED_AND_PERSISTED=true",flush=True)
         print("WG_FIX_KEYS_IP_MTU_ROUTES_UNCHANGED=true",flush=True)
+        for role in ("DE","RU"):
+            try:
+                remote(role,FINALIZE,[TAG],timeout=23)
+                print("WG_FIX_"+role+"_TEMPORARY_FILES_CLEANED=yes",flush=True)
+            except Exception as ex:
+                print("WG_FIX_"+role+"_CONFIRMED_TIMER_CLEANUP_PENDING="+type(ex).__name__,flush=True)
     finally:
         if not confirmed:
             for role in sorted(staged):
