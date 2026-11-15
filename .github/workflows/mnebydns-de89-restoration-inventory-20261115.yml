@@ -179,6 +179,32 @@ jobs:
               item['elapsed_ms']=round(1000*(time.monotonic()-started))
               print('MEDIA_TLS_PUBLIC_VS_WG='+json.dumps(item,sort_keys=True),flush=True)
           PY
+      - name: Compare TLS12 short hello and TLS13 modern hello over public and private paths
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@188.120.254.223 'python3 -' <<'PY'
+          import json,socket,ssl,time
+          for host in ('rr1---sn-gxuo03g-ig3s.googlevideo.com','pbs.twimg.com'):
+            for label,version in (('TLS12',ssl.TLSVersion.TLSv1_2),('TLS13',ssl.TLSVersion.TLSv1_3)):
+              ctx=ssl.create_default_context()
+              ctx.minimum_version=version
+              ctx.maximum_version=version
+              for route,ip in (('PUBLIC','89.125.90.101'),('WG','10.66.77.1')):
+                report={'host':host,'tls':label,'route':route}
+                start=time.monotonic()
+                try:
+                  with socket.create_connection((ip,443),timeout=4) as sock:
+                    report['tcp_ms']=round(1000*(time.monotonic()-start))
+                    sock.settimeout(4)
+                    with ctx.wrap_socket(sock,server_hostname=host) as secured:
+                      report['tls_status']=secured.version()
+                      report['tls_ms']=round(1000*(time.monotonic()-start))
+                except Exception as exc:
+                  report['error']=type(exc).__name__
+                print('MEDIA_TLS_VERSION_DIFFERENTIAL='+json.dumps(report,sort_keys=True),flush=True)
+          PY
       - name: Read-only current DNS administration database summary (no personal rows)
         shell: bash
         run: |
