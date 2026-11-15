@@ -99,6 +99,12 @@ jobs:
           nft=subprocess.run(['nft','-a','list','chain','inet','telegram_nfqws','post'],capture_output=True,text=True)
           lines=nft.stdout.splitlines()
           matched=[s.strip() for s in lines if ('sport 443' in s or 'queue' in s.lower())]
+          quiclog=subprocess.run(['journalctl','-u','mnebydns-de89-public-quic-20261115.service','--since','-20min','-o','cat','--no-pager','-q','-n','300'],capture_output=True,text=True).stdout
+          quiclines=[x for x in quiclog.splitlines() if 'youtube_quic_de-public_active=' in x]
+          counters={}
+          for line in quiclines[-1:]:
+            counters={k:int(v) for k,v in re.findall(r'(\w+)=(\d+)',line)}
+          print('DE89_DIRECT_QUIC_AGGREGATES='+json.dumps({'recent_counter_lines':len(quiclines),'latest':counters},sort_keys=True))
           print('DE89_NFQUEUE_MEDIA_PATH='+json.dumps({'exit_code':nft.returncode,'rules':matched[:14],'current_service':subprocess.run(['systemctl','is-active','telegram-nfqws.service'],capture_output=True,text=True).stdout.strip()},sort_keys=True))
           print('MEDIA_CONFIG_VS_RESTORED_CHECKPOINT='+json.dumps(snapshots,sort_keys=True))
           out={}
