@@ -48,7 +48,10 @@ jobs:
           # A previous exact hostname may now be covered by a verified wildcard.
           # The generator already fails if any prior hostname or wildcard loses coverage.
           assert m['obsolete_personal_only_entries']==0
-          assert all(s in p for s in ['auth.openai.com','chatgpt.com','artifacts.elastic.co','account.mongodb.com'])
+          requested=['auth.openai.com','chatgpt.com','artifacts.elastic.co','account.mongodb.com']
+          coverage={s: s in p or any(rule.startswith('*.') and s.endswith(rule[1:]) for rule in p) for s in requested}
+          print('PERSONAL_REQUIRED_SAMPLE_COVERAGE='+json.dumps(coverage,sort_keys=True))
+          assert all(coverage.values()),'REQUIRED_DOMAIN_NOT_COVERED_BY_CANONICAL_COREDNS'
           print('PERSONAL_SINGLE_SOURCE_POLICY_MANIFEST='+json.dumps(m,sort_keys=True))
           print('PERSONAL_SINGLE_SOURCE_FROM_LIVE_89=PASS')
           PY
