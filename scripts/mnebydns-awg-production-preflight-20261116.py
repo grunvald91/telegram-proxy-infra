@@ -10,14 +10,14 @@ def run(*args,timeout=7):
         return p.returncode,p.stdout.strip()
     except Exception as e:return 254,type(e).__name__
 def safe(s):
-    s=re.sub(r'\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b','<ip>',s)
-    s=re.sub(r'\\b[A-Za-z0-9+/]{40,}={0,2}\\b','<redacted>',s)
+    s=re.sub(r'\b(?:\d{1,3}\.){3}\d{1,3}\b','<ip>',s)
+    s=re.sub(r'\b[A-Za-z0-9+/]{40,}={0,2}\b','<redacted>',s)
     return s[:250]
 emit("UTC",datetime.datetime.now(datetime.timezone.utc).isoformat())
 p=pathlib.Path("/etc/wireguard/tg-relay.conf")
 if p.is_file():
     body=p.read_text(errors="replace")
-    sections=re.split(r'(?m)^\\s*\\[([^]]+)\\]\\s*$',body)
+    sections=re.split(r'(?m)^\s*\[([^]]+)\]\s*$',body)
     info={"exists":True,"bytes":len(body),"mode":oct(p.stat().st_mode&0o777)}
     for sec,b in zip(sections[1::2],sections[2::2]):
         vals={}
@@ -30,7 +30,7 @@ if p.is_file():
                 v=value.lower()
                 vals.setdefault(key,[]).append({"length":len(value),
                   "has_mark":"mark" in v,"has_route":"route" in v,"has_iptables":"iptables" in v,
-                  "has_wg":bool(re.search(r'\\bwg\\b',v)),
+                  "has_wg":bool(re.search(r'\bwg\b',v)),
                   "has_nft":"nft" in v})
             elif key.lower() in ("allowedips","address","mtu","table","listenport","endpoint","fwmark","persistentkeepalive","saveconfig"):
                 vals[key]=value
@@ -58,7 +58,7 @@ for title,args in (
     elif title=="WG_LATEST_HANDSHAKE":
         e=[int(x.split()[-1]) for x in out.splitlines() if x.split() and x.split()[-1].isdigit()]
         emit(title,{"age_sec":min([max(0,int(datetime.datetime.now().timestamp())-v) for v in e if v>0],default=None)})
-    elif title=="WG_ALLOWED":emit(title,{"rc":rc,"allowed":[x.split("\\t")[-1] for x in out.splitlines()[:3]]})
+    elif title=="WG_ALLOWED":emit(title,{"rc":rc,"allowed":[x.split("\t")[-1] for x in out.splitlines()[:3]]})
     elif title in ("IP_RULE","TABLE_51820","MAIN_TUNNEL","PEER_ROUTE","MARK_ROUTE","AWG_UNIT","FORWARD","WG_PORT"):
         emit(title,{"rc":rc,"lines":[safe(x) for x in out.splitlines()][:25]})
 for name,args in (
