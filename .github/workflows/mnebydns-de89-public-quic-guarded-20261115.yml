@@ -60,7 +60,6 @@ jobs:
           ls -l /opt/mnebydns-de89-public-quic-20261115/ || true
           REMOTE
       - name: Guarded restore of direct QUIC and genuine Youtube HTTP3 verification
-        if: false
         shell: bash
         run: |
           set -Eeuo pipefail

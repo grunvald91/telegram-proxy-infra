@@ -68,9 +68,21 @@ case "$phase" in
 stage)
   approved_live_baseline
   test -s "$REMOTE_WRAPPER" && test -s "$REMOTE_MANAGER"
-  test ! -e "$BASE" && test ! -e "$UNITFILE" && test ! -e "$TIMERFILE" && test ! -e "$REVERTFILE"
+  test ! -e "$UNITFILE" && test ! -e "$TIMERFILE" && test ! -e "$REVERTFILE"
   ! ss -H -lun 'sport = :443' | grep -q .
   python3 -m py_compile "$REMOTE_WRAPPER"
+  if [[ -d "$BASE" ]]; then
+    # Recovery is permitted only from this exact script's prior rolled-back
+    # stage, with all production unit files absent and public UDP443 idle.
+    test -s "$WRAPPER" && test -s "$MANAGER" && test -s "$BASE/$UNIT"
+    cmp -s "$WRAPPER" "$REMOTE_WRAPPER"
+    grep -Fq "ExecStart=/usr/bin/python3 -B $WRAPPER" "$BASE/$UNIT"
+    install -m 700 "$REMOTE_MANAGER" "$MANAGER"
+    check_stage
+    echo DE89_PUBLIC_QUIC_SAFE_STAGING_RECOVERY=PASS
+    exit 0
+  fi
+  test ! -e "$BASE"
   mkdir -m 755 "$BASE"
   install -m 644 "$REMOTE_WRAPPER" "$WRAPPER"
   install -m 700 "$REMOTE_MANAGER" "$MANAGER"
@@ -137,7 +149,7 @@ TIMER_CONFIG
   systemctl daemon-reload
   systemctl enable --now "$TIMER"
   systemctl is-active --quiet "$TIMER"
-  trap 'flock -u 9;bash "$MANAGER" rollback || true' ERR
+  trap 'rc=$?; echo "DE89_PUBLIC_QUIC_APPLY_FAILURE_LINE=$LINENO" >&2; echo "DE89_PUBLIC_QUIC_APPLY_FAILURE_EXIT=$rc" >&2; flock -u 9; bash "$MANAGER" rollback || true' ERR
   systemctl start "$UNIT"
   ready=0
   for i in $(seq 1 30);do
