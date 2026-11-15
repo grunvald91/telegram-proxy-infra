@@ -1,0 +1,135 @@
+name: MNEBYDNS 3.1 temporary RU-DE parallel tunnel A/B (guarded self-cleaning)
+on:
+  push:
+    branches: [feat/mnebydns-amneziawg-parallel-20261115]
+    paths: ['.github/workflows/mnebydns-amneziawg-parallel-canary-20261115.yml']
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: mnebydns-amneziawg-parallel-canary
+  cancel-in-progress: false
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: awg-3.1-pinned-amd64-binaries
+          run-id: 43761317882
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/awg-build
+      - name: Stage two short-lived isolated interfaces with timer-enforced rollback
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          bash -n scripts/mnebydns-awg-parallel-stage-20261115.sh
+          if ! command -v sshpass >/dev/null; then sudo apt-get update -qq && sudo apt-get install -y -qq sshpass >/dev/null; fi
+          w="$(mktemp -d)"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null
+            -o UpdateHostKeys=no -o LogLevel=ERROR)
+          copts=(-q -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null
+            -o UpdateHostKeys=no -o LogLevel=ERROR)
+          de() { SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 "$@"; }
+          ru() { SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 "$@"; }
+          cleanup() {
+            rc=$?
+            trap - EXIT
+            de '/opt/mnebydns-awg-stage-20261115/manage.sh cleanup DE' 2>/dev/null ||
+              de 'rm -f /tmp/mneby-awg-bundle-20261115.tar.gz /tmp/mneby-awg-config-20261115.conf /tmp/mneby-awg-manage-20261115.sh' 2>/dev/null || true
+            ru '/opt/mnebydns-awg-stage-20261115/manage.sh cleanup RU' 2>/dev/null ||
+              ru 'rm -f /tmp/mneby-awg-bundle-20261115.tar.gz /tmp/mneby-awg-config-20261115.conf /tmp/mneby-awg-manage-20261115.sh' 2>/dev/null || true
+            rm -rf "$w"
+            echo AWG_STAGE_CLEANUP_ATTEMPTED=true
+            exit "$rc"
+          }
+          trap cleanup EXIT
+          cp "$RUNNER_TEMP/awg-build/amneziawg-pinned-linux-amd64.tar.gz" "$w/bundle.tgz"
+          mkdir -p "$w/bin"
+          tar -xzf "$w/bundle.tgz" -C "$w/bin"
+          (cd "$w/bin" && sha256sum -c SHA256SUMS)
+          BIN="$w/bin/awg"
+          DE_PRIV="$("$BIN" genkey)"
+          RU_PRIV="$("$BIN" genkey)"
+          HKEY="$("$BIN" genkey)"
+          DE_PUB="$(printf %s "$DE_PRIV" | "$BIN" pubkey)"
+          RU_PUB="$(printf %s "$RU_PRIV" | "$BIN" pubkey)"
+          for secret in "$DE_PRIV" "$RU_PRIV" "$HKEY"; do echo "::add-mask::$secret"; done
+          cat >"$w/de.conf" <<EOF
+          [Interface]
+          PrivateKey = $DE_PRIV
+          ListenPort = 56783
+          Address = 10.66.78.1/30
+          MTU = 1280
+          Table = off
+          Jc = 5
+          Jmin = 20
+          Jmax = 95
+          S1 = 32
+          S2 = 32
+          S3 = 32
+          S4 = 32
+          H1 = 1
+          H2 = 2
+          H3 = 3
+          H4 = 4
+          HeaderProtectionKey = $HKEY
+          ContentPaddingAddition = 0-16
+          RandomTrailers = off
+
+          [Peer]
+          PublicKey = $RU_PUB
+          AllowedIPs = 10.66.78.2/32
+          Endpoint = 188.120.254.223:56784
+          PersistentKeepalive = 25
+          EOF
+          sed -e "s/^PrivateKey = .*/PrivateKey = $RU_PRIV/" \
+              -e "s/^ListenPort = 56783/ListenPort = 56784/" \
+              -e "s@^Address = 10.66.78.1/30@Address = 10.66.78.2/30@" \
+              -e "s@^PublicKey = .*@PublicKey = $DE_PUB@" \
+              -e "s@^AllowedIPs = 10.66.78.2/32@AllowedIPs = 10.66.78.1/32@" \
+              -e "s@^Endpoint = 188.120.254.223:56784@Endpoint = 89.125.90.101:56783@" \
+              "$w/de.conf" > "$w/ru.conf"
+          for role in DE RU; do
+            if [[ "$role" == DE ]]; then pass="$DE_PASS"; host=89.125.90.101; cf="$w/de.conf"; else pass="$RU_PASS"; host=188.120.254.223; cf="$w/ru.conf"; fi
+            SSHPASS="$pass" sshpass -e scp "${copts[@]}" "$w/bundle.tgz" "root@$host:/tmp/mneby-awg-bundle-20261115.tar.gz"
+            SSHPASS="$pass" sshpass -e scp "${copts[@]}" "$cf" "root@$host:/tmp/mneby-awg-config-20261115.conf"
+            SSHPASS="$pass" sshpass -e scp "${copts[@]}" scripts/mnebydns-awg-parallel-stage-20261115.sh "root@$host:/tmp/mneby-awg-manage-20261115.sh"
+          done
+          de 'bash /tmp/mneby-awg-manage-20261115.sh stage DE'
+          ru 'bash /tmp/mneby-awg-manage-20261115.sh stage RU'
+          echo AWG_STAGE_BOTH_UP=true
+          ru 'python3 -' <<'PY'
+          import subprocess,re,socket,ssl,datetime,json
+          def probe(name,host):
+              p=subprocess.run(["ping","-n","-q","-M","do","-c","30","-i","0.25","-s","1200","-W","1",host],capture_output=True,text=True,timeout=18)
+              m=re.search(r"(\d+) packets transmitted, (\d+) received, ([\d.]+)% packet loss",p.stdout)
+              print("AWG_COMPARISON_"+name+"="+json.dumps({"sent":int(m[1]),"received":int(m[2]),"loss_pct":float(m[3])} if m else {"error":"missing_ping_summary","rc":p.returncode}),flush=True)
+              return float(m[3]) if m else 100.0
+          old=probe("WIREGUARD","10.66.77.1")
+          public=probe("PUBLIC","89.125.90.101")
+          awg=probe("AMNEZIAWG","10.66.78.1")
+          try:
+              with socket.create_connection(("10.66.78.1",443),timeout=4) as sock:
+                  sock.settimeout(5)
+                  with ssl.create_default_context().wrap_socket(sock,server_hostname="rr1---sn-gxuo03g-ig3s.googlevideo.com") as tls:
+                      print("AWG_CDN_TLS="+tls.version(),flush=True)
+          except Exception as ex:
+              print("AWG_CDN_TLS_ERROR="+type(ex).__name__,flush=True)
+          print("AWG_BETTER_THAN_WG="+str(awg<old).lower(),flush=True)
+          print("AWG_UNDER_5PCT_LOSS="+str(awg<=5).lower(),flush=True)
+          PY
+          de '/opt/mnebydns-awg-stage-20261115/manage.sh status DE'
+          ru '/opt/mnebydns-awg-stage-20261115/manage.sh status RU'
+          echo AWG_PARALLEL_TEST_DONE=true
