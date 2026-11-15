@@ -112,6 +112,7 @@ def plan_ru_errors():
 
 def self_test():
     if len(HOSTS)!=13 or len(set(HOSTS))!=13:raise RuntimeError("FIXED_SCOPE_BAD")
+    assert set(HOSTS).isdisjoint({"artifacts.elastic.co","brickset.com","chatgpt.com"})
     for h in HOSTS:renderer.validate_domain(h)
     assert renderer.DNS_INGRESS==owner.RU and owner.RU!=owner.EDGE
     print("TCP13_REUSE_OFFLINE=PASS",flush=True)
