@@ -61,6 +61,14 @@ case "${1:-}" in
         fi
       done
       echo "AWG_STAGE_LOG_LINES=$(wc -l < "$log")"
+      python3 - "$log" <<'PY'
+import sys,re,pathlib
+for line in pathlib.Path(sys.argv[1]).read_text(errors="replace").splitlines()[:35]:
+    line=re.sub(r'(?i)(PrivateKey|PublicKey|HeaderProtectionKey)\s*=\s*\S+',r'\1=<redacted>',line)
+    line=re.sub(r'\b[A-Za-z0-9+/]{40,}={0,2}\b','<redacted>',line)
+    line=re.sub(r'\b(?:\d{1,3}\.){3}\d{1,3}\b','<ip>',line)
+    print("AWG_STAGE_SAFE_LOG="+line[:250],flush=True)
+PY
       rm -f "$log"
       cleanup
       exit 4
