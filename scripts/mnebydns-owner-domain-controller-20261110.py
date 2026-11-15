@@ -206,9 +206,9 @@ def dns_q(host:str,kind=1)->tuple[int,list[str]]:
 def oracle_canary_check(domain:str,expect_rewrite:bool)->None:
     code,ips=dns_q(domain,1)
     if code!=0:raise RuntimeError("DOMAIN_DOT_RCODE_BAD")
-    if expect_rewrite and ips!=[EDGE]:
+    if expect_rewrite and ips!=[RU]:
         raise RuntimeError("DOMAIN_DOT_REWRITE_NOT_EFFECTIVE")
-    if not expect_rewrite and EDGE in ips:
+    if not expect_rewrite and RU in ips:
         raise RuntimeError("DOMAIN_DOT_REWRITE_STILL_EFFECTIVE")
     if expect_rewrite:
         for qtype in (5,28,64,65):
@@ -218,7 +218,7 @@ def oracle_canary_check(domain:str,expect_rewrite:bool)->None:
     stable=("gemini.google.com","claude.ai","grok.com","x.com","www.tiktok.com")
     for host in stable:
         rc,ips=dns_q(host)
-        if rc!=0 or ips!=[EDGE]:
+        if rc!=0 or ips!=[RU]:
             raise RuntimeError("STABLE_SERVICE_DOT_REGRESSION_"+host)
     # Meta was originally a direct-only control. The owner may enable Meta
     # SmartDNS as a separate product policy, so never hard-code it as excluded.
