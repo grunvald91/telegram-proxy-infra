@@ -1,0 +1,34 @@
+name: MNEBYDNS guarded original WireGuard UDP port repair 2026-11-15
+on:
+  push:
+    branches: [diag/wg-altport-isolated-20261115]
+    paths:
+      - '.github/workflows/mnebydns-wg-port-guarded-fix-20261115.yml'
+permissions: {contents: read}
+concurrency:
+  group: mnebydns-wg-original-port-fix
+  cancel-in-progress: false
+jobs:
+  guarded-migrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Syntax and pinned SSH preflight
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          python3 -m py_compile scripts/mnebydns-wg-port-guarded-fix-20261115.py
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -qq -y sshpass >/dev/null
+      - name: Guarded two-sided live WireGuard port change and auto rollback on loss
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -u scripts/mnebydns-wg-port-guarded-fix-20261115.py
