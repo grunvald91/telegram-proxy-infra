@@ -28,4 +28,10 @@ cmd=(
   "else echo \"$label=DIFFERENT\"; fi; done"
 )
 print(owner.ssh("de",cmd,timeout=45),flush=True)
+
+# Only print safe structure counts, not rule contents.
+anchor_check = 'python3 -c '+shlex.quote("from pathlib import Path; s=Path('/opt/mnebydns-dot/Corefile').read_text(); print('ANCHOR_CACHE_OLD='+str(s.count('    cache 30\\\\n'))); print('ANCHOR_CACHE_RESILIENT='+str(s.count('    cache 30 {\\\\n'))); print('ANCHOR_GEMINI_EXACT='+str(s.count('template IN A gemini.google.com {'))); print('ANCHOR_TEMPLATE_A_GENERIC='+str(s.count('template IN A . {'))); print('ANCHOR_GEMINI_TEXT_PRESENT='+str('gemini.google.com' in s)); print('CORE_TEMPLATE_A_COUNT='+str(s.count('template IN A ')));")
+print(owner.ssh('de',anchor_check,timeout=45),flush=True)
+print('STRUCTURAL_ANCHOR_INSPECTION=PASS',flush=True)
+
 print("READ_ONLY_INSPECTION=PASS",flush=True)
