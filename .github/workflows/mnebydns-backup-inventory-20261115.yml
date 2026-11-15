@@ -1,0 +1,81 @@
+name: MNEBYDNS backup inventory Nov 13 before any reinstall (read-only)
+on:
+  push:
+    branches: [restore/mnebydns-youtube-morning-20261115]
+    paths: ['.github/workflows/mnebydns-backup-inventory-20261115.yml']
+permissions: {contents: read}
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Verify November 13 snapshot contents and identify backup candidate files
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -qq -y sshpass >/dev/null
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          for label in "DE 89.125.90.101" "RU 188.120.254.223"; do
+            read -r role target <<< "$label"
+            if [[ "$role" == RU ]]; then pass="$RU_PASS"; else pass="$DE_PASS"; fi
+            SSHPASS="$pass" sshpass -e ssh "${opts[@]}" "root@$target" "python3 - $role" <<'PY'
+          import pathlib,json,hashlib,datetime,subprocess,sys,re,os
+          role=sys.argv[1]
+          def out(k,v):print("BACKUP_INV_"+role+"_"+k+"="+json.dumps(v,ensure_ascii=False,sort_keys=True),flush=True)
+          def fmt(p):
+            st=p.stat()
+            return {"path":str(p),"type":"directory" if p.is_dir() else "file",
+                    "size":st.st_size if p.is_file() else None,
+                    "mtime_utc":datetime.datetime.fromtimestamp(st.st_mtime,datetime.timezone.utc).isoformat()}
+          root=pathlib.Path("/opt/mnebydns-stable-checkpoints")
+          if root.is_dir():
+            snapshots=[]
+            for p in root.iterdir():
+              if not p.is_dir() or not p.name.isdigit():continue
+              when=datetime.datetime.fromtimestamp(int(p.name),datetime.timezone.utc)
+              if not datetime.datetime(2026,11,12,tzinfo=datetime.timezone.utc)<=when<=datetime.datetime(2026,11,15,23,59,tzinfo=datetime.timezone.utc):continue
+              files=[{"name":q.name,"bytes":q.stat().st_size,"sha256":hashlib.sha256(q.read_bytes()).hexdigest()} for q in sorted(p.iterdir()) if q.is_file() and q.stat().st_size<6_000_000]
+              snapshots.append({"path":str(p),"created_from_unix":when.isoformat(),"files":files})
+            out("CHECKPOINTS",sorted(snapshots,key=lambda x:x["created_from_unix"])[:60])
+          else:out("CHECKPOINT_DIR_EXISTS",False)
+          targets=["/root/proxy-backups","/root/backup","/root/backups","/var/backups","/backup","/backups",
+                   "/opt/backups","/opt/mnebydns-backups","/root/tproxy-predeploy","/root/telemt-upgrades",
+                   "/opt/mnebydns-dot","/etc/wireguard","/etc/letsencrypt","/opt/mnebyvpn"]
+          out("PRESENCE",{s:pathlib.Path(s).exists() for s in targets})
+          bases=["/root/proxy-backups","/root/backup","/root/backups","/var/backups","/backup","/backups","/opt/backups"]
+          candidates=[]
+          for s in bases:
+            p=pathlib.Path(s)
+            if not p.exists():continue
+            try:
+              for c in p.iterdir():
+                try:candidates.append(fmt(c))
+                except Exception:continue
+                if len(candidates)>100:break
+            except Exception:pass
+          out("BACKUP_ROOT_ENTRIES",candidates[:100])
+          # Backup candidates from November 13 under known service folders.
+          selection=[]
+          for s in ("/opt","/root","/var/backups"):
+            p=pathlib.Path(s)
+            if not p.exists():continue
+            try:
+              children=p.iterdir()
+              for c in children:
+                if re.search(r"(back.?up|snap.?shot|archive|checkpoint|recovery|20261113)",c.name,re.I):
+                  try:selection.append(fmt(c))
+                  except Exception:pass
+            except Exception:pass
+          out("TOP_LEVEL_BACKUP_CANDIDATES",selection[:90])
+          out("READ_ONLY",True)
+          PY
+          done
