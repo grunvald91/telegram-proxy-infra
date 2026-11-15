@@ -1,0 +1,47 @@
+name: MNEBYDNS public first-hop TCP443 and DoT853 latency differential read-only
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/mnebydns-public-firsthop-tcp-readonly-20261115.yml']
+  workflow_dispatch:
+permissions: {contents: read}
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: External synthetic public 188 and 89 TCP latency comparison
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import socket,time,math,json,statistics
+          routes={
+            "RU188_TCP443":("188.120.254.223",443),
+            "RU188_DoT853":("188.120.254.223",853),
+            "DE89_TCP443":("89.125.90.101",443),
+            "DE89_DoT853":("89.125.90.101",853),
+          }
+          outcomes={name:[] for name in routes}
+          errors={name:{} for name in routes}
+          def pc(v,p):
+              if not v:return None
+              a=sorted(v);return round(a[min(len(a)-1,max(0,math.ceil(p/100*len(a))-1))],1)
+          for i in range(25):
+              for label,(ip,port) in routes.items():
+                  t=time.perf_counter()
+                  try:
+                      with socket.create_connection((ip,port),timeout=3.0):
+                          outcomes[label].append((time.perf_counter()-t)*1000)
+                  except Exception as e:
+                      d=errors[label];key=type(e).__name__;d[key]=d.get(key,0)+1
+                  time.sleep(.04)
+          for label,v in outcomes.items():
+              print("FIRST_HOP_"+label+"="+json.dumps({
+                  "n":25,"ok":len(v),"p50_ms":pc(v,50),"p95_ms":pc(v,95),
+                  "max_ms":pc(v,100),"over500ms":sum(x>500 for x in v),"errors":errors[label]
+              },separators=(',',':')),flush=True)
+          print("FIRST_HOP_EXTERNAL_RUNNER_NOT_RUSSIAN_CLIENT=true",flush=True)
+          PY
