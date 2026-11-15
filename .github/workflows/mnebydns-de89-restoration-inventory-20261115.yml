@@ -91,6 +91,19 @@ jobs:
               print('VIDEO_SERVER_LOG_AGG='+json.dumps({'name':name,'last_lines':len(last),'timeouts':sum('timed out' in t.lower() for t in last),'upstream_errors':sum('upstream' in t.lower() for t in last),'refused':sum('refused' in t.lower() for t in last)}))
           udp443=subprocess.run(['ss','-Hulnp'],capture_output=True,text=True).stdout
           print('VIDEO_SERVER_PUBLIC_UDP443='+json.dumps([x.strip()[:200] for x in udp443.splitlines() if ':443 ' in x]))
+          import os
+          snapshots={}
+          for label,live in (('nginx',pathlib.Path('/etc/nginx/nginx.conf')),('proxy',pathlib.Path('/etc/mnebydns-googlepilot/nginx.conf')),('dns',p)):
+            saved=pathlib.Path(ptr)/(label+'.stable')
+            snapshots[label]={'live_sha':hashlib.sha256(live.read_bytes()).hexdigest(),'checkpoint_sha':hashlib.sha256(saved.read_bytes()).hexdigest() if saved.is_file() else None,'equal':saved.is_file() and live.read_bytes()==saved.read_bytes()}
+          print('MEDIA_CONFIG_VS_RESTORED_CHECKPOINT='+json.dumps(snapshots,sort_keys=True))
+          out={}
+          for label,src in (('stream',n),('pilot',pilot)):
+            lines=[s.strip() for s in src.splitlines()]
+            out[label]={'googlevideo':next((s[:1200] for s in lines if 'googlevideo' in s.lower()),'missing'),'video_twimg':next((s[:180] for s in lines if 'video.twimg.com ' in s),'missing'),'pbs_twimg':next((s[:180] for s in lines if 'pbs.twimg.com ' in s),'missing'),'timeouts':[s[:100] for s in lines if s.startswith('proxy_timeout ')][:3],'buffer':[s[:100] for s in lines if s.startswith('proxy_buffer_size ')][:3]}
+          print('MEDIA_DE89_ROUTE_MAPS='+json.dumps(out,sort_keys=True))
+          for destination in ('89.125.90.101:443','127.0.0.1:15449','127.0.0.1:19444'):
+            print('MEDIA_LISTENER_REFERENCE='+destination)
           print('DE89_READONLY_INVENTORY='+json.dumps({'corefile_sha256':hashlib.sha256(c.encode()).hexdigest(),'core_a_answer_counts':dict(collections.Counter(answers)),'core_a_templates':len(headers),'owner_exact_core_markers':c.count('# BEGIN MNEBYDNS_OWNER_EXACT_'),'owner_exact_nginx_markers':n.count('# BEGIN MNEBYDNS_OWNER_EXACT_'),'nginx_sni_map_exists':'map $ssl_preread_server_name $direct_mtproxy_backend {' in n,'checkpoint':ptr,'services':svcs},sort_keys=True))
           assert answers and set(answers) <= {'188.120.254.223','89.125.90.101'},'UNEXPECTED_CORE_A_ADDRESS'
           assert len(headers) >= 264 and len(headers)==len(answers),'CORE_A_STRUCTURE_DRIFT'
