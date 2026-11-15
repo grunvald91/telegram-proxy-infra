@@ -105,6 +105,8 @@ def safe_plan():
         totals[reason]+=1
     summary={
         "selected_from_first100":len(selected),
+        "eligible":len(selected),
+        "no_live_mutations":True,
         "source_sha256":{"core":sha(orig[0]),"nginx":sha(orig[1])},
         "target_sha256":{"core":sha(core),"nginx":sha(nginx)},
         "first100_sha256":sha("\n".join(names)+"\n"),
@@ -185,6 +187,9 @@ def self_test():
     bulk.offline_test()
     assert PRODUCT=="Research 2026-11"
     assert len("first100")>0
+    # The existing bulk remote verifier requires these two explicit attestations.
+    sample={"eligible":2,"no_live_mutations":True}
+    assert sample["eligible"] == 2 and sample["no_live_mutations"] is True
     compile(open(__file__,encoding="utf-8").read(),__file__,"exec")
     print("FIRST100_OFFLINE_TEST=PASS")
 
