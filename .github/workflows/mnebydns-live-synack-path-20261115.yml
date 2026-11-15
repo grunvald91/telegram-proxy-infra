@@ -1,0 +1,105 @@
+name: MNEBYDNS identify 1-second TCP delay on RU-DE with on-wire SYN ACK comparison
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/mnebydns-live-synack-path-20261115.yml']
+  workflow_dispatch:
+permissions: {contents: read}
+jobs:
+  locate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Compare synthetic SYN/SYNACK at 188 and 89 public and WG without changes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS" && test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          remote() {
+            local pass="$1" ip="$2";shift 2
+            SSHPASS="$pass" sshpass -e ssh "${opts[@]}" "root@$ip" "$@"
+          }
+          for pair in 'RU 188.120.254.223' 'DE 89.125.90.101'; do
+            read -r role host <<< "$pair"
+            if [[ "$role" == RU ]]; then pass="$RU_PASS"; else pass="$DE_PASS"; fi
+            remote "$pass" "$host" 'command -v tcpdump >/dev/null && ip link show tg-relay >/dev/null'
+          done
+          for spec in "RU $RU_PASS 188.120.254.223 ens3" "RU $RU_PASS 188.120.254.223 tg-relay" "DE $DE_PASS 89.125.90.101 eth0" "DE $DE_PASS 89.125.90.101 tg-relay"; do
+            read -r role pass host iface <<< "$spec"
+            key="$role-$iface"
+            filter='tcp port 443 and ((host 188.120.254.223 and host 89.125.90.101) or (host 10.66.77.2 and host 10.66.77.1)) and (tcp[tcpflags] & tcp-syn != 0)'
+            remote "$pass" "$host" "timeout -s INT 43 tcpdump -nn -l -tt -s 96 -i $iface '$filter' 2>/dev/null" > "$RUNNER_TEMP/$key.txt" &
+            pids+=("$!")
+          done
+          sleep 4
+          remote "$RU_PASS" 188.120.254.223 'python3 -' > "$RUNNER_TEMP/trials.txt" <<'PY'
+          import socket,time
+          names=(("PUBLIC","89.125.90.101"),("WG","10.66.77.1"))
+          for i in range(30):
+              for label,host in names:
+                  with socket.socket(socket.AF_INET,socket.SOCK_STREAM) as s:
+                      s.settimeout(2.5)
+                      s.bind(("0.0.0.0",0))
+                      port=s.getsockname()[1];start=time.monotonic()
+                      try:s.connect((host,443));outcome="ok"
+                      except Exception as exc:outcome=type(exc).__name__
+                      dt=(time.monotonic()-start)*1000
+                      print("PROBE",label,port,round(dt,2),outcome,flush=True)
+                  time.sleep(0.08)
+          PY
+          for pid in "${pids[@]}"; do wait "$pid" || true; done
+          python3 - "$RUNNER_TEMP" <<'PY'
+          import pathlib,sys,re,statistics,json
+          root=pathlib.Path(sys.argv[1])
+          trials=[]
+          for line in (root/"trials.txt").read_text().splitlines():
+              a=line.split()
+              if len(a)==5 and a[0]=="PROBE":
+                  trials.append((a[1],int(a[2]),float(a[3]),a[4]))
+          pattern=re.compile(r"IP ([\d.]+)\.(\d+) > ([\d.]+)\.(\d+): Flags \[([^\]]+)\]")
+          captures={}
+          for role,iface in (("RU","ens3"),("RU","tg-relay"),("DE","eth0"),("DE","tg-relay")):
+              d={}
+              for line in (root/(role+"-"+iface+".txt")).read_text().splitlines():
+                  m=pattern.search(line)
+                  if not m:continue
+                  src,sp,dst,dp,flags=m.groups()
+                  sp=int(sp);dp=int(dp)
+                  if src in ("188.120.254.223","10.66.77.2") and dp==443: p=sp;kind="SYN"
+                  elif src in ("89.125.90.101","10.66.77.1") and sp==443: p=dp;kind="SYNACK"
+                  else:continue
+                  if "S" not in flags:continue
+                  arr=d.setdefault(p,{"SYN":0,"SYNACK":0});arr[kind]+=1
+              captures[role+"-"+iface]=d
+          for label in ("PUBLIC","WG"):
+              iface=("ens3" if label=="PUBLIC" else "tg-relay")
+              de_iface=("eth0" if label=="PUBLIC" else "tg-relay")
+              ru=captures["RU-"+iface];de=captures["DE-"+de_iface]
+              cases=[(port,ms,ok) for x,port,ms,ok in trials if x==label]
+              delays=[ms for port,ms,ok in cases if ok=="ok"]
+              stats={"n":len(cases),"connected":len(delays),
+                  "p50_ms":round(statistics.median(delays),2) if delays else None,
+                  "max_ms":round(max(delays),2) if delays else None,
+                  "over500ms":sum(ms>=500 for port,ms,ok in cases),
+                  "RU_syn_flows":sum(ru.get(p,{}).get("SYN",0)>0 for p,_,_ in cases),
+                  "DE_syn_flows":sum(de.get(p,{}).get("SYN",0)>0 for p,_,_ in cases),
+                  "DE_synack_flows":sum(de.get(p,{}).get("SYNACK",0)>0 for p,_,_ in cases),
+                  "RU_synack_flows":sum(ru.get(p,{}).get("SYNACK",0)>0 for p,_,_ in cases),
+                  "ru_syn_retransmits":sum(max(0,ru.get(p,{}).get("SYN",0)-1) for p,_,_ in cases),
+                  "de_synack_retransmits":sum(max(0,de.get(p,{}).get("SYNACK",0)-1) for p,_,_ in cases)}
+              print("SYN_PATH_"+label+"="+json.dumps(stats,separators=(",",":")),flush=True)
+              for port,ms,ok in cases:
+                  if ms<500 and ok=="ok":continue
+                  def x(k):return {"syn":k.get("SYN",0),"synack":k.get("SYNACK",0)}
+                  print("SYN_SLOW_"+label+"="+json.dumps({"ms":ms,"status":ok,
+                       "ru":x(ru.get(port,{})),"de":x(de.get(port,{}))},separators=(",",":")),flush=True)
+          print("SYN_PATH_READONLY=FINISHED",flush=True)
+          if len(trials)!=60:raise SystemExit("INCOMPLETE_OWN_TEST_SAMPLE")
+          PY
