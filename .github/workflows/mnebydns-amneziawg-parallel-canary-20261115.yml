@@ -94,13 +94,34 @@ jobs:
           Endpoint = 188.120.254.223:56784
           PersistentKeepalive = 25
           EOF
-          sed -e "s/^PrivateKey = .*/PrivateKey = $RU_PRIV/" \
-              -e "s/^ListenPort = 56783/ListenPort = 56784/" \
-              -e "s@^Address = 10.66.78.1/30@Address = 10.66.78.2/30@" \
-              -e "s@^PublicKey = .*@PublicKey = $DE_PUB@" \
-              -e "s@^AllowedIPs = 10.66.78.2/32@AllowedIPs = 10.66.78.1/32@" \
-              -e "s@^Endpoint = 188.120.254.223:56784@Endpoint = 89.125.90.101:56783@" \
-              "$w/de.conf" > "$w/ru.conf"
+          cat >"$w/ru.conf" <<EOF
+          [Interface]
+          PrivateKey = $RU_PRIV
+          ListenPort = 56784
+          Address = 10.66.78.2/30
+          MTU = 1280
+          Table = off
+          Jc = 5
+          Jmin = 20
+          Jmax = 95
+          S1 = 32
+          S2 = 32
+          S3 = 32
+          S4 = 32
+          H1 = 1
+          H2 = 2
+          H3 = 3
+          H4 = 4
+          HeaderProtectionKey = $HKEY
+          ContentPaddingAddition = 0-16
+          RandomTrailers = off
+
+          [Peer]
+          PublicKey = $DE_PUB
+          AllowedIPs = 10.66.78.1/32
+          Endpoint = 89.125.90.101:56783
+          PersistentKeepalive = 25
+          EOF
           for role in DE RU; do
             if [[ "$role" == DE ]]; then pass="$DE_PASS"; host=89.125.90.101; cf="$w/de.conf"; else pass="$RU_PASS"; host=188.120.254.223; cf="$w/ru.conf"; fi
             SSHPASS="$pass" sshpass -e scp "${copts[@]}" "$w/bundle.tgz" "root@$host:/tmp/mneby-awg-bundle-20261115.tar.gz"
