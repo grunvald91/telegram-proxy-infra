@@ -12,7 +12,7 @@ CONFIG=/etc/amnezia/amneziawg/tg-relay.conf
 OLD=/etc/wireguard/tg-relay.conf
 OLDUNIT=wg-quick@tg-relay.service
 NEWUNIT=mneby-awg-tg-relay.service
-ROLLBACK=mneby-awg-auto-rollback-20261116
+ROLLBACK=mneby-awg-auto-rollback-20261116-r2
 if [[ "$ROLE" == DE ]]; then
   PORT=56783; OLDPORT=56781; PEER_PUBLIC=188.120.254.223
   LOCAL_INNER=10.66.77.1
@@ -202,6 +202,9 @@ EOF
    systemctl reset-failed "$OLDUNIT" >/dev/null 2>&1 || true
    systemctl start "$OLDUNIT" >/dev/null 2>&1 || true
    if healthy_old; then
+      if [[ "$ACTION" == rollback-force ]]; then
+         systemctl stop "$ROLLBACK.timer" >/dev/null 2>&1 || true
+      fi
       rm -f "$DIR/COMMITTED"
       msg ROLLBACK_OLD_WORKING true
       exit 0
