@@ -1,0 +1,35 @@
+name: MNEBYDNS isolated second WireGuard transport port A/B 2026-11-15
+on:
+  push:
+    branches: [diag/wg-altport-isolated-20261115]
+    paths:
+      - '.github/workflows/mnebydns-wg-altport-isolated-20261115.yml'
+      - 'scripts/mnebydns-wg-altport-isolated-20261115.py'
+permissions: {contents: read}
+concurrency:
+  group: mnebydns-wg-altport-isolated
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Guard SSH transport and Python syntax
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          python3 -m py_compile scripts/mnebydns-wg-altport-isolated-20261115.py
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -qq -y sshpass >/dev/null
+      - name: Ephemeral alternate interface, both-direction A/B, always rollback
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -u scripts/mnebydns-wg-altport-isolated-20261115.py
