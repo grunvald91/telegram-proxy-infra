@@ -1,0 +1,50 @@
+name: MNEBYDNS live YouTube stall per-flow correlation 20261115
+on:
+  push:
+    branches: [diag/mnebydns-live-video-stall-20261115]
+    paths:
+      - .github/workflows/mnebydns-youtube-stall-correlate-20261115.yml
+permissions: {contents: read}
+concurrency:
+  group: mnebydns-youtube-live-readonly
+  cancel-in-progress: false
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Verify offline source syntax and host credentials preflight
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-youtube-stall-correlate-20261115.py
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+      - name: Observe both nodes in the same bounded window without changes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 - RU188' < scripts/mnebydns-youtube-stall-correlate-20261115.py > ru.log 2>&1 &
+          ru_pid=$!
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 - DE89' < scripts/mnebydns-youtube-stall-correlate-20261115.py > de.log 2>&1 &
+          de_pid=$!
+          ru_status=0;de_status=0
+          wait "$ru_pid" || ru_status=$?
+          wait "$de_pid" || de_status=$?
+          echo "RU188_RESULT_BEGIN";cat ru.log;echo "RU188_RESULT_END"
+          echo "DE89_RESULT_BEGIN";cat de.log;echo "DE89_RESULT_END"
+          test "$ru_status" -eq 0 && test "$de_status" -eq 0
+          grep -q 'VIDEO_RU188_COMPLETED=READ_ONLY' ru.log
+          grep -q 'VIDEO_DE89_COMPLETED=READ_ONLY' de.log
+          echo BOTH_NODES_CORRELATED_READONLY_COMPLETE=true
