@@ -90,3 +90,23 @@ jobs:
                 --output /dev/null --write-out 'LARGE_VIDEO_HTTP=%{http_code} BYTES=%{size_download} TTFB=%{time_starttransfer} TOTAL=%{time_total} SPEED=%{speed_download}\n' "${media[$j]}" || echo 'LARGE_VIDEO_REQUEST_FAILED'
             done
           done
+
+      - name: Test X MP4 transfer from Russian VPS to DE89 public TCP ingress
+        shell: bash
+        env:
+          RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS"
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass >/dev/null
+          SSHPASS="$RU_PASS" sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@188.120.254.223 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          url='https://video.twimg.com/ext_tw_video/1444247208514113546/pu/vid/640x360/39YEtqA_5lC88JYk.mp4?tag=12'
+          for route in foreign_public direct_origin;do
+            opts=()
+            if [[ "$route" == foreign_public ]];then opts=(--resolve video.twimg.com:443:89.125.90.101);fi
+            echo "RU_ORIGIN_VIDEO_ROUTE=$route"
+            curl -4 -sSL --max-time 18 "${opts[@]}" --range 0-1498841 -o /dev/null \
+              -w 'RU_VIDEO_HTTP=%{http_code} BYTES=%{size_download} TTFB=%{time_starttransfer} TOTAL=%{time_total} REMOTE=%{remote_ip}\n' "$url" || echo "RU_VIDEO_FAILED_ROUTE=$route"
+          done
+          REMOTE
