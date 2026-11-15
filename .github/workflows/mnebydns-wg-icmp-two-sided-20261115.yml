@@ -1,0 +1,81 @@
+name: MNEBYDNS WireGuard ICMP loss localization RU and DE (read-only)
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/mnebydns-wg-icmp-two-sided-20261115.yml']
+  workflow_dispatch:
+permissions: {contents: read}
+jobs:
+  packet-correlation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Pinned SSH + passive packet metadata checks
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          run_remote() {
+            local password="$1" host="$2" command="$3"
+            SSHPASS="$password" sshpass -e ssh "${opts[@]}" "root@$host" "$command"
+          }
+          for item in '188.120.254.223 RU' '89.125.90.101 DE'; do
+            read -r ip label <<< "$item"
+            if [ "$label" = RU ]; then pass="$RU_PASS"; else pass="$DE_PASS"; fi
+            run_remote "$pass" "$ip" "command -v tcpdump >/dev/null && ip link show dev tg-relay >/dev/null" || { echo "PRECHECK_FAILED_$label"; exit 1; }
+          done
+          # Two independent passive observations of exactly one bounded ICMP flow.
+          # No raw payloads retained outside the runner's ephemeral workspace.
+          capture="timeout -s INT 40 tcpdump -n -l -tt -i tg-relay -s 96 'icmp and host 10.66.77.1 and host 10.66.77.2' 2>/dev/null"
+          run_remote "$DE_PASS" 89.125.90.101 "$capture" > "$RUNNER_TEMP/de-wg-icmp.txt" &
+          decap_pid=$!
+          run_remote "$RU_PASS" 188.120.254.223 "$capture" > "$RUNNER_TEMP/ru-wg-icmp.txt" &
+          rucap_pid=$!
+          sleep 4
+          # iputils ping uses the chosen ICMP id, so only the controlled probe
+          # is compared, even if another customer is pinging the tunnel.
+          run_remote "$RU_PASS" 188.120.254.223 "ping -n -q -M do -e 29011 -c 32 -i 0.8 -s 1200 -W 2 10.66.77.1" > "$RUNNER_TEMP/probe-result.txt" || true
+          wait "$decap_pid" || true
+          wait "$rucap_pid" || true
+          python3 - "$RUNNER_TEMP/ru-wg-icmp.txt" "$RUNNER_TEMP/de-wg-icmp.txt" "$RUNNER_TEMP/probe-result.txt" <<'PY'
+          import pathlib,sys,re,json
+          ru,de,ping=[pathlib.Path(x).read_text(errors="replace") for x in sys.argv[1:]]
+          def extract(text,kind):
+              hits=set()
+              for s in text.splitlines():
+                  if "id 29011" not in s or ("ICMP echo "+kind) not in s:continue
+                  m=re.search(r"\bseq (\d+)\b",s)
+                  if m and 1<=int(m.group(1))<=32:hits.add(int(m.group(1)))
+              return hits
+          r_req=extract(ru,"request");r_rep=extract(ru,"reply")
+          d_req=extract(de,"request");d_rep=extract(de,"reply")
+          m=re.search(r"(\d+) packets transmitted, (\d+) received, ([\d.]+)% packet loss",ping)
+          result={
+              "attempted":32,"ping_received":int(m.group(2)) if m else None,
+              "ru_wg_requests":len(r_req),"de_wg_requests":len(d_req),
+              "de_wg_replies":len(d_rep),"ru_wg_replies":len(r_rep),
+              "missing_forward":sorted(r_req-d_req),
+              "missing_reply_generation_at_de":sorted(d_req-d_rep),
+              "missing_return":sorted(d_rep-r_rep),
+              "ping_loss_pct":float(m.group(3)) if m else None}
+          print("WG_ICMP_CORRELATED="+json.dumps(result,separators=(',',':')),flush=True)
+          if len(r_req)<28 or len(d_req)<24:print("WG_CAPTURE_REVIEW=INCOMPLETE_CAPTURE_OR_FORWARD_LOSS",flush=True)
+          elif len(d_req)==len(r_req) and len(d_rep)<len(d_req):
+              print("WG_DIAGNOSIS=REQUESTS_REACHED_DE_BUT_NO_ALL_ECHO_REPLIES",flush=True)
+          elif len(d_req)<len(r_req):
+              print("WG_DIAGNOSIS=REQUESTS_MISSING_BETWEEN_WG_INTERFACES",flush=True)
+          elif len(r_rep)<len(d_rep):
+              print("WG_DIAGNOSIS=REPLIES_MISSING_BETWEEN_WG_INTERFACES",flush=True)
+          else: print("WG_DIAGNOSIS=NO_OBSERVED_WG_WIRE_LOSS",flush=True)
+          if not m or not r_req or not d_req:raise SystemExit("INSUFFICIENT_ON_WIRE_EVIDENCE")
+          PY
+          echo "WG_TWO_SIDED_READONLY=COMPLETE" >> "$GITHUB_STEP_SUMMARY"
