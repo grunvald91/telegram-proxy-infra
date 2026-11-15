@@ -54,6 +54,13 @@ def safe_plan():
     # Fail closed on stale checkpoint, in-flight canaries, or low resources.
     batch.ensure_quiet()
     batch.capacity()
+    # Verify that the established public DoT policy uses RU188, not the old
+    # DE89-only topology. Do not stage if the real routing policy changed.
+    for baseline_host in ("gemini.google.com", "claude.ai", "grok.com",
+                          "x.com", "www.tiktok.com", "chatgpt.com"):
+        code, answers = owner.dns_q(baseline_host, 1)
+        if code != 0 or answers != [owner.RU]:
+            raise RuntimeError("UNEXPECTED_LIVE_DNS_INGRESS_"+baseline_host)
     names=names_snapshot()
     rows=batch.table()
     for h in names:
@@ -187,6 +194,13 @@ def self_test():
     bulk.offline_test()
     assert PRODUCT=="Research 2026-11"
     assert len("first100")>0
+    # Confirm the isolated renderer never returns foreign DE89 directly.
+    sample_core = ("tls://.:853 {\\n"
+                   "    template IN A gemini.google.com { match ^gemini[.]google[.]com[.]$ }\\n"
+                   "    cache 30 {\\n    }\\n}\\n")
+    sample_core=sample_core.replace("\\\\n", "\\n")
+    preview=renderer.core_add(sample_core,"artifacts.elastic.co")
+    assert "IN A "+owner.RU in preview and "IN A "+owner.EDGE not in preview
     # The existing bulk remote verifier requires these two explicit attestations.
     sample={"eligible":2,"no_live_mutations":True}
     assert sample["eligible"] == 2 and sample["no_live_mutations"] is True
