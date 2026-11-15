@@ -14,7 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: {persist-credentials: false}
-      - name: Compare 120 small and 120 large synthetic UDP packets on DE egress and RU ingress
+      - name: Compare 1200 small and 1200 large synthetic UDP packets on DE egress and RU ingress
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -28,21 +28,21 @@ jobs:
             local pass="$1" host="$2" command="$3"
             SSHPASS="$pass" sshpass -e ssh "${opts[@]}" "root@$host" "$command"
           }
-          remote "$DE_PASS" 89.125.90.101 "timeout -s INT 30s tcpdump -i eth0 -s 96 -U -w - 'src host 89.125.90.101 and dst host 188.120.254.223 and udp and dst port 53994'" > "$RUNNER_TEMP/de-control.pcap" 2>"$RUNNER_TEMP/de-control.err" &
+          remote "$DE_PASS" 89.125.90.101 "timeout -s INT 42s tcpdump -i eth0 -s 96 -U -w - 'src host 89.125.90.101 and dst host 188.120.254.223 and udp and dst port 53994'" > "$RUNNER_TEMP/de-control.pcap" 2>"$RUNNER_TEMP/de-control.err" &
           pid1=$!
-          remote "$RU_PASS" 188.120.254.223 "timeout -s INT 30s tcpdump -i ens3 -s 96 -U -w - 'src host 89.125.90.101 and dst host 188.120.254.223 and udp and dst port 53994'" > "$RUNNER_TEMP/ru-control.pcap" 2>"$RUNNER_TEMP/ru-control.err" &
+          remote "$RU_PASS" 188.120.254.223 "timeout -s INT 42s tcpdump -i ens3 -s 96 -U -w - 'src host 89.125.90.101 and dst host 188.120.254.223 and udp and dst port 53994'" > "$RUNNER_TEMP/ru-control.pcap" 2>"$RUNNER_TEMP/ru-control.err" &
           pid2=$!
           sleep 4
           remote "$DE_PASS" 89.125.90.101 'python3 -' <<'PY'
           import socket,struct,time
           s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
-          for seq in range(240):
+          for seq in range(2400):
             size=96 if seq%2==0 else 1200
             data=b'MNUS'+struct.pack('!I',seq)+bytes(size-8)
             s.sendto(data,('188.120.254.223',53994))
-            time.sleep(0.075)
+            time.sleep(0.009)
           s.close()
-          print('UDP_CONTROL_SENT=240',flush=True)
+          print('UDP_CONTROL_SENT=2400',flush=True)
           PY
           wait "$pid1" || true
           wait "$pid2" || true
@@ -65,7 +65,7 @@ jobs:
               ids.add(struct.unpack('!I',udp[12:16])[0])
             return ids
           a,b=records(sys.argv[1]),records(sys.argv[2])
-          if len(a)<200:raise ValueError('source capture incomplete')
+          if len(a)<2300:raise ValueError('source capture incomplete')
           missing=a-b
           print('UDP_CONTROL_CORRELATION='+json.dumps({
             'sent_captured':len(a),'received_captured':len(a&b),'missing':len(missing),
