@@ -1,0 +1,79 @@
+name: MNEBYDNS pre-13 November YouTube snapshot versus live (read-only)
+on:
+  push:
+    branches: [restore/mnebydns-youtube-pre13-20261115]
+    paths:
+      - .github/workflows/mnebydns-youtube-pre13-audit-20261115.yml
+  workflow_dispatch:
+permissions: {contents: read}
+concurrency:
+  group: mnebydns-youtube-pre13-readonly-20261115
+  cancel-in-progress: false
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Audit signed pre-13 snapshots and current routing without writes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS" && test -n "$RU_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY'
+          import pathlib,subprocess,hashlib,re,json,datetime
+          snap=pathlib.Path('/opt/mnebydns-stable-checkpoints/1794520280')
+          base=pathlib.Path('/opt/mnebydns-stable-checkpoints')
+          live=pathlib.Path('/opt/mnebydns-dot/Corefile')
+          pointer=(base/'current').read_text().strip()
+          def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()[:16]
+          check=subprocess.run(['sha256sum','-c','stable-manifest.sha256'],cwd=snap,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,text=True)
+          print('PRE13_SNAPSHOT_MANIFEST_VALID='+str(check.returncode==0))
+          assert check.returncode==0
+          print('PRE13_SNAPSHOT_TIME_MSK='+str(datetime.datetime.fromtimestamp(1794520280,datetime.timezone(datetime.timedelta(hours=3))).isoformat()))
+          print('CURRENT_STABLE_POINTER='+pointer)
+          for tag,path in [('OLD_DNS',snap/'dns.stable'),('LIVE_DNS',live),('OLD_NGINX',snap/'nginx.stable'),('LIVE_NGINX',pathlib.Path('/etc/nginx/nginx.conf')),('OLD_PROXY',snap/'proxy.stable'),('LIVE_PROXY',pathlib.Path('/etc/mnebydns-googlepilot/nginx.conf'))]:
+            print(tag+'_SHA16='+sha(path))
+          print('CURRENT_CHECKPOINT_DNS_MATCH='+str(pathlib.Path(pointer,'dns.stable').read_bytes()==live.read_bytes()))
+          pat=re.compile(r'(?ms)^\s*template IN A\s+(\S+)\s*\{\n(.*?)^\s*\}')
+          mpat=re.compile(r'\bmatch\s+([^\n]+)')
+          apat=re.compile(r'\banswer\s+[^\n]*?IN A\s+([0-9.]+)')
+          hosts=['www.youtube.com','youtube.com','m.youtube.com','youtubei.googleapis.com','i.ytimg.com','example-rr.googlevideo.com','youtube.googleapis.com']
+          for label,path in [('SNAPSHOT',snap/'dns.stable'),('LIVE',live)]:
+            blocks=[]
+            for m in pat.finditer(path.read_text()):
+              mm=mpat.search(m.group(2)); aa=apat.search(m.group(2))
+              if mm and aa:blocks.append((m.group(1),mm.group(1).strip(),aa.group(1)))
+            print(label+'_A_BLOCKS='+str(len(blocks)))
+            for host in hosts:
+              matches=[]
+              for zone,reg,ip in blocks:
+                try:
+                  if re.search(reg,host+'.',re.I): matches.append([zone,ip])
+                except re.error: pass
+              print(label+'_HOST_'+host+'='+json.dumps(matches[:8]))
+            special=[[zone,ip,reg[:110]] for zone,reg,ip in blocks if any(q in reg.lower() for q in ('googlevideo','youtube','ytimg'))]
+            print(label+'_MEDIA_TEMPLATES='+json.dumps(special[:15]))
+          for svc in ['nginx','mnebydns-dot','mnebydns-googlepilot','mnebydns-de89-public-quic-20261115','mnebydns-youtube-quic-de-43612369808','xray']:
+            p=subprocess.run(['systemctl','is-active',svc],capture_output=True,text=True)
+            print('DE_SERVICE_'+svc+'='+p.stdout.strip())
+          print('DE_UDP443_LISTENERS='+str(len(subprocess.run(['ss','-H','-lun','sport',':443'],capture_output=True,text=True).stdout.splitlines())))
+          print('AUDIT_READONLY_COMPLETE=true')
+          PY
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 'bash -s' <<'RU'
+          set -Eeuo pipefail
+          for s in nginx mnebydns-youtube-quic-ru-43612369808 wg-quick@tg-relay; do
+            echo "RU_SERVICE_${s}=$(systemctl is-active "$s" || true)"
+          done
+          echo "RU_UDP443_LISTENERS=$(ss -H -lun sport = :443 | wc -l)"
+          echo "RU_AUDIT_READONLY_COMPLETE=true"
+          RU
