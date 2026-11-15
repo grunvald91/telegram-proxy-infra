@@ -1,0 +1,47 @@
+name: MNEBYVPN read-only historical Xray presence audit on both VPS
+on:
+  push:
+    branches: [diag/wg-altport-isolated-20261115]
+    paths: ['.github/workflows/mnebyvpn-xray-historical-presence-readonly-20261115.yml']
+permissions: {contents: read}
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Pinned SSH audit without exposing secrets or changing services
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -qq -y sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          for role in RU DE; do
+            if [ "$role" = RU ]; then export SSHPASS="$RU_PASS"; host=188.120.254.223; else export SSHPASS="$DE_PASS"; host=89.125.90.101; fi
+            sshpass -e ssh "${opts[@]}" "root@$host" "bash -s -- $role" <<'SH'
+          set -u
+          role="$1"
+          echo "XRAYHIST_ROLE=$role"
+          for service in xray.service mnebyvpn-vpn-provisioner.service mnebyvpn-xray-canary.service; do
+            echo "XRAYHIST_SERVICE=$service"
+            systemctl show "$service" --no-pager -p LoadState -p ActiveState -p FragmentPath -p UnitFileState | sed 's/^/XRAYHIST_UNIT_FIELD=/' || true
+          done
+          for path in /etc/xray /etc/xray/config.json /opt/xray/xray /usr/local/bin/xray /usr/bin/xray /etc/mnebyvpn/xray-canary.json; do
+            if test -e "$path"; then echo "XRAYHIST_PATH_EXISTS=$path"; else echo "XRAYHIST_PATH_ABSENT=$path"; fi
+          done
+          command -v xray >/dev/null && echo XRAYHIST_PATH_COMMAND=present || echo XRAYHIST_PATH_COMMAND=absent
+          printf 'XRAYHIST_JOURNAL_ENTRIES='
+          journalctl --since '2026-10-01 00:00:00' --until '2026-11-16 00:00:00' -u xray.service --no-pager -o short-iso 2>/dev/null | awk '/^2026-/{k++} END{print k+0}'
+          journalctl --since '2026-10-01 00:00:00' --until '2026-11-16 00:00:00' -u xray.service --no-pager -o short-iso 2>/dev/null | awk '/^2026-/{print "XRAYHIST_FIRST_JOURNAL_DAY=" substr($1,1,10);exit}'
+          printf 'XRAYHIST_DOCKER_NODE_WORKER='
+          docker inspect --format '{{.State.Status}}' mnebyvpn-vpn-worker 2>/dev/null || echo absent
+          echo XRAYHIST_READ_ONLY=yes
+          SH
+          done
