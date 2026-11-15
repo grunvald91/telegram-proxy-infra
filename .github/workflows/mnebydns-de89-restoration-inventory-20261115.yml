@@ -70,6 +70,16 @@ jobs:
           print('YOUTUBE_NFT_UDP443='+json.dumps([line.strip()[:210] for line in fw.splitlines() if ('443' in line and 'udp' in line.lower())][:20]))
           journal=subprocess.run(['journalctl','-u','mnebydns-googlepilot.service','--since','-15min','--no-pager','-q','-n','80'],capture_output=True,text=True).stdout
           print('YOUTUBE_PILOT_RECENT_LOG_TYPES='+json.dumps({'lines':len(journal.splitlines()),'errors':sum(any(k in x.lower() for k in ('error','fail','timeout','refused','no resolver')) for x in journal.splitlines())}))
+          policies=subprocess.run(['iptables','-S','INPUT'],capture_output=True,text=True).stdout
+          print('YOUTUBE_DE_INPUT_POLICY='+json.dumps(policies.splitlines()[:35]))
+          print('YOUTUBE_DE_NFT_INPUT_POLICIES='+json.dumps([x.strip()[:160] for x in fw.splitlines() if 'hook input' in x or 'policy drop' in x][:20]))
+          import socket
+          with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as sock:
+            sock.settimeout(2)
+            try:
+              sock.connect(('89.125.90.101',443));sock.send(b'UDP443-LOCAL-READONLY');sock.recv(100);res='reply'
+            except Exception as exc:res=type(exc).__name__
+          print('YOUTUBE_UDP443_DE_LOCAL='+res)
           print('DE89_READONLY_INVENTORY='+json.dumps({'corefile_sha256':hashlib.sha256(c.encode()).hexdigest(),'core_a_answer_counts':dict(collections.Counter(answers)),'core_a_templates':len(headers),'owner_exact_core_markers':c.count('# BEGIN MNEBYDNS_OWNER_EXACT_'),'owner_exact_nginx_markers':n.count('# BEGIN MNEBYDNS_OWNER_EXACT_'),'nginx_sni_map_exists':'map $ssl_preread_server_name $direct_mtproxy_backend {' in n,'checkpoint':ptr,'services':svcs},sort_keys=True))
           assert answers and set(answers) <= {'188.120.254.223','89.125.90.101'},'UNEXPECTED_CORE_A_ADDRESS'
           assert len(headers) >= 264 and len(headers)==len(answers),'CORE_A_STRUCTURE_DRIFT'
@@ -94,6 +104,12 @@ jobs:
               report['personal_mapped_dot']=env.get('MNEBYDNS_PERSONAL_MAPPED_DOT_IP','')+':'+env.get('MNEBYDNS_PERSONAL_MAPPED_DOT_PORT','')
           except (OSError,subprocess.CalledProcessError,ValueError,KeyError) as exc:
               report['personal_container_error']=type(exc).__name__
+          with __import__('socket').socket(__import__('socket').AF_INET,__import__('socket').SOCK_DGRAM) as sock:
+            sock.settimeout(3)
+            try:
+              sock.connect(('89.125.90.101',443));sock.send(b'UDP443-RU-READONLY');sock.recv(100);status='reply'
+            except Exception as exc:status=type(exc).__name__
+          print('YOUTUBE_UDP443_RU_TO_DE='+status)
           print('RU188_READONLY_INVENTORY='+json.dumps(report,sort_keys=True))
           PY
       - name: Read-only current DNS administration database summary (no personal rows)
@@ -167,5 +183,21 @@ jobs:
               except Exception as exc:
                 status=type(exc).__name__
               print('YOUTUBE_UDP443_PROBE='+ip+' '+status)
+          import re
+          try:
+            with socket.create_connection(('89.125.90.101',443),timeout=6) as raw:
+              raw.settimeout(7)
+              with ssl.create_default_context().wrap_socket(raw,server_hostname='www.youtube.com') as tls:
+                tls.sendall(b'GET /watch?v=BaW_jenozKc HTTP/1.1\r\nHost: www.youtube.com\r\nUser-Agent: Mozilla/5.0\r\nConnection: close\r\n\r\n')
+                document=bytearray()
+                while len(document)<700000:
+                  chunk=tls.recv(16000)
+                  if not chunk:break
+                  document.extend(chunk)
+            payload=bytes(document)
+            report={'bytes':len(payload),'http_status':payload.split(b'\r\n',1)[0].decode('ascii','replace')[:90],'mentions_googlevideo':b'googlevideo' in payload,'mentions_streamingData':b'streamingData' in payload,'bot_challenge':b'confirm you\'re not a bot' in payload.lower()}
+          except Exception as exc:
+            report={'error_class':type(exc).__name__}
+          print('YOUTUBE_TEST_WATCH_PAGE='+json.dumps(report,sort_keys=True))
           print('PUBLIC_READONLY_PROBES='+json.dumps(result,sort_keys=True))
           PY
