@@ -1,0 +1,71 @@
+name: MNEBYDNS live TCP and HTTP3 video after morning restoration (read-only)
+on:
+  push:
+    branches: [restore/mnebydns-youtube-morning-20261115]
+    paths: ['.github/workflows/mnebydns-live-media-postrestore-20261115.yml']
+permissions: {contents: read}
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Inspect Nginx historical route and live RU public versus WG TLS H3
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -qq -y sshpass >/dev/null
+          echo MEDIA_AUDIT_START_UTC="$(date -u +%FT%TZ)"
+          SSHPASS="$DE_PASS" sshpass -e ssh -T -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o ConnectTimeout=12 root@89.125.90.101 'python3 -' <<'PY'
+          import pathlib,hashlib,re,json,subprocess
+          a=pathlib.Path('/opt/mnebydns-stable-checkpoints/1794566430/nginx.stable')
+          b=pathlib.Path('/etc/nginx/nginx.conf')
+          if not a.is_file():raise RuntimeError('historical nginx missing')
+          def select(p):
+            v=p.read_text().splitlines()
+            return [x.strip() for x in v if not x.lstrip().startswith('#') and re.search(r'(youtube|googlevideo|ytimg|proxy_pass|15449)',x,re.I)]
+          old,new=select(a),select(b)
+          print('MEDIA_NGINX_COMPARE='+json.dumps({'old_sha':hashlib.sha256(a.read_bytes()).hexdigest(),'current_sha':hashlib.sha256(b.read_bytes()).hexdigest(),'old_relevant':len(old),'now_relevant':len(new),'removed':list(dict.fromkeys(x for x in old if x not in new))[:10],'added':list(dict.fromkeys(x for x in new if x not in old))[:10]},sort_keys=True),flush=True)
+          for name in ('mnebydns-de89-public-quic-20261115','mnebydns-youtube-quic-de-43612369808'):
+            p=subprocess.run(['systemctl','is-active',name],capture_output=True,text=True)
+            print('MEDIA_DE_SERVICE='+name+':'+p.stdout.strip(),flush=True)
+          PY
+          SSHPASS="$RU_PASS" sshpass -e ssh -T -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o ConnectTimeout=12 root@188.120.254.223 'python3 -' <<'PY'
+          import socket,ssl,json,runpy,sys,os,asyncio,time,subprocess
+          hosts=('www.youtube.com','rr1---sn-gxuo03g-ig3s.googlevideo.com')
+          for role,ip in [('RU188','188.120.254.223'),('DE89_PUBLIC','89.125.90.101'),('DE89_WG','10.66.77.1')]:
+            for host in hosts:
+              start=time.monotonic()
+              try:
+                with socket.create_connection((ip,443),timeout=4) as tcp:
+                  tcp.settimeout(4)
+                  with ssl.create_default_context().wrap_socket(tcp,server_hostname=host) as tls:
+                    status='TLS_'+tls.version()
+              except Exception as e:status=type(e).__name__
+              print('MEDIA_LIVE_TCP='+json.dumps({'route':role,'sni':host,'result':status,'ms':round((time.monotonic()-start)*1000)},sort_keys=True),flush=True)
+          p=subprocess.run(['systemctl','is-active','mnebydns-youtube-quic-ru-43612369808'],capture_output=True,text=True)
+          print('MEDIA_RU_QUIC_SERVICE='+p.stdout.strip(),flush=True)
+          script='/tmp/mnebydns-youtube-quic-43612369808/http3-probe.py'
+          if os.path.isfile(script):
+            dep='/tmp/mnebydns-youtube-quic-43612369808/deps'
+            sys.path.insert(0,dep);os.environ['PYTHONPATH']=dep
+            once=runpy.run_path(script)['once']
+            async def probe():
+              for role,ip in [('RU_LOOPBACK','127.0.0.1'),('RU_PUBLIC','188.120.254.223'),('DE89_PUBLIC','89.125.90.101')]:
+                os.environ['YOUTUBE_QUIC_VIA']=ip
+                for host in hosts:
+                  try:
+                    result=await asyncio.wait_for(once(host),14)
+                    status='H3_PASS' if result else 'H3_NOT_VERIFIED'
+                  except Exception as e:status=type(e).__name__
+                  print('MEDIA_LIVE_H3='+json.dumps({'route':role,'host':host,'result':status},sort_keys=True),flush=True)
+            asyncio.run(probe())
+          else:print('MEDIA_H3_PROBE_NOT_INSTALLED=true')
+          PY
+          echo MEDIA_LIVE_POSTRESTORE_READONLY_COMPLETE=true
