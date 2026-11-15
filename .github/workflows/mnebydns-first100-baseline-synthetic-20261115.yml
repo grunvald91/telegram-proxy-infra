@@ -1,0 +1,36 @@
+name: MNEBYDNS first100 baseline DNS synthetic read-only
+on:
+  push:
+    branches: [diagnostics/groq-smartdns-readonly-20261115]
+    paths: [.github/workflows/mnebydns-first100-baseline-synthetic-20261115.yml]
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Measure existing public DoT answers without changing them
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import importlib.util, pathlib, json
+          path=pathlib.Path('scripts/mnebydns-owner-domain-controller-20261110.py')
+          spec=importlib.util.spec_from_file_location('owner',path)
+          mod=importlib.util.module_from_spec(spec);spec.loader.exec_module(mod)
+          names=('gemini.google.com','claude.ai','grok.com','x.com','www.tiktok.com','artifacts.elastic.co','brickset.com','chatgpt.com','example.org','api.telegram.org','t.me')
+          for host in names:
+              result={}
+              for typ in (1,28,65):
+                  try:
+                      rc,ips=mod.dns_q(host,typ)
+                      result[str(typ)]={'rcode':rc,'ips':ips}
+                  except Exception as exc:
+                      result[str(typ)]={'error':type(exc).__name__+':'+str(exc)[:130]}
+              print('PUBLIC_DOT_BASELINE='+json.dumps({'host':host,'answers':result},sort_keys=True),flush=True)
+          print('PUBLIC_DOT_BASELINE_COMPLETED=true')
+          PY
