@@ -66,7 +66,7 @@ def receive(sock,n):
         out+=d
     return out
 def query_dot():
-    hostname="rr1---sn-gxuo03g-ig3s.googlevideo.com"
+    hostname="mnebydns-route-probe-"+str(time.time_ns())+".googlevideo.com"
     name=b"".join(bytes([len(p)])+p.encode() for p in hostname.split("."))+b"\x00"
     msg=struct.pack("!HHHHHH",0x4692,0x0100,1,0,0,0)+name+struct.pack("!HH",1,1)
     ctx=ssl.create_default_context()
