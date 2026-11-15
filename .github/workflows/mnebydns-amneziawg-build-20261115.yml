@@ -1,0 +1,45 @@
+name: MNEBYDNS pinned AmneziaWG 3.1 userspace and tools build (no server changes)
+on:
+  push:
+    branches: [feat/mnebydns-amneziawg-parallel-20261115]
+    paths: ['.github/workflows/mnebydns-amneziawg-build-20261115.yml']
+permissions: {contents: read}
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-go@v6
+        with: {go-version: '1.25.0',cache: false}
+      - name: Checkout pinned official sources, build outside production nodes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p "$RUNNER_TEMP/awg-src" "$RUNNER_TEMP/awg-bin"
+          cd "$RUNNER_TEMP/awg-src"
+          git clone --quiet https://github.com/amnezia-vpn/amneziawg-go.git awg-go
+          cd awg-go
+          git checkout --detach --quiet 1b86b2ae0e493e7ea93f8c1a0f0cb6735b1551f1
+          test "$(git rev-parse HEAD)" = 1b86b2ae0e493e7ea93f8c1a0f0cb6735b1551f1
+          go build -trimpath -o "$RUNNER_TEMP/awg-bin/amneziawg-go" .
+          "$RUNNER_TEMP/awg-bin/amneziawg-go" --version || true
+          cd "$RUNNER_TEMP/awg-src"
+          git clone --quiet https://github.com/amnezia-vpn/amneziawg-tools.git awg-tools
+          cd awg-tools
+          git checkout --detach --quiet v3.1.20260812
+          make -C src -j2
+          install -m 0755 src/awg "$RUNNER_TEMP/awg-bin/awg"
+          install -m 0755 src/awg-quick/linux.bash "$RUNNER_TEMP/awg-bin/awg-quick"
+          "$RUNNER_TEMP/awg-bin/awg" --version
+          echo SOURCE_AWG_GO_SHA="$(cd "$RUNNER_TEMP/awg-src/awg-go" && git rev-parse HEAD)"
+          echo SOURCE_AWG_TOOLS_SHA="$(git rev-parse HEAD)"
+          (cd "$RUNNER_TEMP/awg-bin" && sha256sum * > SHA256SUMS)
+          tar -C "$RUNNER_TEMP/awg-bin" -czf "$RUNNER_TEMP/amneziawg-pinned-linux-amd64.tar.gz" .
+          sha256sum "$RUNNER_TEMP/amneziawg-pinned-linux-amd64.tar.gz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: awg-3.1-pinned-amd64-binaries
+          path: ${{ runner.temp }}/amneziawg-pinned-linux-amd64.tar.gz
+          retention-days: 5
