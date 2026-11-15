@@ -1,0 +1,90 @@
+name: MNEBYDNS DE89 restoration - current live inventory (read-only)
+on:
+  push:
+    branches: [restore/mnebydns-de89-20261115]
+    paths: ['.github/workflows/mnebydns-de89-restoration-inventory-20261115.yml']
+  workflow_dispatch:
+permissions: {contents: read}
+concurrency:
+  group: mnebydns-de89-restoration-audit
+  cancel-in-progress: false
+jobs:
+  inventory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Check pinned SSH and install client
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          test -n "$DE_PASS" && test -n "$RU_PASS"
+          sudo apt-get -qq update
+          sudo apt-get -qq install -y sshpass >/dev/null
+      - name: Read-only DE89 live CoreDNS, proxy and checkpoint inventory
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@89.125.90.101 'python3 -' <<'PY'
+          import collections,hashlib,json,pathlib,re,subprocess
+          p=pathlib.Path('/opt/mnebydns-dot/Corefile')
+          c=p.read_text()
+          answers=re.findall(r'(?m)^\s*answer\s+"\{\{ \.Name \}\}\s+\d+\s+IN\s+A\s+((?:\d{1,3}\.){3}\d{1,3})"',c)
+          headers=re.findall(r'(?m)^\s*template\s+IN\s+A\s+([^\s{]+)\s*\{',c)
+          n=pathlib.Path('/etc/nginx/nginx.conf').read_text()
+          ptr=pathlib.Path('/opt/mnebydns-stable-checkpoints/current').read_text().strip()
+          svcs={s:subprocess.run(['systemctl','is-active',s],capture_output=True,text=True).stdout.strip() for s in ['nginx','mnebydns-dot.service','mnebydns-googlepilot.service']}
+          print('DE89_READONLY_INVENTORY='+json.dumps({'corefile_sha256':hashlib.sha256(c.encode()).hexdigest(),'core_a_answer_counts':dict(collections.Counter(answers)),'core_a_templates':len(headers),'owner_exact_core_markers':c.count('# BEGIN MNEBYDNS_OWNER_EXACT_'),'owner_exact_nginx_markers':n.count('# BEGIN MNEBYDNS_OWNER_EXACT_'),'nginx_sni_map_exists':'map $ssl_preread_server_name $direct_mtproxy_backend {' in n,'checkpoint':ptr,'services':svcs},sort_keys=True))
+          assert answers and set(answers) <= {'188.120.254.223','89.125.90.101'},'UNEXPECTED_CORE_A_ADDRESS'
+          assert len(headers) >= 264 and len(headers)==len(answers),'CORE_A_STRUCTURE_DRIFT'
+          assert 'map $ssl_preread_server_name $direct_mtproxy_backend {' in n,'DE89_SNI_MAP_ABSENT'
+          PY
+      - name: Read-only RU188 DNS ingress and personal gateway metadata
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@188.120.254.223 'python3 -' <<'PY'
+          import json,pathlib,subprocess
+          p=pathlib.Path('/etc/nginx/streams.d/01-mtproxy-stdports.conf')
+          s=p.read_text()
+          services={name:subprocess.run(['systemctl','is-active',name],capture_output=True,text=True).stdout.strip() for name in ['nginx','docker']}
+          report={'ru853_demux_installed':'$mnebydns_ru853_target' in s,'ru853_to_de_wg':'10.66.77.1:8854' in s,'services':services}
+          try:
+              obj=json.loads(subprocess.check_output(['docker','inspect','mnebydns-personal-dot-private'],text=True))[0]
+              env=dict(v.split('=',1) for v in obj['Config']['Env'] if '=' in v)
+              report['personal_running']=obj['State']['Running']
+              report['personal_policy_basename']=pathlib.PurePath(env.get('MNEBYDNS_PERSONAL_DOT_ROUTE_POLICY_FILE','')).name
+              report['personal_mapped_dot']=env.get('MNEBYDNS_PERSONAL_MAPPED_DOT_IP','')+':'+env.get('MNEBYDNS_PERSONAL_MAPPED_DOT_PORT','')
+          except (OSError,subprocess.CalledProcessError,ValueError,KeyError) as exc:
+              report['personal_container_error']=type(exc).__name__
+          print('RU188_READONLY_INVENTORY='+json.dumps(report,sort_keys=True))
+          PY
+      - name: Read-only public DoT and current authoritative name resolution
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import json,socket,ssl,struct
+          result={}
+          for name in ('dns.mnebyvpn.site','aaaaaaaaaaaa.dns.mnebyvpn.site'):
+            try:
+              result[name]=sorted({a[4][0] for a in socket.getaddrinfo(name,853,family=socket.AF_INET,type=socket.SOCK_STREAM)})
+            except Exception as e:
+              result[name]=type(e).__name__
+          for ip in ('89.125.90.101','188.120.254.223'):
+            try:
+              with socket.create_connection((ip,853),timeout=8) as tcp:
+                tcp.settimeout(8)
+                with ssl.create_default_context().wrap_socket(tcp,server_hostname='dns.mnebyvpn.site') as tls:
+                  result[ip+':853']='TLS_CERT_VALID'
+            except Exception as e:
+              result[ip+':853']=type(e).__name__
+          print('PUBLIC_READONLY_PROBES='+json.dumps(result,sort_keys=True))
+          PY
