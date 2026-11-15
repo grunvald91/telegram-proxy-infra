@@ -1,0 +1,51 @@
+name: SmartDNS live installed source and errors review 20261115
+on:
+  push:
+    branches: [audit/smartdns-installed-review-20261115]
+    paths: ['.github/workflows/smartdns-installed-review-20261115.yml']
+permissions:
+  contents: read
+concurrency:
+  group: smartdns-installed-review-20261115
+  cancel-in-progress: false
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Read actual server sources and aggregate errors
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS" && test -n "$RU_PASS"
+          python3 -m py_compile scripts/smartdns-installed-review-20261115.py
+          if ! command -v sshpass >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq sshpass >/dev/null
+          fi
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          mkdir output
+          SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -B - DE' < scripts/smartdns-installed-review-20261115.py > output/DE.json
+          SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -B - RU' < scripts/smartdns-installed-review-20261115.py > output/RU.json
+          python3 - <<'PY'
+          import json,pathlib
+          for p in pathlib.Path('output').glob('*.json'):
+              j=json.loads(p.read_text());assert j['done']
+              print(j['role'], 'snapshot_utc='+j['utc'], 'installed_sources='+str(len(j['sources'])), 'service_count='+str(len(j['services'])))
+          print('PRODUCTION_CONFIG_MUTATIONS=false')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: smartdns-live-sanitized-source-review
+          path: output/*.json
+          retention-days: 2
+          if-no-files-found: error
