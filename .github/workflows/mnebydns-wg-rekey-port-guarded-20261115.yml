@@ -1,4 +1,5 @@
 name: MNEBYDNS guarded inter-server WireGuard fresh-key plus new-port recovery
+# Guarded retry after correcting local-versus-remote original Endpoint port validation.
 # Replay with dynamic DE peer endpoint correctly staged; old config and firewall guarded.
 on:
   push:
