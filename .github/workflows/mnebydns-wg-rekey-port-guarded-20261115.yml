@@ -1,0 +1,48 @@
+name: MNEBYDNS guarded inter-server WireGuard fresh-key plus new-port recovery
+on:
+  push:
+    branches: [diag/wg-altport-isolated-20261115]
+    paths: ['.github/workflows/mnebydns-wg-rekey-port-guarded-20261115.yml']
+permissions: {contents: read}
+concurrency:
+  group: mnebydns-wg-rekey-port-once
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Validate isolated WireGuard migration Python syntax and invariants
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-wg-rekey-port-guarded-20261115.py
+          grep -q '^PREPARE_KEYS=r' scripts/mnebydns-wg-rekey-port-guarded-20261115.py
+          grep -q '^STAGE=r' scripts/mnebydns-wg-rekey-port-guarded-20261115.py
+          grep -q '^ROLLBACK=r' scripts/mnebydns-wg-rekey-port-guarded-20261115.py
+          grep -q 'wg syncconf tg-relay' scripts/mnebydns-wg-rekey-port-guarded-20261115.py
+          test -s ops/mnebydns-owner-ssh-known_hosts
+  guarded-recovery:
+    needs: offline
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Install pinned SSH transport
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -qq -y sshpass >/dev/null
+      - name: Guarded fresh interserver keys and tested UDP ports with automatic restoration
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -u scripts/mnebydns-wg-rekey-port-guarded-20261115.py
