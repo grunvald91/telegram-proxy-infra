@@ -55,6 +55,11 @@ def verify():
     print('NFQ_ONEFLOW_PRECHECK=PASS',flush=True)
 
 def cleanup():
+    current=rules()
+    matched=[s for s in current.splitlines() if 'comment "'+TAG+'"' in s]
+    if matched:
+        m=re.search(r'counter packets (\\d+)',matched[0])
+        print('NFQ_ONEFLOW_SCOPED_COUNTER_PACKETS='+ (m.group(1) if m else 'UNKNOWN'),flush=True)
     handle=find_handle()
     if handle:
         command(['nft','delete','rule',*CHAIN,'handle',handle])
