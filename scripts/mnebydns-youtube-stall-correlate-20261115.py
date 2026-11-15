@@ -66,7 +66,7 @@ def number(body, key):
 def sockets():
     # RFC 3449: retrans is an end-to-end counter, not proof of which hop dropped data.
     # ss -Hti: two lines per TCP socket (some kernel versions add a third diagnostic line).
-    raw = cmd(["ss", "-Htin", "state", "established"], timeout=12)
+    raw = cmd(["ss", "-Htin"], timeout=12)
     out = {}
     current = None
     for line in raw.splitlines():
