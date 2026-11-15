@@ -1,0 +1,81 @@
+name: MNEBYVPN encrypted access-only archive off two VPS (no topology)
+on:
+  push:
+    branches: [restore/mnebydns-youtube-morning-20261115]
+    paths: ['.github/workflows/mnebyvpn-access-only-archive-20261115.yml']
+permissions: {contents: read}
+concurrency:
+  group: mnebyvpn-20261115-access-data-backup
+  cancel-in-progress: false
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Validate export scripts and public encryption recipient
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          python3 -m py_compile scripts/mnebyvpn-access-only-backup-20261115.py
+          openssl x509 -in ops/mnebyvpn-recovery-public-cert-20261115.pem -noout -fingerprint -sha256
+          test "$(openssl x509 -in ops/mnebyvpn-recovery-public-cert-20261115.pem -noout -fingerprint -sha256 | tr -dc 'A-F0-9')" = "51164F8C103B8A951DE832CBFEF3B073086818E4B65968C019B5176F0D065AA2"
+          echo BACKUP_OFFSERVER_PUBLIC_RECIPIENT_VERIFIED=true
+      - name: Encrypt selected source data on each server BEFORE transfer
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519
+             -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+             -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          scpopts=(-q -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519
+             -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+             -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          mkdir -p "$RUNNER_TEMP/mnebyvpn-recovery"
+          chmod 700 "$RUNNER_TEMP/mnebyvpn-recovery"
+          for role in RU DE; do
+            if [ "$role" = RU ];then host="188.120.254.223";pass="$RU_PASS";else host="89.125.90.101";pass="$DE_PASS";fi
+            export SSHPASS="$pass"
+            sshpass -e scp "${scpopts[@]}" scripts/mnebyvpn-access-only-backup-20261115.py "root@$host:/run/mnebyvpn-access-only-20261115.py"
+            sshpass -e scp "${scpopts[@]}" ops/mnebyvpn-recovery-public-cert-20261115.pem "root@$host:/run/mnebyvpn-recovery-public-20261115.pem"
+            echo "BACKUP_START_ENCRYPTED_$role=true"
+            sshpass -e ssh "${opts[@]}" "root@$host" \
+              "set -euo pipefail; umask 077; python3 -B /run/mnebyvpn-access-only-20261115.py $role | openssl cms -encrypt -binary -stream -aes-256-gcm -outform DER -recip /run/mnebyvpn-recovery-public-20261115.pem" \
+               > "$RUNNER_TEMP/mnebyvpn-recovery/$role.access-only.tar.gz.cms"
+            sshpass -e ssh "${opts[@]}" "root@$host" \
+              "rm -f /run/mnebyvpn-access-only-20261115.py /run/mnebyvpn-recovery-public-20261115.pem"
+            f="$RUNNER_TEMP/mnebyvpn-recovery/$role.access-only.tar.gz.cms"
+            test "$(stat -c %s "$f")" -gt 1024
+            openssl cms -cmsout -inform DER -in "$f" -print > "$RUNNER_TEMP/cms-check-$role.txt"
+            grep -Fq 'aes-256-gcm' "$RUNNER_TEMP/cms-check-$role.txt"
+            echo "BACKUP_ENCRYPTED_$role=true"
+            stat -c "BACKUP_ENCRYPTED_$role-BYTES=%s" "$f"
+          done
+          (
+            cd "$RUNNER_TEMP/mnebyvpn-recovery"
+            sha256sum *.cms > SHA256SUMS.txt
+            printf '%s\n' \
+              'MNEBYVPN credentials-only backup 2026-11-15' \
+              'All .cms files are OpenSSL CMS AES-256-GCM encrypted to the separate recovery private key.' \
+              'Archive contains only DNS domains, WireGuard key material, TLS certificates + private keys, and user/client access data.' \
+              'No proxy setup scripts, network routes, firewall rules, topology, or server provisioning settings are included.' \
+              'Do NOT place the recovery private key next to encrypted backups.' \
+              'To decrypt: openssl cms -decrypt -inform DER -binary -in RU.access-only.tar.gz.cms -recip PUBLIC_CERT.pem -inkey PRIVATE_KEY.pem -out RU.tar.gz' \
+             > README-RECOVERY.txt
+          )
+          echo BACKUP_ENCRYPTED_BOTH_SOURCES=true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MNEBYVPN-20261115-encrypted-credentials-only
+          path: ${{ runner.temp }}/mnebyvpn-recovery/*
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
