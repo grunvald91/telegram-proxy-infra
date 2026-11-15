@@ -1,0 +1,88 @@
+name: MNEBYDNS guarded deploy of reviewed VPN-only DoT selfroute 20261115
+on:
+  push:
+    branches: [fix/mnebydns-vpn-dot-selfroute-20261115]
+    paths:
+      - .github/workflows/mnebydns-vpn-dot-selfroute-guarded-deploy-20261115.yml
+permissions: {contents: read}
+concurrency:
+  group: mnebydns-vpn-dot-selfroute-20261115
+  cancel-in-progress: false
+jobs:
+  rollout:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Offline reviewed guard tests
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          bash -n scripts/mnebydns-vpn-dot-local-route-20261115.sh
+          python3 tests/test_mnebydns_vpn_dot_local_route_20261115.py
+          test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          echo VPN_DOT_REVIEW_GATE=PASS
+      - name: Stage and apply only owner-UID TCP DoT reroute on DE89 with independent timer
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          copy=(-q -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          de() { SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 "$@"; }
+          cleanup() {
+            rc=$?
+            trap - EXIT
+            if ((rc!=0)); then
+              echo VPN_DOT_ROLLOUT_FAILED_ATTEMPTING_OWN_RULE_REVERT=true
+              de 'if test -f /opt/mnebydns-vpn-dot-selfroute-20261115/manage.sh; then /bin/bash /opt/mnebydns-vpn-dot-selfroute-20261115/manage.sh rollback; fi' || echo VPN_DOT_ROLLBACK_REQUIRES_MANUAL_REVIEW=true
+            fi
+            exit "$rc"
+          }
+          trap cleanup EXIT
+          de 'set -Eeuo pipefail
+              test ! -e /opt/mnebydns-vpn-dot-selfroute-20261115/manage.sh
+              test ! -e /etc/systemd/system/mnebydns-vpn-dot-selfroute-20261115.service
+              test ! -e /var/lib/mnebydns-vpn-dot-selfroute-20261115/installed
+              id -u mnebyvpn-xray >/dev/null
+              systemctl is-active --quiet mnebyvpn-vpn-provisioner.service
+              systemctl is-active --quiet mnebydns-personal-sni-stream.service
+              systemctl is-active --quiet mnebydns-personal-sni-redirect.service
+              systemctl is-active --quiet mnebydns-dot.service
+              iptables -w -t nat -C PREROUTING -i eth0 -d 89.125.90.101 -p tcp --dport 853 -j REDIRECT --to-ports 8854
+              echo VPN_DOT_SERVER_PREFLIGHT=PASS'
+          SSHPASS="$DE_PASS" sshpass -e scp "${copy[@]}" scripts/mnebydns-vpn-dot-local-route-20261115.sh root@89.125.90.101:/tmp/mnebydns-vpn-dot-local-route-20261115.sh
+          SSHPASS="$DE_PASS" sshpass -e scp "${copy[@]}" ops/mnebydns-vpn-dot-selfroute-20261115.service root@89.125.90.101:/tmp/mnebydns-vpn-dot-selfroute-20261115.service
+          de 'set -Eeuo pipefail
+              test -f /tmp/mnebydns-vpn-dot-local-route-20261115.sh
+              test -f /tmp/mnebydns-vpn-dot-selfroute-20261115.service
+              bash -n /tmp/mnebydns-vpn-dot-local-route-20261115.sh
+              install -d -m 0700 /opt/mnebydns-vpn-dot-selfroute-20261115
+              install -m 0700 /tmp/mnebydns-vpn-dot-local-route-20261115.sh /opt/mnebydns-vpn-dot-selfroute-20261115/manage.sh
+              install -m 0644 /tmp/mnebydns-vpn-dot-selfroute-20261115.service /etc/systemd/system/mnebydns-vpn-dot-selfroute-20261115.service
+              /bin/bash /opt/mnebydns-vpn-dot-selfroute-20261115/manage.sh apply
+              /bin/bash /opt/mnebydns-vpn-dot-selfroute-20261115/manage.sh status
+              systemctl is-enabled --quiet mnebydns-vpn-dot-selfroute-20261115.service
+              systemctl is-active --quiet mnebydns-vpn-dot-selfroute-20261115.service
+              echo VPN_DOT_GUARDED_SERVER_APPLIED=PASS'
+          python3 - <<'PY'
+          import socket,ssl
+          for host in ("dns.mnebyvpn.site","aaaaaaaaaaaa.dns.mnebyvpn.site"):
+              with socket.create_connection(("89.125.90.101",853),timeout=8) as raw:
+                  raw.settimeout(8)
+                  with ssl.create_default_context().wrap_socket(raw,server_hostname=host) as tls:
+                      assert tls.version()
+              print("VPN_DOT_PUBLIC_TLS_VALID="+host,flush=True)
+          PY
+          de 'set -Eeuo pipefail
+              /bin/bash /opt/mnebydns-vpn-dot-selfroute-20261115/manage.sh status
+              systemctl is-active --quiet mnebydns-vpn-dot-selfroute-20261115.service
+              systemctl is-active --quiet mnebydns-dot.service
+              systemctl is-active --quiet mnebyvpn-vpn-provisioner.service
+              echo VPN_DOT_FINAL_STABILITY_GUARD=PASS'
+          trap - EXIT
+          echo VPN_DOT_ROLLOUT_COMPLETE=TRUE
