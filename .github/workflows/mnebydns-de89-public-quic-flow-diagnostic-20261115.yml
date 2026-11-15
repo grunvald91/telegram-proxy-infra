@@ -1,0 +1,68 @@
+name: MNEBYDNS DE89 direct UDP443 video packet counters guarded diagnostic
+on:
+  push:
+    branches: [fix/mnebydns-de89-public-quic-20261115]
+    paths: ['.github/workflows/mnebydns-de89-public-quic-flow-diagnostic-20261115.yml']
+permissions: {contents: read}
+concurrency:
+  group: mnebydns-de89-public-quic-443-20261115
+  cancel-in-progress: false
+jobs:
+  guarded-diagnostic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Temporarily activate only separate direct QUIC listener and inspect packet counters
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          bash -n scripts/mnebydns-de89-public-quic-guard-20261115.sh
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          copts=(-q -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          de() { SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 "$@"; }
+          ru() { SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 "$@"; }
+          cleanup() {
+            rc=$?
+            trap - EXIT
+            de "journalctl -u mnebydns-de89-public-quic-20261115.service -q --no-pager -o cat -n 22 | grep -E 'youtube_quic_de-public|DE89_PUBLIC_QUIC_443_LISTENING' || true" || true
+            de "bash /opt/mnebydns-de89-public-quic-20261115/manage.sh rollback" || echo 'QUIC_DIAGNOSTIC_MANUAL_REVIEW_REQUIRED=true'
+            echo 'DE89_DIRECT_QUIC_TEMPORARY_DIAGNOSTIC_ROLLBACK_ATTEMPTED=true'
+            exit "$rc"
+          }
+          trap cleanup EXIT
+          export SSHPASS="$DE_PASS"
+          sshpass -e scp "${copts[@]}" scripts/mnebydns-de89-public-quic-20261115.py root@89.125.90.101:/tmp/mnebydns-de89-public-quic-20261115.py
+          sshpass -e scp "${copts[@]}" scripts/mnebydns-de89-public-quic-guard-20261115.sh root@89.125.90.101:/tmp/mnebydns-de89-public-quic-guard-20261115.sh
+          de 'bash /tmp/mnebydns-de89-public-quic-guard-20261115.sh stage'
+          de 'bash /opt/mnebydns-de89-public-quic-20261115/manage.sh apply'
+          de 'bash /opt/mnebydns-de89-public-quic-20261115/manage.sh status'
+          ru 'PYTHONPATH=/tmp/mnebydns-youtube-quic-43612369808/deps YOUTUBE_QUIC_VIA=89.125.90.101 timeout 65s python3 -B -' <<'PY'
+          import asyncio,os,runpy
+          once=runpy.run_path('/tmp/mnebydns-youtube-quic-43612369808/http3-probe.py')['once']
+          async def test(host):
+            try:
+              ok=await asyncio.wait_for(once(host),20)
+              result='H3_TLS_AND_HTTP' if ok else 'H3_UNVERIFIED'
+            except Exception as exc:
+              result=type(exc).__name__
+            print('DE89_PUBLIC_QUIC_FLOW_'+host+'='+result,flush=True)
+          async def main():
+            await test('www.youtube.com')
+            await test('rr1---sn-gxuo03g-ig3s.googlevideo.com')
+            await asyncio.sleep(13)
+          asyncio.run(main())
+          PY
+          de "journalctl -u mnebydns-de89-public-quic-20261115.service -q --no-pager -o cat -n 20 | grep -E 'youtube_quic_de-public|DE89_PUBLIC_QUIC_443_LISTENING' || true"
+          echo DE89_QUIC_DIAGNOSTIC_CAPTURE_COMPLETE=true
