@@ -1,0 +1,61 @@
+name: MNEBYDNS signed YouTube videoplayback byte-range readonly
+on:
+  push:
+    branches: [diag/mnebydns-real-videoplayback-20261115]
+    paths: ['.github/workflows/mnebydns-youtube-signed-video-bytes-20261115.yml']
+permissions: {contents: read}
+jobs:
+  media:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Find public YouTube test media without exporting signed URL
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m venv /tmp/mnebydns-yt-probe
+          /tmp/mnebydns-yt-probe/bin/pip -q install yt-dlp
+          /tmp/mnebydns-yt-probe/bin/python - <<'PY'
+          from yt_dlp import YoutubeDL
+          from urllib.parse import urlsplit
+          from pathlib import Path
+          names=('BaW_jenozKc','jNQXAC9IVRw')
+          matches=[]
+          with YoutubeDL({'quiet':True,'no_warnings':True,'skip_download':True,'noplaylist':True,'socket_timeout':8,'retries':1}) as ydl:
+            for video in names:
+              try:
+                info=ydl.extract_info('https://www.youtube.com/watch?v='+video,download=False)
+                formats=info.get('formats',[])
+                matches=[f for f in formats if f.get('url') and f.get('protocol')=='https' and f.get('ext')=='mp4' and 'googlevideo.com' in urlsplit(f['url']).hostname]
+                if matches:
+                  candidate=next((f for f in matches if f.get('vcodec')!='none'),matches[0])
+                  address=candidate['url']
+                  Path('/tmp/mnebydns-yt-video-url').write_text(address)
+                  print('YT_SIGNED_MEDIA_DISCOVERY=PASS')
+                  print('YT_SIGNED_MEDIA_HOST='+urlsplit(address).hostname)
+                  print('YT_SIGNED_MEDIA_FORMAT='+str(candidate.get('format_id')))
+                  break
+              except Exception as e:
+                print('YT_SIGNED_MEDIA_EXTRACT_ERROR='+type(e).__name__)
+          if not matches:
+            print('YT_SIGNED_MEDIA_DISCOVERY=UNAVAILABLE')
+          PY
+      - name: Compare real byte ranges with and without DE89 TCP relay
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if [[ ! -s /tmp/mnebydns-yt-video-url ]];then
+            echo YT_SIGNED_BYTES_NOT_RUN_NO_PUBLIC_URL=true
+            exit 0
+          fi
+          url=$(cat /tmp/mnebydns-yt-video-url)
+          host=$(python3 -c 'import sys,urllib.parse;print(urllib.parse.urlsplit(sys.argv[1]).hostname)' "$url")
+          for route in ORIGIN DE89;do
+            options=()
+            [[ "$route" != DE89 ]] || options=(--resolve "$host:443:89.125.90.101")
+            echo "YT_REAL_VIDEO_ROUTE=$route"
+            curl --noproxy '*' -4 -sSL --max-time 22 --range 0-1048575 "${options[@]}" -o /dev/null \
+              -w 'YT_REAL_VIDEO_HTTP=%{http_code} BYTES=%{size_download} TTFB=%{time_starttransfer} TOTAL=%{time_total}\n' "$url" || echo YT_REAL_VIDEO_CURL_FAILED=true
+          done
