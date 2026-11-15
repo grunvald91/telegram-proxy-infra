@@ -1,0 +1,79 @@
+name: "MNEBYDNS first100 final active routes and pending audit (read-only)"
+on:
+  push:
+    branches: [diagnostics/groq-smartdns-readonly-20261115]
+    paths: [.github/workflows/mnebydns-first100-final-audit-20261115.yml]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Retrieve original first100 immutable inventory
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p original100
+          gh run download 43682373080 --repo grunvald91/telegram-proxy-infra --name mnebydns-first100-deploy-43682373080 --dir original100
+          find original100 -type f -maxdepth 3 -print
+      - name: Verify DB, live marker, DoT and RU ingress for active routes without edits
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -qq -y sshpass >/dev/null
+          python3 - <<'PY'
+          from pathlib import Path
+          import importlib.util,json,base64,shlex,collections
+          spec=importlib.util.spec_from_file_location("bulk",Path("scripts/mnebydns-bulk-deploy-20261112.py"))
+          b=importlib.util.module_from_spec(spec);spec.loader.exec_module(b)
+          active=("artifacts.elastic.co","brickset.com","account.mongodb.com","alberta.ca",
+                  "analog.com","ansys.com","axiomtek.com","badoo.com","badoocdn.com",
+                  "bosch.de","bumble.com","census.gov")
+          failing=("arduino.cc","avira.com","bluehost.com")
+          source=list(Path("original100").rglob("first100.txt"))
+          if len(source)!=1:raise RuntimeError("ORIGINAL_FIRST100_MISSING")
+          original=[x.strip() for x in source[0].read_text().splitlines() if x.strip()]
+          if len(original)!=100 or len(set(original))!=100 or original[0]!="6pm.com" or original[-1]!="claudemcpcontent.com":
+              raise RuntimeError("ORIGINAL_INVENTORY_INVALID")
+          if not set(active).issubset(original) or not set(failing).issubset(original):
+              raise RuntimeError("OUT_OF_SCOPE_ROUTE")
+          rows=b.batch.table()
+          all_status=collections.Counter(rows[h][0] for h in original)
+          print("FIRST100_FINAL_DB_STATES="+json.dumps(dict(all_status),sort_keys=True),flush=True)
+          for h in active:
+              status,product,error=rows[h]
+              print("FIRST100_ACTIVATED="+json.dumps({"host":h,"status":status,"product":product,"last_error":error},sort_keys=True),flush=True)
+              if status!="ACTIVE" or product!="Research 2026-11":raise RuntimeError("EXPECTED_ACTIVE_NOT_CONFIRMED_"+h)
+          for h in failing:
+              print("FIRST100_BLOCKED="+json.dumps({"host":h,"status":rows[h][0]},sort_keys=True),flush=True)
+          print("FIRST100_CHATGPT="+json.dumps({"host":"chatgpt.com","db_state":rows["chatgpt.com"][0]},sort_keys=True),flush=True)
+          if not b.owner.live_checkpoint_unchanged():raise RuntimeError("CHECKPOINT_DRIFT")
+          core=b.plan.read_exact_remote("de","/opt/mnebydns-dot/Corefile")
+          nginx=b.plan.read_exact_remote("de","/etc/nginx/nginx.conf")
+          for h in active:
+              tag=b.renderer.mark(h)
+              a=core.count(tag);n=nginx.count(tag)
+              rc,ips=b.owner.dns_q(h,1)
+              print("FIRST100_ROUTE="+json.dumps({"domain":h,"core_marker_count":a,"nginx_marker_count":n,"dns_rcode":rc,"dns_ips":ips},sort_keys=True),flush=True)
+              if a!=2 or n!=2 or rc!=0 or ips!=[b.owner.RU]:
+                  raise RuntimeError("ACTIVATED_ROUTE_DRIFT_"+h)
+          for h in ("gemini.google.com","claude.ai","grok.com","x.com","www.tiktok.com","chatgpt.com"):
+              rc,ips=b.owner.dns_q(h,1)
+              if rc!=0 or ips!=[b.owner.RU]:raise RuntimeError("STABLE_DNS_ROUTE_CHANGED_"+h)
+          payload=base64.b64encode(json.dumps(list(active)).encode()).decode()
+          out=b.owner.ssh("ru","python3 -c "+shlex.quote(b.RU_HTTPS)+" "+shlex.quote(payload)+" "+b.owner.RU,180)
+          cases=json.loads(out)
+          print("FIRST100_RU188_HTTPS="+json.dumps(cases,sort_keys=True),flush=True)
+          print("FIRST100_POST_DEPLOY_AUDIT=PASS",flush=True)
+          PY
