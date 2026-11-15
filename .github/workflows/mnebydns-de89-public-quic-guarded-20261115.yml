@@ -20,7 +20,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: {persist-credentials: false}
-      - name: Offline preflight: syntactic and exact historic release contract
+      - name: Offline preflight checks for exact historic release contract
         shell: bash
         run: |
           set -Eeuo pipefail
