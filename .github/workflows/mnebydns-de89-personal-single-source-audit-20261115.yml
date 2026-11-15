@@ -1,0 +1,53 @@
+name: MNEBYDNS personal policy live single-source parity preflight (read-only)
+on:
+  push:
+    branches: [restore/mnebydns-de89-20261115]
+    paths:
+      - .github/workflows/mnebydns-de89-personal-single-source-audit-20261115.yml
+permissions: {contents: read}
+concurrency:
+  group: mnebydns-de89-personal-policy-audit
+  cancel-in-progress: false
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Offline generator regression
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/test_mnebydns_personal_shared_policy_generate_20261114.py
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          test -n "$DE_PASS" && test -n "$RU_PASS"
+          sudo apt-get -qq update && sudo apt-get -qq install -y sshpass >/dev/null
+      - name: Read only current DE CoreDNS and RU personal policy, derive parity without revealing contents
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          install -d -m 700 "$RUNNER_TEMP/mnebydns-policy-review"
+          cd "$RUNNER_TEMP/mnebydns-policy-review"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$GITHUB_WORKSPACE/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -T "${opts[@]}" root@89.125.90.101 'cat /opt/mnebydns-dot/Corefile' > current.Corefile
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T "${opts[@]}" root@188.120.254.223 'cat /etc/mnebydns/personal-dot/policy-chatgpt-dependencies-20261114.json' > previous.personal.json
+          python3 "$GITHUB_WORKSPACE/scripts/mnebydns-personal-shared-policy-generate-20261114.py" current.Corefile previous.personal.json derived/premium.json
+          python3 - <<'PY'
+          import json,pathlib,hashlib
+          m=json.loads(pathlib.Path('derived/manifest.json').read_text())
+          p=json.loads(pathlib.Path('derived/premium.json').read_text())
+          assert m['core_a_templates']>=264 and m['core_family_roots']==75
+          assert m['obsolete_personal_only_entries']==0
+          assert len(p)==m['new_policy_count']
+          assert set(json.loads(pathlib.Path('previous.personal.json').read_text())).issubset(set(p))
+          assert all(s in p for s in ['auth.openai.com','chatgpt.com','artifacts.elastic.co','account.mongodb.com'])
+          print('PERSONAL_SINGLE_SOURCE_POLICY_MANIFEST='+json.dumps(m,sort_keys=True))
+          print('PERSONAL_SINGLE_SOURCE_FROM_LIVE_89=PASS')
+          PY
+          rm -rf -- current.Corefile previous.personal.json derived
