@@ -5,6 +5,7 @@ No DNS rewrites, credentials, application data capture, or service mutations.
 import asyncio
 import os
 import ssl
+import socket
 from aioquic.asyncio.client import connect
 from aioquic.asyncio.protocol import QuicConnectionProtocol
 from aioquic.h3.connection import H3_ALPN,H3Connection
@@ -52,14 +53,26 @@ async def once(host):
         return False
 
 async def main():
-    hosts=('www.youtube.com','rr1---sn-gxuo03g-ig3s.googlevideo.com')
+    hosts=('www.youtube.com','rr1---sn-gxuo03g-ig3s.googlevideo.com',
+           'video.twimg.com','pbs.twimg.com','x.com')
     for host in hosts:
         try:
-            success=await asyncio.wait_for(once(host),27)
-            print('DE89_FOREIGN_PUBLIC_HTTP3_'+host+'='+('PASS' if success else 'UNVERIFIED'),flush=True)
-        except Exception as exc:
-            print('DE89_FOREIGN_PUBLIC_HTTP3_'+host+'='+type(exc).__name__,flush=True)
-    print('DE89_FOREIGN_PUBLIC_HTTP3_AUDIT_COMPLETED=true',flush=True)
+            origins=socket.getaddrinfo(host,443,socket.AF_INET,socket.SOCK_DGRAM)
+            addresses=sorted(set(x[4][0] for x in origins))
+        except Exception:
+            addresses=[]
+        for label,ip in (('DE89','89.125.90.101'),('ORIGIN',addresses[0] if addresses else '')):
+            if not ip:
+                print('MEDIA_H3_COMPARE='+host+':'+label+':NO_IPV4',flush=True)
+                continue
+            os.environ['YOUTUBE_QUIC_VIA']=ip
+            try:
+                success=await asyncio.wait_for(once(host),17)
+                outcome='HTTP3_TLS_AND_HTTP_PASS' if success else 'NO_HTTP3_RESPONSE'
+            except Exception as exc:
+                outcome=type(exc).__name__
+            print('MEDIA_H3_COMPARE='+host+':'+label+':'+outcome,flush=True)
+    print('MEDIA_H3_COMPARE_COMPLETE=true',flush=True)
 
 if __name__=='__main__':
     asyncio.run(main())
