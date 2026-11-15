@@ -15,10 +15,10 @@ NEWUNIT=mneby-awg-tg-relay.service
 ROLLBACK=mneby-awg-auto-rollback-20261116
 if [[ "$ROLE" == DE ]]; then
   PORT=56783; OLDPORT=56781; PEER_PUBLIC=188.120.254.223
-  LOCAL_INNER=10.66.77.1; REMOTE_INNER=10.66.77.2
+  LOCAL_INNER=10.66.77.1
 else
   PORT=56784; OLDPORT=56782; PEER_PUBLIC=89.125.90.101
-  LOCAL_INNER=10.66.77.2; REMOTE_INNER=10.66.77.1
+  LOCAL_INNER=10.66.77.2
 fi
 msg() { echo "AWG_PROD_${ROLE}_$1=$2"; }
 healthy_old() {
@@ -33,10 +33,11 @@ healthy_awg() {
 case "$ACTION" in
  stage)
    healthy_old || { msg PRECHECK_OLD false; exit 10; }
+   ip -4 -br addr show tg-relay | grep -Fq "$LOCAL_INNER/24" || { msg ORIGINAL_ADDRESS_MISMATCH true; exit 10; }
    [[ ! -e "$DIR" ]] || { msg STAGE_COLLISION true; exit 11; }
    [[ ! -e "$CONFIG" ]] || { msg CONFIG_EXISTS true; exit 11; }
    [[ -f /tmp/mneby-awg-prod-bundle-20261116.tar.gz && -s /tmp/mneby-awg-prod-header-20261116.txt ]] || exit 11
-   if ss -H -lun | grep -Eq ":$PORT[[:space:]]"; then msg PORT_OCCUPIED true; exit 12; fi
+   if ss -H -lun | grep -Eq ":${PORT}[[:space:]]"; then msg PORT_OCCUPIED true; exit 12; fi
    mkdir -p "$BIN" "$DIR/backup" /etc/amnezia/amneziawg
    chmod 700 "$DIR" "$DIR/backup" /etc/amnezia/amneziawg
    cp -p "$OLD" "$DIR/backup/wireguard-tg-relay.conf"
