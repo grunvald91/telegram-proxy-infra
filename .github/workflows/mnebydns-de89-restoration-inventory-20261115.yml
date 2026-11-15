@@ -53,6 +53,7 @@ jobs:
               wrong.append(current_template)
           ck=(pathlib.Path(ptr)/'dns.stable').read_bytes()
           print('DE89_A_DRIFT_DETAILS='+json.dumps({'ru188_template_names':wrong,'repeated_owner_count':len(repeat_core),'repeated_owner_samples':list(repeat_core.items())[:12],'owner_missing_in_nginx':sorted(set(owners_core)-set(owners_nginx))[:20],'checkpoint_matches_live':ck==p.read_bytes(),'checkpoint_a_rules':len(re.findall(r'(?m)^\\s*template\\s+IN\\s+A\\s+([^\\s{]+)\\s*\\{',ck.decode())),'mtime_utc':__import__('datetime').datetime.fromtimestamp(p.stat().st_mtime,__import__('datetime').timezone.utc).isoformat()},sort_keys=True))
+          print('GOOGLE_VIDEO_RULES='+str({'googlevideo':c.count('googlevideo'),'ytimg':c.count('ytimg'),'youtube':c.count('youtube'),'googleapis':c.count('googleapis')}))
           print('DE89_READONLY_INVENTORY='+json.dumps({'corefile_sha256':hashlib.sha256(c.encode()).hexdigest(),'core_a_answer_counts':dict(collections.Counter(answers)),'core_a_templates':len(headers),'owner_exact_core_markers':c.count('# BEGIN MNEBYDNS_OWNER_EXACT_'),'owner_exact_nginx_markers':n.count('# BEGIN MNEBYDNS_OWNER_EXACT_'),'nginx_sni_map_exists':'map $ssl_preread_server_name $direct_mtproxy_backend {' in n,'checkpoint':ptr,'services':svcs},sort_keys=True))
           assert answers and set(answers) <= {'188.120.254.223','89.125.90.101'},'UNEXPECTED_CORE_A_ADDRESS'
           assert len(headers) >= 264 and len(headers)==len(answers),'CORE_A_STRUCTURE_DRIFT'
