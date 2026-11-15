@@ -35,6 +35,13 @@ jobs:
           echo "PREFLIGHT_EXPECTED_ENDPOINT=$other"
           printf 'PREFLIGHT_NEW_PORT_LISTENER_COUNT=';ss -H -lun "( sport = :$target )" | wc -l
           printf 'PREFLIGHT_UFW_FIRST=';ufw status 2>&1 | head -1
+          printf 'PREFLIGHT_INPUT_POLICY=';iptables -S INPUT 2>&1 | head -1
+          echo PREFLIGHT_INPUT_RULES_START
+          iptables -S INPUT 2>/dev/null | head -12
+          echo PREFLIGHT_INPUT_RULES_END
+          printf 'PREFLIGHT_NFT_WG_RULES=';nft -a list ruleset 2>/dev/null | grep -E '51820|53832|56781|56782' | head -12 || true
+          printf 'PREFLIGHT_IPTABLES_PERSISTENT=';systemctl is-enabled netfilter-persistent.service 2>/dev/null || true
+          printf 'PREFLIGHT_UFW_ENABLED=';systemctl is-enabled ufw.service 2>/dev/null || true
           printf 'PREFLIGHT_UFW_RULE_MATCH=';ufw status 2>&1 | grep -Ec "(^|[[:space:]])$target(/udp|[[:space:]])" || true
           printf 'PREFLIGHT_WG_SHOWCONF_WORKS=';wg showconf tg-relay >/dev/null 2>&1 && echo yes || echo no
           printf 'PREFLIGHT_DISK_PRESENT=';test -s /etc/wireguard/tg-relay.conf && echo yes || echo no
