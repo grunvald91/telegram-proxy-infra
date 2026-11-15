@@ -73,3 +73,20 @@ jobs:
           curl -4 -sS --max-time 7 https://api.ipify.org || true
           echo
           echo RUNNER_PUBLIC_IP_END
+
+      - name: Transfer megabyte video ranges rather than headers or short clips
+        run: |
+          set -Eeuo pipefail
+          media=(
+            'https://video.twimg.com/ext_tw_video/1444247208514113546/pu/vid/640x360/39YEtqA_5lC88JYk.mp4?tag=12'
+            'https://video.twimg.com/ext_tw_video/1912350520460689409/pu/vid/avc1/480x270/ur9xSviOdHMCLG4O.mp4?tag=12'
+          )
+          for j in 0 1; do
+            for route in ORIGIN DE89; do
+              options=()
+              [[ "$route" != DE89 ]] || options=(--resolve 'video.twimg.com:443:89.125.90.101')
+              echo "X_LARGE_VIDEO_SAMPLE=$j ROUTE=$route"
+              curl -4 -sSL --max-time 25 --range 0-4194303 "${options[@]}" \
+                --output /dev/null --write-out 'LARGE_VIDEO_HTTP=%{http_code} BYTES=%{size_download} TTFB=%{time_starttransfer} TOTAL=%{time_total} SPEED=%{speed_download}\n' "${media[$j]}" || echo 'LARGE_VIDEO_REQUEST_FAILED'
+            done
+          done
