@@ -69,7 +69,11 @@ def valid_checkpoint(expected_dns: bytes) -> Path:
 
 def render(current: str) -> tuple[str, int]:
     matches = list(A_LINE.finditer(current))
-    if len(matches) < MINIMUM_A_COUNT or len(A_HEADER.findall(current)) != len(matches):
+    header_count = len(A_HEADER.findall(current))
+    if len(matches) < MINIMUM_A_COUNT or header_count != len(matches):
+        loose_lines = re.findall(r'(?m)^\\s*answer\\s+".*?\\sIN\\sA\\s+[^"\\n]+"', current)
+        print("DE89_A_PATTERN_COUNTS=" + str({"matched":len(matches), "headers":header_count, "loose":len(loose_lines), "source_sha256":sha(current.encode())}), flush=True)
+        print("DE89_A_PATTERN_SAMPLE=" + repr(loose_lines[:2])[:400], flush=True)
         raise RuntimeError("A_RULE_COUNT_DRIFT")
     if set(m.group(2) for m in matches) != {RU}:
         raise RuntimeError("FOREIGN_OR_MIXED_A_ANSWERS_NOT_APPROVED")
