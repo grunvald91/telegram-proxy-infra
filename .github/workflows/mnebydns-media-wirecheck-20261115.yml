@@ -1,0 +1,87 @@
+name: MNEBYDNS fresh two-path ClientHello packet metadata audit (read only)
+on:
+  push:
+    branches: [diag/mnebydns-media-wirecheck-20261115]
+    paths: ['.github/workflows/mnebydns-media-wirecheck-20261115.yml']
+permissions: {contents: read}
+jobs:
+  wirecheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Capture only synthetic connection packet metadata on DE89 for public and encrypted WireGuard
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS" && test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -qq -y sshpass >/dev/null
+          ssh_opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          echo WIRECHECK_UTC_START="$(date -u +%FT%TZ)"
+          for spec in 'eth0 188.120.254.223 89.125.90.101' 'tg-relay 10.66.77.2 10.66.77.1'; do
+            read -r iface src dst <<< "$spec"
+            filter="tcp and host $src and host $dst and portrange 43301-43305"
+            SSHPASS="$DE_PASS" sshpass -e ssh "${ssh_opts[@]}" root@89.125.90.101               "command -v tcpdump >/dev/null && timeout -s INT 49 tcpdump -nn -l -tt -s 96 -i $iface '$filter' 2>/dev/null" > "$RUNNER_TEMP/$iface.txt" &
+            pids+=("$!")
+          done
+          sleep 4
+          SSHPASS="$RU_PASS" sshpass -e ssh "${ssh_opts[@]}" root@188.120.254.223 'python3 -' <<'PY'
+          import socket,ssl,time,json
+          checks=[
+            ("googlevideo_public","89.125.90.101","rr1---sn-gxuo03g-ig3s.googlevideo.com",43301),
+            ("googlevideo_wireguard","10.66.77.1","rr1---sn-gxuo03g-ig3s.googlevideo.com",43302),
+            ("ximage_public","89.125.90.101","pbs.twimg.com",43303),
+            ("ximage_wireguard","10.66.77.1","pbs.twimg.com",43304),
+            ("youtube_public_control","89.125.90.101","www.youtube.com",43305),
+          ]
+          for label,ip,host,port in checks:
+            started=time.monotonic()
+            result={"label":label,"source_port":port}
+            try:
+              with socket.socket(socket.AF_INET,socket.SOCK_STREAM) as s:
+                s.settimeout(5)
+                s.bind(("0.0.0.0",port))
+                s.connect((ip,443))
+                result["tcp"]="connected"
+                with ssl.create_default_context().wrap_socket(s,server_hostname=host) as tls:
+                  result["tls"]=tls.version()
+            except Exception as exc:
+              result["error"]=type(exc).__name__
+            result["elapsed_ms"]=round((time.monotonic()-started)*1000)
+            print("WIRECHECK_PROBE="+json.dumps(result,sort_keys=True),flush=True)
+            time.sleep(0.4)
+          PY
+          for pid in "${pids[@]}"; do wait "$pid" || true; done
+          python3 - "$RUNNER_TEMP" <<'PY'
+          import pathlib,sys,re,json
+          root=pathlib.Path(sys.argv[1])
+          pattern=re.compile(r"IP ([0-9.]+)\.(\d+) > ([0-9.]+)\.(\d+): Flags \[([^\]]+)\].*?length (\d+)")
+          ports={43301:"googlevideo_public",43302:"googlevideo_wireguard",
+                 43303:"ximage_public",43304:"ximage_wireguard",
+                 43305:"youtube_public_control"}
+          out={p:{"client_segments":0,"client_payload_bytes":0,"server_segments":0,"server_payload_bytes":0,"syns":0,"synacks":0} for p in ports}
+          for name in ("eth0","tg-relay"):
+            lines=(root/(name+".txt")).read_text().splitlines()
+            print("WIRECHECK_INTERFACE="+json.dumps({"interface":name,"captured_lines":len(lines)}),flush=True)
+            for line in lines:
+              m=pattern.search(line)
+              if not m:continue
+              src,sport,dst,dport,flags,length=m.groups()
+              sport,dport,length=int(sport),int(dport),int(length)
+              if sport in ports and dport==443:
+                d=out[sport];d["client_segments"]+=1;d["client_payload_bytes"]+=length
+                if "S" in flags:d["syns"]+=1
+              elif sport==443 and dport in ports:
+                d=out[dport];d["server_segments"]+=1;d["server_payload_bytes"]+=length
+                if "S" in flags:d["synacks"]+=1
+          for port,d in out.items():
+            print("WIRECHECK_PACKET_METADATA="+json.dumps({"label":ports[port],"port":port,**d},sort_keys=True),flush=True)
+          print("WIRECHECK_SERVER_CONFIG_CHANGED=false",flush=True)
+          PY
