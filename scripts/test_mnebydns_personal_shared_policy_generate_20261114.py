@@ -16,7 +16,7 @@ def exact_template(domain):
     return (
         f"    template IN A {domain} {{\n"
         f"        match ^{escaped}[.]$\n"
-        f'        answer "{{{{ .Name }}}} 20 IN A 188.120.254.223"\n'
+        f'        answer "{{{{ .Name }}}} 20 IN A 89.125.90.101"\n'
         f"    }}\n"
     )
 def family_template(roots):
@@ -25,7 +25,7 @@ def family_template(roots):
     return (
         f"    template IN A . {{\n"
         f"        match {pattern}\n"
-        f'        answer "{{{{ .Name }}}} 20 IN A 188.120.254.223"\n'
+        f'        answer "{{{{ .Name }}}} 20 IN A 89.125.90.101"\n'
         f"    }}\n"
     )
 exact=[f"site{i:03d}.example.net" for i in range(262)]
@@ -59,6 +59,19 @@ with tempfile.TemporaryDirectory(prefix="mnebydns-single-source-test-") as d:
     previous=output.read_bytes()
     mod.generate(config,personal,output)
     assert output.read_bytes()==previous, "different output for identical CoreDNS source"
+    # Production contains additional exact host routes. They must be inherited
+    # without a new static count or second personalized domain registry.
+    extended=core[:-2] + "".join(
+        map(exact_template,[f"growth{i:03d}.example.net" for i in range(300)])
+    ) + "}\n"
+    config.write_text(extended)
+    expanded=mod.generate(config,personal,output)
+    assert expanded["core_a_templates"]==564
+    assert expanded["core_exact_domains"]==562
+    assert expanded["new_policy_count"]==712
+    assert mod.classify(set(json.loads(output.read_text())),"growth299.example.net")
+    config.write_text(core)
+    mod.generate(config,personal,output)
     # An old policy-only domain must not be retained or silently removed.
     personal.write_text(json.dumps(old[:-1]+["*.unrelated.example.com"]))
     try:
@@ -68,7 +81,7 @@ with tempfile.TemporaryDirectory(prefix="mnebydns-single-source-test-") as d:
     else:raise AssertionError("old-only policy unexpectedly accepted")
     personal.write_text(json.dumps(old))
     # Any unmapped A must make the review fail closed.
-    config.write_text(core.replace("188.120.254.223","89.125.90.101",1))
+    config.write_text(core.replace("89.125.90.101","188.120.254.223",1))
     try:
         mod.generate(config,personal,output)
     except ValueError as e:

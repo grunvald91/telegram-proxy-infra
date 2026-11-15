@@ -15,8 +15,8 @@ import socket
 import ssl
 
 EDGE = "89.125.90.101"
-# Current Smart DNS entrypoint is RU188; DE89 is only the verified SNI proxy.
-DNS_INGRESS = "188.120.254.223"
+# Restored public DNS entrypoint; share the same catalog and SNI proxy on DE89.
+DNS_INGRESS = EDGE
 KINDS = ("A", "AAAA", "HTTPS", "SVCB", "CNAME")
 DOMAIN = re.compile(r"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}$")
 FORBIDDEN = re.compile(r"\.(?:localhost|local|internal|test|invalid|example|onion|arpa|lan|home|corp)$")
