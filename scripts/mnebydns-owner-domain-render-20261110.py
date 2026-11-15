@@ -15,6 +15,8 @@ import socket
 import ssl
 
 EDGE = "89.125.90.101"
+# New exact-host templates match the established Russian ingress topology.
+DNS_INGRESS = "188.120.254.223"
 KINDS = ("A", "AAAA", "HTTPS", "SVCB", "CNAME")
 DOMAIN = re.compile(r"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}$")
 FORBIDDEN = re.compile(r"\.(?:localhost|local|internal|test|invalid|example|onion|arpa|lan|home|corp)$")
@@ -205,7 +207,7 @@ def core_add(stable: str, domain: str) -> str:
     hostname = re.escape(domain).replace(r"\.", "[.]")
     prefix = begin + "    # Owner-only exact domain, independent public TLS ingress\n"
     for kind in KINDS:
-        body = '        answer "{{ .Name }} 20 IN A ' + EDGE + '"\n' if kind == "A" \
+        body = '        answer "{{ .Name }} 20 IN A ' + DNS_INGRESS + '"\n' if kind == "A" \
             else "        rcode NOERROR\n"
         prefix += (
             "    template IN "+kind+" . {\n"
