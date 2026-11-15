@@ -29,7 +29,14 @@ jobs:
           git clone --quiet https://github.com/amnezia-vpn/amneziawg-tools.git awg-tools
           cd awg-tools
           git checkout --detach --quiet v3.1.20260812
-          make -C src -j2
+          # Build C tools against Ubuntu 22.04 / glibc 2.35, matching DE89.
+          # The GitHub runner's newer GLIBC cannot run on that production host.
+          docker run --rm -v "$PWD:/work" -w /work ubuntu:22.04 bash -ec '
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -qq
+            apt-get install -qq -y build-essential make pkg-config >/dev/null
+            make -C src -j2
+          '
           install -m 0755 src/wg "$RUNNER_TEMP/awg-bin/awg"
           install -m 0755 src/wg-quick/linux.bash "$RUNNER_TEMP/awg-bin/awg-quick"
           "$RUNNER_TEMP/awg-bin/awg" --version
