@@ -1,0 +1,135 @@
+name: MNEBYVPN live outage triage read only 20261115
+on:
+  push:
+    branches: [diag/mnebydns-live-video-stall-20261115]
+    paths:
+      - .github/workflows/mnebyvpn-live-outage-triage-20261115.yml
+permissions: {contents: read}
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Check live VPN service and two-node transport for connection failures, read only
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          cat > /tmp/outage.py <<'PY'
+          import sys,subprocess,time,datetime,re,json,pathlib,collections,os
+          R=sys.argv[1]
+          def out(k,v):print("OUTAGE_"+R+"_"+k+"="+str(v),flush=True)
+          def run(args,timeout=8):
+              try:
+                  p=subprocess.run(args,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,timeout=timeout)
+                  return p.stdout
+              except Exception:return ""
+          out("UTC",datetime.datetime.now(datetime.timezone.utc).isoformat())
+          out("LOAD",repr(run(["cat","/proc/loadavg"]).strip()[:60]))
+          d=run(["df","-P","/"])
+          out("ROOT_DISK",repr(d.splitlines()[-1].split()[4] if len(d.splitlines())>1 else "unknown"))
+          for name in ["nginx","wg-quick@tg-relay.service","xray.service","mnebyvpn-vpn-provisioner.service","mnebydns-dot.service","mnebydns-googlepilot.service"]:
+              val=run(["systemctl","show",name,"--property=ActiveState,SubState,NRestarts,ExecMainStartTimestampMonotonic,MainPID","--no-pager"]).replace("\n",";")
+              out("UNIT_"+name,repr(val[:210]))
+          route=run(["ip","-4","route","get","1.1.1.1"])
+          out("DEFAULT_IPV4_ROUTE",repr(re.sub(r"(?<=src )\S+","[src]",route.strip())[:130]))
+          for name in ["tg-relay"]:
+              data=run(["wg","show",name,"latest-handshakes"])
+              now=time.time()
+              ages=[]
+              for line in data.splitlines():
+                  s=line.split()
+                  if len(s)==2 and s[1].isdigit(): ages.append(round(now-int(s[1])))
+              out("WG_HANDSHAKE_AGE_SEC",repr(ages))
+              data=run(["wg","show",name,"transfer"])
+              totals=[(int(l.split()[1]),int(l.split()[2])) for l in data.splitlines() if len(l.split())==3]
+              out("WG_TRANSFERS",repr(totals[:3]))
+              out("WG_MTU",run(["cat","/sys/class/net/tg-relay/mtu"]).strip())
+          def sockets():
+              data=run(["ss","-Htinp"],timeout=15)
+              sums=collections.defaultdict(lambda:collections.Counter())
+              conn_id=None
+              for line in data.splitlines():
+                  z=line.split()
+                  if len(z)>4 and z[0] in ("ESTAB","SYN-SENT","CLOSE-WAIT","TIME-WAIT"):
+                      local,peer=z[3:5]
+                      tag=None
+                      for p in (18943,2053,8443,443,853,15449):
+                          if local.endswith(":"+str(p)):tag="IN_"+str(p);break
+                      if not tag:
+                          for p in (18943,2053,8443,443,853,15449):
+                              if peer.endswith(":"+str(p)):tag="OUT_"+str(p);break
+                      conn_id=tag
+                      if tag:
+                          sums[tag]["connections"]+=1
+                          sums[tag][z[0]]+=1
+                  elif conn_id and ("bytes_sent:" in line or "rtt:" in line):
+                      for field in ("bytes_sent","bytes_received","bytes_retrans","unacked","retrans"):
+                          mat=re.search(r"(?<!\w)"+field+r":([0-9]+)",line)
+                          if mat:sums[conn_id][field]+=int(mat.group(1))
+                      conn_id=None
+              return sums
+          def kernel():
+              data=run(["nstat","-az"],timeout=8)
+              wanted=("TcpRetransSegs","TcpExtTCPTimeouts","TcpExtTCPFastRetrans",
+                      "TcpExtTCPSynRetrans","TcpExtTCPBacklogDrop","UdpRcvbufErrors",
+                      "UdpSndbufErrors","IpOutDiscards")
+              c={}
+              for line in data.splitlines():
+                  sp=line.split()
+                  if len(sp)>1 and sp[0] in wanted:
+                      try:c[sp[0]]=int(sp[1])
+                      except ValueError:pass
+              return c
+          a=sockets();k0=kernel();time.sleep(12);b=sockets();k1=kernel()
+          for port in sorted(set(a)|set(b)):
+              out("PORT_"+port+"_BEFORE",repr(dict(a.get(port,{}))))
+              out("PORT_"+port+"_AFTER",repr(dict(b.get(port,{}))))
+          for key in sorted(set(k0)|set(k1)):
+              out("KERNEL_DELTA_"+key,k1.get(key,0)-k0.get(key,0))
+          if R=="DE89":
+              files=["/etc/xray/config.json","/etc/mnebyvpn/xray-canary.json"]
+              for path in files:
+                  try:
+                      data=json.loads(pathlib.Path(path).read_text())
+                      for item in data.get("inbounds",[]):
+                          out("XRAY_INBOUND",repr(dict(tag=item.get("tag"),port=item.get("port"),
+                            protocol=item.get("protocol"),sniffing=item.get("sniffing"))))
+                  except Exception as ex:out("XRAY_CONFIG_ERROR",type(ex).__name__)
+              for unit in ("xray.service","mnebyvpn-vpn-provisioner.service"):
+                  data=run(["journalctl","-u",unit,"--since","-10 min","--no-pager","-o","cat"],timeout=9)
+                  selected=collections.Counter()
+                  for line in data.splitlines():
+                      low=line.lower()
+                      if "failed" in low:selected["FAILED"]+=1
+                      if "timeout" in low:selected["TIMEOUT"]+=1
+                      if "error" in low:selected["ERROR"]+=1
+                      if "restarting" in low or "started" in low:selected["RESTART_OR_START"]+=1
+                      if "reject" in low:selected["REJECT"]+=1
+                  out("LOG_COUNTER_"+unit,repr(dict(selected)))
+              st=run(["ss","-H","-lntp"])
+              for port in (443,8443,18943,2053,853,15449):
+                  matched=[l for l in st.splitlines() if len(l.split())>3 and l.split()[3].endswith(":"+str(port))]
+                  out("LISTEN_"+str(port),len(matched))
+          out("COMPLETE","TRUE")
+          PY
+          SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 - RU188' < /tmp/outage.py > ru.txt 2>&1 &
+          pr=$!
+          SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 - DE89' < /tmp/outage.py > de.txt 2>&1 &
+          pd=$!
+          a=0;b=0
+          wait "$pr" || a=$?
+          wait "$pd" || b=$?
+          echo "RU_START";cat ru.txt;echo "RU_END"
+          echo "DE_START";cat de.txt;echo "DE_END"
+          test "$a" -eq 0 && test "$b" -eq 0
+          grep -q 'OUTAGE_RU188_COMPLETE=TRUE' ru.txt
+          grep -q 'OUTAGE_DE89_COMPLETE=TRUE' de.txt
