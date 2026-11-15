@@ -50,11 +50,22 @@ case "${1:-}" in
     if ! iptables -C INPUT "${rule[@]}" >/dev/null 2>&1; then
       iptables -I INPUT 1 "${rule[@]}"
     fi
-    if ! PATH="$BIN:$PATH" "$BIN/awg-quick" up "$CONF" >/dev/null 2>&1; then
+    # Keep the diagnostic log on the remote host, but report only whitelisted
+    # error classes. No user/session keys or config lines go to Actions logs.
+    log="$(mktemp)"
+    if ! timeout 45s env PATH="$BIN:$PATH" WG_QUICK_USERSPACE_IMPLEMENTATION="$BIN/amneziawg-go" "$BIN/awg-quick" up "$CONF" >"$log" 2>&1; then
       echo AWG_STAGE_UP_FAILED=true
+      for pattern in "Operation not supported" "Unknown device" "Unable to" "Failed" "Error" "invalid" "unrecognized" "permission denied" "No such file" "not found" "failed to"; do
+        if grep -iq "$pattern" "$log"; then
+          echo "AWG_STAGE_ERROR_CLASS=$pattern"
+        fi
+      done
+      echo "AWG_STAGE_LOG_LINES=$(wc -l < "$log")"
+      rm -f "$log"
       cleanup
       exit 4
     fi
+    rm -f "$log"
     ip -4 -br addr show awgtest0 | sed -E 's/([0-9]{1,3}\.){3}[0-9]{1,3}/<address>/g'
     echo AWG_STAGE_"$ROLE"_UP=true ;;
   status)
