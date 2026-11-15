@@ -135,7 +135,7 @@ jobs:
           ru 'python3 -' <<'PY'
           import subprocess,re,socket,ssl,datetime,json
           def probe(name,host):
-              p=subprocess.run(["ping","-n","-q","-M","do","-c","30","-i","0.25","-s","1200","-W","1",host],capture_output=True,text=True,timeout=18)
+              p=subprocess.run(["ping","-n","-q","-M","do","-c","100","-i","0.20","-s","1200","-W","1",host],capture_output=True,text=True,timeout=42)
               m=re.search(r"(\d+) packets transmitted, (\d+) received, ([\d.]+)% packet loss",p.stdout)
               print("AWG_COMPARISON_"+name+"="+json.dumps({"sent":int(m[1]),"received":int(m[2]),"loss_pct":float(m[3])} if m else {"error":"missing_ping_summary","rc":p.returncode}),flush=True)
               return float(m[3]) if m else 100.0
