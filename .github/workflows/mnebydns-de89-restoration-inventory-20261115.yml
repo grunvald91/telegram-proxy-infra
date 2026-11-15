@@ -80,6 +80,17 @@ jobs:
               sock.connect(('89.125.90.101',443));sock.send(b'UDP443-LOCAL-READONLY');sock.recv(100);res='reply'
             except Exception as exc:res=type(exc).__name__
           print('YOUTUBE_UDP443_DE_LOCAL='+res)
+          for svc in ('mnebydns-de89-public-quic-20261115.service','mnebydns-youtube-quic-de-43612369808.service','mnebydns-googlepilot.service'):
+            psvc=subprocess.run(['systemctl','is-active',svc],capture_output=True,text=True)
+            print('VIDEO_SERVER_SERVICE='+svc+':'+psvc.stdout.strip())
+          print('VIDEO_SERVER_X_ROUTE='+json.dumps([x.strip()[:260] for x in n.splitlines() if 'twimg' in x or 'video.' in x and 'twitter' in x][:18]))
+          for name,filename in (('stream','/var/log/nginx/error.log'),('pilot','/var/log/mnebydns-googlepilot/error.log')):
+            fp=pathlib.Path(filename)
+            if fp.exists():
+              last=fp.read_text(errors='replace').splitlines()[-300:]
+              print('VIDEO_SERVER_LOG_AGG='+json.dumps({'name':name,'last_lines':len(last),'timeouts':sum('timed out' in t.lower() for t in last),'upstream_errors':sum('upstream' in t.lower() for t in last),'refused':sum('refused' in t.lower() for t in last)}))
+          udp443=subprocess.run(['ss','-Hulnp'],capture_output=True,text=True).stdout
+          print('VIDEO_SERVER_PUBLIC_UDP443='+json.dumps([x.strip()[:200] for x in udp443.splitlines() if ':443 ' in x]))
           print('DE89_READONLY_INVENTORY='+json.dumps({'corefile_sha256':hashlib.sha256(c.encode()).hexdigest(),'core_a_answer_counts':dict(collections.Counter(answers)),'core_a_templates':len(headers),'owner_exact_core_markers':c.count('# BEGIN MNEBYDNS_OWNER_EXACT_'),'owner_exact_nginx_markers':n.count('# BEGIN MNEBYDNS_OWNER_EXACT_'),'nginx_sni_map_exists':'map $ssl_preread_server_name $direct_mtproxy_backend {' in n,'checkpoint':ptr,'services':svcs},sort_keys=True))
           assert answers and set(answers) <= {'188.120.254.223','89.125.90.101'},'UNEXPECTED_CORE_A_ADDRESS'
           assert len(headers) >= 264 and len(headers)==len(answers),'CORE_A_STRUCTURE_DRIFT'
