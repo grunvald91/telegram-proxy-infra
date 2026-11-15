@@ -105,6 +105,20 @@ jobs:
           for line in quiclines[-1:]:
             counters={k:int(v) for k,v in re.findall(r'(\w+)=(\d+)',line)}
           print('DE89_DIRECT_QUIC_AGGREGATES='+json.dumps({'recent_counter_lines':len(quiclines),'latest':counters},sort_keys=True))
+          ruleset=subprocess.run(['nft','-a','list','ruleset'],capture_output=True,text=True).stdout
+          checks=('tcp dport 443','tcp sport 443','udp dport 443','udp sport 443','queue flags',' tproxy ','synack','mss','clamp','mneby','drop','reject','netdev')
+          related=[line.strip()[:340] for line in ruleset.splitlines() if any(k in line.lower() for k in checks)]
+          print('DE89_PUBLIC_MEDIA_ALL_NFT_MATCHES='+json.dumps({'total':len(related),'samples':related[:60]},sort_keys=True))
+          for group in (['tc','qdisc','show','dev','eth0'],['tc','filter','show','dev','eth0','ingress'],['ip','-4','route','get','188.120.254.223'],['ip','-4','rule','show']):
+            try:
+              proc=subprocess.run(group,capture_output=True,text=True,timeout=6)
+              print('DE89_MEDIA_NETWORK_PATH='+json.dumps({'command':' '.join(group[:3]),'status':proc.returncode,'output':proc.stdout.strip()[:1200]},sort_keys=True))
+            except Exception as exc:
+              print('DE89_MEDIA_NETWORK_PATH_ERROR='+str(group[:2])+':'+type(exc).__name__)
+          for table in ('raw','mangle','nat','filter'):
+            proc=subprocess.run(['iptables','-t',table,'-S'],capture_output=True,text=True,timeout=6)
+            entries=[line.strip()[:300] for line in proc.stdout.splitlines() if any(k in line for k in ('443','NFQUEUE','MARK','DROP','REJECT','TCPMSS'))]
+            print('DE89_IPTABLES_MEDIA_RELATED='+json.dumps({'table':table,'count':len(entries),'sample':entries[:20]},sort_keys=True))
           print('DE89_NFQUEUE_MEDIA_PATH='+json.dumps({'exit_code':nft.returncode,'rules':matched[:14],'current_service':subprocess.run(['systemctl','is-active','telegram-nfqws.service'],capture_output=True,text=True).stdout.strip()},sort_keys=True))
           print('MEDIA_CONFIG_VS_RESTORED_CHECKPOINT='+json.dumps(snapshots,sort_keys=True))
           out={}
