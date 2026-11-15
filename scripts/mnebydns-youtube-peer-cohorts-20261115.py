@@ -11,7 +11,7 @@ def n(s,k):
 def peerclass(ip):
     try:
         addr=ipaddress.ip_address(ip.rsplit(":",1)[0].strip("[]").split("%")[0])
-        if addr.ipv4_mapped:addr=addr.ipv4_mapped
+        if isinstance(addr,ipaddress.IPv6Address) and addr.ipv4_mapped:addr=addr.ipv4_mapped
     except ValueError:return "UNPARSED"
     if str(addr)=="188.120.254.223":return "RU188_PUBLIC"
     if str(addr)=="89.125.90.101":return "DE89_SELF_PUBLIC"
