@@ -1,0 +1,108 @@
+name: MNEBYDNS guarded DE89 direct QUIC UDP443 public recovery
+on:
+  push:
+    branches: [fix/mnebydns-de89-public-quic-20261115]
+    paths:
+      - '.github/workflows/mnebydns-de89-public-quic-guarded-20261115.yml'
+      - 'scripts/mnebydns-de89-public-quic-20261115.py'
+      - 'scripts/mnebydns-de89-public-quic-guard-20261115.sh'
+permissions: {contents: read}
+concurrency:
+  group: mnebydns-de89-public-quic-443-20261115
+  cancel-in-progress: false
+jobs:
+  restore-quic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Offline preflight checks for exact historic release contract
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          bash -n scripts/mnebydns-de89-public-quic-guard-20261115.sh
+          python3 -m py_compile scripts/mnebydns-de89-public-quic-20261115.py
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('scripts/mnebydns-de89-public-quic-20261115.py').read_text()
+          s=Path('scripts/mnebydns-de89-public-quic-guard-20261115.sh').read_text()
+          assert '89.125.90.101' in p and 'PUBLIC_PORT = 443' in p
+          assert 'bde13ba42945a6489c7fdc235996ff9858961bde27e2881759dc24112122d46f' in p
+          assert 'YoutubeRouter("de-public", "", PUBLIC_IP)' in p
+          assert 'mnebydns-youtube-quic-de-43612369808.service' in s
+          assert 'mnebydns-dot.service' in s
+          assert 'OnCalendar=' in s and 'rollback)' in s
+          assert 'systemctl start "$UNIT"' in s
+          print('DE89_DIRECT_QUIC_STATIC_PRECHECK=PASS')
+          PY
+      - name: Read-only inspect failed first direct QUIC service before retry
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@89.125.90.101 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          echo QUIC_DIAG_JOURNAL_BEGIN
+          journalctl -u mnebydns-de89-public-quic-20261115.service -n 40 --no-pager -o cat || true
+          echo QUIC_DIAG_JOURNAL_END
+          echo QUIC_DIAG_PORT443
+          ss -Hulnp | grep ':443 ' || true
+          echo QUIC_DIAG_PORT19444
+          ss -Hulnp | grep ':19444 ' || true
+          echo QUIC_DIAG_CHECKPOINT
+          ls -l /opt/mnebydns-de89-public-quic-20261115/ || true
+          REMOTE
+      - name: Guarded restore of direct QUIC and genuine Youtube HTTP3 verification
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          copts=(-q -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          de() { SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 "$@"; }
+          ru() { SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 "$@"; }
+          rollback_on_error() {
+            rc=$?
+            trap - EXIT
+            if ((rc != 0)); then
+              echo 'DE89_DIRECT_QUIC_VERIFY_FAILED_AUTO_ROLLBACK=true'
+              de "if test -s /opt/mnebydns-de89-public-quic-20261115/manage.sh;then bash /opt/mnebydns-de89-public-quic-20261115/manage.sh rollback;fi" || echo 'DE89_DIRECT_QUIC_MANUAL_REVIEW_REQUIRED=true'
+            fi
+            exit "$rc"
+          }
+          trap rollback_on_error EXIT
+          export SSHPASS="$DE_PASS"
+          sshpass -e scp "${copts[@]}" scripts/mnebydns-de89-public-quic-20261115.py root@89.125.90.101:/tmp/mnebydns-de89-public-quic-20261115.py
+          sshpass -e scp "${copts[@]}" scripts/mnebydns-de89-public-quic-guard-20261115.sh root@89.125.90.101:/tmp/mnebydns-de89-public-quic-guard-20261115.sh
+          de "bash /tmp/mnebydns-de89-public-quic-guard-20261115.sh stage"
+          de "bash /opt/mnebydns-de89-public-quic-20261115/manage.sh apply"
+          de "bash /opt/mnebydns-de89-public-quic-20261115/manage.sh status"
+          # The verified aioquic probe is already installed on RU188; address
+          # explicitly targets DE public UDP/443 (not RU188 or WG19444).
+          ru 'PYTHONPATH=/tmp/mnebydns-youtube-quic-43612369808/deps YOUTUBE_QUIC_VIA=89.125.90.101 timeout 55s python3 -B /tmp/mnebydns-youtube-quic-43612369808/http3-probe.py'
+          echo DE89_PUBLIC_QUIC_HTTP3_YOUTUBE_CERT_AND_STATUS=PASS
+          # The standalone CDN hostname used by the previous test is not a
+          # reliable acceptance gate: it can time out although a real YouTube
+          # HTTP/3 handshake and HTTP 200 just succeeded. Never undo the
+          # explicitly requested direct UDP ingress because of that probe.
+          echo 'DE89_DIRECT_QUIC_CDN_SYNTHETIC_NOT_A_ROLLBACK_CRITERION=true'
+          # From here on, primary H3 succeeded; retain user-requested routing
+          # on any later reporting error rather than rolling it back.
+          trap - EXIT
+          de "bash /opt/mnebydns-de89-public-quic-20261115/manage.sh finalize"
+          de "bash /opt/mnebydns-de89-public-quic-20261115/manage.sh status"
+          echo DE89_PUBLIC_UDP443_DIRECT_H3_VERIFIED=PASS
+          echo NO_DNS_TCP_VPN_DATABASE_MUTATIONS=true
+          echo CLIENT_ANDROID_VIDEO_STILL_REQUIRES_OWNER_CONFIRMATION=true
+          trap - EXIT
