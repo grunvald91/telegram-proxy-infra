@@ -30,8 +30,8 @@ jobs:
           cd awg-tools
           git checkout --detach --quiet v3.1.20260812
           make -C src -j2
-          install -m 0755 src/awg "$RUNNER_TEMP/awg-bin/awg"
-          install -m 0755 src/awg-quick/linux.bash "$RUNNER_TEMP/awg-bin/awg-quick"
+          install -m 0755 src/wg "$RUNNER_TEMP/awg-bin/awg"
+          install -m 0755 src/wg-quick/linux.bash "$RUNNER_TEMP/awg-bin/awg-quick"
           "$RUNNER_TEMP/awg-bin/awg" --version
           echo SOURCE_AWG_GO_SHA="$(cd "$RUNNER_TEMP/awg-src/awg-go" && git rev-parse HEAD)"
           echo SOURCE_AWG_TOOLS_SHA="$(git rev-parse HEAD)"
