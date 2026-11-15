@@ -54,6 +54,13 @@ jobs:
           ck=(pathlib.Path(ptr)/'dns.stable').read_bytes()
           print('DE89_A_DRIFT_DETAILS='+json.dumps({'ru188_template_names':wrong,'repeated_owner_count':len(repeat_core),'repeated_owner_samples':list(repeat_core.items())[:12],'owner_missing_in_nginx':sorted(set(owners_core)-set(owners_nginx))[:20],'checkpoint_matches_live':ck==p.read_bytes(),'checkpoint_a_rules':len(re.findall(r'(?m)^\\s*template\\s+IN\\s+A\\s+([^\\s{]+)\\s*\\{',ck.decode())),'mtime_utc':__import__('datetime').datetime.fromtimestamp(p.stat().st_mtime,__import__('datetime').timezone.utc).isoformat()},sort_keys=True))
           print('GOOGLE_VIDEO_RULES='+str({'googlevideo':c.count('googlevideo'),'ytimg':c.count('ytimg'),'youtube':c.count('youtube'),'googleapis':c.count('googleapis')}))
+          google_keys=('googlevideo','youtube','ytimg','googleapis')
+          print('YOUTUBE_CORE_RELEVANT='+json.dumps([line.strip() for line in c.splitlines() if any(k in line.lower() for k in google_keys)][:24]))
+          print('YOUTUBE_NGINX_RELEVANT='+json.dumps([line.strip() for line in n.splitlines() if any(k in line.lower() for k in google_keys)][:24]))
+          udp=subprocess.run(['ss','-Hulnp'],capture_output=True,text=True).stdout
+          print('YOUTUBE_UDP443_LISTENERS='+json.dumps([line.strip()[:240] for line in udp.splitlines() if ':443 ' in line][:10]))
+          firewall=subprocess.run(['iptables','-S'],capture_output=True,text=True).stdout
+          print('YOUTUBE_UDP443_FIREWALL='+json.dumps([line.strip()[:200] for line in firewall.splitlines() if '443' in line and ('udp' in line.lower() or 'DROP' in line or 'REJECT' in line)][:18]))
           print('DE89_READONLY_INVENTORY='+json.dumps({'corefile_sha256':hashlib.sha256(c.encode()).hexdigest(),'core_a_answer_counts':dict(collections.Counter(answers)),'core_a_templates':len(headers),'owner_exact_core_markers':c.count('# BEGIN MNEBYDNS_OWNER_EXACT_'),'owner_exact_nginx_markers':n.count('# BEGIN MNEBYDNS_OWNER_EXACT_'),'nginx_sni_map_exists':'map $ssl_preread_server_name $direct_mtproxy_backend {' in n,'checkpoint':ptr,'services':svcs},sort_keys=True))
           assert answers and set(answers) <= {'188.120.254.223','89.125.90.101'},'UNEXPECTED_CORE_A_ADDRESS'
           assert len(headers) >= 264 and len(headers)==len(answers),'CORE_A_STRUCTURE_DRIFT'
@@ -106,5 +113,28 @@ jobs:
                   result[ip+':853']='TLS_CERT_VALID'
             except Exception as e:
               result[ip+':853']=type(e).__name__
+          import sys
+          sys.path.insert(0,'scripts')
+          from mnebydns_reliability_monitor import dot_query
+          youtube_hosts=('www.youtube.com','youtubei.googleapis.com','i.ytimg.com','redirector.googlevideo.com','r1---sn-test.googlevideo.com')
+          youtube_results={}
+          for host in youtube_hosts:
+            item={}
+            for kind,label in ((1,'A'),(28,'AAAA'),(65,'HTTPS')):
+              try:
+                answer=dot_query('89.125.90.101','dns.mnebyvpn.site',host,kind,timeout=4)
+                item[label]={'rcode':answer.rcode,'ips':list(answer.addresses)[:5]}
+              except Exception as exc:
+                item[label]={'error_class':type(exc).__name__}
+            if host!='r1---sn-test.googlevideo.com':
+              try:
+                with socket.create_connection(('89.125.90.101',443),timeout=5) as raw:
+                  raw.settimeout(5)
+                  with ssl.create_default_context().wrap_socket(raw,server_hostname=host) as tls:
+                    item['https_tls']=tls.version()
+              except Exception as exc:
+                item['https_tls_error']=type(exc).__name__
+            youtube_results[host]=item
+          print('YOUTUBE_PUBLIC_DOT_SNI='+json.dumps(youtube_results,sort_keys=True))
           print('PUBLIC_READONLY_PROBES='+json.dumps(result,sort_keys=True))
           PY
