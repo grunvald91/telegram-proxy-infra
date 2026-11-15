@@ -33,3 +33,23 @@ jobs:
           curl -4 -sSL --max-time 18 --range 0-262143 -o /dev/null -w 'ORIGIN_HTTP=%{http_code} BYTES=%{size_download} TOTAL=%{time_total} PEER=%{remote_ip}\n' "$url" || true
           echo MEDIA_ROUTE_DE89
           curl -4 -sSL --max-time 18 --resolve video.twimg.com:443:89.125.90.101 --range 0-262143 -o /dev/null -w 'DE89_HTTP=%{http_code} BYTES=%{size_download} TOTAL=%{time_total} PEER=%{remote_ip}\n' "$url" || true
+
+      - name: Compare four independent public X MP4 video samples with byte ranges
+        run: |
+          set -Eeuo pipefail
+          urls=(
+            'https://video.twimg.com/amplify_video/2012668347305828352/vid/avc1/924x680/19Ttm-WDlu9p63hG.mp4'
+            'https://video.twimg.com/ext_tw_video/1444247208514113546/pu/vid/640x360/39YEtqA_5lC88JYk.mp4?tag=12'
+            'https://video.twimg.com/ext_tw_video/1912350520460689409/pu/vid/avc1/480x270/ur9xSviOdHMCLG4O.mp4?tag=12'
+            'https://video.twimg.com/amplify_video/2005267882067001344/vid/avc1/720x1280/dkBErKNn6EyQqzcN.mp4'
+          )
+          for i in 0 1 2 3;do
+            for route in ORIGIN DE89;do
+              if [[ "$route" == ORIGIN ]];then
+                result=$(curl -4 -sSL --max-time 16 --range 0-262143 -o /dev/null -w 'HTTP=%{http_code} BYTES=%{size_download} TTFB=%{time_starttransfer} TOTAL=%{time_total}' "${urls[$i]}" 2>/dev/null) || true
+              else
+                result=$(curl -4 -sSL --max-time 16 --resolve video.twimg.com:443:89.125.90.101 --range 0-262143 -o /dev/null -w 'HTTP=%{http_code} BYTES=%{size_download} TTFB=%{time_starttransfer} TOTAL=%{time_total}' "${urls[$i]}" 2>/dev/null) || true
+              fi
+              echo "X_MEDIA_SAMPLE=$i ROUTE=$route RESULT=$result"
+            done
+          done
