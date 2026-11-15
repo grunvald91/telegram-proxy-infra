@@ -1,0 +1,64 @@
+name: MNEBYDNS Googlevideo QUIC old-path versus direct origin read-only comparison
+on:
+  push:
+    branches: [fix/mnebydns-de89-public-quic-20261115]
+    paths: ['.github/workflows/mnebydns-googlevideo-udp-path-comparison-20261115.yml']
+permissions: {contents: read}
+concurrency:
+  group: mnebydns-googlevideo-udp-compare-20261115
+  cancel-in-progress: false
+jobs:
+  readonly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Compare real CDN H3 through prior RU WG DE and true public origin
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'bash -s' <<'DE'
+          set -Eeuo pipefail
+          echo DE_PUBLIC_UDP443_AFTER_PROTECTED_ROLLBACK
+          ss -H -lun 'sport = :443' || true
+          echo DE_PRIVATE_UDP19444_PRESENT
+          ss -H -lun 'sport = :19444'
+          echo DE_RECENT_QUIC_PUBLIC_LOG
+          journalctl -u mnebydns-de89-public-quic-20261115.service --since '2026-11-15 08:59:00 UTC' -q --no-pager -o cat -n 18 || true
+          echo DE_PRIVATE_QUIC_ACTIVE
+          systemctl is-active mnebydns-youtube-quic-de-43612369808.service
+          DE
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 'PYTHONPATH=/tmp/mnebydns-youtube-quic-43612369808/deps python3 -B -' <<'PY'
+          import asyncio,os,runpy,socket,collections
+          h='rr1---sn-gxuo03g-ig3s.googlevideo.com'
+          once=runpy.run_path('/tmp/mnebydns-youtube-quic-43612369808/http3-probe.py')['once']
+          origins=sorted({i[4][0] for i in socket.getaddrinfo(h,443,socket.AF_INET,socket.SOCK_DGRAM)})
+          print('QUIC_CDN_PUBLIC_ORIGINS_COUNT='+str(len(origins)),flush=True)
+          async def check(host,ip,label):
+            os.environ['YOUTUBE_QUIC_VIA']=ip
+            try:
+              result=await asyncio.wait_for(once(host),22)
+              state='H3_TLS_AND_HTTP_PASS' if result else 'H3_NOT_VERIFIED'
+            except Exception as ex:
+              state=type(ex).__name__
+            print('QUIC_CDN_DIFFERENTIAL_'+label+'='+state,flush=True)
+          async def main():
+            await check('www.youtube.com','127.0.0.1','OLD_RU_WG_DE_YOUTUBE')
+            await check(h,'127.0.0.1','OLD_RU_WG_DE_CDN')
+            if origins:
+              await check(h,origins[0],'DIRECT_ORIGIN_CDN')
+          asyncio.run(main())
+          PY
+          echo QUIC_CDN_DIFFERENTIAL_READ_ONLY_COMPLETE=true
