@@ -1,0 +1,92 @@
+name: MNEBYDNS Xray DNS override loop and Google voice transport audit
+on:
+  push:
+    branches: [diag/mnebydns-live-video-stall-20261115]
+    paths: [.github/workflows/mnebydns-xray-google-voice-path-20261115.yml]
+permissions: {contents: read}
+jobs:
+  readonly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Verify Xray sniffing destOverride, DNS rewrite and selected Google HTTPS via 89
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY'
+          import sys,os,subprocess,pathlib,json,re,socket,ssl,time,hashlib,urllib.request,urllib.error
+          def emit(k,v):print("VPN_DNS_"+k+"="+str(v),flush=True)
+          def run(args,t=7):
+            try:
+              p=subprocess.run(args,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=t,text=True)
+              return p.stdout if p.returncode==0 else ""
+            except Exception:return ""
+          ps=run(["ps","-eo","comm,args"])
+          configs=[]
+          for line in ps.splitlines():
+            if not re.match(r"^xray\s",line):continue
+            parts=line.split()
+            for i,field in enumerate(parts):
+              if field in ("-config","-c") and i+1<len(parts):
+                configs.append(parts[i+1])
+              if field.startswith("-config="):configs.append(field[8:])
+          configs.extend(["/usr/local/etc/xray/config.json","/etc/xray/config.json","/opt/mnebyvpn/xray/config.json","/opt/mnebyvpn/config.json"])
+          seen=set()
+          for f in configs:
+            if f in seen:continue
+            seen.add(f)
+            path=pathlib.Path(f)
+            if not path.is_file() or path.is_symlink():continue
+            try:
+              data=json.loads(path.read_text())
+            except Exception:continue
+            emit("XRAY_CONFIG_PATH",f)
+            emit("XRAY_INBOUNDS",len(data.get("inbounds",[])))
+            for i,x in enumerate(data.get("inbounds",[])):
+              sniff=x.get("sniffing") or {}
+              # Only flags, never UUID, access data, REALITY certs, or server addresses.
+              emit("XRAY_INBOUND_"+str(i),repr(dict(tag=x.get("tag"),protocol=x.get("protocol"),
+                sniffing_enabled=sniff.get("enabled"),dest_override=sniff.get("destOverride"),
+                route_only=sniff.get("routeOnly"))))
+            routing=data.get("routing",{})
+            emit("XRAY_DOMAIN_STRATEGY",routing.get("domainStrategy"))
+            emit("XRAY_OUTBOUND_TAGS",repr([x.get("tag") for x in data.get("outbounds",[])]))
+            for i,x in enumerate(routing.get("rules",[])[:100]):
+              # Only supported boolean route indicators, no user IPs or CIDR.
+              if "89.125.90.101" in str(x) or "geoip:private" in str(x).lower() or "geosite:google" in str(x).lower():
+                emit("XRAY_SPECIAL_RULE_"+str(i),repr(dict(type=x.get("type"),outbound_tag=x.get("outboundTag"),
+                  has_de89=("89.125.90.101" in str(x)),has_google=("google" in str(x).lower()))))
+          raw=run(["nginx","-T"],16)
+          lines=raw.splitlines()
+          for i,line in enumerate(lines):
+            if re.search(r"listen\s+(?:127\.0\.0\.1:)?(?:15449|9443)\b",line):
+              emit("NGINX_LISTENER_15449_OR_9443",line.strip()[:120])
+              for j in range(max(0,i-7),min(len(lines),i+11)):
+                z=lines[j].strip()
+                if re.match(r"^(proxy_pass|resolver|proxy_ssl|listen|ssl_preread|set\s+\$|server\s*\{|map\s+|proxy_connect_timeout|proxy_timeout)",z):
+                  emit("NGINX_NEAR_LISTENER",str(j+1)+" "+z[:150])
+          for host in ["speech.googleapis.com","voiceinput.googleapis.com","antigravity.google","antigravity.google.com","aiplatform.googleapis.com","www.youtube.com","rr1---sn-gxuo03g-ig3s.googlevideo.com"]:
+            start=time.monotonic()
+            try:
+              ctx=ssl.create_default_context()
+              ctx.set_alpn_protocols(["h2","http/1.1"])
+              with socket.create_connection(("89.125.90.101",443),timeout=4) as tcp:
+                tcp.settimeout(4)
+                with ctx.wrap_socket(tcp,server_hostname=host) as tls:
+                  emit("TLS_"+host,"OK "+str(tls.selected_alpn_protocol())+" "+str(round((time.monotonic()-start)*1000))+"ms")
+            except Exception as ex:emit("TLS_"+host,type(ex).__name__+" "+str(round((time.monotonic()-start)*1000))+"ms")
+          for host in ["antigravity.google","antigravity.google.com"]:
+            try:
+              ips=sorted(set(x[4][0] for x in socket.getaddrinfo(host,443,family=socket.AF_INET,type=socket.SOCK_STREAM)))
+              emit("SYSTEM_DNS_"+host,repr(ips[:8]))
+            except Exception as e:emit("SYSTEM_DNS_"+host,type(e).__name__)
+          emit("AUDIT_COMPLETED",True)
+          PY
