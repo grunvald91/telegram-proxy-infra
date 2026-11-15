@@ -1,0 +1,130 @@
+name: MNEBYDNS safe DE89 restore - stage then gated production apply
+on:
+  push:
+    branches: [restore/mnebydns-de89-20261115]
+    paths:
+      - .github/workflows/mnebydns-de89-restoration-guarded-20261115.yml
+      - data/mnebydns-de89-restore-mode-20261115.txt
+  workflow_dispatch:
+permissions: {contents: read}
+concurrency:
+  group: mnebydns-de89-restore-20261115
+  cancel-in-progress: false
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Validate mode, guarded script, DNS policy parity and owner-domain offline contracts
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mode="$(cat data/mnebydns-de89-restore-mode-20261115.txt)"
+          [[ "$mode" == stage || "$mode" == apply ]]
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          test -n "$DE_PASS" && test -n "$RU_PASS"
+          python3 -m py_compile scripts/mnebydns-de89-restore-20261115.py \
+            scripts/mnebydns-personal-shared-policy-generate-20261114.py \
+            scripts/mnebydns-owner-domain-controller-20261110.py \
+            scripts/mnebydns-owner-domain-render-20261110.py \
+            scripts/test_mnebydns_personal_shared_policy_generate_20261114.py
+          python3 scripts/test_mnebydns_personal_shared_policy_generate_20261114.py
+          python3 -m unittest discover -s scripts/tests -p 'test_owner_domain_*.py' -v
+          sudo apt-get -qq update && sudo apt-get -qq install -y sshpass >/dev/null
+      - name: STAGE only - immutable DE89 CoreDNS backup and isolated strict TLS test
+        id: stage
+        if: ${{ hashFiles('data/mnebydns-de89-restore-mode-20261115.txt') != '' }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mode="$(cat data/mnebydns-de89-restore-mode-20261115.txt)"
+          if [[ "$mode" != stage ]];then echo 'PREVIOUS_VERIFIED_STAGE_IS_REQUIRED';exit 0;fi
+          export SSHPASS="$DE_PASS"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e scp -q "${opts[@]}" scripts/mnebydns-de89-restore-20261115.py root@89.125.90.101:/tmp/mnebydns-de89-restore-20261115.py
+          sshpass -e ssh -T "${opts[@]}" root@89.125.90.101 'python3 /tmp/mnebydns-de89-restore-20261115.py stage'
+      - name: HTTPS preflight to DE89 public 443 (no writes)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import socket,ssl
+          for host in ('chatgpt.com','www.youtube.com','claude.ai','x.com'):
+              with socket.create_connection(('89.125.90.101',443),timeout=8) as raw:
+                  raw.settimeout(9)
+                  with ssl.create_default_context().wrap_socket(raw,server_hostname=host) as tls:
+                      assert tls.getpeercert()
+              print('DE89_CURRENT_SNI_TLS_VALID='+host,flush=True)
+          PY
+      - name: APPLY only - change 564 existing A replies, preserve every rule, independent 30min rollback
+        id: apply
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mode="$(cat data/mnebydns-de89-restore-mode-20261115.txt)"
+          if [[ "$mode" != apply ]];then echo 'STAGE_ONLY_NO_PRODUCTION_WRITES';exit 0;fi
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@89.125.90.101 'python3 /usr/local/sbin/mnebydns-de89-restore-20261115.py apply'
+          echo 'DE89_RESTORE_APPLIED_PENDING_EXTERNAL_VERIFICATION=true'
+      - name: APPLY only - external DoT on DE and RU, strict TLS and A response parity
+        id: verified
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mode="$(cat data/mnebydns-de89-restore-mode-20261115.txt)"
+          if [[ "$mode" != apply ]];then echo 'STAGE_ONLY';exit 0;fi
+          python3 - <<'PY'
+          import socket,ssl,struct
+          def ask(ip,host):
+              labels=b''.join(bytes([len(x)])+x.encode() for x in host.split('.'))+b'\0'
+              packet=struct.pack('!HHHHHH',1234,256,1,0,0,0)+labels+struct.pack('!HH',1,1)
+              with socket.create_connection((ip,853),timeout=8) as s:
+                  s.settimeout(8)
+                  with ssl.create_default_context().wrap_socket(s,server_hostname='dns.mnebyvpn.site') as tls:
+                      tls.sendall(len(packet).to_bytes(2,'big')+packet)
+                      hdr=tls.recv(2)
+                      assert len(hdr)==2
+                      n=int.from_bytes(hdr,'big')
+                      body=b''
+                      while len(body)<n:
+                          b=tls.recv(n-len(body))
+                          assert b
+                          body+=b
+              assert body[:2]==packet[:2] and body[3]&15==0
+              a89=socket.inet_aton('89.125.90.101') in body
+              a188=socket.inet_aton('188.120.254.223') in body
+              return a89,a188
+          for ip in ('89.125.90.101','188.120.254.223'):
+              for host in ('chatgpt.com','www.youtube.com','gemini.google.com','claude.ai','x.com','grok.com','artifacts.elastic.co'):
+                  assert ask(ip,host)==(True,False),(ip,host,'MAPPED_A_NOT_DE89')
+              assert ask(ip,'example.org')==(False,False)
+              print('PUBLIC_DOT_DE89_A_7_HOSTS_AND_DIRECT_CONTROL='+ip,flush=True)
+          for ip in ('89.125.90.101','188.120.254.223'):
+              with socket.create_connection((ip,853),timeout=8) as raw:
+                  raw.settimeout(8)
+                  with ssl.create_default_context().wrap_socket(raw,server_hostname='aaaaaaaaaaaa.dns.mnebyvpn.site') as tls:
+                      assert tls.getpeercert()
+              print('PERSONAL_DOT_EXISTING_SNI_CERT_VALID='+ip,flush=True)
+          PY
+      - name: APPLY only - atomically confirm new stable checkpoint and disarm independent rollback
+        id: finalized
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mode="$(cat data/mnebydns-de89-restore-mode-20261115.txt)"
+          if [[ "$mode" != apply ]];then echo 'STAGE_ONLY';exit 0;fi
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@89.125.90.101 'python3 /usr/local/sbin/mnebydns-de89-restore-20261115.py finalize'
+      - name: APPLY failure - revert only changed DE CoreDNS if checkpoint not committed
+        if: ${{ failure() && steps.apply.outcome == 'failure' || failure() && steps.verified.outcome == 'failure' || failure() && steps.finalized.outcome == 'failure' }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if [[ "$(cat data/mnebydns-de89-restore-mode-20261115.txt)" != apply ]];then exit 0;fi
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@89.125.90.101 'python3 /usr/local/sbin/mnebydns-de89-restore-20261115.py rollback'
