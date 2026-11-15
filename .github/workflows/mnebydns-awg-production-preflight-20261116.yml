@@ -2,7 +2,9 @@ name: MNEBYDNS AWG production route preflight sanitized read-only
 on:
   push:
     branches: [feat/mnebydns-amneziawg-parallel-20261115]
-    paths: ['.github/workflows/mnebydns-awg-production-preflight-20261116.yml']
+    paths:
+      - '.github/workflows/mnebydns-awg-production-preflight-20261116.yml'
+      - 'scripts/mnebydns-awg-production-preflight-20261116.py'
 permissions: {contents: read}
 jobs:
   audit:
