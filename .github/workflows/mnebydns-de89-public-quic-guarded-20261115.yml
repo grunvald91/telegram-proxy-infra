@@ -41,7 +41,26 @@ jobs:
           assert 'systemctl start "$UNIT"' in s
           print('DE89_DIRECT_QUIC_STATIC_PRECHECK=PASS')
           PY
+      - name: Read-only inspect failed first direct QUIC service before retry
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@89.125.90.101 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          echo QUIC_DIAG_JOURNAL_BEGIN
+          journalctl -u mnebydns-de89-public-quic-20261115.service -n 40 --no-pager -o cat || true
+          echo QUIC_DIAG_JOURNAL_END
+          echo QUIC_DIAG_PORT443
+          ss -Hulnp | grep ':443 ' || true
+          echo QUIC_DIAG_PORT19444
+          ss -Hulnp | grep ':19444 ' || true
+          echo QUIC_DIAG_CHECKPOINT
+          ls -l /opt/mnebydns-de89-public-quic-20261115/ || true
+          REMOTE
       - name: Guarded restore of direct QUIC and genuine Youtube HTTP3 verification
+        if: false
         shell: bash
         run: |
           set -Eeuo pipefail
