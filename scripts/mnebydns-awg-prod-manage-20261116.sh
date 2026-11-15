@@ -121,7 +121,7 @@ EOF
 Description=Automatic fallback to WireGuard if AmneziaWG fails on $ROLE
 [Service]
 Type=oneshot
-ExecStart=$DIR/manage.sh rollback $ROLE
+ExecStart=$DIR/manage.sh rollback-force $ROLE
 EOF
    systemctl daemon-reload
    systemctl is-enabled --quiet "$OLDUNIT" || { msg OLD_BOOT_NOT_ENABLED true; exit 13; }
@@ -173,12 +173,22 @@ EOF
    systemctl enable "$NEWUNIT" >/dev/null
    systemctl disable "$OLDUNIT" >/dev/null
    touch "$DIR/COMMITTED"
-   systemctl stop "$ROLLBACK.timer" >/dev/null
+   # Keep the independent timer until it fires: it will only revert if health is bad.
+   # This also closes the two-host crash window during staged commits.
+   systemctl is-active --quiet "$ROLLBACK.timer" || exit 24
    systemctl is-enabled --quiet "$NEWUNIT" || exit 24
    [[ "$(systemctl is-enabled "$OLDUNIT" 2>/dev/null || true)" == disabled ]] || exit 24
    msg COMMITTED true ;;
- rollback)
-   # Used both by watchdog and workflow failure trap. Never delete original key.
+ rollback|rollback-force)
+   # A committed, healthy new tunnel survives a completed recovery timer.
+   # Rollback-force is reserved for explicit failed migration recovery.
+   if [[ "$ACTION" == rollback && -f "$DIR/COMMITTED" ]]; then
+      if "$DIR/manage.sh" check "$ROLE" >/dev/null 2>&1; then
+         msg HEALTHY_COMMIT_KEEP_AWG true
+         exit 0
+      fi
+   fi
+   # Never delete original WireGuard private keys.
    systemctl disable "$NEWUNIT" >/dev/null 2>&1 || true
    if systemctl is-active --quiet "$NEWUNIT"; then
       systemctl stop "$NEWUNIT" >/dev/null 2>&1 || true
