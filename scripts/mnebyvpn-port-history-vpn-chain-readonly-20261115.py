@@ -65,7 +65,7 @@ def current_listeners():
         for line in raw.splitlines():
             fields=line.split()
             if len(fields)<5:continue
-            bind=fields[4] if protocol=="UDP" else fields[3]
+            bind=fields[3]
             port=port_from_addr(bind)
             if port is None:continue
             m=re.search(r'users:\(\("([^"]+)"',line)
