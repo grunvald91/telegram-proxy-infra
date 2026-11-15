@@ -195,10 +195,13 @@ def self_test():
     assert PRODUCT=="Research 2026-11"
     assert len("first100")>0
     # Confirm the isolated renderer never returns foreign DE89 directly.
-    sample_core = ("tls://.:853 {\\n"
-                   "    template IN A gemini.google.com { match ^gemini[.]google[.]com[.]$ }\\n"
-                   "    cache 30 {\\n    }\\n}\\n")
-    sample_core=sample_core.replace("\\\\n", "\\n")
+    sample_core = chr(10).join([
+        "tls://.:853 {",
+        "    template IN A gemini.google.com { match ^gemini[.]google[.]com[.]$ }",
+        "    cache 30 {",
+        "    }",
+        "}"
+    ]) + chr(10)
     preview=renderer.core_add(sample_core,"artifacts.elastic.co")
     assert "IN A "+owner.RU in preview and "IN A "+owner.EDGE not in preview
     # The existing bulk remote verifier requires these two explicit attestations.
