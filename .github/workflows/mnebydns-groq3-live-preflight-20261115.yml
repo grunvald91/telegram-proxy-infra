@@ -1,0 +1,60 @@
+name: "MNEBYDNS Groq three exact hosts live RU-DE preflight (read-only)"
+on:
+  push:
+    branches: [ops/mnebydns-groq-priority-20261115]
+    paths: [.github/workflows/mnebydns-groq3-live-preflight-20261115.yml]
+permissions:
+  contents: read
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify live Groq candidate state, foreign TLS, direct Russian access, collisions
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -qq -y sshpass >/dev/null
+          python3 - <<'PY'
+          import importlib.util,json,base64,shlex
+          from pathlib import Path
+          def load(name,file):
+              spec=importlib.util.spec_from_file_location(name,Path('scripts')/file)
+              module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);return module
+          bulk=load("groq_bulk","mnebydns-bulk-deploy-20261112.py")
+          scan=load("groq_scan","mnebydns-108-mass-readonly-20261112.py")
+          owner=bulk.owner; renderer=bulk.renderer
+          names=["groq.com","chat.groq.com","console.groq.com"]
+          rows=bulk.batch.table()
+          print("GROQ_CHECKPOINT="+str(owner.live_checkpoint_unchanged()),flush=True)
+          for h in names:
+              print("GROQ_DB="+json.dumps({'domain':h,'row':rows.get(h)},sort_keys=True),flush=True)
+          de=scan.via_ssh("DE",[{'host':h} for h in names])
+          ru=scan.via_ssh("RU",[{'host':h,'origin_ipv4':de[h].get('origin_ipv4')} for h in names])
+          c=bulk.plan.read_exact_remote("de","/opt/mnebydns-dot/Corefile")
+          n=bulk.plan.read_exact_remote("de","/etc/nginx/nginx.conf")
+          for h in names:
+              result={'domain':h,'de':de[h],'ru':ru[h]}
+              try:
+                  ip=renderer.validated_public_ip(de[h]['origin_ipv4'])
+                  candidate_core=renderer.core_add(c,h)
+                  candidate_nginx=renderer.nginx_add(n,h,ip)
+                  result['render']={'allowed':bool(candidate_core!=c and candidate_nginx!=n),'pinned_origin':ip}
+              except Exception as e:
+                  result['render']={'allowed':False,'reason':type(e).__name__+':'+str(e)[:140]}
+              try:
+                  rc,ips=owner.dns_q(h,1)
+                  result['live_dot']={'rcode':rc,'A':ips}
+              except Exception as e:
+                  result['live_dot']={'error':type(e).__name__+':'+str(e)[:100]}
+              print("GROQ_RESULT="+json.dumps(result,ensure_ascii=False,sort_keys=True),flush=True)
+          print("GROQ_PREFLIGHT_READ_ONLY=PASS",flush=True)
+          PY
