@@ -799,6 +799,20 @@ if [ "$PHASE" = "clamped" ] || [ "$PHASE" = "all" ]; then
     run_one E "graph.instagram.com" "вкл" "$i"
   done
 fi
+if [ "$PHASE" = "geneva" ]; then
+  for i in $(seq 1 "$ATTEMPTS"); do
+    if deadline_reached "$PHASE2_DEADLINE_UTC" "$CLAMPED_TIMEOUT"; then
+      echo "=== Geneva deadline guard reached before B #$i; stopping Geneva cells ===" >&2
+      break
+    fi
+    run_one B "$CONTROL_SNI" "вкл" "$i"
+    if deadline_reached "$PHASE2_DEADLINE_UTC" "$CLAMPED_TIMEOUT"; then
+      echo "=== Geneva deadline guard reached before D #$i; stopping Geneva cells ===" >&2
+      break
+    fi
+    run_one D "i.instagram.com" "вкл" "$i"
+  done
+fi
 echo "Saved CSV: $OUT_CSV"
 """
 

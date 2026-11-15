@@ -20,6 +20,15 @@ import threading
 import time
 
 from mnebydns_iglite_sni_observer import LIMIT, locate_partial_sni, clienthello_view
+from meta_geneva_dupack import (
+    DEFAULT_GENEVA_REPEATS,
+    DEFAULT_GENEVA_VARIANT,
+    GENEVA_QUEUE,
+    NetfilterQueueWorker,
+    SUPPORTED_EXPERIMENT_MODES,
+    SUPPORTED_GENEVA_REPEATS,
+    SUPPORTED_GENEVA_VARIANTS,
+)
 
 BYPASS = 0x40000000
 RELEASED = 0x20000000
@@ -190,7 +199,8 @@ def relay(left, right, stop, *, idle=60):
 
 class WindowProxy:
     def __init__(self, edge, peer, *, port=18443, backend=("127.0.0.1",443),
-                 non_meta_backend=None, prefix_timeout=DEFAULT_PREFIX_TIMEOUT):
+                 non_meta_backend=None, prefix_timeout=DEFAULT_PREFIX_TIMEOUT,
+                 clamp_window=True):
         self.edge=ipv4(edge)
         self.peer=None if peer=="all" else ipv4(peer)
         if self.peer is None and non_meta_backend is None:
@@ -200,6 +210,7 @@ class WindowProxy:
         self.port, self.backend = port, backend
         self.non_meta_backend = non_meta_backend
         self.prefix_timeout = prefix_timeout
+        self.clamp_window = bool(clamp_window)
         if non_meta_backend is not None and (
                 self.edge != "188.120.254.223" or
                 backend != ("10.66.77.1", 443) or
@@ -227,7 +238,8 @@ class WindowProxy:
         listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
             listener.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
-            listener.setsockopt(socket.IPPROTO_TCP,socket.TCP_WINDOW_CLAMP,CLAMP)
+            if self.clamp_window:
+                listener.setsockopt(socket.IPPROTO_TCP,socket.TCP_WINDOW_CLAMP,CLAMP)
             # Do not mark the listener: BYPASS on SYN-ACK would trigger the
             # existing OUTPUT notrack rule before reverse DNAT can take place.
             # The peer-scoped postrouting rule marks replies only after conntrack.
@@ -274,9 +286,10 @@ class WindowProxy:
         try:
             if original_destination(conn) != (self.edge,443):
                 raise ValueError("direct listener access forbidden")
-            if receive_scale(conn) != 0:
-                raise RuntimeError("receive scale must be zero")
-            self.count("scale_zero")
+            if self.clamp_window:
+                if receive_scale(conn) != 0:
+                    raise RuntimeError("receive scale must be zero")
+                self.count("scale_zero")
             prefix, host = read_prefix(conn, timeout=self.prefix_timeout)
             self.count("target_sni" if host in HOSTS else "other_protocol")
             # Linux still believes its original advertised window. Because
@@ -284,9 +297,10 @@ class WindowProxy:
             # unmodified window needs no translation or changed TCP options.
             # RELEASED alone prevents the small-window clamp without
             # triggering the unrelated pre-conntrack BYPASS/notrack rule.
-            conn.setsockopt(socket.SOL_SOCKET,socket.SO_MARK,RELEASED)
-            conn.setsockopt(socket.IPPROTO_TCP,socket.TCP_QUICKACK,1)
-            self.count("window_released")
+            if self.clamp_window:
+                conn.setsockopt(socket.SOL_SOCKET,socket.SO_MARK,RELEASED)
+                conn.setsockopt(socket.IPPROTO_TCP,socket.TCP_QUICKACK,1)
+                self.count("window_released")
             # The RU shared :443 ingress also handles non-Meta connections.
             # These must stay on RU's existing HTTPS service, not leak into
             # the fixed private Meta WireGuard origin router.
@@ -334,6 +348,9 @@ def main():
     parser.add_argument("--backend-address",choices=("127.0.0.1","10.66.77.1"),default="127.0.0.1")
     parser.add_argument("--non-meta-backend-address",choices=("188.120.254.223",))
     parser.add_argument("--evidence-file")
+    parser.add_argument("--experiment-mode",choices=SUPPORTED_EXPERIMENT_MODES,default="window")
+    parser.add_argument("--geneva-variant",choices=SUPPORTED_GENEVA_VARIANTS,default=DEFAULT_GENEVA_VARIANT)
+    parser.add_argument("--geneva-repeats",type=int,choices=SUPPORTED_GENEVA_REPEATS,default=DEFAULT_GENEVA_REPEATS)
     args=parser.parse_args()
     if args.peer!="all" and (not ipaddress.IPv4Address(args.peer).is_global or args.peer==args.edge):
         raise SystemExit("distinct public test-phone IPv4 required")
@@ -344,17 +361,31 @@ def main():
     proxy=WindowProxy(args.edge,args.peer,port=args.port,
                       backend=(args.backend_address,443),
                       non_meta_backend=fallback,
-                      prefix_timeout=args.prefix_timeout)
+                      prefix_timeout=args.prefix_timeout,
+                      clamp_window=(args.experiment_mode=="window"))
     def stop(signum, frame):proxy.stop.set()
     for sig in (signal.SIGTERM,signal.SIGINT,signal.SIGHUP):signal.signal(sig,stop)
     evidence=None
+    nfq_worker=None
     try:
+        if args.experiment_mode=="geneva":
+            nfq_worker=NetfilterQueueWorker(
+                queue_num=GENEVA_QUEUE,
+                variant=args.geneva_variant,
+                repeats=args.geneva_repeats,
+            )
+            nfq_worker.start()
         if args.evidence_file:
             if (args.edge!="188.120.254.223" or
                     args.evidence_file!="/var/lib/mneby-meta-v26-ru/evidence.json"):
                 raise ValueError("packet evidence must use the owned RU state")
             from meta_v31_sni_evidence import CaptureEvidence
-            evidence=CaptureEvidence(args.peer,args.evidence_file)
+            evidence=CaptureEvidence(
+                args.peer,
+                args.evidence_file,
+                geneva_egress=(args.experiment_mode=="geneva"),
+                geneva_stats_fn=(nfq_worker.snapshot if nfq_worker is not None else None),
+            )
             evidence.start()
         proxy.start()
         print("meta_v15_listener_ready=true",flush=True)
@@ -368,10 +399,15 @@ def main():
         if proxy.stats["accept_failed"]:
             raise RuntimeError("proxy accept loop failed")
     finally:
+        if nfq_worker is not None:
+            nfq_worker.stop()
         proxy.close()
         if evidence is not None:
             evidence.stop()
             evidence.publish(proxy.stats)
+        if nfq_worker is not None:
+            for key,value in sorted(nfq_worker.snapshot().items()):
+                print("meta_geneva_"+key+"="+str(value),flush=True)
         for key,value in sorted(proxy.stats.items()):
             print("meta_v15_proxy_"+key+"="+str(value),flush=True)
 

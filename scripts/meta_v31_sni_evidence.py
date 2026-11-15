@@ -17,6 +17,7 @@ import threading
 import time
 
 from mnebydns_iglite_sni_observer import Analyzer,capture_command,parse_pcap
+from meta_geneva_dupack import GenevaEgressVerifier
 from meta_v15_receive_window import HOSTS
 
 POINT="RU_ENS3_INBOUND_PRE_DNAT"
@@ -86,6 +87,34 @@ def validate_tz_report(report,*,require_split=True,now=None):
         raise RuntimeError("RU SNI measurement: NO_SPLIT_SNI_OBSERVED")
     return "TZ_PHASED_SNI_SPLIT_OBSERVED" if has_split else "TZ_PHASED_CAPTURE_VALID"
 
+
+def validate_geneva_report(report, *, now=None):
+    """Validate finalized capture for Geneva dup-ACK (allows unsplit ClientHello)."""
+    _validate_report_base(report, final=True, now=now)
+    if report.get("final") is not True:
+        raise RuntimeError("RU Geneva measurement: CAPTURING")
+    if report.get("kernel_drops") != 0:
+        raise RuntimeError("RU Geneva measurement: CAPTURE_INVALID")
+    stats = report["stats"]
+    gm = report.get("geneva_metrics") or {}
+    if not stats["syn"] and not gm.get("egress_synack"):
+        raise RuntimeError("RU Geneva measurement: NO_TRAFFIC")
+    if gm.get("egress_synack", 0) > 0 and gm.get("egress_dupack_badsum", 0) == 0:
+        raise RuntimeError("RU Geneva measurement: GENEVA_BADSUM_NOT_OBSERVED")
+    if not stats["target_clienthello"]:
+        raise RuntimeError("RU Geneva measurement: GENEVA_SENT_CLIENTHELLO_DROPPED")
+    return "GENEVA_CLIENTHELLO_REACHED_RU"
+
+
+class _BidirectionalSink:
+    def __init__(self, analyzer, egress_verifier):
+        self.analyzer = analyzer
+        self.egress_verifier = egress_verifier
+
+    def ethernet(self, frame, timestamp=None):
+        self.analyzer.ethernet(frame, timestamp)
+        self.egress_verifier.ethernet(frame)
+
 def write_report(path,report):
     # Single owned writer; readers only see whole JSON documents.
     tmp=path.with_name(path.name+".tmp")
@@ -96,10 +125,18 @@ def write_report(path,report):
     os.replace(tmp,path)
 
 class CaptureEvidence:
-    def __init__(self,peer,path):
+    def __init__(self,peer,path,*,geneva_egress=False,geneva_stats_fn=None):
         self.path=Path(path)
-        self.command=capture_command(edge="188.120.254.223",peer=None if peer=="all" else peer)
+        self.geneva_egress=bool(geneva_egress)
+        self.geneva_stats_fn=geneva_stats_fn
+        self.command=capture_command(
+            edge="188.120.254.223",
+            peer=None if peer=="all" else peer,
+            bidirectional=self.geneva_egress,
+        )
         self.analyzer=Analyzer(HOSTS)
+        self.egress_verifier=GenevaEgressVerifier(edge="188.120.254.223") if self.geneva_egress else None
+        self.sink=_BidirectionalSink(self.analyzer,self.egress_verifier) if self.geneva_egress else self.analyzer
         self.ready=threading.Event()
         self.stopping=threading.Event()
         self.failures=[]
@@ -113,7 +150,7 @@ class CaptureEvidence:
             stderr=subprocess.PIPE,bufsize=0,env=dict(os.environ,LC_ALL="C"))
         def consume():
             try:
-                parse_pcap(self.process.stdout,self.analyzer,self.ready)
+                parse_pcap(self.process.stdout,self.sink,self.ready)
                 if not self.stopping.is_set():self.failures.append("UnexpectedCaptureEOF")
             except Exception as exc:
                 self.failures.append(type(exc).__name__)
@@ -150,6 +187,11 @@ class CaptureEvidence:
                     if re.fullmatch(r"[a-z0-9.-]{1,253}",host)),
                 "android_login_feed":"NOT_VERIFIED"}
         result["verdict"]=final_verdict(result)
+        if self.geneva_egress:
+            gm = self.egress_verifier.snapshot()
+            if self.geneva_stats_fn is not None:
+                gm.update(self.geneva_stats_fn())
+            result["geneva_metrics"] = gm
         if proxy_stats is not None:result["proxy"]=dict(proxy_stats)
         return result
 

@@ -370,11 +370,13 @@ def parse_pcap(stream,analyzer,ready=None):
         if cap>PACKET_LIMIT or cap>wire:raise ValueError('unexpected PCAP record')
         analyzer.ethernet(read_exact(stream,cap),timestamp=sec)
 
-def capture_command(*, edge="89.125.90.101", interface=None, peer=None):
-    """Build exact inbound pre-DNAT PCAP filter for either owner edge.
+def capture_command(*, edge="89.125.90.101", interface=None, peer=None, bidirectional=False):
+    """Build exact pre-DNAT PCAP filter for either owner edge.
 
     tcpdump on the RU external interface sees the original dst :443 before
     prerouting DNAT. A DE-only filter silently recorded zero ClientHellos.
+    When bidirectional=True (Geneva mode), captures both inbound to :443 and
+    outbound from :443 so bad-checksum egress packets can be verified on-wire.
     """
     import ipaddress
     interfaces={"89.125.90.101":"eth0","188.120.254.223":"ens3"}
@@ -385,13 +387,16 @@ def capture_command(*, edge="89.125.90.101", interface=None, peer=None):
         interface=expected
     if interface!=expected:
         raise ValueError("capture interface does not match owner ingress")
-    capture_filter='ip and tcp and dst host '+edge+' and dst port 443'
+    if bidirectional:
+        capture_filter='ip and tcp and host '+edge+' and port 443'
+    else:
+        capture_filter='ip and tcp and dst host '+edge+' and dst port 443'
     if peer is not None:
         parsed=ipaddress.IPv4Address(peer)
         if not parsed.is_global or str(parsed)==edge:
             raise ValueError("invalid capture client peer")
-        capture_filter+=' and src host '+str(parsed)
-    return ['tcpdump','-i',interface,'-n','-U','-s','1600','-w','-',capture_filter]
+        capture_filter+=' and '+('host ' if bidirectional else 'src host ')+str(parsed)
+    return ['tcpdump','-i',interface,'-n','-U','--immediate-mode','-s','1600','-w','-',capture_filter]
 
 
 def begin(hosts,peer=None,*,edge="89.125.90.101",interface=None):

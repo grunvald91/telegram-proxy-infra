@@ -48,9 +48,27 @@ on:
       duration_minutes:
         description: 'Test window in minutes'
         type: choice
-        options: ['15', '30']
+        options: ['5', '15', '30']
         required: true
         default: '30'
+      experiment_mode:
+        description: 'Desync intervention: window (TCP clamp) or geneva (server dup-ACK badsum)'
+        type: choice
+        options: ['window', 'geneva']
+        required: false
+        default: 'window'
+      geneva_variant:
+        description: 'Geneva dup-ACK variant when experiment_mode=geneva'
+        type: choice
+        options: ['ack-exact', 'ack-desync']
+        required: false
+        default: 'ack-exact'
+      geneva_repeats:
+        description: 'Geneva dup-ACK packets per SYN-ACK'
+        type: choice
+        options: ['1', '2', '3']
+        required: false
+        default: '2'
 permissions:
   contents: read
 concurrency:
@@ -92,9 +110,10 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          python3 -m py_compile scripts/meta_v30_actions_adapter.py scripts/meta_v29_two_server_sequence.py
+          python3 -m py_compile scripts/meta_v30_actions_adapter.py scripts/meta_v29_two_server_sequence.py scripts/meta_geneva_dupack.py
           python3 scripts/meta_v30_actions_adapter.py --mode validate
           python3 -m unittest discover -s scripts/tests -p 'test_meta_v30_actions_adapter.py' -v
+          python3 -m unittest discover -s scripts/tests -p 'test_meta_geneva_dupack.py' -v
           test -n "$RELAY89_SSH_PASSWORD" && test -n "$SERVER188_SSH_PASSWORD"
           if ! command -v sshpass >/dev/null; then
             timeout 35s sudo apt-get -o Acquire::Retries=0 -o Acquire::http::Timeout=7 update -qq || true
@@ -110,6 +129,9 @@ jobs:
           SELECTED_WINDOW: ${{ github.event_name == 'push' && '8' || inputs.window }}
           SELECTED_PREFIX_TIMEOUT: ${{ github.event_name == 'push' && '12' || inputs.prefix_timeout }}
           SELECTED_UNCLAMPED_SECONDS: ${{ github.event_name == 'push' && '540' || inputs.unclamped_seconds }}
+          SELECTED_EXPERIMENT_MODE: ${{ github.event_name == 'push' && 'window' || inputs.experiment_mode }}
+          SELECTED_GENEVA_VARIANT: ${{ github.event_name == 'push' && 'ack-exact' || inputs.geneva_variant }}
+          SELECTED_GENEVA_REPEATS: ${{ github.event_name == 'push' && '2' || inputs.geneva_repeats }}
         run: |
           set -Eeuo pipefail
           if [[ "$SELECTED_MODE" == "preflight" ]]; then
@@ -127,6 +149,13 @@ jobs:
             fi
             if [[ "${SELECTED_UNCLAMPED_SECONDS:-540}" != "540" ]]; then
               extra_args+=(--unclamped-seconds "$SELECTED_UNCLAMPED_SECONDS")
+            fi
+            if [[ "${SELECTED_EXPERIMENT_MODE:-window}" == "geneva" ]]; then
+              extra_args+=(
+                --experiment-mode geneva
+                --geneva-variant "${SELECTED_GENEVA_VARIANT:-ack-exact}"
+                --geneva-repeats "${SELECTED_GENEVA_REPEATS:-2}"
+              )
             fi
             python3 -u scripts/meta_v30_actions_adapter.py --mode activate \
               --phone-ip "$SELECTED_IP" --minutes "$SELECTED_MINUTES" "${extra_args[@]}" | tee -a "$GITHUB_STEP_SUMMARY"

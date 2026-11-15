@@ -22,7 +22,19 @@ from meta_v15_receive_window import (
     SUPPORTED_WINDOWS,
 )
 from meta_v29_two_server_sequence import Trial, checked_phone_ip, RU, DE
-from meta_v31_sni_evidence import validate_report,validate_tz_report,write_report
+from meta_v31_sni_evidence import (
+    validate_geneva_report,
+    validate_report,
+    validate_tz_report,
+    write_report,
+)
+from meta_geneva_dupack import (
+    DEFAULT_GENEVA_REPEATS,
+    DEFAULT_GENEVA_VARIANT,
+    SUPPORTED_EXPERIMENT_MODES,
+    SUPPORTED_GENEVA_REPEATS,
+    SUPPORTED_GENEVA_VARIANTS,
+)
 
 ROOT=Path(__file__).resolve().parents[1]
 STAGE="/usr/local/libexec/mneby-meta-v26"
@@ -31,6 +43,7 @@ FILES=(
     "meta_v26_readonly_preflight.py", "meta_v25_source_view.py",
     "meta_v25_view_runtime_smoke.py", "meta_v28_dot_view_smoke.py",
     "meta_v23_ru_firsthop_preview.py", "meta_v15_receive_window.py",
+    "meta_geneva_dupack.py",
     "mnebydns_iglite_sni_observer.py",
     "mnebydns_iglite_dns_wire_checks.py", "meta_v31_sni_evidence.py",
     "mnebydns_iglite_wifi_multi_meta_v10_w20.py",
@@ -100,15 +113,26 @@ def check_approval(phone_ip,approved,event):
     return peer
 
 class Remote:
-    def __init__(self,*,repo_root=ROOT,env=None,window=8,prefix_timeout=DEFAULT_PREFIX_TIMEOUT):
+    def __init__(self,*,repo_root=ROOT,env=None,window=8,prefix_timeout=DEFAULT_PREFIX_TIMEOUT,
+                 experiment_mode="window",geneva_variant=DEFAULT_GENEVA_VARIANT,
+                 geneva_repeats=DEFAULT_GENEVA_REPEATS):
         self.root=repo_root
         self.env=dict(os.environ if env is None else env)
         if type(window) is not int or window not in SUPPORTED_WINDOWS:
             raise ValueError("window must be 4, 8 or 16")
         if type(prefix_timeout) is not int or prefix_timeout not in SUPPORTED_PREFIX_TIMEOUTS:
             raise ValueError("prefix_timeout must be 12, 25 or 30")
+        if experiment_mode not in SUPPORTED_EXPERIMENT_MODES:
+            raise ValueError("experiment_mode must be window or geneva")
+        if geneva_variant not in SUPPORTED_GENEVA_VARIANTS:
+            raise ValueError("invalid geneva_variant")
+        if type(geneva_repeats) is not int or geneva_repeats not in SUPPORTED_GENEVA_REPEATS:
+            raise ValueError("invalid geneva_repeats")
         self.window=window
         self.prefix_timeout=prefix_timeout
+        self.experiment_mode=experiment_mode
+        self.geneva_variant=geneva_variant
+        self.geneva_repeats=geneva_repeats
         validate_manifest(repo_root)
         self.known=repo_root/"ops/mnebydns-owner-ssh-known_hosts"
         self.payload=bundle(repo_root)
@@ -205,6 +229,13 @@ class Remote:
         prefix_timeout=getattr(self,"prefix_timeout",DEFAULT_PREFIX_TIMEOUT)
         if role=="ru" and action=="start" and prefix_timeout!=DEFAULT_PREFIX_TIMEOUT:
             command+=" --prefix-timeout "+str(prefix_timeout)
+        experiment_mode=getattr(self,"experiment_mode","window")
+        if role=="ru" and action=="start" and experiment_mode=="geneva":
+            geneva_variant=getattr(self,"geneva_variant",DEFAULT_GENEVA_VARIANT)
+            geneva_repeats=getattr(self,"geneva_repeats",DEFAULT_GENEVA_REPEATS)
+            command+=(" --experiment-mode geneva"
+                      +" --geneva-variant "+shlex.quote(geneva_variant)
+                      +" --geneva-repeats "+str(geneva_repeats))
         return self.call(role,command,timeout=145 if needs_peer else 70)
 
     def verify_health(self):
@@ -225,6 +256,10 @@ class Remote:
         counts=report.get("stats",{})
         for key in ("target_clienthello","sni_split","sni_unsplit","sni_boundary_indeterminate"):
             print("meta_v31_"+key+"="+str(counts.get(key,0)),flush=True)
+        geneva_metrics=report.get("geneva_metrics")
+        if isinstance(geneva_metrics,dict):
+            for key,val in sorted(geneva_metrics.items()):
+                print("meta_v31_geneva_"+str(key)+"="+str(val),flush=True)
         if require_success:validate_report(report,final=final)
         return report
 
@@ -241,10 +276,14 @@ class Remote:
                 return checks
             time.sleep(min(15,remaining))
 
-    def active_window(self,seconds,*,clamp_mode="on",unclamped_seconds=540):
+    def active_window(self,seconds,*,clamp_mode="on",unclamped_seconds=540,experiment_mode="window"):
         if clamp_mode not in ("on","off","phased"):
             raise ValueError("invalid clamp_mode")
-        if clamp_mode=="off":
+        if experiment_mode not in SUPPORTED_EXPERIMENT_MODES:
+            raise ValueError("invalid experiment_mode")
+        if experiment_mode=="geneva":
+            print("meta_v30_experiment_mode=geneva",flush=True)
+        elif clamp_mode=="off":
             self.run("ru","set-clamp-off")
             print("meta_v30_clamp_phase=OFF",flush=True)
         elif clamp_mode=="phased":
@@ -261,7 +300,7 @@ class Remote:
         print("meta_v30_test_window_seconds="+str(seconds),flush=True)
         print("meta_v30_test_window_ends_epoch="+str(end_epoch),flush=True)
         print("meta_v30_test_window_ends_utc="+end_utc,flush=True)
-        if clamp_mode=="phased":
+        if clamp_mode=="phased" and experiment_mode=="window":
             phase1=min(max(1,unclamped_seconds),max(1,seconds//2))
             phase2=max(0,seconds-phase1)
             phase1_end_epoch=start_epoch+phase1
@@ -297,6 +336,9 @@ def main(argv=None):
     p.add_argument("--unclamped-seconds",type=int,default=540)
     p.add_argument("--window",type=int,choices=SUPPORTED_WINDOWS,default=8)
     p.add_argument("--prefix-timeout",type=int,choices=SUPPORTED_PREFIX_TIMEOUTS,default=DEFAULT_PREFIX_TIMEOUT)
+    p.add_argument("--experiment-mode",choices=SUPPORTED_EXPERIMENT_MODES,default="window")
+    p.add_argument("--geneva-variant",choices=SUPPORTED_GENEVA_VARIANTS,default=DEFAULT_GENEVA_VARIANT)
+    p.add_argument("--geneva-repeats",type=int,choices=SUPPORTED_GENEVA_REPEATS,default=DEFAULT_GENEVA_REPEATS)
     args=p.parse_args(argv)
     if args.mode=="validate":
         validate_manifest()
@@ -319,6 +361,10 @@ def main(argv=None):
         remote_kwargs["window"]=args.window
     if args.prefix_timeout!=DEFAULT_PREFIX_TIMEOUT:
         remote_kwargs["prefix_timeout"]=args.prefix_timeout
+    if args.experiment_mode!="window":
+        remote_kwargs["experiment_mode"]=args.experiment_mode
+        remote_kwargs["geneva_variant"]=args.geneva_variant
+        remote_kwargs["geneva_repeats"]=args.geneva_repeats
     adapter=Remote(**remote_kwargs)
     for role in ("de","ru"):
         adapter.preflight(role)
@@ -334,16 +380,28 @@ def main(argv=None):
             adapter.stage_files(role)
             installed.append(role)
         attempted=True
-        window_fn=(adapter.active_window if args.clamp_mode=="on"
-                   else lambda secs: adapter.active_window(
-                       secs,clamp_mode=args.clamp_mode,
-                       unclamped_seconds=args.unclamped_seconds))
+        if args.experiment_mode!="window":
+            window_fn=lambda secs: adapter.active_window(
+                secs,clamp_mode=args.clamp_mode,
+                unclamped_seconds=args.unclamped_seconds,
+                experiment_mode=args.experiment_mode)
+        elif args.clamp_mode=="on":
+            window_fn=adapter.active_window
+        else:
+            window_fn=lambda secs: adapter.active_window(
+                secs,clamp_mode=args.clamp_mode,
+                unclamped_seconds=args.unclamped_seconds)
         Trial(adapter.run,window_fn).run(peer,seconds=args.minutes*60)
     except BaseException as exc:
         failure=exc
     if attempted:
         try:
-            if args.clamp_mode=="on":
+            if args.experiment_mode=="geneva":
+                report=adapter.collect_evidence(final=True,require_success=False)
+                if failure is None:
+                    verdict=validate_geneva_report(report)
+                    print("meta_v31_geneva_verdict="+verdict,flush=True)
+            elif args.clamp_mode=="on":
                 adapter.collect_evidence(final=True,require_success=failure is None)
             else:
                 report=adapter.collect_evidence(final=True,require_success=False)
@@ -361,7 +419,12 @@ def main(argv=None):
     if failure:
         raise RuntimeError("v30 trial failed; cleanup verified") from failure
     print("meta_v30_trial_finished_cleanup_verified=true",flush=True)
-    seg_status="NOT_TESTED_CLAMP_OFF" if args.clamp_mode=="off" else "OBSERVED"
+    if args.experiment_mode=="geneva":
+        seg_status="NOT_TESTED_GENEVA"
+    elif args.clamp_mode=="off":
+        seg_status="NOT_TESTED_CLAMP_OFF"
+    else:
+        seg_status="OBSERVED"
     print("meta_v31_phone_sni_segmentation="+seg_status,flush=True)
     print("meta_v30_instagram_android_works=NOT_PROVEN",flush=True)
 

@@ -30,6 +30,15 @@ from meta_v15_receive_window import (
 )
 from meta_v23_ru_firsthop_preview import RU_EDGE,WG_BACKEND,RU_INTERFACE,TEST_PORT
 from meta_v15_receive_window import HOSTS
+from meta_geneva_dupack import (
+    DEFAULT_GENEVA_REPEATS,
+    DEFAULT_GENEVA_VARIANT,
+    GENEVA_QUEUE,
+    SUPPORTED_EXPERIMENT_MODES,
+    SUPPORTED_GENEVA_REPEATS,
+    SUPPORTED_GENEVA_VARIANTS,
+    nft_geneva_rules,
+)
 
 ROOT=Path("/var/lib/mneby-meta-v26-ru")
 STAGE=Path("/usr/local/libexec/mneby-meta-v26")
@@ -193,7 +202,17 @@ def _write_state(name, text):
     os.replace(tmp,path)
 
 
-def baseline(peer, *, window=8, clamp=True):
+def _verify_geneva_sockets():
+    nfq=socket.socket(socket.AF_NETLINK, socket.SOCK_RAW, socket.NETLINK_NETFILTER)
+    try:
+        raw=socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_RAW)
+        raw.close()
+    finally:
+        nfq.close()
+
+def baseline(peer, *, window=8, clamp=True, experiment_mode="window"):
+    if experiment_mode not in SUPPORTED_EXPERIMENT_MODES:
+        raise ValueError("invalid experiment_mode")
     cmd(["tcpdump","--version"],timeout=5)
     if not active("wg-quick@tg-relay.service"):
         raise RuntimeError("RU private WireGuard service inactive")
@@ -222,8 +241,13 @@ def baseline(peer, *, window=8, clamp=True):
     cmd(["iptables","-w","5","-S",FIREWALL_CHAIN],timeout=10)
     if firewall_present(peer):
         raise RuntimeError("previous scoped firewall rule was not cleaned up")
-    rules=nft_rules(RU_EDGE,peer,port=TEST_PORT,interface=RU_INTERFACE,table=TABLE,
-                    window=window,clamp=clamp)
+    if experiment_mode=="geneva":
+        _verify_geneva_sockets()
+        rules=nft_geneva_rules(RU_EDGE,peer,port=TEST_PORT,interface=RU_INTERFACE,
+                               table=TABLE,queue_num=GENEVA_QUEUE)
+    else:
+        rules=nft_rules(RU_EDGE,peer,port=TEST_PORT,interface=RU_INTERFACE,table=TABLE,
+                        window=window,clamp=clamp)
     # Check parsing/chain collisions without mutating nftables.
     p=cmd(["nft","--check","-f","-"],input=rules)
     return rules
@@ -264,14 +288,22 @@ def rollback():
     if not ROOT.exists():return
     with locked():_rollback_locked()
 
-def start(peer, *, window=8, clamp=True, prefix_timeout=DEFAULT_PREFIX_TIMEOUT):
+def start(peer, *, window=8, clamp=True, prefix_timeout=DEFAULT_PREFIX_TIMEOUT,
+          experiment_mode="window", geneva_variant=DEFAULT_GENEVA_VARIANT,
+          geneva_repeats=DEFAULT_GENEVA_REPEATS):
     owner_flag()
     peer=checked_peer(peer)
     if type(window) is not int or window not in SUPPORTED_WINDOWS or not isinstance(clamp, bool):
         raise ValueError("invalid window or clamp")
     if type(prefix_timeout) is not int or prefix_timeout not in SUPPORTED_PREFIX_TIMEOUTS:
         raise ValueError("invalid prefix_timeout")
-    rules=baseline(peer, window=window, clamp=clamp)
+    if experiment_mode not in SUPPORTED_EXPERIMENT_MODES:
+        raise ValueError("invalid experiment_mode")
+    if geneva_variant not in SUPPORTED_GENEVA_VARIANTS:
+        raise ValueError("invalid geneva_variant")
+    if type(geneva_repeats) is not int or geneva_repeats not in SUPPORTED_GENEVA_REPEATS:
+        raise ValueError("invalid geneva_repeats")
+    rules=baseline(peer, window=window, clamp=clamp, experiment_mode=experiment_mode)
     with locked():
         # Existing baseline was checked before the state dir was created.
         fd=os.open(ROOT/"peer",os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
@@ -280,8 +312,12 @@ def start(peer, *, window=8, clamp=True, prefix_timeout=DEFAULT_PREFIX_TIMEOUT):
             target.flush()
             os.fsync(target.fileno())
         _write_state("window", str(window))
-        _write_state("clamp", "on" if clamp else "off")
+        _write_state("clamp", "off" if experiment_mode=="geneva" else ("on" if clamp else "off"))
         _write_state("prefix_timeout", str(prefix_timeout))
+        _write_state("experiment_mode", experiment_mode)
+        if experiment_mode=="geneva":
+            _write_state("geneva_variant", geneva_variant)
+            _write_state("geneva_repeats", str(geneva_repeats))
         cmd(["systemd-run","--quiet","--collect","--unit",UNIT,
              "--on-active="+str(CLEANUP_SECONDS)+"s","/usr/bin/python3",
              str(Path(__file__).resolve()),"rollback"])
@@ -293,19 +329,28 @@ def start(peer, *, window=8, clamp=True, prefix_timeout=DEFAULT_PREFIX_TIMEOUT):
             f.flush()
             os.fsync(f.fileno())
         try:
-            cmd(["systemd-run","--quiet","--collect","--unit",WORKER,
-                 "--property=RuntimeMaxSec="+str(WORKER_SECONDS),
-                 # Signal Python first so it can stop tcpdump with SIGINT,
-                 # drain PCAP and save final counters before cgroup teardown.
-                 "--property=KillMode=mixed","--property=TimeoutStopSec=15s",
-                 "/usr/bin/python3","-u",str(STAGE/"meta_v15_receive_window.py"),
-                 "--peer",peer,"--edge",RU_EDGE,"--port",str(TEST_PORT),
-                 "--window",str(window),
-                 "--prefix-timeout",str(prefix_timeout),
-                 "--backend-address",WG_BACKEND,
-                 "--non-meta-backend-address",RU_EDGE,
-                 "--evidence-file",str(ROOT/"evidence.json"),
-                 "--max-lifetime",str(WORKER_SECONDS)])
+            worker_args=[
+                "systemd-run","--quiet","--collect","--unit",WORKER,
+                "--property=RuntimeMaxSec="+str(WORKER_SECONDS),
+                # Signal Python first so it can stop tcpdump with SIGINT,
+                # drain PCAP and save final counters before cgroup teardown.
+                "--property=KillMode=mixed","--property=TimeoutStopSec=15s",
+                "/usr/bin/python3","-u",str(STAGE/"meta_v15_receive_window.py"),
+                "--peer",peer,"--edge",RU_EDGE,"--port",str(TEST_PORT),
+                "--window",str(window),
+                "--prefix-timeout",str(prefix_timeout),
+                "--backend-address",WG_BACKEND,
+                "--non-meta-backend-address",RU_EDGE,
+                "--evidence-file",str(ROOT/"evidence.json"),
+                "--max-lifetime",str(WORKER_SECONDS),
+            ]
+            if experiment_mode=="geneva":
+                worker_args.extend([
+                    "--experiment-mode","geneva",
+                    "--geneva-variant",geneva_variant,
+                    "--geneva-repeats",str(geneva_repeats),
+                ])
+            cmd(worker_args)
             for i in range(80):
                 if ready_worker() and evidence_ready():break
                 time.sleep(.1)
@@ -339,6 +384,9 @@ def set_clamp(state, *, window=None):
     owner_flag()
     if not (ROOT/"armed").is_file():
         raise RuntimeError("RU experiment not armed")
+    mode_file=ROOT/"experiment_mode"
+    if mode_file.is_file() and mode_file.read_text().strip()=="geneva":
+        raise RuntimeError("set_clamp is invalid in geneva experiment mode")
     with locked():
         if not table_exists():
             raise RuntimeError("RU nft canary table missing")
@@ -393,10 +441,20 @@ if __name__=="__main__":
     p.add_argument("--peer")
     p.add_argument("--window",type=int,choices=SUPPORTED_WINDOWS,default=None)
     p.add_argument("--prefix-timeout",type=int,choices=SUPPORTED_PREFIX_TIMEOUTS,default=DEFAULT_PREFIX_TIMEOUT)
+    p.add_argument("--experiment-mode",choices=SUPPORTED_EXPERIMENT_MODES,default="window")
+    p.add_argument("--geneva-variant",choices=SUPPORTED_GENEVA_VARIANTS,default=DEFAULT_GENEVA_VARIANT)
+    p.add_argument("--geneva-repeats",type=int,choices=SUPPORTED_GENEVA_REPEATS,default=DEFAULT_GENEVA_REPEATS)
     args=p.parse_args()
     if args.mode=="start":
         if not args.peer:p.error("RU start requires --peer")
-        start(args.peer,window=args.window or 8,prefix_timeout=args.prefix_timeout)
+        start(
+            args.peer,
+            window=args.window or 8,
+            prefix_timeout=args.prefix_timeout,
+            experiment_mode=args.experiment_mode,
+            geneva_variant=args.geneva_variant,
+            geneva_repeats=args.geneva_repeats,
+        )
     elif args.mode=="set-clamp-on":set_clamp("on",window=args.window)
     elif args.mode=="set-clamp-off":set_clamp("off",window=args.window)
     elif args.mode=="rollback":rollback()
