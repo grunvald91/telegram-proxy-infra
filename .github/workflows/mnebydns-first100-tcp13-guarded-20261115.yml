@@ -1,0 +1,74 @@
+name: "MNEBYDNS first100 RU TCP TLS failures guarded activation"
+on:
+  push:
+    branches: [diagnostics/groq-smartdns-readonly-20261115]
+    paths:
+      - .github/workflows/mnebydns-first100-tcp13-guarded-20261115.yml
+      - scripts/mnebydns-first100-ru-tcp-tls-20261115.py
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-google-public-443-change
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate fixed scope and 188-ingress renderer
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-first100-ru-tcp-tls-20261115.py
+          python3 scripts/mnebydns-first100-ru-tcp-tls-20261115.py self-test
+          python3 scripts/mnebydns-first100-guarded-20261115.py self-test
+          test "$(cat data/mnebydns-batch-auto-enabled-20261112.txt)" = disabled
+  guarded:
+    if: >-
+      github.event.head_commit.message == 'deploy(MNEBYDNS): first100 TCP13 verified'
+    needs: offline
+    runs-on: ubuntu-latest
+    timeout-minutes: 58
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Require pinned SSH and exact one-off scope
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          test "$(cat data/mnebydns-first100-activate-once-20261115.txt)" = deploy-first100-once-20261115
+          test "$(cat data/mnebydns-batch-auto-enabled-20261112.txt)" = disabled
+      - name: Install SSH dependency
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -qq -y sshpass >/dev/null
+      - name: Screen and commit only proven RU TCP TLS failures
+        shell: bash
+        run: python3 -u scripts/mnebydns-first100-ru-tcp-tls-20261115.py deploy
+      - name: Publish per-domain decisions
+        if: always()
+        shell: bash
+        run: |
+          if test -f first100-deploy-results/summary.json; then
+            cat first100-deploy-results/summary.json >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if test -f first100-deploy-results/tcp13-decisions.json; then
+            cat first100-deploy-results/tcp13-decisions.json >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Archive evidence (no raw configs or credentials)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mnebydns-first100-tcp13-${{ github.run_id }}
+          path: first100-deploy-results/
+          if-no-files-found: warn
+          retention-days: 30
