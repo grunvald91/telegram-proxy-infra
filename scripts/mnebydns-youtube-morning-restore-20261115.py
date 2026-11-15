@@ -30,7 +30,6 @@ def current_checkpoint():
     ref=CHECKPOINT.read_text().strip()
     if not re.fullmatch(r"/opt/mnebydns-stable-checkpoints/[0-9]+",ref):raise RuntimeError("unstable checkpoint pointer")
     p=pathlib.Path(ref)
-    run("sha256sum","-c",str(p/"stable-manifest.sha256")) if False else None
     proc=subprocess.run(["sha256sum","-c","stable-manifest.sha256"],cwd=p,capture_output=True,text=True,timeout=15)
     if proc.returncode:raise RuntimeError("checkpoint manifest mismatch")
     return p
@@ -54,7 +53,7 @@ def wait_reload():
     before=run("systemctl","show","--value","-p","MainPID","mnebydns-dot.service")
     if not before.isdecimal() or int(before)<=1:raise RuntimeError("missing original resolver pid")
     if "    reload 5s 1s" not in LIVE.read_text():raise RuntimeError("reload directive missing")
-    if "reload" not in run("/opt/mnebydns-dot/coredns","-plugins"):raise RuntimeError("CoreDNS reload plugin missing")
+    if "reload" not in subprocess.run(["/opt/mnebydns-dot/coredns","-plugins"],capture_output=True,text=True,timeout=15).stdout:raise RuntimeError("CoreDNS reload plugin missing")
     time.sleep(7)
     if run("systemctl","show","--value","-p","MainPID","mnebydns-dot.service")!=before:raise RuntimeError("unexpected DNS restart")
     active()
@@ -132,10 +131,9 @@ def do_apply():
     if str(cp)!=(STATE/"checkpoint.before").read_text().strip():raise RuntimeError("checkpoint changed after staging")
     assert_base(cp);active()
     if sha(LIVE.read_bytes())!=meta["old"]:raise RuntimeError("concurrent DNS change")
-    if (STATE/"dns.pilot").read_bytes()!=(lambda x: x)((STATE/"dns.pilot").read_bytes()):raise RuntimeError("invalid pilot")
     if sha((STATE/"dns.pilot").read_bytes())!=meta["pilot"]:raise RuntimeError("pilot modified")
     if "    reload 5s 1s" not in LIVE.read_text():raise RuntimeError("reload plugin absent in Corefile")
-    if "reload" not in run("/opt/mnebydns-dot/coredns","-plugins"):raise RuntimeError("reload plugin absent")
+    if "reload" not in subprocess.run(["/opt/mnebydns-dot/coredns","-plugins"],capture_output=True,text=True,timeout=15).stdout:raise RuntimeError("reload plugin absent")
     # Independent systemd timer is installed before changing production.
     run("systemd-run","--unit="+UNIT,"--on-active=12m","--collect",
         "/usr/bin/python3",str(ROOT/"manager.py"),"rollback")
