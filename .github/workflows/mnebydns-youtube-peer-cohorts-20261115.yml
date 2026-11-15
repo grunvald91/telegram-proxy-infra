@@ -2,7 +2,9 @@ name: MNEBYDNS YouTube TCP retrans peer-class correlation read-only
 on:
   push:
     branches: [diag/mnebydns-live-video-stall-20261115]
-    paths: [.github/workflows/mnebydns-youtube-peer-cohorts-20261115.yml]
+    paths:
+      - .github/workflows/mnebydns-youtube-peer-cohorts-20261115.yml
+      - scripts/mnebydns-youtube-peer-cohorts-20261115.py
 permissions: {contents: read}
 jobs:
   classify:
