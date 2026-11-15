@@ -185,7 +185,7 @@ def stage_and_verify(selected, raw_summary):
 
 def validate_dns_one(host):
     code, ips=owner.dns_q(host,1)
-    if code!=0 or ips!=[owner.EDGE]:
+    if code!=0 or ips!=[owner.RU]:
         return host,"A_REWRITE_MISMATCH"
     for kind in (28,5,64,65):
         rcode, other=owner.dns_q(host,kind)
