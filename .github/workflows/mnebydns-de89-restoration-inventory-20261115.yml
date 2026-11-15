@@ -144,6 +144,8 @@ jobs:
               sock.connect(('89.125.90.101',443));sock.send(b'UDP443-RU-READONLY');sock.recv(100);status='reply'
             except Exception as exc:status=type(exc).__name__
           print('YOUTUBE_UDP443_RU_TO_DE='+status)
+          probe=subprocess.run(['docker','exec','mnebydns-personal-dot-private','node','-e',"const fs=require('fs');let a=JSON.parse(fs.readFileSync(process.env.MNEBYDNS_PERSONAL_DOT_ROUTE_POLICY_FILE,'utf8'));const p=new Set(a);console.log(JSON.stringify({count:a.length,googlevideo:p.has('*.googlevideo.com'),ytimg:p.has('*.ytimg.com'),youtube:p.has('*.youtube.com'),twimg:p.has('*.twimg.com'),x:p.has('*.x.com'),googleapis:p.has('*.googleapis.com')}));"],capture_output=True,text=True,timeout=12)
+          print('PERSONAL_MEDIA_POLICY_VERIFY='+json.dumps({'exit_code':probe.returncode,'result':probe.stdout.strip()[:700] if probe.returncode==0 else 'NodeInspectionUnavailable'},sort_keys=True))
           print('RU188_READONLY_INVENTORY='+json.dumps(report,sort_keys=True))
           PY
       - name: Differential real TLS and HTTP into the same DE89 server via public TCP and WireGuard
