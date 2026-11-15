@@ -119,6 +119,10 @@ jobs:
             proc=subprocess.run(['iptables','-t',table,'-S'],capture_output=True,text=True,timeout=6)
             entries=[line.strip()[:300] for line in proc.stdout.splitlines() if any(k in line for k in ('443','NFQUEUE','MARK','DROP','REJECT','TCPMSS'))]
             print('DE89_IPTABLES_MEDIA_RELATED='+json.dumps({'table':table,'count':len(entries),'sample':entries[:20]},sort_keys=True))
+          nfqp=pathlib.Path('/proc/net/netfilter/nfnetlink_queue')
+          activeq=nfqp.read_text(errors='replace').splitlines() if nfqp.is_file() else []
+          qids=[x.split()[0] for x in activeq if x.split()]
+          print('DE89_LIVE_NFQUEUE_BINDINGS='+json.dumps({'queue_ids':qids,'bound_210':'210' in qids,'proc_available':nfqp.is_file()},sort_keys=True))
           print('DE89_NFQUEUE_MEDIA_PATH='+json.dumps({'exit_code':nft.returncode,'rules':matched[:14],'current_service':subprocess.run(['systemctl','is-active','telegram-nfqws.service'],capture_output=True,text=True).stdout.strip()},sort_keys=True))
           print('MEDIA_CONFIG_VS_RESTORED_CHECKPOINT='+json.dumps(snapshots,sort_keys=True))
           out={}
