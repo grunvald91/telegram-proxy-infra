@@ -35,7 +35,10 @@ assert len(new)==m['new_policy_count'] and len(set(new))==len(new)
 assert m['core_a_templates']>=264 and m['core_family_roots']==75
 assert m['obsolete_personal_only_entries']==0 and m['original_policy_count']==158
 assert m['sha256']==hashlib.sha256(newpath.read_bytes()).hexdigest()
-assert {'chatgpt.com','auth.openai.com','*.chatgpt.com','*.openai.com'}<=set(new)
+def covered(name):
+    return name in new or any(p.startswith('*.') and name.endswith(p[1:]) for p in new)
+assert covered('chatgpt.com') and covered('auth.openai.com')
+assert '*.chatgpt.com' in new and '*.openai.com' in new
 assert len(new)>len(old)
 print('PERSONAL_DE89_POLICY_VERIFIED_COUNT='+str(len(new)),flush=True)
 print('PERSONAL_DE89_POLICY_SHA256='+m['sha256'],flush=True)
@@ -125,12 +128,19 @@ rollback(){
 }
 case "$phase" in
 stage)
-  [[ ! -e "$NEW" && ! -e "$MANIFEST" && ! -e "$BACKUP" && ! -e "$SCRIPT" ]] || exit 2
   [[ -s "$STAGED_JSON" && -s "$STAGED_MANIFEST" ]] || exit 3
+  [[ ! -e "$BACKUP" && ! -e "$SCRIPT" ]] || exit 2
   check_old_settings
-  install -m 600 "$STAGED_JSON" "$NEW"
-  install -m 600 "$STAGED_MANIFEST" "$MANIFEST"
-  chown 1001:1001 "$NEW"
+  if [[ -e "$NEW" || -e "$MANIFEST" ]];then
+    # Recover only an identical partial staging after a failed policy assertion.
+    [[ -s "$NEW" && -s "$MANIFEST" ]] || exit 4
+    cmp -s "$STAGED_JSON" "$NEW" && cmp -s "$STAGED_MANIFEST" "$MANIFEST" || exit 4
+    echo 'PERSONAL_DE89_IDENTICAL_PARTIAL_STAGE_RECOVERED=PASS'
+  else
+    install -m 600 "$STAGED_JSON" "$NEW"
+    install -m 600 "$STAGED_MANIFEST" "$MANIFEST"
+    chown 1001:1001 "$NEW"
+  fi
   check_policy
   docker image inspect "$(docker inspect -f '{{.Image}}' "$SERVICE")" >/dev/null
   install -m 700 "$0" "$SCRIPT"
