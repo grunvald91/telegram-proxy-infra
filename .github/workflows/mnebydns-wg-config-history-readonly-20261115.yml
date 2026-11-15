@@ -1,0 +1,79 @@
+name: MNEBYDNS current WG configuration and recent history metadata (read-only)
+on:
+  push:
+    branches: [restore/mnebydns-youtube-morning-20261115]
+    paths: ['.github/workflows/mnebydns-wg-config-history-readonly-20261115.yml']
+permissions: {contents: read}
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Check current interface and configuration history without secrets or writes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -qq -y sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          for role in RU DE; do
+            if [[ "$role" == RU ]];then host=188.120.254.223;pass="$RU_PASS";else host=89.125.90.101;pass="$DE_PASS";fi
+            SSHPASS="$pass" sshpass -e ssh "${opts[@]}" "root@$host" "python3 - $role" <<'PY'
+          import pathlib,subprocess,datetime,json,re,sys
+          role=sys.argv[1]
+          def cmd(*a,timeout=8):
+            try:
+              p=subprocess.run(a,text=True,capture_output=True,timeout=timeout)
+              return p.returncode,p.stdout.strip()
+            except Exception:return 255,""
+          def emit(k,v):print("WG_AUDIT_"+role+"_"+k+"="+json.dumps(v,sort_keys=True),flush=True)
+          emit("NOW",datetime.datetime.now(datetime.timezone.utc).isoformat())
+          rc,lp=cmd("wg","show","tg-relay","listen-port")
+          emit("LISTEN_UDP",lp if rc==0 else None)
+          rc,p=cmd("wg","show","tg-relay","endpoints")
+          emit("PEER_ENDPOINTS",[x.split()[-1] for x in p.splitlines() if len(x.split())>=2] if rc==0 else [])
+          rc,p=cmd("wg","show","tg-relay","persistent-keepalive")
+          emit("KEEPALIVE",[x.split()[-1] for x in p.splitlines() if len(x.split())>=2] if rc==0 else [])
+          rc,p=cmd("wg","show","tg-relay","fwmark")
+          emit("FWMARK",p if rc==0 else None)
+          rc,p=cmd("ip","-j","-s","link","show","tg-relay")
+          try:
+            link=json.loads(p)[0]
+            e=link.get("stats64",link.get("stats",{}))
+            emit("LINK",{"mtu":link.get("mtu"),"rx_errors":e.get("rx",{}).get("errors"),"rx_dropped":e.get("rx",{}).get("dropped"),"tx_errors":e.get("tx",{}).get("errors"),"tx_dropped":e.get("tx",{}).get("dropped")})
+          except Exception:emit("LINK","unavailable")
+          rc,p=cmd("ip","-4","route","get","89.125.90.101" if role=="RU" else "188.120.254.223")
+          emit("PUBLIC_ROUTE",p if rc==0 else None)
+          rc,p=cmd("ip","-4","rule")
+          emit("IP_RULES",p.splitlines()[:15])
+          for key in ("net.ipv4.conf.all.rp_filter","net.ipv4.conf.default.rp_filter","net.ipv4.conf.tg-relay.rp_filter",
+                      "net.core.rmem_max","net.core.wmem_max","net.netfilter.nf_conntrack_max"):
+            rc,out=cmd("sysctl","-n",key)
+            emit("SYSCTL_"+key,out if rc==0 else None)
+          for path in ["/etc/wireguard/tg-relay.conf","/etc/wireguard/tg-relay.conf.save","/etc/wireguard/tg-relay.conf.bak"]:
+            p=pathlib.Path(path)
+            if p.is_file():
+              stat=p.stat()
+              emit("CONFIG_FILE_META",{"name":str(p),"mtime":datetime.datetime.fromtimestamp(stat.st_mtime,datetime.timezone.utc).isoformat(),"bytes":stat.st_size})
+          paths=[p for p in pathlib.Path("/etc/wireguard").glob("*") if p.is_file()] if pathlib.Path("/etc/wireguard").exists() else []
+          emit("WIREGUARD_FILES",[{"name":p.name,"mtime":datetime.datetime.fromtimestamp(p.stat().st_mtime,datetime.timezone.utc).isoformat()} for p in paths[:15]])
+          for unit in ["wg-quick@tg-relay.service","telegram-nfqws.service","telegram-foreign-nfqws.service",
+                       "mnebydns-youtube-quic-ru-43612369808.service","mnebydns-youtube-quic-de-43612369808.service",
+                       "mnebydns-de89-public-quic-20261115.service"]:
+            rc,out=cmd("systemctl","is-active",unit)
+            emit("SERVICE_"+unit,out)
+          rc,out=cmd("iptables","-t","nat","-S")
+          nat=[x[:250] for x in out.splitlines() if "tg-relay" in x or any(port in x for port in ("19444","8853","8856"))]
+          emit("NAT_RELEVANT",nat[:20])
+          rc,out=cmd("iptables","-t","mangle","-S")
+          mangle=[x[:250] for x in out.splitlines() if any(token in x for token in ("tg-relay","NFQUEUE","MARK","51820","53832"))]
+          emit("MANGLE_RELEVANT",mangle[:24])
+          emit("READONLY",True)
+          PY
+          done
