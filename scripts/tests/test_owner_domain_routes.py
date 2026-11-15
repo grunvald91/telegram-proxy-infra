@@ -39,6 +39,15 @@ class OwnerDomainRouteSafety(TestCase):
         self.assertEqual(render.core_remove(a, TARGET), DNS)
         self.assertEqual(render.nginx_remove(b, TARGET), NGINX)
 
+    def test_new_route_uses_russian_dns_ingress_without_changing_older_templates(self):
+        result = render.core_add(DNS, TARGET)
+        begin, end = render._block_bounds(result, TARGET)
+        added = result.split(begin, 1)[1].split(end, 1)[0]
+        self.assertEqual(render.DNS_INGRESS, "188.120.254.223")
+        self.assertIn('20 IN A 188.120.254.223', added)
+        self.assertNotIn('20 IN A 89.125.90.101', added)
+        self.assertIn('20 IN A 89.125.90.101', DNS)
+
     def test_redundant_dot_cache_block_keeps_owner_exact_roundtrip(self):
         upgraded = DNS.replace(
             "    cache 30\n",
