@@ -1,0 +1,35 @@
+name: MNEBYDNS X media range and YouTube video CDN read-only
+on:
+  push:
+    branches: [diag/mnebydns-real-videoplayback-20261115]
+    paths: ['.github/workflows/mnebydns-video-range-readonly-20261115.yml']
+permissions: {contents: read}
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - name: Probe YouTube and X media DoT routing on public DE89
+        run: |
+          python3 - <<'PY'
+          import sys,json
+          sys.path.insert(0,'scripts')
+          from mnebydns_reliability_monitor import dot_query
+          for name in ('video.twimg.com','pbs.twimg.com','abs.twimg.com','x.com','www.youtube.com','youtubei.googleapis.com','rr1---sn-gxuo03g-ig3s.googlevideo.com'):
+              record={}
+              for typ,label in ((1,'A'),(28,'AAAA'),(65,'HTTPS')):
+                  try:
+                      ans=dot_query('89.125.90.101','dns.mnebyvpn.site',name,typ,timeout=5)
+                      record[label]={'rcode':ans.rcode,'ips':list(ans.addresses)[:5]}
+                  except Exception as ex:record[label]={'error':type(ex).__name__}
+              print('MEDIA_DNS_'+name+'='+json.dumps(record,sort_keys=True),flush=True)
+          PY
+      - name: Compare actual X MP4 256KiB via public DE89 vs origin
+        run: |
+          set -Eeuo pipefail
+          url='https://video.twimg.com/ext_tw_video/1876344715940880384/pu/vid/avc1/480x360/IIArnqwjtehdIN7W.mp4?tag=12'
+          echo MEDIA_ROUTE_ORIGIN
+          curl -4 -sSL --max-time 18 --range 0-262143 -o /dev/null -w 'ORIGIN_HTTP=%{http_code} BYTES=%{size_download} TOTAL=%{time_total} PEER=%{remote_ip}\n' "$url" || true
+          echo MEDIA_ROUTE_DE89
+          curl -4 -sSL --max-time 18 --resolve video.twimg.com:443:89.125.90.101 --range 0-262143 -o /dev/null -w 'DE89_HTTP=%{http_code} BYTES=%{size_download} TOTAL=%{time_total} PEER=%{remote_ip}\n' "$url" || true
