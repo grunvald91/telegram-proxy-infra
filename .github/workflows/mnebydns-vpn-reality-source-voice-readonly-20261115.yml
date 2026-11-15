@@ -1,0 +1,67 @@
+name: MNEBYDNS VPN Reality provisioner source and voice QUIC allowlist
+on:
+  push:
+    branches: [diag/mnebydns-live-video-stall-20261115]
+    paths: [.github/workflows/mnebydns-vpn-reality-source-voice-readonly-20261115.yml]
+permissions: {contents: read}
+jobs:
+  readonly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Detect provisioner regeneration and QUIC allowlist for Google voice domains
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY'
+          import subprocess,re,pathlib,json,importlib.util,os,hashlib
+          def emit(k,v):print("PROVISIONER_"+k+"="+str(v),flush=True)
+          def run(a):
+            try:return subprocess.run(a,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,timeout=6).stdout
+            except Exception:return ""
+          for unit in ["mnebyvpn-vpn-provisioner.service","xray.service"]:
+            raw=run(["systemctl","show",unit,"--property=ExecStart,FragmentPath,MainPID,ActiveState"])
+            for line in raw.splitlines():
+              if line.startswith("ExecStart"):
+                m=re.search(r"path=([^\s;]+)",line)
+                prog=m.group(1) if m else "unknown"
+                arg=re.findall(r"--(?:config|file|db|database)\s+(\S+)",line)
+                emit("UNIT_"+unit,repr(dict(executable=prog,opts=arg)))
+              elif line.startswith(("FragmentPath","ActiveState")):emit("UNIT_"+unit,line)
+          config=pathlib.Path("/etc/mnebyvpn/xray-canary.json")
+          if config.exists():
+            emit("CANARY_CONFIG_SHA",hashlib.sha256(config.read_bytes()).hexdigest()[:16])
+            emit("CANARY_CONFIG_MTIME",config.stat().st_mtime)
+            d=json.loads(config.read_text())
+            for i,x in enumerate(d.get("inbounds",[])):
+              emit("CANARY_INBOUND_"+str(i),repr(dict(port=x.get("port"),tag=x.get("tag"),sniff=x.get("sniffing"))))
+          for directory in ["/opt/mnebyvpn","/etc/mnebyvpn","/usr/local/bin"]:
+            path=pathlib.Path(directory)
+            if not path.is_dir():continue
+            for file in list(path.glob("*provision*"))[:18]:
+              if file.is_file() and file.suffix in (".py",".sh",".service"):
+                content=file.read_text(errors="ignore")
+                emit("CANDIDATE_GENERATOR",str(file)+" sha16="+hashlib.sha256(file.read_bytes()).hexdigest()[:16])
+                for k in ["xray-canary.json","sniffing","destOverride","mnebyvpn-vpn-provisioner"]:
+                  emit("CANDIDATE_"+file.name+"_"+k,str(k in content))
+          relay=pathlib.Path("/opt/mnebydns-youtube-quic-43612369808/relay.py")
+          if relay.is_file():
+            try:
+              spec=importlib.util.spec_from_file_location("mnebydns_relay_voice_inspect",str(relay))
+              m=importlib.util.module_from_spec(spec)
+              import sys
+              sys.modules[spec.name]=m
+              spec.loader.exec_module(m)
+              for host in ["www.youtube.com","rr1---sn-gxuo03g-ig3s.googlevideo.com","speech.googleapis.com","voiceinput.googleapis.com","antigravity.google","antigravity.google.com","aiplatform.googleapis.com","realtime.googleapis.com","generativelanguage.googleapis.com","daily.googleapis.com"]:
+                emit("UDP_QUIC_ALLOW_"+host,str(bool(m.allowed(host))))
+            except Exception as e:emit("UDP_QUIC_ALLOW","ERROR_"+type(e).__name__)
+          emit("READONLY_COMPLETE",True)
+          PY
