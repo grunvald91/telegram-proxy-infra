@@ -96,6 +96,10 @@ jobs:
           for label,live in (('nginx',pathlib.Path('/etc/nginx/nginx.conf')),('proxy',pathlib.Path('/etc/mnebydns-googlepilot/nginx.conf')),('dns',p)):
             saved=pathlib.Path(ptr)/(label+'.stable')
             snapshots[label]={'live_sha':hashlib.sha256(live.read_bytes()).hexdigest(),'checkpoint_sha':hashlib.sha256(saved.read_bytes()).hexdigest() if saved.is_file() else None,'equal':saved.is_file() and live.read_bytes()==saved.read_bytes()}
+          nft=subprocess.run(['nft','-a','list','chain','inet','telegram_nfqws','post'],capture_output=True,text=True)
+          lines=nft.stdout.splitlines()
+          matched=[s.strip() for s in lines if ('sport 443' in s or 'queue' in s.lower())]
+          print('DE89_NFQUEUE_MEDIA_PATH='+json.dumps({'exit_code':nft.returncode,'rules':matched[:14],'current_service':subprocess.run(['systemctl','is-active','telegram-nfqws.service'],capture_output=True,text=True).stdout.strip()},sort_keys=True))
           print('MEDIA_CONFIG_VS_RESTORED_CHECKPOINT='+json.dumps(snapshots,sort_keys=True))
           out={}
           for label,src in (('stream',n),('pilot',pilot)):
