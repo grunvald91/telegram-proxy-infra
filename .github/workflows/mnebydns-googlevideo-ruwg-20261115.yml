@@ -1,0 +1,82 @@
+name: MNEBYDNS targeted Googlevideo A via working RU WireGuard media path (guarded)
+on:
+  push:
+    branches: [restore/mnebydns-youtube-morning-20261115]
+    paths:
+      - '.github/workflows/mnebydns-googlevideo-ruwg-20261115.yml'
+      - 'scripts/mnebydns-googlevideo-ruwg-route-20261115.py'
+permissions: {contents: read}
+concurrency:
+  group: mnebydns-google-public-443-change
+  cancel-in-progress: false
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Strict offline change scope and tools preflight
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-googlevideo-ruwg-route-20261115.py
+          grep -Fq 'www.youtube.com' scripts/mnebydns-googlevideo-ruwg-route-20261115.py
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          echo GOOGLEVIDEO_RUWG_OFFLINE_GATE=PASS
+      - name: Apply one pre-migration exact A record, verify real public DoT, persist stable checkpoint
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -qq -y sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          copt=(-q -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          de() { SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 "$@"; }
+          ru() { SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 "$@"; }
+          export SSHPASS="$DE_PASS"
+          sshpass -e scp "${copt[@]}" scripts/mnebydns-googlevideo-ruwg-route-20261115.py root@89.125.90.101:/tmp/mnebydns-googlevideo-ruwg-route-20261115.py
+          de 'install -d -m 700 /opt/mnebydns-googlevideo-ruwg-20261115 && install -m 700 /tmp/mnebydns-googlevideo-ruwg-route-20261115.py /opt/mnebydns-googlevideo-ruwg-20261115/manager.py'
+          undo() {
+            rc=$?
+            trap - EXIT
+            if ((rc != 0)); then
+              de 'python3 -B /opt/mnebydns-googlevideo-ruwg-20261115/manager.py rollback' || echo GOOGLEVIDEO_RUWG_MANUAL_RESTORE_REVIEW_REQUIRED=true
+            fi
+            exit "$rc"
+          }
+          trap undo EXIT
+          de 'python3 -B /opt/mnebydns-googlevideo-ruwg-20261115/manager.py stage'
+          de 'python3 -B /opt/mnebydns-googlevideo-ruwg-20261115/manager.py apply'
+          de 'python3 -B /opt/mnebydns-googlevideo-ruwg-20261115/manager.py verify'
+          ru 'python3 -' <<'PY'
+          import socket,ssl
+          name='rr1---sn-gxuo03g-ig3s.googlevideo.com'
+          with socket.create_connection(('188.120.254.223',443),timeout=8) as sock:
+            with ssl.create_default_context().wrap_socket(sock,server_hostname=name) as tls:
+              assert tls.version() in ('TLSv1.2','TLSv1.3')
+              print('GOOGLEVIDEO_RUWG_RU188_PUBLIC_TLS='+tls.version(),flush=True)
+          PY
+          ru 'PYTHONPATH=/tmp/mnebydns-youtube-quic-43612369808/deps YOUTUBE_QUIC_VIA=188.120.254.223 python3 -B -' <<'PY'
+          import asyncio,os,runpy
+          once=runpy.run_path('/tmp/mnebydns-youtube-quic-43612369808/http3-probe.py')['once']
+          host='rr1---sn-gxuo03g-ig3s.googlevideo.com'
+          ok=asyncio.run(asyncio.wait_for(once(host),18))
+          assert ok,'Googlevideo QUIC through RU188 and WG not verified'
+          print('GOOGLEVIDEO_RUWG_RU188_PUBLIC_H3=PASS',flush=True)
+          PY
+          de 'python3 -B /opt/mnebydns-googlevideo-ruwg-20261115/manager.py confirm'
+          de 'systemctl stop mnebydns-googlevideo-ruwg-revert-20261115.timer || true'
+          de 'systemctl is-active --quiet mnebydns-dot.service && systemctl is-active --quiet nginx.service'
+          echo GOOGLEVIDEO_RUWG_MEDIA_A_ROUTE_TO_RU188=CONFIRMED
+          echo GOOGLEVIDEO_RUWG_OTHER_DOMAINS_UNCHANGED=true
+          echo GOOGLEVIDEO_RUWG_REAL_VIDEO_REQUIRES_PHONE_TEST=true
+          trap - EXIT
