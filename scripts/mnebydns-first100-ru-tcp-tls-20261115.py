@@ -64,7 +64,11 @@ def plan_ru_errors():
         raise RuntimeError("POLICY_CHANGED_DURING_TCP13_PROBE")
     selected=[]
     statuses={}
+    failed_public_edge={"arduino.cc","avira.com","bluehost.com"}
     for host in names:
+        if host in failed_public_edge:
+            statuses[host]="SKIP_PREVIOUS_CANARY_PUBLIC_EDGE_HTTPS_FAILED"
+            continue
         if rows[host][0]=="ACTIVE":
             statuses[host]="ALREADY_ACTIVE"
             continue
@@ -113,6 +117,8 @@ def plan_ru_errors():
 def self_test():
     if len(HOSTS)!=13 or len(set(HOSTS))!=13:raise RuntimeError("FIXED_SCOPE_BAD")
     assert set(HOSTS).isdisjoint({"artifacts.elastic.co","brickset.com","chatgpt.com"})
+    # Three prior live HTTPS failures are quarantined, not silently retried.
+    assert {"arduino.cc","avira.com","bluehost.com"}.issubset(HOSTS)
     for h in HOSTS:renderer.validate_domain(h)
     assert renderer.DNS_INGRESS==owner.RU and owner.RU!=owner.EDGE
     print("TCP13_REUSE_OFFLINE=PASS",flush=True)
