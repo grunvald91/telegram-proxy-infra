@@ -187,7 +187,7 @@ disk=(d/"candidate.file").read_text()
 disk=replace_unique(disk,"PrivateKey",priv)
 disk=replace_unique(disk,"PublicKey",peerpub)
 wg=(d/"original.wg").read_text()
-oldend=other+":"+oldport
+oldend=other+":"+otherold
 endpoints=re.findall(r"(?m)^[ \t]*Endpoint[ \t]*=[ \t]*(\S+)[ \t]*$",wg)
 if endpoints and (len(endpoints)!=1 or endpoints[0]!=oldend):
     raise ValueError("Unexpected pre-existing native peer endpoint")
