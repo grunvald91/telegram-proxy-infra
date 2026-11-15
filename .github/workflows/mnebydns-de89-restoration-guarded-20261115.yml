@@ -5,6 +5,11 @@ on:
     paths:
       - .github/workflows/mnebydns-de89-restoration-guarded-20261115.yml
       - data/mnebydns-de89-restore-mode-20261115.txt
+      - scripts/mnebydns-de89-restore-20261115.py
+      - scripts/mnebydns-personal-shared-policy-generate-20261114.py
+      - scripts/test_mnebydns_personal_shared_policy_generate_20261114.py
+      - scripts/tests/test_owner_domain_reconcile.py
+      - scripts/tests/test_owner_domain_routes.py
   workflow_dispatch:
 permissions: {contents: read}
 concurrency:
