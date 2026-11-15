@@ -1,0 +1,109 @@
+name: MNEBYDNS WG tunnel deep diagnostic read-only 2026-11-15
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebydns-wg-depth-readonly-20261115.yml'
+  workflow_dispatch:
+permissions: {contents: read}
+jobs:
+  wg-readonly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Install pinned SSH transport
+        run: |
+          set -Eeuo pipefail
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+      - name: Two-sided WireGuard diagnostics without altering any service or route
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          for role in RU DE; do
+            if [ "$role" = RU ]; then export SSHPASS="$RU_PASS"; host=188.120.254.223; else export SSHPASS="$DE_PASS"; host=89.125.90.101; fi
+            sshpass -e ssh "${opts[@]}" "root@$host" "python3 - $role" <<'PY'
+          import sys,subprocess,time,datetime,json,statistics,math,socket,ssl,re
+          role=sys.argv[1]
+          WG_DE="10.66.77.1"; WG_RU="10.66.77.2"; DE="89.125.90.101"; RU="188.120.254.223"
+          peer=WG_DE if role=="RU" else WG_RU
+          def cmd(*args,timeout=12):
+              try:
+                  p=subprocess.run(args,text=True,capture_output=True,timeout=timeout)
+                  return p.returncode,p.stdout.strip()
+              except Exception as e: return 254,type(e).__name__
+          def emit(k,v):
+              if isinstance(v,(dict,list)):v=json.dumps(v,separators=(',',':'),sort_keys=True)
+              print("WGDEPTH_"+role+"_"+k+"="+str(v),flush=True)
+          def pc(vals,p):
+              if not vals:return None
+              x=sorted(vals)
+              return round(x[min(len(x)-1,max(0,math.ceil(len(x)*p/100)-1))],1)
+          emit("UTC",datetime.datetime.now(datetime.timezone.utc).isoformat())
+          for name in ("wg-quick@tg-relay.service","nginx.service","mnebydns-dot.service"):
+              rc,out=cmd("systemctl","is-active",name)
+              emit("SERVICE_"+name,out or "unknown")
+          rc,out=cmd("wg","show","tg-relay","latest-handshakes")
+          epochs=[int(line.split()[1]) for line in out.splitlines() if len(line.split())==2 and line.split()[1].isdigit()]
+          emit("HANDSHAKE_AGE_SEC",min((round(time.time()-t) for t in epochs if t>0),default=None))
+          rc,out=cmd("wg","show","tg-relay","transfer")
+          vals=[]
+          for line in out.splitlines():
+              p=line.split()
+              if len(p)==3 and p[1].isdigit() and p[2].isdigit():vals.append([int(p[1]),int(p[2])])
+          emit("WG_TRANSFER_RX_TX_BYTES",vals)
+          rc,out=cmd("ip","-j","-s","link","show","tg-relay")
+          try:
+              d=json.loads(out)[0]
+              emit("WG_LINK",{"mtu":d.get("mtu"),"operstate":d.get("operstate"),"stats64":d.get("stats64"),"stats":d.get("stats")})
+          except Exception:emit("WG_LINK_ERROR",out[:100])
+          rc,out=cmd("ip","-4","route","get",peer)
+          emit("WG_ROUTE",out[:240])
+          rc,out=cmd("ip","-4","route","get",DE if role=="RU" else RU)
+          emit("PUBLIC_ROUTE",out[:240])
+          rc,out=cmd("ss","-s")
+          emit("SOCKET_SUMMARY",out.replace('\n',' | ')[:300])
+          if role=="RU":
+              def ping(label,host,size,interval="0.8"):
+                  rc,out=cmd("ping","-n","-q","-M","do","-c","18","-i",interval,"-s",str(size),"-W","2",host,timeout=24)
+                  send=recv=loss=None
+                  m=re.search(r"(\d+) packets transmitted, (\d+) received, ([0-9.]+)% packet loss",out)
+                  if m:send,recv,loss=int(m.group(1)),int(m.group(2)),float(m.group(3))
+                  r=re.search(r"(?:rtt|round-trip) min/avg/max/(?:mdev|stddev) = ([\d.]+)/([\d.]+)/([\d.]+)/([\d.]+) ms",out)
+                  return {"rc":rc,"sent":send,"recv":recv,"loss_pct":loss,
+                          "rtt_avg_ms":float(r.group(2)) if r else None,
+                          "rtt_max_ms":float(r.group(3)) if r else None,
+                          "error":out[:160] if send is None else None}
+              for h,size in ((WG_DE,32),(WG_DE,1200),(WG_DE,1320),(DE,1200)):
+                  label=("WG" if h==WG_DE else "PUBLIC")+"_"+str(size)
+                  emit("PING_"+label,ping(label,h,size))
+              for title,host in (("WG",WG_DE),("PUBLIC",DE)):
+                  for sni in ("claude.ai","chatgpt.com"):
+                      times=[];tcp=[];errors={}
+                      for _ in range(8):
+                          start=time.monotonic()
+                          try:
+                              with socket.create_connection((host,443),timeout=3) as s:
+                                  tcp.append((time.monotonic()-start)*1000)
+                                  s.settimeout(3)
+                                  with ssl.create_default_context().wrap_socket(s,server_hostname=sni) as tls:
+                                      if not tls.getpeercert():raise RuntimeError("missing certificate")
+                                      times.append((time.monotonic()-start)*1000)
+                          except Exception as e:
+                              k=type(e).__name__;errors[k]=errors.get(k,0)+1
+                          time.sleep(0.05)
+                      emit("TLS_"+title+"_"+sni,{"n":8,"ok":len(times),"p50_ms":pc(times,50),"p95_ms":pc(times,95),
+                                  "tcp_p50_ms":pc(tcp,50),"tcp_p95_ms":pc(tcp,95),"errors":errors})
+          emit("DONE","yes")
+          PY
+          done
+      - name: Output result location
+        run: echo "Read-only test only. Compare the two route stats, no service changes." >> "$GITHUB_STEP_SUMMARY"
