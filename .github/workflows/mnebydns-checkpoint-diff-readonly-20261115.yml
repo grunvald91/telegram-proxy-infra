@@ -1,0 +1,30 @@
+name: "MNEBYDNS three-file checkpoint comparison (read-only)"
+on:
+  push:
+    branches: [diagnostics/mnebydns-checkpoint-diff-readonly-20261115]
+    paths:
+      - .github/workflows/mnebydns-checkpoint-diff-readonly-20261115.yml
+      - scripts/mnebydns-checkpoint-compare-readonly-20261115.py
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compare checkpoint with live files, no writes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          python3 -m py_compile scripts/mnebydns-checkpoint-compare-readonly-20261115.py
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+          python3 scripts/mnebydns-checkpoint-compare-readonly-20261115.py
