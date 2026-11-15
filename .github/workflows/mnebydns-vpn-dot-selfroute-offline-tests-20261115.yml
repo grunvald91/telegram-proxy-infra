@@ -1,0 +1,23 @@
+name: MNEBYDNS VPN-only DoT selfroute offline safety tests
+on:
+  push:
+    branches: [fix/mnebydns-vpn-dot-selfroute-20261115]
+    paths:
+      - scripts/mnebydns-vpn-dot-local-route-20261115.sh
+      - tests/test_mnebydns_vpn_dot_local_route_20261115.py
+      - .github/workflows/mnebydns-vpn-dot-selfroute-offline-tests-20261115.yml
+permissions: {contents: read}
+jobs:
+  safe-static:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Verify exact UID-targeted local DoT reroute with no VPS deployment
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          bash -n scripts/mnebydns-vpn-dot-local-route-20261115.sh
+          python3 tests/test_mnebydns_vpn_dot_local_route_20261115.py
+          echo VPN_DOT_SELFROUTE_OFFLINE=PASS
