@@ -171,12 +171,38 @@ umask 077
 python3 - "$root" "$oldport" "$newport" "$other" "$otherold" "$othernew" "$peerpub" <<'PY'
 import pathlib,re,sys
 root,oldport,newport,other,otherold,othernew,peerpub=sys.argv[1:]
-dir=pathlib.Path(root)
-priv=(dir/'new.private').read_text().strip()
-if not re.fullmatch(r'[A-Za-z0-9+/]{43}=',priv):raise ValueError('Bad new WG private key')
-if not re.fullmatch(r'[A-Za-z0-9+/]{43}=',peerpub):raise ValueError('Bad new WG peer key')
-def one(src,key,val):
-    pat=r'(?m)^([ \t]*'+re.escape(key)+r'[ \t]*=[ \t]*)\S+([ \t]*)
+d=pathlib.Path(root)
+priv=(d/"new.private").read_text().strip()
+if not re.fullmatch(r"[A-Za-z0-9+/]{43}=",priv):raise ValueError("Invalid ephemeral private key")
+if not re.fullmatch(r"[A-Za-z0-9+/]{43}=",peerpub):raise ValueError("Invalid peer public key")
+def replace_unique(text,key,value):
+    lines=text.splitlines(keepends=True)
+    indices=[i for i,v in enumerate(lines) if re.match(r"^[ \t]*"+re.escape(key)+r"[ \t]*=",v)]
+    if len(indices)!=1:raise ValueError("Unexpected "+key+" count "+str(len(indices)))
+    i=indices[0]
+    m=re.match(r"^([ \t]*"+re.escape(key)+r"[ \t]*=[ \t]*)",lines[i])
+    lines[i]=m.group(1)+value+"\n"
+    return "".join(lines)
+disk=(d/"candidate.file").read_text()
+disk=replace_unique(disk,"PrivateKey",priv)
+disk=replace_unique(disk,"PublicKey",peerpub)
+wg=(d/"original.wg").read_text()
+oldend=other+":"+oldport
+if not re.search(r"(?m)^[ \t]*Endpoint[ \t]*=[ \t]*"+re.escape(oldend)+r"[ \t]*$",wg):
+    raise ValueError("Old runtime endpoint differs from expected")
+wg=replace_unique(wg,"PrivateKey",priv)
+wg=replace_unique(wg,"PublicKey",peerpub)
+wg=replace_unique(wg,"ListenPort",newport)
+wg=replace_unique(wg,"Endpoint",other+":"+othernew)
+(d/"candidate.file").write_text(disk)
+(d/"candidate.runtime").write_text(wg)
+(d/"expected.peer").write_text(peerpub+"\n")
+for name in ("candidate.file","candidate.runtime","expected.peer"):
+    (d/name).chmod(0o600)
+PY
+echo WG_FIX_NEW_KEYS_PREPARED=yes
+"""
+APPLY=r"""
 set -Eeuo pipefail
 tag="$1"; old="$2"; new="$3"; other="$4"; othernew="$5"
 [[ "$tag" =~ ^[0-9]{6}$ ]]
@@ -295,13 +321,13 @@ def main():
             staged.add(role)
             if "WG_FIX_STAGED=yes" not in out:raise RuntimeError("Stage unacknowledged "+role)
             m=re.search(r"^WG_FIX_NEW_PUBLIC_KEY=([A-Za-z0-9+/]{43}=)$",out,re.M)
-            if not m:raise RuntimeError("New peer key not returned "+role)
+            if not m:raise RuntimeError("Peer public key missing "+role)
             newkeys[role]=m.group(1)
             print("WG_FIX_"+role+"_STAGED=yes",flush=True)
         for role in ("DE","RU"):
             other=OTHER[role]
-            out=remote(role,PREPARE_KEYS,[TAG,OLD[role],NEW[role],HOST[other],OLD[other],NEW[other],newkeys[other]],timeout=25)
-            if "WG_FIX_NEW_KEYS_PREPARED=yes" not in out:raise RuntimeError("Rekey candidate not verified "+role)
+            out=remote(role,PREPARE_KEYS,[TAG,OLD[role],NEW[role],HOST[other],OLD[other],NEW[other],newkeys[other]],timeout=27)
+            if "WG_FIX_NEW_KEYS_PREPARED=yes" not in out:raise RuntimeError("New-key candidate unverified "+role)
             print("WG_FIX_"+role+"_CANDIDATE_READY=yes",flush=True)
         for role in ("DE","RU"):
             other=OTHER[role]
@@ -325,346 +351,8 @@ def main():
             print("WG_FIX_"+role+"_CONFIRMED=yes",flush=True)
         confirmed=True
         print("WG_FIX_NEW_PORTS_APPLIED_AND_PERSISTED=true",flush=True)
-        print("WG_FIX_KEYS_ROTATED_ON_BOTH_NODES=true",flush=True)
+        print("WG_FIX_INTERSERVER_WG_KEYS_ROTATED=true",flush=True)
         print("WG_FIX_SUBSCRIBER_VLESS_KEYS_IP_MTU_ROUTES_UNCHANGED=true",flush=True)
-        for role in ("DE","RU"):
-            try:
-                remote(role,FINALIZE,[TAG],timeout=23)
-                print("WG_FIX_"+role+"_TEMPORARY_FILES_CLEANED=yes",flush=True)
-            except Exception as ex:
-                print("WG_FIX_"+role+"_CONFIRMED_TIMER_CLEANUP_PENDING="+type(ex).__name__,flush=True)
-    finally:
-        if not confirmed:
-            for role in sorted(staged):
-                try:
-                    remote(role,ROLLBACK,[TAG],timeout=35)
-                    print("WG_FIX_"+role+"_ROLLBACK_ATTEMPTED=yes",flush=True)
-                except Exception as ex:
-                    print("WG_FIX_"+role+"_INDEPENDENT_REVERT_PENDING="+type(ex).__name__,flush=True)
-if __name__=="__main__":
-    main()
-
-    dest,n=re.subn(pat,lambda m:m.group(1)+val+m.group(2),src)
-    if n!=1:raise ValueError('Unexpected '+key+' lines: '+str(n))
-    return dest
-disk=(dir/'candidate.file').read_text()
-disk=one(disk,'PrivateKey',priv)
-disk=one(disk,'PublicKey',peerpub)
-(dir/'candidate.file').write_text(disk)
-wg=(dir/'original.wg').read_text()
-wg=one(wg,'PrivateKey',priv)
-wg=one(wg,'PublicKey',peerpub)
-wg=one(wg,'ListenPort',newport)
-pat=r'(?m)^([ \t]*Endpoint[ \t]*=[ \t]*)'+re.escape(other+':'+oldport)+r'([ \t]*)
-set -Eeuo pipefail
-tag="$1"; old="$2"; new="$3"; other="$4"; othernew="$5"
-[[ "$tag" =~ ^[0-9]{6}$ ]]
-root="/run/mnebywgfix-$tag"
-test -s "$root/original.wg"
-test -s "$root/candidate.file"
-test ! -f "$root/confirmed"
-test "$(wg show tg-relay listen-port)" = "$old"
-peer="$(wg show tg-relay peers)"
-test "$(printf '%s\n' "$peer" | wc -l)" = 1
-wg set tg-relay listen-port "$new"
-wg set tg-relay peer "$peer" endpoint "$other:$othernew"
-test "$(wg show tg-relay listen-port)" = "$new"
-wg show tg-relay endpoints | grep -Fq "$other:$othernew"
-echo WG_FIX_RUNTIME_CHANGED=yes
-"""
-PING=r"""
-set -Eeuo pipefail
-dest="$1"; bytes="$2"
-[[ "$dest" == 10.66.77.1 || "$dest" == 10.66.77.2 ]]
-[[ "$bytes" == 32 || "$bytes" == 1200 ]]
-ping -n -q -M do -c 100 -i 0.20 -s "$bytes" -W 1 "$dest" || true
-"""
-TLS=r"""
-set -Eeuo pipefail
-python3 - <<'PY'
-import ssl,socket
-ctx=ssl.create_default_context()
-with socket.create_connection(('10.66.77.1',443),timeout=7) as sock:
-  sock.settimeout(8)
-  with ctx.wrap_socket(sock,server_hostname='www.youtube.com') as tls:
-    if not tls.getpeercert():raise RuntimeError("TLS certificate missing")
-    print("WG_FIX_TLS_OVER_TUNNEL="+str(tls.version()),flush=True)
-PY
-"""
-PERSIST=r"""
-set -Eeuo pipefail
-tag="$1"; new="$2"
-root="/run/mnebywgfix-$tag"
-disk=/etc/wireguard/tg-relay.conf
-test -s "$root/original.file" && test -s "$root/candidate.file"
-test "$(wg show tg-relay listen-port)" = "$new"
-cmp -s "$disk" "$root/original.file"
-backup="$disk.bak-wgport-$tag"
-test ! -e "$backup"
-cp -p "$disk" "$backup"
-install -m 600 "$root/candidate.file" "$disk.wgport-$tag.tmp"
-mv -f "$disk.wgport-$tag.tmp" "$disk"
-cmp -s "$root/candidate.file" "$disk"
-test "$(wg show tg-relay listen-port)" = "$new"
-echo WG_FIX_DISK_PERSISTED=yes
-"""
-ROLLBACK=r"""
-set +e
-tag="$1"
-[[ "$tag" =~ ^[0-9]{6}$ ]] || exit 3
-root="/run/mnebywgfix-$tag"
-if [ -f "$root/confirmed" ]; then rm -f "$root/confirmed"; fi
-if [ -s "$root/rollback.sh" ]; then bash "$root/rollback.sh"; fi
-echo WG_FIX_ROLLBACK_ATTEMPTED=yes
-"""
-CONFIRM=r"""
-set -Eeuo pipefail
-tag="$1"; new="$2"; other="$3"; othernew="$4"
-[[ "$tag" =~ ^[0-9]{6}$ ]]
-root="/run/mnebywgfix-$tag"
-test -s "$root/candidate.file"
-test "$(wg show tg-relay listen-port)" = "$new"
-wg show tg-relay endpoints | grep -Fq "$other:$othernew"
-cmp -s "$root/candidate.file" /etc/wireguard/tg-relay.conf
-touch "$root/confirmed"
-echo WG_FIX_CONFIRMED=yes
-"""
-FINALIZE=r"""
-set -Eeuo pipefail
-tag="$1"
-[[ "$tag" =~ ^[0-9]{6}$ ]]
-root="/run/mnebywgfix-$tag"
-test -f "$root/confirmed"
-systemctl stop "mnebywgfix-$tag-revert.timer" >/dev/null 2>&1 || true
-rm -rf -- "$root"
-echo WG_FIX_CLEANED=yes
-"""
-
-def args(role):
-    other=OTHER[role]
-    return [TAG,role,OLD[role],NEW[role],HOST[other],OLD[other],NEW[other],WAN[role]]
-def check_losses():
-    def ping_pair(role,sz):
-        target="10.66.77.1" if role=="RU" else "10.66.77.2"
-        raw=remote(role,PING,[target,sz],timeout=65)
-        m=re.search(r"100 packets transmitted, (\d+) received, ([\d.]+)% packet loss",raw)
-        if not m:raise RuntimeError("Ping result missing for "+role)
-        return {"role":role,"size":sz,"received":int(m.group(1)),"loss_pct":float(m.group(2))}
-    results=[]
-    for sz in (32,1200):
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-            results.extend(list(pool.map(lambda role:ping_pair(role,sz),("RU","DE"))))
-    print("WG_FIX_POSTCUTOVER_LOSS="+json.dumps(results,sort_keys=True),flush=True)
-    if any(x["loss_pct"]>2.0 for x in results):
-        raise RuntimeError("Cutover loss exceeded 2%; automatic rollback")
-    return results
-
-def main():
-    if not KNOWN.is_file() or not all(PASS.values()):
-        raise RuntimeError("Missing pinned SSH trust or secrets")
-    staged=set()
-    confirmed=False
-    try:
-        for role in ("DE","RU"):
-            try:out=remote(role,STAGE,args(role),timeout=48)
-            except Exception:
-                staged.add(role)
-                raise
-            staged.add(role)
-            if "WG_FIX_STAGED=yes" not in out:raise RuntimeError("Stage unacknowledged "+role)
-            print("WG_FIX_"+role+"_STAGED=yes",flush=True)
-        for role in ("DE","RU"):
-            other=OTHER[role]
-            out=remote(role,APPLY,[TAG,OLD[role],NEW[role],HOST[other],NEW[other]],timeout=32)
-            if "WG_FIX_RUNTIME_CHANGED=yes" not in out:raise RuntimeError("Apply not confirmed "+role)
-            print("WG_FIX_"+role+"_RUNTIME_NEW_PORT="+str(NEW[role]),flush=True)
-        time.sleep(6)
-        check_losses()
-        out=remote("RU",TLS,timeout=26)
-        if "WG_FIX_TLS_OVER_TUNNEL=TLS" not in out:raise RuntimeError("Real TLS over WG failed")
-        print(out.strip(),flush=True)
-        for role in ("DE","RU"):
-            out=remote(role,PERSIST,[TAG,NEW[role]],timeout=24)
-            if "WG_FIX_DISK_PERSISTED=yes" not in out:raise RuntimeError("Persistent file write unconfirmed "+role)
-            print("WG_FIX_"+role+"_PERSISTED=yes",flush=True)
-        # Confirm both quickly; after this, independent timer will not revert a committed pair.
-        for role in ("DE","RU"):
-            other=OTHER[role]
-            out=remote(role,CONFIRM,[TAG,NEW[role],HOST[other],NEW[other]],timeout=24)
-            if "WG_FIX_CONFIRMED=yes" not in out:raise RuntimeError("Confirmation missing "+role)
-            print("WG_FIX_"+role+"_CONFIRMED=yes",flush=True)
-        confirmed=True
-        print("WG_FIX_NEW_PORTS_APPLIED_AND_PERSISTED=true",flush=True)
-        print("WG_FIX_KEYS_IP_MTU_ROUTES_UNCHANGED=true",flush=True)
-        for role in ("DE","RU"):
-            try:
-                remote(role,FINALIZE,[TAG],timeout=23)
-                print("WG_FIX_"+role+"_TEMPORARY_FILES_CLEANED=yes",flush=True)
-            except Exception as ex:
-                print("WG_FIX_"+role+"_CONFIRMED_TIMER_CLEANUP_PENDING="+type(ex).__name__,flush=True)
-    finally:
-        if not confirmed:
-            for role in sorted(staged):
-                try:
-                    remote(role,ROLLBACK,[TAG],timeout=35)
-                    print("WG_FIX_"+role+"_ROLLBACK_ATTEMPTED=yes",flush=True)
-                except Exception as ex:
-                    print("WG_FIX_"+role+"_INDEPENDENT_REVERT_PENDING="+type(ex).__name__,flush=True)
-if __name__=="__main__":
-    main()
-
-# In this two-node setup, the peer endpoint observed at run time must be exact.
-wg,n=re.subn(pat,lambda m:m.group(1)+other+':'+othernew+m.group(2),wg)
-if n!=1:raise ValueError('Original runtime peer endpoint mismatch')
-(dir/'candidate.runtime').write_text(wg)
-(dir/'expected.peer').write_text(peerpub+'\n')
-for name in ('candidate.file','candidate.runtime','expected.peer'):
-    (dir/name).chmod(0o600)
-PY
-echo WG_FIX_NEW_KEYS_PREPARED=yes
-"""
-
-APPLY=r"""
-set -Eeuo pipefail
-tag="$1"; old="$2"; new="$3"; other="$4"; othernew="$5"
-[[ "$tag" =~ ^[0-9]{6}$ ]]
-root="/run/mnebywgfix-$tag"
-test -s "$root/original.wg"
-test -s "$root/candidate.file"
-test ! -f "$root/confirmed"
-test "$(wg show tg-relay listen-port)" = "$old"
-peer="$(wg show tg-relay peers)"
-test "$(printf '%s\n' "$peer" | wc -l)" = 1
-wg set tg-relay listen-port "$new"
-wg set tg-relay peer "$peer" endpoint "$other:$othernew"
-test "$(wg show tg-relay listen-port)" = "$new"
-wg show tg-relay endpoints | grep -Fq "$other:$othernew"
-echo WG_FIX_RUNTIME_CHANGED=yes
-"""
-PING=r"""
-set -Eeuo pipefail
-dest="$1"; bytes="$2"
-[[ "$dest" == 10.66.77.1 || "$dest" == 10.66.77.2 ]]
-[[ "$bytes" == 32 || "$bytes" == 1200 ]]
-ping -n -q -M do -c 100 -i 0.20 -s "$bytes" -W 1 "$dest" || true
-"""
-TLS=r"""
-set -Eeuo pipefail
-python3 - <<'PY'
-import ssl,socket
-ctx=ssl.create_default_context()
-with socket.create_connection(('10.66.77.1',443),timeout=7) as sock:
-  sock.settimeout(8)
-  with ctx.wrap_socket(sock,server_hostname='www.youtube.com') as tls:
-    if not tls.getpeercert():raise RuntimeError("TLS certificate missing")
-    print("WG_FIX_TLS_OVER_TUNNEL="+str(tls.version()),flush=True)
-PY
-"""
-PERSIST=r"""
-set -Eeuo pipefail
-tag="$1"; new="$2"
-root="/run/mnebywgfix-$tag"
-disk=/etc/wireguard/tg-relay.conf
-test -s "$root/original.file" && test -s "$root/candidate.file"
-test "$(wg show tg-relay listen-port)" = "$new"
-cmp -s "$disk" "$root/original.file"
-backup="$disk.bak-wgport-$tag"
-test ! -e "$backup"
-cp -p "$disk" "$backup"
-install -m 600 "$root/candidate.file" "$disk.wgport-$tag.tmp"
-mv -f "$disk.wgport-$tag.tmp" "$disk"
-cmp -s "$root/candidate.file" "$disk"
-test "$(wg show tg-relay listen-port)" = "$new"
-echo WG_FIX_DISK_PERSISTED=yes
-"""
-ROLLBACK=r"""
-set +e
-tag="$1"
-[[ "$tag" =~ ^[0-9]{6}$ ]] || exit 3
-root="/run/mnebywgfix-$tag"
-if [ -f "$root/confirmed" ]; then rm -f "$root/confirmed"; fi
-if [ -s "$root/rollback.sh" ]; then bash "$root/rollback.sh"; fi
-echo WG_FIX_ROLLBACK_ATTEMPTED=yes
-"""
-CONFIRM=r"""
-set -Eeuo pipefail
-tag="$1"; new="$2"; other="$3"; othernew="$4"
-[[ "$tag" =~ ^[0-9]{6}$ ]]
-root="/run/mnebywgfix-$tag"
-test -s "$root/candidate.file"
-test "$(wg show tg-relay listen-port)" = "$new"
-wg show tg-relay endpoints | grep -Fq "$other:$othernew"
-cmp -s "$root/candidate.file" /etc/wireguard/tg-relay.conf
-touch "$root/confirmed"
-echo WG_FIX_CONFIRMED=yes
-"""
-FINALIZE=r"""
-set -Eeuo pipefail
-tag="$1"
-[[ "$tag" =~ ^[0-9]{6}$ ]]
-root="/run/mnebywgfix-$tag"
-test -f "$root/confirmed"
-systemctl stop "mnebywgfix-$tag-revert.timer" >/dev/null 2>&1 || true
-rm -rf -- "$root"
-echo WG_FIX_CLEANED=yes
-"""
-
-def args(role):
-    other=OTHER[role]
-    return [TAG,role,OLD[role],NEW[role],HOST[other],OLD[other],NEW[other],WAN[role]]
-def check_losses():
-    def ping_pair(role,sz):
-        target="10.66.77.1" if role=="RU" else "10.66.77.2"
-        raw=remote(role,PING,[target,sz],timeout=65)
-        m=re.search(r"100 packets transmitted, (\d+) received, ([\d.]+)% packet loss",raw)
-        if not m:raise RuntimeError("Ping result missing for "+role)
-        return {"role":role,"size":sz,"received":int(m.group(1)),"loss_pct":float(m.group(2))}
-    results=[]
-    for sz in (32,1200):
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-            results.extend(list(pool.map(lambda role:ping_pair(role,sz),("RU","DE"))))
-    print("WG_FIX_POSTCUTOVER_LOSS="+json.dumps(results,sort_keys=True),flush=True)
-    if any(x["loss_pct"]>2.0 for x in results):
-        raise RuntimeError("Cutover loss exceeded 2%; automatic rollback")
-    return results
-
-def main():
-    if not KNOWN.is_file() or not all(PASS.values()):
-        raise RuntimeError("Missing pinned SSH trust or secrets")
-    staged=set()
-    confirmed=False
-    try:
-        for role in ("DE","RU"):
-            try:out=remote(role,STAGE,args(role),timeout=48)
-            except Exception:
-                staged.add(role)
-                raise
-            staged.add(role)
-            if "WG_FIX_STAGED=yes" not in out:raise RuntimeError("Stage unacknowledged "+role)
-            print("WG_FIX_"+role+"_STAGED=yes",flush=True)
-        for role in ("DE","RU"):
-            other=OTHER[role]
-            out=remote(role,APPLY,[TAG,OLD[role],NEW[role],HOST[other],NEW[other]],timeout=32)
-            if "WG_FIX_RUNTIME_CHANGED=yes" not in out:raise RuntimeError("Apply not confirmed "+role)
-            print("WG_FIX_"+role+"_RUNTIME_NEW_PORT="+str(NEW[role]),flush=True)
-        time.sleep(6)
-        check_losses()
-        out=remote("RU",TLS,timeout=26)
-        if "WG_FIX_TLS_OVER_TUNNEL=TLS" not in out:raise RuntimeError("Real TLS over WG failed")
-        print(out.strip(),flush=True)
-        for role in ("DE","RU"):
-            out=remote(role,PERSIST,[TAG,NEW[role]],timeout=24)
-            if "WG_FIX_DISK_PERSISTED=yes" not in out:raise RuntimeError("Persistent file write unconfirmed "+role)
-            print("WG_FIX_"+role+"_PERSISTED=yes",flush=True)
-        # Confirm both quickly; after this, independent timer will not revert a committed pair.
-        for role in ("DE","RU"):
-            other=OTHER[role]
-            out=remote(role,CONFIRM,[TAG,NEW[role],HOST[other],NEW[other]],timeout=24)
-            if "WG_FIX_CONFIRMED=yes" not in out:raise RuntimeError("Confirmation missing "+role)
-            print("WG_FIX_"+role+"_CONFIRMED=yes",flush=True)
-        confirmed=True
-        print("WG_FIX_NEW_PORTS_APPLIED_AND_PERSISTED=true",flush=True)
-        print("WG_FIX_KEYS_IP_MTU_ROUTES_UNCHANGED=true",flush=True)
         for role in ("DE","RU"):
             try:
                 remote(role,FINALIZE,[TAG],timeout=23)
