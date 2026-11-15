@@ -1,0 +1,30 @@
+name: MNEBYDNS AWG production manager offline review (no server changes)
+on:
+  push:
+    branches: [feat/mnebydns-amneziawg-parallel-20261115]
+    paths:
+      - 'scripts/mnebydns-awg-prod-manage-20261116.sh'
+      - '.github/workflows/mnebydns-awg-production-review-20261116.yml'
+permissions: {contents: read}
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Validate shell, timer and rollback code without touching servers
+        run: |
+          set -Eeuo pipefail
+          bash -n scripts/mnebydns-awg-prod-manage-20261116.sh
+          if ! command -v shellcheck >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -qq -y shellcheck >/dev/null
+          fi
+          shellcheck -S warning scripts/mnebydns-awg-prod-manage-20261116.sh
+          grep -Fq 'systemd-run --quiet --unit=' scripts/mnebydns-awg-prod-manage-20261116.sh
+          grep -Fq 'systemctl start "$OLDUNIT"' scripts/mnebydns-awg-prod-manage-20261116.sh
+          grep -Fq 'Table = off' scripts/mnebydns-awg-prod-manage-20261116.sh
+          grep -Fq 'PostUp =' scripts/mnebydns-awg-prod-manage-20261116.sh
+          grep -Fq 'PostDown =' scripts/mnebydns-awg-prod-manage-20261116.sh
+          echo AWG_PRODUCTION_STATIC_REVIEW=PASS
