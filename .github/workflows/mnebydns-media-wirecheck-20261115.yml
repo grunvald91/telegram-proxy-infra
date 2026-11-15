@@ -28,10 +28,10 @@ jobs:
           for spec in 'eth0 188.120.254.223 89.125.90.101' 'tg-relay 10.66.77.2 10.66.77.1'; do
             read -r iface src dst <<< "$spec"
             filter="tcp and host $src and host $dst and portrange 43301-43305"
-            SSHPASS="$DE_PASS" sshpass -e ssh "${ssh_opts[@]}" root@89.125.90.101               "command -v tcpdump >/dev/null && timeout -s INT 49 tcpdump -nn -l -tt -s 96 -i $iface '$filter' 2>/dev/null" > "$RUNNER_TEMP/$iface.txt" &
+            SSHPASS="$DE_PASS" sshpass -e ssh "${ssh_opts[@]}" root@89.125.90.101               "command -v tcpdump >/dev/null && timeout -s INT 42 tcpdump -nn -l -tt -s 96 -i $iface '$filter' 2>/dev/null" > "$RUNNER_TEMP/$iface.txt" &
             pids+=("$!")
           done
-          SSHPASS="$RU_PASS" sshpass -e ssh "${ssh_opts[@]}" root@188.120.254.223 "command -v tcpdump >/dev/null && timeout -s INT 49 tcpdump -nn -l -tt -s 96 -i ens3 'tcp and host 188.120.254.223 and host 89.125.90.101 and portrange 43301-43305' 2>/dev/null" > "$RUNNER_TEMP/ru-ens3.txt" &
+          SSHPASS="$RU_PASS" sshpass -e ssh "${ssh_opts[@]}" root@188.120.254.223 "command -v tcpdump >/dev/null && timeout -s INT 42 tcpdump -nn -l -tt -s 96 -i ens3 'tcp and host 188.120.254.223 and host 89.125.90.101 and portrange 43301-43305' 2>/dev/null" > "$RUNNER_TEMP/ru-ens3.txt" &
           pids+=("$!")
           sleep 4
           SSHPASS="$RU_PASS" sshpass -e ssh "${ssh_opts[@]}" root@188.120.254.223 'python3 -' <<'PY'
@@ -68,7 +68,7 @@ jobs:
           ports={43301:"googlevideo_public",43302:"googlevideo_wireguard",
                  43303:"ximage_public",43304:"ximage_wireguard",
                  43305:"youtube_public_control"}
-          ru={p:{"client_segments":0,"client_payload_bytes":0} for p in ports}
+          ru={p:{"client_segments":0,"client_payload_bytes":0,"syns":0} for p in ports}
           out={p:{"client_segments":0,"client_payload_bytes":0,"server_segments":0,"server_payload_bytes":0,"syns":0,"synacks":0} for p in ports}
           for name in ("eth0","tg-relay","ru-ens3"):
             lines=(root/(name+".txt")).read_text().splitlines()
