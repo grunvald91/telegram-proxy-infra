@@ -1,0 +1,67 @@
+name: MNEBYDNS compare Google voice stream TLS paths via 89 public and WireGuard
+on:
+  push:
+    branches: [diag/mnebydns-live-video-stall-20261115]
+    paths: [.github/workflows/mnebydns-voice-stream-transport-readonly-20261115.yml]
+permissions: {contents: read}
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Compare voice SNI/TLS through same two paths as YouTube without auth or payloads
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          cat > /tmp/voicepath.py <<'PY'
+          import sys,socket,ssl,time,datetime
+          role=sys.argv[1]
+          print("VOICE_ROLE="+role,flush=True)
+          print("VOICE_UTC="+datetime.datetime.now(datetime.timezone.utc).isoformat(),flush=True)
+          hosts=["generativelanguage.googleapis.com","speech.googleapis.com","voiceinput.googleapis.com","aiplatform.googleapis.com","antigravity.google"]
+          ips=[("public_DE","89.125.90.101"),("private_WG","10.66.77.1"),("RU_local","188.120.254.223")] if role=="RU188" else [("DE_self","89.125.90.101")]
+          ctx=ssl.create_default_context()
+          ctx.set_alpn_protocols(["http/1.1"])
+          for tag,ip in ips:
+            for host in hosts:
+              start=time.monotonic()
+              try:
+                with socket.create_connection((ip,443),timeout=4) as tcp:
+                  tcp.settimeout(4)
+                  with ctx.wrap_socket(tcp,server_hostname=host) as tls:
+                    print("VOICE_TEST_"+role+"_"+tag+"_"+host+"=TLS_OK "+str(int((time.monotonic()-start)*1000))+"ms",flush=True)
+                    if host=="generativelanguage.googleapis.com":
+                      # An unauthenticated, synthetic WebSocket Upgrade. Read only HTTP status, never a media body.
+                      request=("GET /ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent HTTP/1.1\r\n"+
+                        "Host: "+host+"\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"+
+                        "Sec-WebSocket-Key: MTIzNDU2Nzg5MGFiY2RlZg==\r\nSec-WebSocket-Version: 13\r\n\r\n")
+                      tls.sendall(request.encode("ascii"))
+                      try:
+                        status=tls.recv(200).split(b"\r\n",1)[0].decode("latin-1","replace")
+                      except Exception as e:status="NO_STATUS_"+type(e).__name__
+                      print("VOICE_WSS_"+role+"_"+tag+"="+status[:100],flush=True)
+              except Exception as e:
+                print("VOICE_TEST_"+role+"_"+tag+"_"+host+"="+type(e).__name__+" "+str(int((time.monotonic()-start)*1000))+"ms",flush=True)
+          print("VOICE_DONE="+role,flush=True)
+          PY
+          SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 - RU188' < /tmp/voicepath.py > ru.txt 2>&1 &
+          p_ru=$!
+          SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 - DE89' < /tmp/voicepath.py > de.txt 2>&1 &
+          p_de=$!
+          rc=0
+          wait "$p_ru" || rc=1
+          wait "$p_de" || rc=1
+          echo "VOICE_RU_BEGIN";cat ru.txt;echo "VOICE_RU_END"
+          echo "VOICE_DE_BEGIN";cat de.txt;echo "VOICE_DE_END"
+          test "$rc" -eq 0
+          grep -q VOICE_DONE=RU188 ru.txt
+          grep -q VOICE_DONE=DE89 de.txt
