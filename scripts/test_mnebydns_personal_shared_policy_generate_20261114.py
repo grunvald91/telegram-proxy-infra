@@ -61,9 +61,9 @@ with tempfile.TemporaryDirectory(prefix="mnebydns-single-source-test-") as d:
     assert output.read_bytes()==previous, "different output for identical CoreDNS source"
     # Production contains additional exact host routes. They must be inherited
     # without a new static count or second personalized domain registry.
-    extended=core.replace("}\n", "".join(
+    extended=core[:-2] + "".join(
         map(exact_template,[f"growth{i:03d}.example.net" for i in range(300)])
-    ) + "}\n",1)
+    ) + "}\n"
     config.write_text(extended)
     expanded=mod.generate(config,personal,output)
     assert expanded["core_a_templates"]==564
