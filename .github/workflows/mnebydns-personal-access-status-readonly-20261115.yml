@@ -1,0 +1,55 @@
+name: MNEBYDNS live personal access and ingress read-only audit
+on:
+  push:
+    branches: [diag/wg-altport-isolated-20261115]
+    paths: ['.github/workflows/mnebydns-personal-access-status-readonly-20261115.yml']
+permissions: {contents: read}
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Inspect aggregate entitlement state without identifiers or configuration changes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 'bash -se' <<'RU'
+          set -Eeuo pipefail
+          echo "AUDIT_PERSONAL_RU_OLD_CONTAINER=$(docker inspect -f '{{.State.Status}}' mnebydns-personal-dot 2>/dev/null || echo absent)"
+          echo "AUDIT_PERSONAL_RU_PRIVATE_CONTAINER=$(docker inspect -f '{{.State.Status}}' mnebydns-personal-dot-private 2>/dev/null || echo absent)"
+          if ss -H -lnt | grep -Eq '10\.66\.77\.2:8856\s'; then echo AUDIT_PERSONAL_RU_PRIVATE_8856=LISTENING; else echo AUDIT_PERSONAL_RU_PRIVATE_8856=NOT_LISTENING; fi
+          sql="BEGIN READ ONLY;
+          SET LOCAL statement_timeout='5s';
+          SELECT 'AUDIT_PERSONAL_TOTAL_CREDS='||count(*)
+             ||' LIVE_TIME_AND_STATE='||count(*) FILTER(WHERE e.starts_at<=clock_timestamp() AND e.expires_at>clock_timestamp() AND e.state::text='ACTIVE' AND c.revoked_at IS NULL)
+             ||' EXPIRED_NOT_REVOKED='||count(*) FILTER(WHERE e.expires_at<=clock_timestamp() AND c.revoked_at IS NULL)
+             ||' REVOKED='||count(*) FILTER(WHERE c.revoked_at IS NOT NULL)
+            FROM entitlements e JOIN personal_dns_credentials c ON c.entitlement_id=e.id
+            WHERE e.product='smart_dns';
+          SELECT 'AUDIT_PERSONAL_TRIAL_MAX_EXPIRY_UTC='||COALESCE(to_char(max(e.expires_at) AT TIME ZONE 'UTC','YYYY-MM-DD HH24:MI:SS'),'NONE')
+            FROM entitlements e JOIN orders o ON o.id=e.source_order_id
+            WHERE e.product='smart_dns' AND o.provider='internal_trial';
+          COMMIT;"
+          result="$(printf '%s\n' "$sql" | docker exec -i mnebyvpn-stage-postgres sh -c 'PGPASSWORD="$POSTGRES_PASSWORD" exec psql -XAt -v ON_ERROR_STOP=1 -h 127.0.0.1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' )"
+          printf '%s\n' "$result" | grep '^AUDIT_PERSONAL_' || true
+          echo "AUDIT_PERSONAL_RU_DB_READONLY=YES"
+          RU
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'bash -se' <<'DE'
+          set -Eeuo pipefail
+          echo "AUDIT_PERSONAL_DE_NGINX=$(systemctl is-active nginx 2>/dev/null || echo absent)"
+          if ss -H -lnt | grep -Eq '(^|[[:space:]])[^[:space:]]+:853[[:space:]]'; then echo AUDIT_PERSONAL_DE_853=LISTENING; else echo AUDIT_PERSONAL_DE_853=NOT_LISTENING; fi
+          if ss -H -lnt | grep -Eq '(^|[[:space:]])[^[:space:]]+:8856[[:space:]]'; then echo AUDIT_PERSONAL_DE_8856=LISTENING; else echo AUDIT_PERSONAL_DE_8856=NOT_LISTENING; fi
+          echo "AUDIT_PERSONAL_DE_READONLY=YES"
+          DE
