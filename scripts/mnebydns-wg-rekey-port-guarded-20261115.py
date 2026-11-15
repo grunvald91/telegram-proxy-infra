@@ -260,7 +260,11 @@ tag="$1"
 [[ "$tag" =~ ^[0-9]{6}$ ]] || exit 3
 root="/run/mnebywgfix-$tag"
 if [ -f "$root/confirmed" ]; then rm -f "$root/confirmed"; fi
-if [ -s "$root/rollback.sh" ]; then bash "$root/rollback.sh"; fi
+if [ -s "$root/rollback.sh" ]; then
+  bash "$root/rollback.sh"
+elif [ -d "$root" ] && [ ! -e "$root/ufw_added" ] && [ ! -e "$root/fw_added" ]; then
+  rm -rf -- "$root"
+fi
 echo WG_FIX_ROLLBACK_ATTEMPTED=yes
 """
 CONFIRM=r"""
