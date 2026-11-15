@@ -1,0 +1,83 @@
+name: MNEBYDNS live TCP kernel and NFQUEUE counters on both edges (read-only)
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/mnebydns-live-kernel-nfqws-readonly-20261115.yml']
+  workflow_dispatch:
+permissions: {contents: read}
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Read-only kernel TCP and netfilter queue/mangle inspection
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          for role in RU DE; do
+            if [[ "$role" == RU ]]; then pass="$RU_PASS";host=188.120.254.223;else pass="$DE_PASS";host=89.125.90.101;fi
+            SSHPASS="$pass" sshpass -e ssh "${opts[@]}" "root@$host" "python3 - $role" <<'PY'
+          import sys,subprocess,os,json,re,time,pathlib
+          role=sys.argv[1]
+          def cmd(*a,timeout=8):
+              try:
+                  p=subprocess.run(a,capture_output=True,text=True,timeout=timeout)
+                  return p.returncode,p.stdout
+              except Exception:return 255,""
+          def out(k,v):
+              if isinstance(v,(dict,list)):v=json.dumps(v,sort_keys=True,separators=(",",":"))
+              print("KERNDIAG_"+role+"_"+k+"="+str(v),flush=True)
+          units=["telegram-nfqws.service","telegram-foreign-nfqws.service","nginx.service","mnebydns-googlepilot.service"]
+          for unit in units:
+              rc,s=cmd("systemctl","is-active",unit)
+              out("SERVICE_"+unit,s.strip() or "unknown")
+          rc,s=cmd("nft","-j","list","chain","inet","telegram_nfqws","post")
+          if rc==0:
+              rules=[]
+              for o in json.loads(s).get("nftables",[]):
+                  r=o.get("rule")
+                  if not r:continue
+                  acts=[k for e in r.get("expr",[]) for k in ("accept","drop","reject","queue","mark","mangle") if k in e]
+                  rules.append({"comment":r.get("comment",""),"handle":r.get("handle"),
+                                "actions":acts,"counter_packets":next((e["counter"].get("packets") for e in r.get("expr",[]) if "counter" in e),None)})
+              out("NFQUEUE_POST_CHAIN",rules)
+          else:out("NFQUEUE_POST_CHAIN","UNAVAILABLE")
+          rc,s=cmd("cat","/proc/net/netfilter/nfnetlink_queue")
+          if rc==0:
+              queue=[]
+              for line in s.splitlines():
+                  p=line.split()
+                  if len(p)>=8:
+                      queue.append({"queue":p[0],"pid_available":p[1]!="-1","queue_len":p[2],
+                                    "dropped_kernel":p[5],"dropped_user":p[6],"seq":p[7]})
+              out("NFNETLINK_QUEUES",queue)
+          def tcpstat():
+              lines=pathlib.Path("/proc/net/netstat").read_text().splitlines()
+              d={}
+              for i in range(len(lines)-1):
+                  a,b=lines[i].split(),lines[i+1].split()
+                  if a and a[0]=="TcpExt:" and b and b[0]=="TcpExt:":
+                      d=dict(zip(a[1:],map(int,b[1:])))
+              return {k:d.get(k) for k in ("TCPSynRetrans","TCPTimeouts","TCPLossProbes","TCPLossProbeRecovery","TCPBacklogDrop","ListenDrops","TCPRcvQDrop","TCPDeferAcceptDrop","TCPOFOQueue","TCPOrigDataSent")}
+          initial=tcpstat();out("TCP_EXT_START",initial)
+          for iface in (("ens3" if role=="RU" else "eth0"),"tg-relay"):
+              rc,s=cmd("ip","-j","-s","link","show",iface)
+              if rc==0:
+                  j=json.loads(s)[0]
+                  d=j.get("stats64",j.get("stats",{}))
+                  out("LINK_"+iface,{"mtu":j.get("mtu"),"rx":{k:d.get("rx",{}).get(k) for k in ("errors","dropped","packets")},"tx":{k:d.get("tx",{}).get(k) for k in ("errors","dropped","packets")}})
+          time.sleep(6)
+          after=tcpstat()
+          out("TCP_EXT_DELTA_6SEC",{k:after[k]-initial[k] if after[k] is not None and initial[k] is not None else None for k in initial})
+          out("DONE","yes")
+          PY
+          done
