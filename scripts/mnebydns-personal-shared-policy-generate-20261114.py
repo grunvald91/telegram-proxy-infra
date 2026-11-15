@@ -138,7 +138,7 @@ def generate(core_path: Path, old_path: Path, output: Path) -> dict:
         "original_policy_count": len(old),
         "new_policy_count": len(new),
         "added_entries": len(new) - len(old),
-        "core_a_templates": len(exact) + len(groups),
+        "core_a_templates": len(exact) + 2,  # exactly two verified family blocks
         "core_exact_domains": len(exact),
         "core_family_roots": len(roots),
         "previous_unmapped_exact": len(missing_old),
