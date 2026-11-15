@@ -47,8 +47,15 @@ test "$(wg show tg-relay listen-port)" = "$old"
 test "$(wg show tg-relay peers | wc -l)" = 1
 wg show tg-relay endpoints | grep -Fq "$other:$otherold"
 ! ss -H -lun "( sport = :$new )" | grep -q .
-test "$(ufw status | head -1)" = "Status: active"
-! ufw status | grep -Eq "(^|[[:space:]])$new(/udp|[[:space:]])"
+if [ "$side" = RU ]; then
+  test "$(ufw status | head -1)" = "Status: active"
+  ! ufw status | grep -Eq "(^|[[:space:]])$new(/udp|[[:space:]])"
+else
+  test "$(iptables -S INPUT | head -1)" = "-P INPUT ACCEPT"
+  ! iptables -C INPUT -s "$other" -p udp --dport "$new" -j ACCEPT 2>/dev/null
+  ! iptables -C INPUT -p udp --dport "$new" -j DROP 2>/dev/null
+  ! ip6tables -C INPUT -p udp --dport "$new" -j DROP 2>/dev/null
+fi
 disk=/etc/wireguard/tg-relay.conf
 test -s "$disk"
 root="/run/mnebywgfix-$tag"
@@ -57,17 +64,37 @@ install -d -m 700 "$root"
 umask 077
 wg showconf tg-relay > "$root/original.wg"
 cp -p "$disk" "$root/original.file"
-python3 - "$root" "$disk" "$old" "$new" "$other" "$otherold" "$othernew" <<'PY'
+python3 - "$root" "$disk" "$old" "$new" "$other" "$otherold" "$othernew" "$side" <<'PY'
 import pathlib,re,sys
-root,disk,old,new,other,otherold,othernew=sys.argv[1:]
+root,disk,old,new,other,otherold,othernew,side=sys.argv[1:]
 raw=pathlib.Path(disk).read_text()
 def subst(k,prev,want,text):
     pat=r'(?m)^([ \t]*'+re.escape(k)+r'[ \t]*=[ \t]*)'+re.escape(prev)+r'([ \t]*(?:#[^\r\n]*)?)$'
     edited,n=re.subn(pat,lambda m:m.group(1)+want+m.group(2),text)
     if n!=1:raise RuntimeError("Expected unique original "+k+" entry, not found")
     return edited
-raw=subst('ListenPort',old,new,raw)
-raw=subst('Endpoint',other+':'+otherold,other+':'+othernew,raw)
+if side=='DE':
+    if re.search(r'(?m)^[ \t]*Endpoint[ \t]*=',raw):
+        raise RuntimeError('Unexpected DE static Endpoint')
+    raw=subst('ListenPort',old,new,raw)
+    lines=raw.splitlines(keepends=True)
+    counts={}
+    for i,line in enumerate(lines):
+        m=re.match(r'^[ \t]*(PostUp|PostDown)[ \t]*=',line)
+        if m:
+            edited,n=re.subn(r'(?<=--dport )'+re.escape(old)+r'(?=\D|$)',new,line)
+            lines[i]=edited
+            counts[m.group(1)]=n
+    if counts.get('PostUp',0)<3 or counts.get('PostDown',0)<2:
+        raise RuntimeError('Incomplete DE firewall PostUp/PostDown port change')
+    raw=''.join(lines)
+else:
+    if re.search(r'(?m)^[ \t]*ListenPort[ \t]*=',raw):
+        raise RuntimeError('Unexpected RU static ListenPort')
+    raw=subst('Endpoint',other+':'+otherold,other+':'+othernew,raw)
+    raw,n=re.subn(r'(?m)^\[Interface\][ \t]*\r?\n',
+                  lambda m:m.group(0)+'ListenPort = '+new+'\n',raw,count=1)
+    if n!=1:raise RuntimeError('RU Interface header missing or duplicated')
 pathlib.Path(root+'/candidate.file').write_text(raw)
 PY
 cat > "$root/rollback.sh" <<ROLLBACK
@@ -90,14 +117,26 @@ fi
 if test -f "\$root/ufw_added"; then
   ufw --force delete allow in on "$wan" from "$other" to "$(hostname -I | awk '{print $1}')" port "$new" proto udp >/dev/null 2>&1
 fi
+if test -f "\$root/fw_added"; then
+  iptables -D INPUT -p udp -s "$other" --dport "$new" -j ACCEPT >/dev/null 2>&1
+  iptables -D INPUT -p udp --dport "$new" -j DROP >/dev/null 2>&1
+  ip6tables -D INPUT -p udp --dport "$new" -j DROP >/dev/null 2>&1
+fi
 rm -rf -- "\$root"
 ROLLBACK
 # Fix destination to the exact public address rather than hostname-derived interfaces.
 selfip="188.120.254.223"; if [ "$side" = DE ]; then selfip="89.125.90.101"; fi
 chmod 700 "$root/rollback.sh"
 systemd-run --quiet --unit="mnebywgfix-$tag-revert" --on-active=480s --collect /bin/bash "$root/rollback.sh"
-ufw allow in on "$wan" from "$other" to "$selfip" port "$new" proto udp comment "MNEBYVPN WG verified port repair" >/dev/null
-touch "$root/ufw_added"
+if [ "$side" = RU ]; then
+  touch "$root/ufw_added"
+  ufw allow in on "$wan" from "$other" to "$selfip" port "$new" proto udp comment "MNEBYVPN WG verified port repair" >/dev/null
+else
+  touch "$root/fw_added"
+  iptables -I INPUT 1 -p udp -s "$other" --dport "$new" -j ACCEPT
+  iptables -I INPUT 2 -p udp --dport "$new" -j DROP
+  ip6tables -I INPUT 1 -p udp --dport "$new" -j DROP
+fi
 test "$(wg show tg-relay listen-port)" = "$old"
 cmp -s "$disk" "$root/original.file"
 echo WG_FIX_STAGED=yes
