@@ -1,3 +1,4 @@
+# rerun with verified secret-safe startup diagnostics
 name: MNEBYDNS 3.1 temporary RU-DE parallel tunnel A/B (guarded self-cleaning)
 on:
   push:
