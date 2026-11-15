@@ -1,5 +1,5 @@
 name: MNEBYDNS DE89 restoration - current live inventory (read-only)
-# Recheck after Jino A-record update on November 15.
+# Read-only post-Meta v30 and personal policy release verification.
 on:
   push:
     branches: [restore/mnebydns-de89-20261115]
