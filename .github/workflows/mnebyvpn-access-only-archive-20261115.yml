@@ -25,7 +25,7 @@ jobs:
           test -s ops/mnebydns-owner-ssh-known_hosts
           python3 -m py_compile scripts/mnebyvpn-access-only-backup-20261115.py
           openssl x509 -in ops/mnebyvpn-recovery-public-cert-20261115.pem -noout -fingerprint -sha256
-          test "$(openssl x509 -in ops/mnebyvpn-recovery-public-cert-20261115.pem -noout -fingerprint -sha256 | sed 's/.*=//' | tr -d ':')" = "51164F8C103B8A951DE832CBFEF3B073086818E4B65968C019B5176F0D065AA2"
+          test "$(openssl x509 -in ops/mnebyvpn-recovery-public-cert-20261115.pem -noout -fingerprint -sha256 | sed 's/.*=//' | tr -d ':')" = "9CB54F3CEA2E668E204960C9CC894DE491995B81EC9A1F516A33924C65CF7486"
           echo BACKUP_OFFSERVER_PUBLIC_RECIPIENT_VERIFIED=true
       - name: Encrypt selected source data on each server BEFORE transfer
         shell: bash
