@@ -1,0 +1,22 @@
+name: MNEBYVPN VPN and SmartDNS Xray sniffing offline regression
+on:
+  push:
+    branches: [fix/mnebydns-vpn-dns-sniff-20261115]
+    paths:
+      - .github/workflows/mnebydns-vpn-dns-sniff-offline-20261115.yml
+      - scripts/mnebydns-vpn-dns-sniff-fix-20261115.py
+      - tests/test_mnebydns_vpn_dns_sniff_fix_20261115.py
+permissions: {contents: read}
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Verify Python syntax and local-only regression tests
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-vpn-dns-sniff-fix-20261115.py tests/test_mnebydns_vpn_dns_sniff_fix_20261115.py
+          python3 tests/test_mnebydns_vpn_dns_sniff_fix_20261115.py
+          echo OFFLINE_GUARDED_VPN_SNI_PATCH_TESTS=PASS
