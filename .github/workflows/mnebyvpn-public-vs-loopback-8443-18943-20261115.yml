@@ -1,0 +1,68 @@
+name: MNEBYVPN retrans public 8443 versus loopback 18943 exact cohorts
+on:
+  push:
+    branches: [diag/mnebydns-live-video-stall-20261115]
+    paths: [.github/workflows/mnebyvpn-public-vs-loopback-8443-18943-20261115.yml]
+permissions: {contents: read}
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Compare actual retransmissions on public VPN ingress and internal Xray link read-only
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS" && test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY'
+          import subprocess,re,time,collections,json,datetime
+          def out(k,v):print("COHORT_"+k+"="+json.dumps(v,sort_keys=True),flush=True)
+          def cohort(a,b):
+              if a.endswith(":8443"):
+                  return "8443_PUBLIC_NGINX" if a.startswith("89.125.90.101:") else "8443_LOCAL_XRAY" if a.startswith("127.0.0.1:") else "8443_OTHER"
+              if a.endswith(":18943"):
+                  return "18943_LOCAL_XRAY" if a.startswith("127.0.0.1:") else "18943_OTHER"
+              if a.endswith(":2053"):return "2053_REALITY"
+              if a.endswith(":15449"):return "15449_LOCAL_GOOGLE_PROXY"
+              if a.endswith(":443"):return "443_PUBLIC_SMARTDNS" if a.startswith("89.125.90.101:") else "443_OTHER"
+              if b.endswith(":443"):return "443_OUTBOUND_OR_BACKEND"
+              return None
+          def sample():
+              p=subprocess.run(["ss","-Htin"],capture_output=True,text=True,timeout=14,check=True)
+              sockets={}
+              ident=None
+              for line in p.stdout.splitlines():
+                  tok=line.split()
+                  if len(tok)>4 and tok[0]=="ESTAB":
+                      group=cohort(tok[3],tok[4])
+                      ident=(tok[3],tok[4]) if group else None
+                      if ident:sockets[ident]={"group":group,"bytes_sent":0,"bytes_retrans":0,"bytes_received":0}
+                  elif ident and ("rtt:" in line or "bytes_sent:" in line):
+                      for k in ("bytes_sent","bytes_retrans","bytes_received"):
+                          m=re.search(r"(?<![A-Za-z])"+k+r":(\d+)",line)
+                          if m:sockets[ident][k]=int(m.group(1))
+                      ident=None
+              return sockets
+          before=sample();time.sleep(12);after=sample()
+          groups={}
+          for key,entry in after.items():
+              group=entry["group"]
+              stats=groups.setdefault(group,dict(sockets_after=0,stable_sockets=0,sent_delta_bytes=0,retrans_delta_bytes=0,received_delta_bytes=0,retrans_sockets=0))
+              stats["sockets_after"]+=1
+              if key in before and before[key]["group"]==group:
+                  stats["stable_sockets"]+=1
+                  for item in ("sent","retrans","received"):
+                      val=max(0,entry["bytes_"+item]-before[key]["bytes_"+item])
+                      stats[item+"_delta_bytes"]+=val
+                      if item=="retrans" and val>0:stats["retrans_sockets"]+=1
+          out("UTC",datetime.datetime.now(datetime.timezone.utc).isoformat())
+          out("WINDOW_S",12)
+          for key,stats in sorted(groups.items()):out(key,stats)
+          out("READONLY_COMPLETE",True)
+          PY
