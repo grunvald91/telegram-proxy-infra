@@ -1,0 +1,77 @@
+name: MNEBYDNS AmneziaWG two-node live compatibility preflight (read-only)
+on:
+  push:
+    branches: [feat/mnebydns-amneziawg-parallel-20261115]
+    paths: ['.github/workflows/mnebydns-amneziawg-preflight-20261115.yml']
+permissions: {contents: read}
+concurrency:
+  group: mnebydns-amneziawg-preflight
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Check pinned SSH transport and run inventory on two production nodes without changes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          if ! command -v sshpass >/dev/null; then sudo apt-get update -qq && sudo apt-get install -y -qq sshpass >/dev/null; fi
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          for role in DE RU; do
+            if [[ "$role" == DE ]]; then pass="$DE_PASS"; host=89.125.90.101; else pass="$RU_PASS"; host=188.120.254.223; fi
+            SSHPASS="$pass" sshpass -e ssh "${opts[@]}" "root@$host" "python3 -B - $role" <<'PY'
+          import sys,subprocess,os,json,pathlib,re
+          role=sys.argv[1]
+          def c(*args):
+              try:
+                  p=subprocess.run(args,text=True,capture_output=True,timeout=8)
+                  return p.returncode,p.stdout.strip()
+              except Exception as e:return 254,type(e).__name__
+          def emit(n,v):
+              print("AWGPREFLIGHT_"+role+"_"+n+"="+json.dumps(v,ensure_ascii=False,sort_keys=True),flush=True)
+          emit("PLATFORM",{"os":{x.split("=",1)[0]:x.split("=",1)[1].strip('"') for x in pathlib.Path("/etc/os-release").read_text().splitlines() if x.startswith(("ID=","VERSION_ID=","VERSION_CODENAME="))},
+               "kernel":os.uname().release,"arch":os.uname().machine,
+               "headers_present":pathlib.Path("/lib/modules/"+os.uname().release+"/build").exists(),
+               "tun_present":pathlib.Path("/dev/net/tun").exists()})
+          for bin in ("awg","awg-quick","amneziawg-go","wg","wg-quick","docker","dkms","make","gcc","ip","iptables","nft"):
+              p=c("bash","-lc","command -v "+bin)[1]
+              emit("BIN_"+bin,{"present":p.startswith("/")})
+          for mod in ("amneziawg","wireguard"):
+              rc,out=c("lsmod")
+              emit("MODULE_"+mod,{"loaded":bool(re.search(r"^"+re.escape(mod)+r"\\s",out,re.M))})
+          rc,out=c("systemctl","is-active","wg-quick@tg-relay")
+          emit("WG_SERVICE",out or str(rc))
+          rc,out=c("ip","-j","addr","show","dev","tg-relay")
+          try:
+              j=json.loads(out)[0]
+              emit("WG_INTERFACE",{"mtu":j.get("mtu"),
+                "ipv4":[x.get("local")+"/"+str(x.get("prefixlen")) for x in j.get("addr_info",[]) if x.get("family")=="inet"]})
+          except Exception:emit("WG_INTERFACE",{"error":"no_interface_or_parse"})
+          rc,out=c("wg","show","tg-relay","allowed-ips")
+          emit("WG_PEERS",{"allowed_ips":[x.split("\\t")[-1] for x in out.splitlines()][:5]})
+          rc,out=c("ip","-4","rule","show")
+          emit("POLICY_RULES",{"rules":[re.sub(r"(\\d{1,3}\\.){3}\\d{1,3}","<ip>",z) for z in out.splitlines()][:20]})
+          rc,out=c("ss","-H","-lunp")
+          matches=[re.search(r":(\\d+)\\s",x) for x in out.splitlines()]
+          ports=sorted({int(m.group(1)) for m in matches if m})
+          emit("UDP_PORTS",{"ports_of_interest":[v for v in ports if v in (443,853,19444,51820,56781,56782,56783,56784,54821,54822)]})
+          rc,out=c("dpkg-query","-W","-f=${binary:Package}=${Version}\\n","amneziawg","amneziawg-dkms","amneziawg-tools","wireguard-tools")
+          emit("PACKAGES",{"installed":[x for x in out.splitlines() if "amneziawg" in x or "wireguard-tools" in x][:8]})
+          for p in ("/etc/wireguard/tg-relay.conf","/etc/amnezia/amneziawg","/etc/amneziawg"):
+              f=pathlib.Path(p)
+              emit("PATH_EXISTS_"+p.replace("/","_"),f.exists())
+          emit("DONE",True)
+          PY
+          done
+          echo AWG_READONLY_PREFLIGHT_FINISHED=true
