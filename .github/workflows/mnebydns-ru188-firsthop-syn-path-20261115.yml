@@ -1,0 +1,110 @@
+name: MNEBYDNS pinpoint RU188 public SYN-SYNACK missing packets from external client
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/mnebydns-ru188-firsthop-syn-path-20261115.yml']
+  workflow_dispatch:
+permissions: {contents: read}
+jobs:
+  locate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Simultaneous read-only SYN captures at external runner and RU188
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass tcpdump >/dev/null
+          client_ip="$(curl --noproxy '*' -4 -fsS --max-time 7 https://api.ipify.org)"
+          python3 - "$client_ip" <<'PY'
+          import ipaddress,sys
+          assert ipaddress.ip_address(sys.argv[1]).is_global
+          PY
+          ssh_opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          remote() { SSHPASS="$RU_PASS" sshpass -e ssh "${ssh_opts[@]}" root@188.120.254.223 "$@"; }
+          remote 'command -v tcpdump >/dev/null && ip link show ens3 >/dev/null'
+          runner_filter='host 188.120.254.223 and tcp and (port 443 or port 853) and (tcp[tcpflags] & tcp-syn != 0)'
+          server_filter="host $client_ip and tcp and (port 443 or port 853) and (tcp[tcpflags] & tcp-syn != 0)"
+          remote "timeout -s INT 64 tcpdump -nn -S -tt -l -s 96 -i ens3 '$server_filter' 2>/dev/null" > "$RUNNER_TEMP/ru188-syn.txt" &
+          srv_pid=$!
+          sudo -n timeout -s INT 64 tcpdump -nn -S -tt -l -s 96 -i any "$runner_filter" > "$RUNNER_TEMP/runner-syn.txt" 2>/dev/null &
+          local_pid=$!
+          sleep 4
+          python3 - "$RUNNER_TEMP/probes.txt" <<'PY'
+          import socket,time,sys
+          out=open(sys.argv[1],"w",buffering=1)
+          for trial in range(42):
+              for port in (443,853):
+                  with socket.socket(socket.AF_INET,socket.SOCK_STREAM) as s:
+                      s.settimeout(2.7)
+                      s.bind(("0.0.0.0",0))
+                      localport=s.getsockname()[1]
+                      t=time.monotonic()
+                      try:s.connect(("188.120.254.223",port));kind="OK"
+                      except Exception as exc:kind=type(exc).__name__
+                      dt=(time.monotonic()-t)*1000
+                      print("PROBE",port,localport,round(dt,1),kind,file=out,flush=True)
+                  time.sleep(.04)
+          PY
+          wait "$srv_pid" || true
+          wait "$local_pid" || true
+          python3 - "$RUNNER_TEMP" <<'PY'
+          import pathlib,sys,re,json,statistics,math,collections
+          root=pathlib.Path(sys.argv[1])
+          # Absolute TCP initial sequence identifies a synthetic SYN across SNAT.
+          pattern=re.compile(r"IP ([\d.]+)\.(\d+) > ([\d.]+)\.(\d+): Flags \[([^\]]+)\].*?\bseq (\d+)")
+          def parse(name,runner):
+              syn=collections.defaultdict(list)
+              synack=collections.defaultdict(list)
+              for line in (root/name).read_text().splitlines():
+                  m=pattern.search(line)
+                  if not m:continue
+                  src,sp,dst,dp,flags,seq=m.groups();sp=int(sp);dp=int(dp);seq=int(seq)
+                  timestamp=float(line.split()[0])
+                  if flags=="S" and dp in (443,853):
+                      syn[(dp,seq)].append(timestamp)
+                  elif flags.startswith("S.") and sp in (443,853):
+                      ack=re.search(r"\back (\d+)",line)
+                      if ack:synack[(sp,(int(ack.group(1))-1)%(2**32))].append(timestamp)
+              return syn,synack
+          r_syn,r_ack=parse("runner-syn.txt",True)
+          s_syn,s_ack=parse("ru188-syn.txt",False)
+          rows=[]
+          for line in (root/"probes.txt").read_text().splitlines():
+              p=line.split()
+              if len(p)==5 and p[0]=="PROBE":rows.append((int(p[1]),int(p[2]),float(p[3]),p[4]))
+          port_key={}
+          for (dport,seq),stamps in r_syn.items():
+              # pcap capture is L3 before SNAT; runner source port is listed in the original SYN line.
+              for line in (root/"runner-syn.txt").read_text().splitlines():
+                  m=pattern.search(line)
+                  if m and m.group(5)=="S" and int(m.group(4))==dport and int(m.group(6))==seq:
+                      port_key[(dport,int(m.group(2)))]=(dport,seq)
+                      break
+          for port in (443,853):
+              items=[(local,ms,status) for dest,local,ms,status in rows if dest==port]
+              good=[ms for local,ms,status in items if status=="OK"]
+              def pct(a,p):
+                  return round(sorted(a)[min(len(a)-1,max(0,math.ceil(len(a)*p/100)-1))],1) if a else None
+              def have(d):return sum(key in d for key in [port_key.get((port,local)) for local,_,_ in items] if key)
+              data={"attempts":len(items),"success":len(good),"p50_ms":pct(good,50),
+                    "p95_ms":pct(good,95),"timeouts":len(items)-len(good),
+                    "syn_runner":have(r_syn),"syn_server":have(s_syn),
+                    "synack_server":have(s_ack),"synack_runner":have(r_ack),
+                    "syn_retrans_runner":sum(max(0,len(r_syn.get(port_key.get((port,local)),[]))-1) for local,_,_ in items),
+                    "synack_retrans_server":sum(max(0,len(s_ack.get(port_key.get((port,local)),[]))-1) for local,_,_ in items)}
+              print("FIRST_HOP_WIRE_"+str(port)+"="+json.dumps(data,separators=(",",":")),flush=True)
+              for local,ms,status in items:
+                  if ms<500 and status=="OK":continue
+                  k=port_key.get((port,local))
+                  print("FIRST_HOP_SLOW_"+str(port)+"="+json.dumps({"ms":ms,"status":status,
+                       "syn_at_runner":len(r_syn.get(k,[])),"syn_at_server":len(s_syn.get(k,[])),
+                       "synack_sent_server":len(s_ack.get(k,[])),"synack_received_runner":len(r_ack.get(k,[]))},separators=(",",":")),flush=True)
+          if len(rows)!=84:raise SystemExit("OWN_TEST_INCOMPLETE")
+          print("FIRST_HOP_TWO_SIDED_READONLY=COMPLETE",flush=True)
+          PY
