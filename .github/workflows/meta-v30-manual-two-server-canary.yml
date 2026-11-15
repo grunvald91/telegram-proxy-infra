@@ -28,11 +28,23 @@ on:
         required: false
         default: 'on'
       window:
-        description: 'Clamped receive window size (bytes): 8 (default) or 4 (TZ)'
+        description: 'Clamped receive window size (bytes): 8 (default), 4 (TZ), or 16'
         type: choice
-        options: ['8', '4']
+        options: ['8', '4', '16']
         required: false
         default: '8'
+      prefix_timeout:
+        description: 'Server read_prefix timeout in seconds (12 default; 25/30 for tiny windows)'
+        type: choice
+        options: ['12', '25', '30']
+        required: false
+        default: '12'
+      unclamped_seconds:
+        description: 'Phase 1 unclamped window in phased mode (seconds, <= half of duration)'
+        type: choice
+        options: ['540', '660', '720']
+        required: false
+        default: '540'
       duration_minutes:
         description: 'Test window in minutes'
         type: choice
@@ -96,6 +108,8 @@ jobs:
           SELECTED_MINUTES: ${{ github.event_name == 'push' && '15' || inputs.duration_minutes }}
           SELECTED_CLAMP_MODE: ${{ github.event_name == 'push' && 'on' || inputs.clamp_mode }}
           SELECTED_WINDOW: ${{ github.event_name == 'push' && '8' || inputs.window }}
+          SELECTED_PREFIX_TIMEOUT: ${{ github.event_name == 'push' && '12' || inputs.prefix_timeout }}
+          SELECTED_UNCLAMPED_SECONDS: ${{ github.event_name == 'push' && '540' || inputs.unclamped_seconds }}
         run: |
           set -Eeuo pipefail
           if [[ "$SELECTED_MODE" == "preflight" ]]; then
@@ -107,6 +121,12 @@ jobs:
             fi
             if [[ "${SELECTED_WINDOW:-8}" != "8" ]]; then
               extra_args+=(--window "$SELECTED_WINDOW")
+            fi
+            if [[ "${SELECTED_PREFIX_TIMEOUT:-12}" != "12" ]]; then
+              extra_args+=(--prefix-timeout "$SELECTED_PREFIX_TIMEOUT")
+            fi
+            if [[ "${SELECTED_UNCLAMPED_SECONDS:-540}" != "540" ]]; then
+              extra_args+=(--unclamped-seconds "$SELECTED_UNCLAMPED_SECONDS")
             fi
             python3 -u scripts/meta_v30_actions_adapter.py --mode activate \
               --phone-ip "$SELECTED_IP" --minutes "$SELECTED_MINUTES" "${extra_args[@]}" | tee -a "$GITHUB_STEP_SUMMARY"

@@ -65,11 +65,116 @@ class ClampAndWindowTests(unittest.TestCase):
         self.assertIn("dnat ip to 188.120.254.223:18443", rules_off)
         self.assertIn("meta mark set meta mark | 0x40000000", rules_off)
 
-        for bad_w in (0, 2, 16, True):
+        rules_w16 = receiver.nft_rules(ru.RU_EDGE, "8.8.8.8", interface="ens3", window=16, clamp=True)
+        self.assertIn("tcp window > 16 counter tcp window set 16", rules_w16)
+
+        for bad_w in (0, 2, 32, True):
             with self.assertRaises(ValueError):
                 receiver.nft_rules(ru.RU_EDGE, "8.8.8.8", window=bad_w)
         with self.assertRaises(ValueError):
             receiver.nft_rules(ru.RU_EDGE, "8.8.8.8", clamp="off")
+
+    def test_window_proxy_forwards_prefix_timeout_to_read_prefix(self):
+        with self.assertRaises(ValueError):
+            receiver.WindowProxy("188.120.254.223", "8.8.8.8", prefix_timeout=999)
+
+        proxy = receiver.WindowProxy("188.120.254.223", "8.8.8.8", prefix_timeout=25)
+        proxy.slots.acquire()
+        conn = Mock()
+        conn.getsockopt.side_effect = [b"\x00\x02\x01\xbb" + b"\xbc\x78\xfe\xdf" + b"\0" * 8, b"\0" * 16]
+        with patch.object(receiver, "read_prefix", side_effect=OSError("stop_after_read")) as rp:
+            proxy.handle(conn)
+        rp.assert_called_once_with(conn, timeout=25)
+
+    def test_ru_stage_supports_window_16_and_prefix_timeout(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d) / "state"
+            commands = []
+            timer_armed = {"on": False}
+
+            def rich_cmd(argv, **kwargs):
+                commands.append(list(argv))
+                if argv[:2] == ["ip", "-j"]:
+                    return SimpleNamespace(returncode=0, stdout='[{"dev":"tg-relay"}]')
+                if argv[:2] == ["ip", "-4"]:
+                    return SimpleNamespace(returncode=0, stdout="2: ens3    inet 188.120.254.223/24")
+                if argv[:2] == ["sysctl", "-n"]:
+                    return SimpleNamespace(returncode=0, stdout="1\n")
+                if argv[:2] == ["ss", "-H"]:
+                    return SimpleNamespace(returncode=0, stdout="" if f":{ru.TEST_PORT}" in " ".join(argv) else "LISTEN 0 4096 0.0.0.0:443")
+                if argv[:2] == ["nft", "-j"]:
+                    return SimpleNamespace(returncode=0, stdout=json.dumps({
+                        "nftables": [{"rule": {"expr": [
+                            {"match": {"op": "==", "left": {"&": [{"meta": {"key": "mark"}}, receiver.BYPASS]}, "right": 0}},
+                            {"queue": {"num": 210}},
+                        ]}}]
+                    }))
+                if argv[:2] == ["systemd-run", "--quiet"] and f"{ru.UNIT}" in argv:
+                    timer_armed["on"] = True
+                    return SimpleNamespace(returncode=0, stdout="")
+                return SimpleNamespace(returncode=0, stdout="")
+
+            def fake_active(name):
+                if name == "wg-quick@tg-relay.service":
+                    return True
+                if name == f"{ru.UNIT}.timer":
+                    return timer_armed["on"]
+                return False
+
+            with patch.object(ru, "ROOT", root), \
+                 patch.object(ru, "owner_flag"), \
+                 patch.object(ru, "active", side_effect=fake_active), \
+                 patch.object(ru, "table_exists", side_effect=[False, True]), \
+                 patch.object(ru, "verify_non_meta_fallback"), \
+                 patch.object(ru, "firewall_present", return_value=False), \
+                 patch.object(ru, "firewall_install"), \
+                 patch.object(ru, "ready_worker", return_value=True), \
+                 patch.object(ru, "evidence_ready", return_value=True), \
+                 patch.object(ru, "verify_tls_path", return_value=1), \
+                 patch.object(ru, "cmd", side_effect=rich_cmd):
+                ru.start("8.8.8.8", window=16, prefix_timeout=25)
+
+            worker_cmds = [c for c in commands if any("meta_v15_receive_window.py" in str(a) for a in c)]
+            self.assertEqual(len(worker_cmds), 1)
+            self.assertIn("--window", worker_cmds[0])
+            self.assertEqual(worker_cmds[0][worker_cmds[0].index("--window") + 1], "16")
+            self.assertIn("--prefix-timeout", worker_cmds[0])
+            self.assertEqual(worker_cmds[0][worker_cmds[0].index("--prefix-timeout") + 1], "25")
+            self.assertEqual((root / "window").read_text(), "16")
+            self.assertEqual((root / "prefix_timeout").read_text(), "25")
+
+    def test_runner_and_termux_script_support_clamped_timeout_and_workflow_inputs(self):
+        seen_timeouts = []
+
+        def fake_probe(sni, *, edge_ip=runner.RU_EDGE, timeout=10, url_path="/", **kwargs):
+            seen_timeouts.append((sni, timeout))
+            return {"ok": True, "http": 200, "time_connect": "0.05", "time_appconnect": "0.10", "comment": ""}
+
+        with tempfile.TemporaryDirectory() as d:
+            script_path = Path(d) / "run.sh"
+            with patch.object(runner, "probe_curl", side_effect=fake_probe):
+                runner.main([
+                    "run", "--run-id", "t1", "--operator", "wifi_ru", "--network-type", "wifi",
+                    "--cells", "A", "B", "--attempts", "1", "--pause", "0",
+                    "--timeout", "10", "--clamped-timeout", "25",
+                ])
+            self.assertEqual(seen_timeouts, [("gemini.google.com", 10), ("gemini.google.com", 25)])
+
+            runner.main([
+                "generate-termux-script", "--run-id", "t1", "--operator", "wifi_ru",
+                "--network-type", "wifi", "--timeout", "10", "--clamped-timeout", "25",
+                "--out", str(script_path),
+            ])
+            text = script_path.read_text(encoding="utf-8")
+            self.assertIn("UNCLAMPED_TIMEOUT=10", text)
+            self.assertIn("CLAMPED_TIMEOUT=25", text)
+
+        wf_path = Path(__file__).resolve().parents[2] / ".github/workflows/meta-v30-manual-two-server-canary.yml"
+        wf_text = wf_path.read_text(encoding="utf-8")
+        self.assertIn("options: ['8', '4', '16']", wf_text)
+        self.assertIn("prefix_timeout:", wf_text)
+        self.assertIn("options: ['12', '25', '30']", wf_text)
+        self.assertIn("unclamped_seconds:", wf_text)
 
     def test_ru_stage_set_clamp_off_and_on_with_window_4(self):
         with tempfile.TemporaryDirectory() as d:
@@ -621,6 +726,151 @@ class TZVerdictsAndRunnerTests(unittest.TestCase):
         self.assertEqual(agg_validity["V2"]["status"], "PASS")
         self.assertEqual(agg_validity["V2"]["le4"], 20)
         self.assertEqual(agg_validity["V2"]["total"], 20)
+
+    def test_curves_option_forwarded_to_curl_and_termux_script(self):
+        cmds = []
+
+        def fake_subproc(cmd, **kwargs):
+            cmds.append(list(cmd))
+            return SimpleNamespace(returncode=0, stdout="200 0.03 0.12", stderr="")
+
+        with patch.object(runner.subprocess, "run", side_effect=fake_subproc):
+            res = runner.probe_curl("i.instagram.com", curves="X25519")
+        self.assertTrue(res["ok"])
+        idx = cmds[0].index("--curves")
+        self.assertEqual(cmds[0][idx + 1], "X25519")
+
+        with self.assertRaises(ValueError):
+            runner.probe_curl("i.instagram.com", curves="X25519; rm -rf /")
+
+        with tempfile.TemporaryDirectory() as d:
+            script_path = Path(d) / "curves.sh"
+            runner.main([
+                "generate-termux-script", "--run-id", "c1", "--operator", "wifi_ru",
+                "--network-type", "wifi", "--curves", "X25519", "--out", str(script_path),
+            ])
+            text = script_path.read_text(encoding="utf-8")
+            self.assertIn("CURVES=X25519", text)
+            self.assertIn("--curves", text)
+            proc = subprocess.run(["bash", "-n", str(script_path)], capture_output=True, text=True, timeout=10)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    def test_termux_script_fixes_curl_timeout_concatenation_and_partial_200_punish(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            bin_dir = tmp / "bin"
+            bin_dir.mkdir()
+            curl_shim = bin_dir / "curl"
+            curl_shim.write_text(
+                "#!/usr/bin/env python3\n"
+                "import sys\n"
+                "url = sys.argv[-1]\n"
+                "args = ' '.join(sys.argv[1:])\n"
+                "if 'api.ipify.org' in url:\n"
+                "    sys.stdout.write('185.137.178.123')\n"
+                "    sys.exit(0)\n"
+                "if 'i.instagram.com' in url:\n"
+                "    sys.stdout.write('000 0.000000 0.000000')\n"
+                "    sys.exit(28)\n"
+                "if 'gemini.google.com' in url:\n"
+                "    if '%{time_appconnect}' in args:\n"
+                "        sys.stdout.write('200 0.030000 0.190000')\n"
+                "        sys.exit(0)\n"
+                "    sys.stdout.write('200')\n"
+                "    sys.exit(28)\n"
+                "sys.exit(1)\n",
+                encoding="utf-8",
+            )
+            curl_shim.chmod(0o755)
+            script_path = tmp / "run.sh"
+            csv_path = tmp / "out.csv"
+            runner.main([
+                "generate-termux-script", "--run-id", "p3", "--operator", "wifi_ru",
+                "--network-type", "wifi", "--attempts", "1", "--pause", "0",
+                "--out", str(script_path),
+            ])
+            env = dict(os.environ, PATH=f"{bin_dir}:{os.environ.get('PATH', '')}")
+            proc = subprocess.run(
+                ["bash", str(script_path), "unclamped", str(csv_path)],
+                env=env, capture_output=True, text=True, timeout=15,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            rows = runner.read_csv(csv_path)
+            self.assertEqual([r["ячейка"] for r in rows], ["A", "C"])
+            row_c = rows[1]
+            self.assertEqual(row_c["time_appconnect"], "0.000000")
+            self.assertIn("ip_punish_check=PASS", row_c["комментарий"])
+            self.assertNotIn("200000", row_c["комментарий"])
+            self.assertFalse(runner.evaluate_rows(rows)["ip_punishment_observed"])
+
+    def test_python_runner_and_termux_enforce_phase_deadlines_and_partial_punish(self):
+        called = []
+
+        def fake_probe(sni, *, edge_ip=runner.RU_EDGE, timeout=10, url_path="/"):
+            called.append(sni)
+            if sni == "i.instagram.com":
+                return {"ok": False, "http": 0, "time_connect": "0", "time_appconnect": "0", "comment": "timeout"}
+            if len(called) == 2:
+                return {"ok": False, "http": 200, "time_connect": "0.03", "time_appconnect": "0.18", "comment": "curl_rc=28"}
+            return {"ok": True, "http": 200, "time_connect": "0.03", "time_appconnect": "0.18", "comment": ""}
+
+        with tempfile.TemporaryDirectory() as d:
+            csv_partial = Path(d) / "partial.csv"
+            with patch.object(runner, "probe_curl", side_effect=fake_probe):
+                runner.main([
+                    "run", "--run-id", "r_p", "--operator", "wifi_ru", "--network-type", "wifi",
+                    "--cells", "C", "--attempts", "1", "--pause", "0", "--out-csv", str(csv_partial),
+                ])
+            rows_p = runner.read_csv(csv_partial)
+            self.assertIn("ip_punish_check=PASS(partial)", rows_p[0]["комментарий"])
+            self.assertFalse(runner.evaluate_rows(rows_p)["ip_punishment_observed"])
+
+            # Expired phase1 deadline prevents unclamped probes while future phase2 still executes.
+            called.clear()
+            csv_guarded = Path(d) / "guarded.csv"
+            with patch.object(runner, "probe_curl", side_effect=fake_probe):
+                runner.main([
+                    "run", "--run-id", "r_g", "--operator", "wifi_ru", "--network-type", "wifi",
+                    "--cells", "A", "C", "B", "--attempts", "1", "--pause", "0",
+                    "--phase1-deadline-utc", "1000", "--phase2-deadline-utc", "9999999999",
+                    "--out-csv", str(csv_guarded),
+                ])
+            rows_g = runner.read_csv(csv_guarded)
+            self.assertEqual([r["ячейка"] for r in rows_g], ["B"])
+
+            # Bash script stops unclamped loop cleanly if PHASE1_DEADLINE_UTC has passed.
+            bin_dir = Path(d) / "bin2"
+            bin_dir.mkdir()
+            log_file = Path(d) / "calls.log"
+            shim = bin_dir / "curl"
+            shim.write_text(
+                "#!/usr/bin/env python3\n"
+                "import sys\n"
+                "url = sys.argv[-1]\n"
+                "if 'api.ipify.org' in url:\n"
+                "    sys.stdout.write('185.137.178.123')\n"
+                "    sys.exit(0)\n"
+                f"open({str(log_file)!r}, 'a').write(url + '\\n')\n"
+                "sys.stdout.write('200 0.03 0.18')\n",
+                encoding="utf-8",
+            )
+            shim.chmod(0o755)
+            script_path = Path(d) / "guarded.sh"
+            csv_sh = Path(d) / "sh.csv"
+            runner.main([
+                "generate-termux-script", "--run-id", "g1", "--operator", "wifi_ru",
+                "--network-type", "wifi", "--attempts", "2", "--pause", "0",
+                "--phase1-deadline-utc", "1000", "--phase2-deadline-utc", "9999999999",
+                "--phase-margin", "15", "--out", str(script_path),
+            ])
+            env = dict(os.environ, PATH=f"{bin_dir}:{os.environ.get('PATH', '')}")
+            proc = subprocess.run(
+                ["bash", str(script_path), "unclamped", str(csv_sh)],
+                env=env, capture_output=True, text=True, timeout=15,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertFalse(log_file.exists())
+            self.assertEqual(runner.read_csv(csv_sh), [])
 
 
 class TestPost186Compatibility(unittest.TestCase):

@@ -103,6 +103,60 @@ class AdapterTests(unittest.TestCase):
         remote.run("de","stage","8.8.8.8")
         self.assertIn(" --peer 8.8.8.8",calls[0][0][1])
 
+    def test_remote_passes_window_16_and_prefix_timeout_to_ru_stage(self):
+        remote=object.__new__(m.Remote)
+        remote.window=16
+        remote.prefix_timeout=30
+        calls=[]
+        remote.call=lambda *a,**k: calls.append((a,k)) or "ok"
+        remote.run("ru","start","8.8.8.8")
+        self.assertIn(" --window 16",calls[0][0][1])
+        self.assertIn(" --prefix-timeout 30",calls[0][0][1])
+        remote.run("ru","set-clamp-on")
+        self.assertIn(" --window 16",calls[1][0][1])
+        self.assertNotIn("--prefix-timeout",calls[1][0][1])
+        with self.assertRaises(ValueError):
+            m.Remote(window=32)
+        with self.assertRaises(ValueError):
+            m.Remote(prefix_timeout=999)
+
+    def test_adapter_main_forwards_window_16_and_prefix_timeout(self):
+        class Fake:
+            def preflight(self,role):pass
+            def stage_files(self,role):pass
+            def run(self,role,action,peer=None):return "{}"
+            def active_window(self,seconds,**kwargs):pass
+            def collect_evidence(self,**kwargs):
+                return {"schema":1,"capture_point":"RU_ENS3_INBOUND_PRE_DNAT","worker_pid":1,
+                        "updated_at":9999999999.0,"final":True,"capture_ok":True,"kernel_drops":0,
+                        "stats":{"syn":1,"target_clienthello":1,"sni_split":1,"sni_unsplit":0,
+                                 "sni_boundary_indeterminate":0,"evictions":0,"payload_without_syn":0}}
+            def reset(self,role):pass
+        with patch.object(m,"Remote",return_value=Fake()) as remote_cls, \
+             patch.dict(os.environ,{"GITHUB_EVENT_NAME":"workflow_dispatch",
+                                    "MNEBY_META_V30_APPROVED":m.APPROVAL}), \
+             patch.object(m.signal,"signal"):
+            m.main(["--mode","activate","--phone-ip","all","--minutes","30",
+                    "--clamp-mode","phased","--window","16","--prefix-timeout","30"])
+        remote_cls.assert_called_once_with(window=16,prefix_timeout=30)
+
+    def test_active_window_phased_prints_phase_deadline_timestamps(self):
+        remote=object.__new__(m.Remote)
+        remote.run=lambda role,action: ""
+        remote.verify_health=lambda: None
+        remote.collect_evidence=lambda **kwargs: {}
+        remote._wait_health_loop=lambda seconds,*,checks_start=0: checks_start+1
+        import contextlib
+        buf=io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            remote.active_window(1800,clamp_mode="phased",unclamped_seconds=540)
+        out=buf.getvalue()
+        self.assertIn("meta_v30_test_window_started_epoch=",out)
+        self.assertIn("meta_v30_phase1_ends_epoch=",out)
+        self.assertIn("meta_v30_phase1_ends_utc=",out)
+        self.assertIn("meta_v30_test_window_ends_epoch=",out)
+        self.assertIn("meta_v30_test_window_ends_utc=",out)
+
     def test_health_requires_actual_services_routes_and_timers(self):
         remote=object.__new__(m.Remote)
         remote.run=lambda role,action: "\n".join(m.HEALTH[role])+"\n"

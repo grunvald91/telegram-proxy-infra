@@ -24,6 +24,9 @@ from mnebydns_iglite_sni_observer import LIMIT, locate_partial_sni, clienthello_
 BYPASS = 0x40000000
 RELEASED = 0x20000000
 WINDOW = 8
+SUPPORTED_WINDOWS = (4, 8, 16)
+DEFAULT_PREFIX_TIMEOUT = 12
+SUPPORTED_PREFIX_TIMEOUTS = (12, 25, 30)
 CLAMP = 65535
 MAX_CLIENTS = 64
 MAX_LIFETIME = 1500
@@ -47,7 +50,7 @@ def out_clamp_rule(edge, peer, *, port=18443, table="mneby_meta_v15", window=WIN
         raise ValueError("invalid canary endpoint")
     if not re.fullmatch(r"[a-zA-Z0-9_]{1,40}", table):
         raise ValueError("invalid table")
-    if type(window) is not int or window not in (4, 8):
+    if type(window) is not int or window not in SUPPORTED_WINDOWS:
         raise ValueError("invalid window")
     destination="" if shared else f"ip daddr {peer} "
     return (f"add rule inet {table} out ip saddr {edge} {destination}tcp sport {port} "
@@ -57,7 +60,7 @@ def out_clamp_rule(edge, peer, *, port=18443, table="mneby_meta_v15", window=WIN
 
 def nft_rules(edge, peer, *, port=18443, interface="eth0", table="mneby_meta_v15",
               window=WINDOW, clamp=True):
-    if type(window) is not int or window not in (4, 8) or not isinstance(clamp, bool):
+    if type(window) is not int or window not in SUPPORTED_WINDOWS or not isinstance(clamp, bool):
         raise ValueError("invalid window or clamp")
     edge=ipv4(edge)
     shared=peer=="all"
@@ -187,13 +190,16 @@ def relay(left, right, stop, *, idle=60):
 
 class WindowProxy:
     def __init__(self, edge, peer, *, port=18443, backend=("127.0.0.1",443),
-                 non_meta_backend=None):
+                 non_meta_backend=None, prefix_timeout=DEFAULT_PREFIX_TIMEOUT):
         self.edge=ipv4(edge)
         self.peer=None if peer=="all" else ipv4(peer)
         if self.peer is None and non_meta_backend is None:
             raise ValueError("shared receiver requires the reviewed RU fallback")
+        if type(prefix_timeout) is not int or prefix_timeout not in SUPPORTED_PREFIX_TIMEOUTS:
+            raise ValueError("invalid prefix_timeout")
         self.port, self.backend = port, backend
         self.non_meta_backend = non_meta_backend
+        self.prefix_timeout = prefix_timeout
         if non_meta_backend is not None and (
                 self.edge != "188.120.254.223" or
                 backend != ("10.66.77.1", 443) or
@@ -271,7 +277,7 @@ class WindowProxy:
             if receive_scale(conn) != 0:
                 raise RuntimeError("receive scale must be zero")
             self.count("scale_zero")
-            prefix, host = read_prefix(conn)
+            prefix, host = read_prefix(conn, timeout=self.prefix_timeout)
             self.count("target_sni" if host in HOSTS else "other_protocol")
             # Linux still believes its original advertised window. Because
             # scale zero was negotiated by the kernel itself, restoring the
@@ -322,7 +328,8 @@ def main():
     parser.add_argument("--edge",default="89.125.90.101")
     parser.add_argument("--peer",required=True)
     parser.add_argument("--port",type=int,default=18443)
-    parser.add_argument("--window",type=int,choices=(4,8),default=WINDOW)
+    parser.add_argument("--window",type=int,choices=SUPPORTED_WINDOWS,default=WINDOW)
+    parser.add_argument("--prefix-timeout",type=int,choices=SUPPORTED_PREFIX_TIMEOUTS,default=DEFAULT_PREFIX_TIMEOUT)
     parser.add_argument("--max-lifetime",type=int,choices=(1500,2700),default=1500)
     parser.add_argument("--backend-address",choices=("127.0.0.1","10.66.77.1"),default="127.0.0.1")
     parser.add_argument("--non-meta-backend-address",choices=("188.120.254.223",))
@@ -336,7 +343,8 @@ def main():
                 if args.non_meta_backend_address else None)
     proxy=WindowProxy(args.edge,args.peer,port=args.port,
                       backend=(args.backend_address,443),
-                      non_meta_backend=fallback)
+                      non_meta_backend=fallback,
+                      prefix_timeout=args.prefix_timeout)
     def stop(signum, frame):proxy.stop.set()
     for sig in (signal.SIGTERM,signal.SIGINT,signal.SIGHUP):signal.signal(sig,stop)
     evidence=None

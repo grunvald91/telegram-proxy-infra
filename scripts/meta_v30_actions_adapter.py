@@ -6,6 +6,7 @@ workflow_dispatch, manual approval and a current public phone IPv4.
 """
 from __future__ import annotations
 import argparse
+import datetime as dt
 import io
 import json
 import os
@@ -15,6 +16,11 @@ import shlex
 import subprocess
 import tarfile
 import time
+from meta_v15_receive_window import (
+    DEFAULT_PREFIX_TIMEOUT,
+    SUPPORTED_PREFIX_TIMEOUTS,
+    SUPPORTED_WINDOWS,
+)
 from meta_v29_two_server_sequence import Trial, checked_phone_ip, RU, DE
 from meta_v31_sni_evidence import validate_report,validate_tz_report,write_report
 
@@ -94,12 +100,15 @@ def check_approval(phone_ip,approved,event):
     return peer
 
 class Remote:
-    def __init__(self,*,repo_root=ROOT,env=None,window=8):
+    def __init__(self,*,repo_root=ROOT,env=None,window=8,prefix_timeout=DEFAULT_PREFIX_TIMEOUT):
         self.root=repo_root
         self.env=dict(os.environ if env is None else env)
-        if type(window) is not int or window not in (4,8):
-            raise ValueError("window must be 4 or 8")
+        if type(window) is not int or window not in SUPPORTED_WINDOWS:
+            raise ValueError("window must be 4, 8 or 16")
+        if type(prefix_timeout) is not int or prefix_timeout not in SUPPORTED_PREFIX_TIMEOUTS:
+            raise ValueError("prefix_timeout must be 12, 25 or 30")
         self.window=window
+        self.prefix_timeout=prefix_timeout
         validate_manifest(repo_root)
         self.known=repo_root/"ops/mnebydns-owner-ssh-known_hosts"
         self.payload=bundle(repo_root)
@@ -193,6 +202,9 @@ class Remote:
         window=getattr(self,"window",8)
         if role=="ru" and action in ("start","set-clamp-on","set-clamp-off") and window!=8:
             command+=" --window "+str(window)
+        prefix_timeout=getattr(self,"prefix_timeout",DEFAULT_PREFIX_TIMEOUT)
+        if role=="ru" and action=="start" and prefix_timeout!=DEFAULT_PREFIX_TIMEOUT:
+            command+=" --prefix-timeout "+str(prefix_timeout)
         return self.call(role,command,timeout=145 if needs_peer else 70)
 
     def verify_health(self):
@@ -240,15 +252,26 @@ class Remote:
             print("meta_v30_clamp_phase=OFF_FOR_CELLS_A_C",flush=True)
         self.verify_health()
         self.collect_evidence(require_success=True)
+        start_epoch=int(time.time())
+        end_epoch=start_epoch+seconds
+        end_utc=dt.datetime.fromtimestamp(end_epoch,dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         print("meta_v30_phone_test_ready=true",flush=True)
         print("meta_v30_test_window_started=true",flush=True)
+        print("meta_v30_test_window_started_epoch="+str(start_epoch),flush=True)
         print("meta_v30_test_window_seconds="+str(seconds),flush=True)
+        print("meta_v30_test_window_ends_epoch="+str(end_epoch),flush=True)
+        print("meta_v30_test_window_ends_utc="+end_utc,flush=True)
         if clamp_mode=="phased":
             phase1=min(max(1,unclamped_seconds),max(1,seconds//2))
             phase2=max(0,seconds-phase1)
+            phase1_end_epoch=start_epoch+phase1
+            phase1_end_utc=dt.datetime.fromtimestamp(phase1_end_epoch,dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            print("meta_v30_phase1_ends_epoch="+str(phase1_end_epoch),flush=True)
+            print("meta_v30_phase1_ends_utc="+phase1_end_utc,flush=True)
             checks=self._wait_health_loop(phase1,checks_start=0)
             self.run("ru","set-clamp-on")
             print("meta_v30_clamp_phase=ON_FOR_CELLS_B_D_E",flush=True)
+            print("meta_v30_clamp_phase_epoch="+str(int(time.time())),flush=True)
             if phase2>0:
                 self._wait_health_loop(phase2,checks_start=checks)
         else:
@@ -272,7 +295,8 @@ def main(argv=None):
     p.add_argument("--minutes",type=int,default=30)
     p.add_argument("--clamp-mode",choices=("on","off","phased"),default="on")
     p.add_argument("--unclamped-seconds",type=int,default=540)
-    p.add_argument("--window",type=int,choices=(4,8),default=8)
+    p.add_argument("--window",type=int,choices=SUPPORTED_WINDOWS,default=8)
+    p.add_argument("--prefix-timeout",type=int,choices=SUPPORTED_PREFIX_TIMEOUTS,default=DEFAULT_PREFIX_TIMEOUT)
     args=p.parse_args(argv)
     if args.mode=="validate":
         validate_manifest()
@@ -285,10 +309,17 @@ def main(argv=None):
                             os.environ.get("GITHUB_EVENT_NAME"))
         if args.minutes not in (5,15,30):
             raise ValueError("approved window must be 5, 15 or 30 minutes")
+        if args.unclamped_seconds<=0:
+            raise ValueError("unclamped_seconds must be positive")
     if args.mode=="activate":
         signal.signal(signal.SIGTERM,cancel_trial)
         signal.signal(signal.SIGINT,cancel_trial)
-    adapter=Remote() if args.window==8 else Remote(window=args.window)
+    remote_kwargs={}
+    if args.window!=8:
+        remote_kwargs["window"]=args.window
+    if args.prefix_timeout!=DEFAULT_PREFIX_TIMEOUT:
+        remote_kwargs["prefix_timeout"]=args.prefix_timeout
+    adapter=Remote(**remote_kwargs)
     for role in ("de","ru"):
         adapter.preflight(role)
         print("meta_v30_"+role+"_preflight=PASS",flush=True)

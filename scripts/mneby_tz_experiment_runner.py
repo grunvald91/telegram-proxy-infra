@@ -19,6 +19,7 @@ import datetime as dt
 import json
 import math
 from pathlib import Path
+import re
 import shlex
 import subprocess
 import sys
@@ -113,21 +114,33 @@ def is_http_success(http_code: int) -> bool:
     return 200 <= http_code <= 499
 
 
+def _validate_curves(curves: str | None) -> str | None:
+    if curves is None or curves == "":
+        return None
+    if not isinstance(curves, str) or not re.fullmatch(r"[A-Za-z0-9:._/-]{1,128}", curves):
+        raise ValueError("invalid TLS curves specification")
+    return curves
+
+
 def probe_curl(
     sni: str,
     *,
     edge_ip: str = RU_EDGE,
     timeout: int = 10,
     url_path: str = "/",
+    curves: str | None = None,
 ) -> dict[str, object]:
     """Execute one synthetic curl probe against edge_ip with exact SNI override."""
+    checked_curves = _validate_curves(curves)
     cmd = [
         "curl", "-sS", "-o", "/dev/null",
         "-w", "%{http_code} %{time_connect} %{time_appconnect}",
         "--max-time", str(timeout),
         "--resolve", f"{sni}:443:{edge_ip}",
-        f"https://{sni}{url_path}",
     ]
+    if checked_curves:
+        cmd.extend(["--curves", checked_curves])
+    cmd.append(f"https://{sni}{url_path}")
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 5)
     parts = proc.stdout.strip().split()
     http_code = int(parts[0]) if parts and parts[0].isdigit() else 0
@@ -150,15 +163,19 @@ def measure_download_bps(
     *,
     edge_ip: str = RU_EDGE,
     timeout: int = 45,
+    curves: str | None = None,
 ) -> dict[str, object]:
     """Measure 10 MB payload download speed (bytes/sec) for V3 or Stage 2."""
+    checked_curves = _validate_curves(curves)
     cmd = [
         "curl", "-sS", "-o", "/dev/null",
         "-w", "%{http_code} %{size_download} %{speed_download} %{time_total}",
         "--max-time", str(timeout),
         "--resolve", f"{sni}:443:{edge_ip}",
-        f"https://{sni}{url_path}",
     ]
+    if checked_curves:
+        cmd.extend(["--curves", checked_curves])
+    cmd.append(f"https://{sni}{url_path}")
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 5)
     parts = proc.stdout.strip().split()
     http_code = int(parts[0]) if parts and parts[0].isdigit() else 0
@@ -185,6 +202,20 @@ def _parse_utc_epoch(value: str) -> int | None:
         return int(parsed.timestamp())
     except ValueError:
         return None
+
+
+def _parse_deadline_epoch(value: str | int | None) -> int | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, int):
+        return value
+    raw = str(value).strip()
+    if raw.isdigit():
+        return int(raw)
+    parsed = _parse_utc_epoch(raw)
+    if parsed is None:
+        raise ValueError(f"Invalid UTC deadline: {value!r}")
+    return parsed
 
 
 def _flow_matches_clamp(flow: dict, clamp_state: str) -> bool:
@@ -541,14 +572,39 @@ def run_experiment(args: argparse.Namespace) -> int:
         interleave=args.interleave,
         sequential_blocks=getattr(args, "sequential_blocks", False),
     )
+    clamped_timeout = args.clamped_timeout if getattr(args, "clamped_timeout", None) is not None else args.timeout
+    punish_timeout = int(getattr(args, "punish_timeout", 8) or 8)
+    phase_margin = int(getattr(args, "phase_margin", 15) if getattr(args, "phase_margin", None) is not None else 15)
+    phase1_deadline = _parse_deadline_epoch(getattr(args, "phase1_deadline_utc", None))
+    phase2_deadline = _parse_deadline_epoch(getattr(args, "phase2_deadline_utc", None))
+    curves = _validate_curves(getattr(args, "curves", None))
+    probe_extra = {"curves": curves} if curves else {}
     rows: list[dict[str, str]] = []
+    skipped_phases: set[str] = set()
     for idx, item in enumerate(schedule):
+        req_timeout = clamped_timeout if item.clamp == "вкл" else args.timeout
+        deadline = phase2_deadline if item.clamp == "вкл" else phase1_deadline
+        reserve = req_timeout + (punish_timeout if item.cell == "C" else 0) + phase_margin
+        if deadline is not None and time.time() + reserve >= deadline:
+            if item.clamp not in skipped_phases:
+                skipped_phases.add(item.clamp)
+                print(
+                    f"Skipping remaining clamp={item.clamp} attempts: phase deadline {deadline} reached (margin={phase_margin}s)",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            continue
         ts = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        res = probe_curl(item.sni, edge_ip=args.edge_ip, timeout=args.timeout)
+        res = probe_curl(item.sni, edge_ip=args.edge_ip, timeout=req_timeout, **probe_extra)
         comment = str(res["comment"])
         if item.cell == "C" and not res["ok"] and not args.skip_punish_check:
-            punish = probe_curl(args.control_sni, edge_ip=args.edge_ip, timeout=min(10, args.timeout))
-            tag = "ip_punish_check=PASS" if punish["ok"] else f"ip_punish_check=FAIL(http={punish['http']})"
+            punish = probe_curl(args.control_sni, edge_ip=args.edge_ip, timeout=min(punish_timeout, args.timeout), **probe_extra)
+            if punish["ok"]:
+                tag = "ip_punish_check=PASS"
+            elif is_http_success(int(punish["http"])):
+                tag = "ip_punish_check=PASS(partial)"
+            else:
+                tag = f"ip_punish_check=FAIL(http={punish['http']})"
             comment = f"{comment}; {tag}".strip("; ")
         rows.append({
             "run_id": args.run_id,
@@ -591,6 +647,19 @@ def generate_termux_script(args: argparse.Namespace) -> str:
     net_type = shlex.quote(args.network_type)
     attempts = int(args.attempts)
     pause = int(args.pause)
+    unclamped_timeout = int(getattr(args, "timeout", 10) or 10)
+    clamped_timeout = int(
+        getattr(args, "clamped_timeout", None)
+        if getattr(args, "clamped_timeout", None) is not None
+        else unclamped_timeout
+    )
+    punish_timeout = int(getattr(args, "punish_timeout", 8) or 8)
+    phase_margin = int(getattr(args, "phase_margin", 15) if getattr(args, "phase_margin", None) is not None else 15)
+    p1_deadline = _parse_deadline_epoch(getattr(args, "phase1_deadline_utc", None))
+    p2_deadline = _parse_deadline_epoch(getattr(args, "phase2_deadline_utc", None))
+    p1_str = str(p1_deadline) if p1_deadline is not None else ""
+    p2_str = str(p2_deadline) if p2_deadline is not None else ""
+    curves = _validate_curves(getattr(args, "curves", None)) or ""
     return f"""#!/usr/bin/env bash
 set -u
 RUN_ID={run_id}
@@ -600,43 +669,107 @@ CONTROL_SNI={control}
 EDGE_IP={edge}
 ATTEMPTS={attempts}
 PAUSE_S={pause}
+UNCLAMPED_TIMEOUT={unclamped_timeout}
+CLAMPED_TIMEOUT={clamped_timeout}
+PUNISH_TIMEOUT={punish_timeout}
+PHASE_MARGIN={phase_margin}
+PHASE1_DEADLINE_UTC="${{PHASE1_DEADLINE_UTC:-{p1_str}}}"
+PHASE2_DEADLINE_UTC="${{PHASE2_DEADLINE_UTC:-{p2_str}}}"
+CURVES={shlex.quote(curves)}
+CURL_CURVES_ARGS=()
+if [ -n "$CURVES" ]; then
+  CURL_CURVES_ARGS=(--curves "$CURVES")
+fi
 PHASE="${{1:-all}}"
 OUT_CSV="${{2:-mneby_tz_${{RUN_ID}}_${{PHASE}}.csv}}"
 
 CLIENT_IP="$(curl -sS --max-time 6 https://api.ipify.org || echo unknown)"
-echo "External IP: $CLIENT_IP (verify matches allowed RU canary peer)" >&2
+echo "External IP: $CLIENT_IP (verify matches allowed RU canary peer); Curves: ${{CURVES:-default}}" >&2
 
 if [ ! -f "$OUT_CSV" ]; then
   echo 'run_id,дата_время,оператор,тип_сети,внешний_IP,ячейка,попытка,SNI,clamp,результат,http,time_connect,time_appconnect,длина_первого_сегмента,комментарий' > "$OUT_CSV"
 fi
 
+parse_epoch() {{
+  local raw="${{1:-}}"
+  if [ -z "$raw" ]; then
+    return 1
+  fi
+  case "$raw" in
+    *[!0-9]*)
+      date -u -d "$raw" +%s 2>/dev/null || return 1
+      ;;
+    *)
+      printf '%s\\n' "$raw"
+      ;;
+  esac
+}}
+
+deadline_reached() {{
+  local raw="${{1:-}}" reserve="${{2:-0}}"
+  local dl now
+  dl="$(parse_epoch "$raw")" || return 1
+  now="$(date -u +%s)"
+  [ $((now + reserve + PHASE_MARGIN)) -ge "$dl" ]
+}}
+
 run_one() {{
   local cell="$1" sni="$2" clamp="$3" i="$4"
-  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  out="$(curl -sS -o /dev/null -w '%{{http_code}} %{{time_connect}} %{{time_appconnect}}' --max-time 10 --resolve "$sni:443:$EDGE_IP" "https://$sni/" 2>/dev/null || echo '000 0 0')"
-  read -r code tc ta <<< "$out"
-  res="СБОЙ"
-  if [ "${{code:-0}}" -ge 200 ] 2>/dev/null && [ "${{code:-0}}" -le 499 ] 2>/dev/null; then
-    res="УСПЕХ"
+  local req_timeout="$UNCLAMPED_TIMEOUT"
+  if [ "$clamp" = "вкл" ]; then
+    req_timeout="$CLAMPED_TIMEOUT"
   fi
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  local rc=0
+  out="$(curl -sS -o /dev/null -w '%{{http_code}} %{{time_connect}} %{{time_appconnect}}' --max-time "$req_timeout" --resolve "$sni:443:$EDGE_IP" "${{CURL_CURVES_ARGS[@]+"${{CURL_CURVES_ARGS[@]}}"}}" "https://$sni/" 2>/dev/null)" || rc=$?
+  if [ -z "$out" ]; then
+    out="000 0 0"
+  fi
+  read -r code tc ta _ <<< "$out"
+  code="${{code:-000}}"; tc="${{tc:-0}}"; ta="${{ta:-0}}"
+  res="СБОЙ"
   comment=""
+  if [ "$rc" -eq 0 ] && [ "$code" -ge 200 ] 2>/dev/null && [ "$code" -le 499 ] 2>/dev/null; then
+    res="УСПЕХ"
+  elif [ "$rc" -ne 0 ]; then
+    comment="curl_rc=$rc"
+  fi
   if [ "$cell" = "C" ] && [ "$res" = "СБОЙ" ]; then
-    p_out="$(curl -sS -o /dev/null -w '%{{http_code}}' --max-time 8 --resolve "$CONTROL_SNI:443:$EDGE_IP" "https://$CONTROL_SNI/" 2>/dev/null || echo '000')"
-    if [ "${{p_out:-0}}" -ge 200 ] 2>/dev/null && [ "${{p_out:-0}}" -le 499 ] 2>/dev/null; then
-      comment="ip_punish_check=PASS"
+    local p_rc=0 p_out p_digits p_code p_tag
+    p_out="$(curl -sS -o /dev/null -w '%{{http_code}}' --max-time "$PUNISH_TIMEOUT" --resolve "$CONTROL_SNI:443:$EDGE_IP" "${{CURL_CURVES_ARGS[@]+"${{CURL_CURVES_ARGS[@]}}"}}" "https://$CONTROL_SNI/" 2>/dev/null)" || p_rc=$?
+    p_digits="$(printf '%s' "$p_out" | tr -cd '0-9')"
+    p_code="${{p_digits:0:3}}"
+    if [ -z "$p_code" ]; then p_code="000"; fi
+    if [ "$p_code" -ge 200 ] 2>/dev/null && [ "$p_code" -le 499 ] 2>/dev/null; then
+      if [ "$p_rc" -eq 0 ]; then
+        p_tag="ip_punish_check=PASS"
+      else
+        p_tag="ip_punish_check=PASS(partial_rc=$p_rc)"
+      fi
     else
-      comment="ip_punish_check=FAIL(http=${{p_out:-0}})"
+      p_tag="ip_punish_check=FAIL(http=${{p_code}},rc=${{p_rc}})"
     fi
+    comment="${{comment:+$comment; }}$p_tag"
   fi
   printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,,%s\\n' \\
-    "$RUN_ID" "$ts" "$OPERATOR" "$NET_TYPE" "$CLIENT_IP" "$cell" "$i" "$sni" "$clamp" "$res" "${{code:-0}}" "${{tc:-0}}" "${{ta:-0}}" "$comment" >> "$OUT_CSV"
-  printf '[%s %2d/%d] %s -> %s http=%s tc=%s ta=%s %s\\n' "$cell" "$i" "$ATTEMPTS" "$sni" "$res" "${{code:-0}}" "${{tc:-0}}" "${{ta:-0}}" "$comment"
-  sleep "$PAUSE_S"
+    "$RUN_ID" "$ts" "$OPERATOR" "$NET_TYPE" "$CLIENT_IP" "$cell" "$i" "$sni" "$clamp" "$res" "$code" "$tc" "$ta" "$comment" >> "$OUT_CSV"
+  printf '[%s %2d/%d] %s -> %s http=%s tc=%s ta=%s %s\\n' "$cell" "$i" "$ATTEMPTS" "$sni" "$res" "$code" "$tc" "$ta" "$comment"
+  if [ "$PAUSE_S" -gt 0 ] 2>/dev/null; then
+    sleep "$PAUSE_S"
+  fi
 }}
 
 if [ "$PHASE" = "unclamped" ] || [ "$PHASE" = "all" ]; then
   for i in $(seq 1 "$ATTEMPTS"); do
+    if deadline_reached "$PHASE1_DEADLINE_UTC" "$UNCLAMPED_TIMEOUT"; then
+      echo "=== Phase 1 deadline guard reached before A #$i; stopping unclamped cells ===" >&2
+      break
+    fi
     run_one A "$CONTROL_SNI" "выкл" "$i"
+    if deadline_reached "$PHASE1_DEADLINE_UTC" $((UNCLAMPED_TIMEOUT + PUNISH_TIMEOUT)); then
+      echo "=== Phase 1 deadline guard reached before C #$i; stopping unclamped cells ===" >&2
+      break
+    fi
     run_one C "i.instagram.com" "выкл" "$i"
   done
 fi
@@ -649,8 +782,20 @@ if [ "$PHASE" = "all" ]; then
 fi
 if [ "$PHASE" = "clamped" ] || [ "$PHASE" = "all" ]; then
   for i in $(seq 1 "$ATTEMPTS"); do
+    if deadline_reached "$PHASE2_DEADLINE_UTC" "$CLAMPED_TIMEOUT"; then
+      echo "=== Phase 2 deadline guard reached before B #$i; stopping clamped cells ===" >&2
+      break
+    fi
     run_one B "$CONTROL_SNI" "вкл" "$i"
+    if deadline_reached "$PHASE2_DEADLINE_UTC" "$CLAMPED_TIMEOUT"; then
+      echo "=== Phase 2 deadline guard reached before D #$i; stopping clamped cells ===" >&2
+      break
+    fi
     run_one D "i.instagram.com" "вкл" "$i"
+    if deadline_reached "$PHASE2_DEADLINE_UTC" "$CLAMPED_TIMEOUT"; then
+      echo "=== Phase 2 deadline guard reached before E #$i; stopping clamped cells ===" >&2
+      break
+    fi
     run_one E "graph.instagram.com" "вкл" "$i"
   done
 fi
@@ -673,6 +818,12 @@ def main(argv: list[str] | None = None) -> int:
     p_run.add_argument("--attempts", type=int, default=20)
     p_run.add_argument("--pause", type=float, default=5.0)
     p_run.add_argument("--timeout", type=int, default=10)
+    p_run.add_argument("--clamped-timeout", type=int, default=None)
+    p_run.add_argument("--punish-timeout", type=int, default=8)
+    p_run.add_argument("--phase1-deadline-utc", default=None)
+    p_run.add_argument("--phase2-deadline-utc", default=None)
+    p_run.add_argument("--phase-margin", type=int, default=15)
+    p_run.add_argument("--curves", default=None)
     p_run.add_argument("--interleave", action="store_true")
     p_run.add_argument("--sequential-blocks", action="store_true")
     p_run.add_argument("--skip-punish-check", action="store_true")
@@ -695,6 +846,13 @@ def main(argv: list[str] | None = None) -> int:
     p_termux.add_argument("--control-sni", default=DEFAULT_CONTROL_SNI)
     p_termux.add_argument("--attempts", type=int, default=20)
     p_termux.add_argument("--pause", type=int, default=5)
+    p_termux.add_argument("--timeout", type=int, default=10)
+    p_termux.add_argument("--clamped-timeout", type=int, default=None)
+    p_termux.add_argument("--punish-timeout", type=int, default=8)
+    p_termux.add_argument("--phase1-deadline-utc", default=None)
+    p_termux.add_argument("--phase2-deadline-utc", default=None)
+    p_termux.add_argument("--phase-margin", type=int, default=15)
+    p_termux.add_argument("--curves", default=None)
     p_termux.add_argument("--out")
 
     p_overall = sub.add_parser("overall", help="Evaluate Section 7.3 verdict across network JSONs")

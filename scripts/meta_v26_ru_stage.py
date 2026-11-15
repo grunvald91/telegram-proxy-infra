@@ -20,7 +20,14 @@ import ssl
 import subprocess
 import time
 
-from meta_v15_receive_window import nft_rules,out_clamp_rule as _base_out_clamp_rule,verify_queue_exemption
+from meta_v15_receive_window import (
+    DEFAULT_PREFIX_TIMEOUT,
+    SUPPORTED_PREFIX_TIMEOUTS,
+    SUPPORTED_WINDOWS,
+    nft_rules,
+    out_clamp_rule as _base_out_clamp_rule,
+    verify_queue_exemption,
+)
 from meta_v23_ru_firsthop_preview import RU_EDGE,WG_BACKEND,RU_INTERFACE,TEST_PORT
 from meta_v15_receive_window import HOSTS
 
@@ -257,11 +264,13 @@ def rollback():
     if not ROOT.exists():return
     with locked():_rollback_locked()
 
-def start(peer, *, window=8, clamp=True):
+def start(peer, *, window=8, clamp=True, prefix_timeout=DEFAULT_PREFIX_TIMEOUT):
     owner_flag()
     peer=checked_peer(peer)
-    if type(window) is not int or window not in (4, 8) or not isinstance(clamp, bool):
+    if type(window) is not int or window not in SUPPORTED_WINDOWS or not isinstance(clamp, bool):
         raise ValueError("invalid window or clamp")
+    if type(prefix_timeout) is not int or prefix_timeout not in SUPPORTED_PREFIX_TIMEOUTS:
+        raise ValueError("invalid prefix_timeout")
     rules=baseline(peer, window=window, clamp=clamp)
     with locked():
         # Existing baseline was checked before the state dir was created.
@@ -272,6 +281,7 @@ def start(peer, *, window=8, clamp=True):
             os.fsync(target.fileno())
         _write_state("window", str(window))
         _write_state("clamp", "on" if clamp else "off")
+        _write_state("prefix_timeout", str(prefix_timeout))
         cmd(["systemd-run","--quiet","--collect","--unit",UNIT,
              "--on-active="+str(CLEANUP_SECONDS)+"s","/usr/bin/python3",
              str(Path(__file__).resolve()),"rollback"])
@@ -291,6 +301,7 @@ def start(peer, *, window=8, clamp=True):
                  "/usr/bin/python3","-u",str(STAGE/"meta_v15_receive_window.py"),
                  "--peer",peer,"--edge",RU_EDGE,"--port",str(TEST_PORT),
                  "--window",str(window),
+                 "--prefix-timeout",str(prefix_timeout),
                  "--backend-address",WG_BACKEND,
                  "--non-meta-backend-address",RU_EDGE,
                  "--evidence-file",str(ROOT/"evidence.json"),
@@ -337,7 +348,7 @@ def set_clamp(state, *, window=None):
             win=int(win_file.read_text().strip()) if win_file.is_file() else 8
         else:
             win=window
-        if type(win) is not int or win not in (4, 8):
+        if type(win) is not int or win not in SUPPORTED_WINDOWS:
             raise ValueError("invalid window")
         rules=nft_rules(RU_EDGE,peer,port=TEST_PORT,interface=RU_INTERFACE,table=TABLE,
                         window=win,clamp=(state=="on"))
@@ -380,11 +391,12 @@ if __name__=="__main__":
     p=argparse.ArgumentParser()
     p.add_argument("mode",choices=("start","rollback","status","reset","evidence","set-clamp-on","set-clamp-off"))
     p.add_argument("--peer")
-    p.add_argument("--window",type=int,choices=(4,8),default=None)
+    p.add_argument("--window",type=int,choices=SUPPORTED_WINDOWS,default=None)
+    p.add_argument("--prefix-timeout",type=int,choices=SUPPORTED_PREFIX_TIMEOUTS,default=DEFAULT_PREFIX_TIMEOUT)
     args=p.parse_args()
     if args.mode=="start":
         if not args.peer:p.error("RU start requires --peer")
-        start(args.peer,window=args.window or 8)
+        start(args.peer,window=args.window or 8,prefix_timeout=args.prefix_timeout)
     elif args.mode=="set-clamp-on":set_clamp("on",window=args.window)
     elif args.mode=="set-clamp-off":set_clamp("off",window=args.window)
     elif args.mode=="rollback":rollback()
