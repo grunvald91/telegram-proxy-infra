@@ -1,0 +1,72 @@
+name: MNEBYDNS restore pre-Nov13 YouTube A routes guarded
+on:
+  push:
+    branches: [restore/mnebydns-youtube-pre13-20261115]
+    paths:
+      - .github/workflows/mnebydns-youtube-pre13-restore-20261115.yml
+permissions: {contents: read}
+concurrency:
+  group: mnebydns-google-public-443-change
+  cancel-in-progress: false
+jobs:
+  guarded:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Validate scoped offline rollback and SSH known hosts
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS" && test -n "$RU_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          python3 -m py_compile scripts/mnebydns-youtube-pre13-restore-20261115.py
+          grep -Fq '1794520280' scripts/mnebydns-youtube-pre13-restore-20261115.py
+          grep -Fq 'EXPECTED_SHA="578d8c0777a494dd91351aa75e839e35b1c9028355cdc9e8d5592a13fea98fb1"' scripts/mnebydns-youtube-pre13-restore-20261115.py
+          echo YT_PRE13_OFFLINE_SAFE=PASS
+      - name: Guarded DNS-only YouTube route restoration and new stable checkpoint
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          copts=(-q -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          de() { SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 "$@"; }
+          ru() { SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 "$@"; }
+          cleanup() {
+            rc=$?
+            trap - EXIT
+            if ((rc)); then
+              de 'python3 -B /opt/mnebydns-youtube-pre13-restore-20261115/manager.py rollback' || echo YT_PRE13_ROLLBACK_MANUAL_REVIEW_NEEDED=true
+            fi
+            exit "$rc"
+          }
+          trap cleanup EXIT
+          ru 'python3 -' <<'PY'
+          import socket,ssl
+          ctx=ssl.create_default_context()
+          for host in ("www.youtube.com","rr1---sn-gxuo03g-ig3s.googlevideo.com"):
+            with socket.create_connection(("89.125.90.101",443),timeout=9) as tcp:
+              with ctx.wrap_socket(tcp,server_hostname=host) as sock:
+                print("PRE13_DE89_ORIGINAL_SNI_TLS_"+host+"="+sock.version(),flush=True)
+          PY
+          de 'install -d -m 700 /opt/mnebydns-youtube-pre13-restore-20261115 && test ! -e /opt/mnebydns-youtube-pre13-restore-20261115/state'
+          SSHPASS="$DE_PASS" sshpass -e scp "${copts[@]}" scripts/mnebydns-youtube-pre13-restore-20261115.py root@89.125.90.101:/tmp/mnebydns-youtube-pre13-restore-20261115.py
+          de 'install -m 700 /tmp/mnebydns-youtube-pre13-restore-20261115.py /opt/mnebydns-youtube-pre13-restore-20261115/manager.py'
+          de 'python3 -B /opt/mnebydns-youtube-pre13-restore-20261115/manager.py audit'
+          de 'python3 -B /opt/mnebydns-youtube-pre13-restore-20261115/manager.py apply'
+          de 'python3 -B /opt/mnebydns-youtube-pre13-restore-20261115/manager.py verify'
+          de 'python3 -B /opt/mnebydns-youtube-pre13-restore-20261115/manager.py confirm'
+          de 'python3 -B /opt/mnebydns-youtube-pre13-restore-20261115/manager.py verify' || true
+          echo YT_PRE13_TWO_HOST_FAMILIES_RESTORED_TO_DE89=true
+          echo YT_PRE13_OTHER_ROUTES_VPN_WG_SUBSCRIBERS_UNCHANGED=true
+          echo YT_PRE13_ANDROID_VIDEO_PLAYBACK_NOT_YET_VERIFIED=true
