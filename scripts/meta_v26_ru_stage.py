@@ -34,6 +34,7 @@ from meta_geneva_dupack import (
     DEFAULT_GENEVA_REPEATS,
     DEFAULT_GENEVA_VARIANT,
     GENEVA_QUEUE,
+    NETLINK_NETFILTER,
     SUPPORTED_EXPERIMENT_MODES,
     SUPPORTED_GENEVA_REPEATS,
     SUPPORTED_GENEVA_VARIANTS,
@@ -203,7 +204,7 @@ def _write_state(name, text):
 
 
 def _verify_geneva_sockets():
-    nfq=socket.socket(socket.AF_NETLINK, socket.SOCK_RAW, socket.NETLINK_NETFILTER)
+    nfq=socket.socket(socket.AF_NETLINK, socket.SOCK_RAW, NETLINK_NETFILTER)
     try:
         raw=socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_RAW)
         raw.close()
