@@ -1,0 +1,147 @@
+name: MNEBYDNS diagnose VPN plus Smart DNS and Google voice/Antigravity
+on:
+  push:
+    branches: [diag/mnebydns-live-video-stall-20261115]
+    paths: [.github/workflows/mnebydns-vpn-dns-voice-antigravity-audit-20261115.yml]
+permissions: {contents: read}
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Read-only compare DNS matches, DoT A AAAA, nginx SNI routing and VPN listener
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS" && test -n "$RU_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          cat > /tmp/audit.py <<'PY'
+          import pathlib,re,subprocess,socket,ssl,struct,sys,datetime,hashlib
+          role=sys.argv[1]
+          def emit(k,v):print("INTEGRATION_"+role+"_"+k+"="+str(v),flush=True)
+          def cmd(a,t=6):
+            try:
+              p=subprocess.run(a,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,timeout=t)
+              return p.stdout if p.returncode==0 else ""
+            except Exception:return ""
+          hosts=[
+            "www.youtube.com","youtubei.googleapis.com","rr1---sn-gxuo03g-ig3s.googlevideo.com",
+            "i.ytimg.com","speech.googleapis.com","eu-speech.googleapis.com",
+            "us-speech.googleapis.com","voiceinput.googleapis.com","www.google.com",
+            "accounts.google.com","oauth2.googleapis.com","generativelanguage.googleapis.com",
+            "aiplatform.googleapis.com","antigravity.google","antigravity.google.com",
+            "daily.googleapis.com","www.googleapis.com","ai.google.dev",
+            "content-autofill.googleapis.com"
+          ]
+          emit("UTC",datetime.datetime.now(datetime.timezone.utc).isoformat())
+          emit("WG_LINK",cmd(["wg","show","tg-relay","latest-handshakes"]).count("\n"))
+          emit("NGINX_SYNTAX_RC",subprocess.run(["nginx","-t"],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode)
+          emit("XRAY_ACTIVE",cmd(["systemctl","is-active","xray"]).strip())
+          dns=pathlib.Path("/opt/mnebydns-dot/Corefile")
+          old=pathlib.Path("/opt/mnebydns-stable-checkpoints/1794520280/dns.stable")
+          if dns.exists():
+            current=dns.read_text()
+            prior=old.read_text() if old.exists() else ""
+            patt=re.compile(r"(?ms)^[ \t]*template IN (A|AAAA|HTTPS|SVCB|CNAME) (\S+) \{\n(.*?)^[ \t]*\}")
+            mpatt=re.compile(r"\bmatch\s+([^\n]+)")
+            apatt=re.compile(r"\banswer\s+[^\n]*?\bIN\s+(A|AAAA|HTTPS|SVCB|CNAME)\s+([^\s\";]+)")
+            def parse(raw):
+              blocks=[]
+              for m in patt.finditer(raw):
+                ma=mpatt.search(m.group(3)); an=apatt.search(m.group(3))
+                if ma:
+                  blocks.append((m.group(1),m.group(2),ma.group(1).strip(),an.group(2) if an else "NO_ANSWER"))
+              return blocks
+            now=parse(current); history=parse(prior) if prior else []
+            emit("COREFILE_SHA16",hashlib.sha256(dns.read_bytes()).hexdigest()[:16])
+            emit("COREFILE_RULE_COUNT",len(now))
+            for label,blocks in (("CURRENT",now),("OLD_13NOV",history)):
+              for host in hosts:
+                matches=[]
+                for typ,zone,pattern,ans in blocks:
+                  try:
+                    if re.search(pattern,host+".",re.I):
+                      matches.append(typ+":"+zone+":"+ans)
+                  except re.error: pass
+                emit(label+"_"+host,",".join(matches[:8]) if matches else "NO_TEMPLATE_MATCH")
+            for k in ("speech","antigravity","googlevideo","googleapis","dictat","voice"):
+              count=sum(1 for typ,zone,pat,ans in now if k in pat.lower() or k in zone.lower())
+              emit("PATTERN_"+k+"_RULE_COUNT",count)
+          else:emit("COREFILE", "ABSENT")
+          ng=cmd(["nginx","-T"],18)
+          if ng:
+            start=ng.find("map $ssl_preread_server_name $direct_mtproxy_backend")
+            if start!=-1:
+              sub=ng[start:start+28000]
+              lines=sub.splitlines()
+              for i,line in enumerate(lines):
+                if re.search(r"(^\s*default\s|googlevideo|youtube|speech|antigravity|googleapis|^\s*~)",line,re.I):
+                  if not re.search(r"token|password|secret|key",line,re.I):
+                    emit("SNI_MAP_LINE",line.strip()[:210])
+            else:
+              emit("SNI_MAP","NOT_FOUND")
+          ss=cmd(["ss","-H","-lntp"])
+          for port in (443,853,15449,1080,10808,10000,2053,8443):
+            lines=[line for line in ss.splitlines() if len(line.split())>3 and line.split()[3].endswith(":"+str(port))]
+            emit("LISTEN_TCP_"+str(port),len(lines))
+          def readexact(s,n):
+            b=b""
+            while len(b)<n:
+              x=s.recv(n-len(b))
+              if not x:raise RuntimeError("short DNS frame")
+              b+=x
+            return b
+          def query(host,typ):
+            enc=b"".join(bytes([len(x)])+x.encode() for x in host.split("."))+b"\x00"
+            req=struct.pack("!HHHHHH",0x5291,0x0100,1,0,0,0)+enc+struct.pack("!HH",typ,1)
+            ctx=ssl.create_default_context()
+            with socket.create_connection(("89.125.90.101",853),timeout=5) as tcp:
+              tcp.settimeout(5)
+              with ctx.wrap_socket(tcp,server_hostname="dns.mnebyvpn.site") as tls:
+                tls.sendall(struct.pack("!H",len(req))+req)
+                data=readexact(tls,struct.unpack("!H",readexact(tls,2))[0])
+            _,flags,qd,an,ns,ar=struct.unpack("!HHHHHH",data[:12])
+            def endname(i):
+              for _ in range(100):
+                if data[i]&192==192:return i+2
+                k=data[i]
+                i+=1
+                if k==0:return i
+                i+=k
+              raise RuntimeError("bad name")
+            i=endname(12)+4
+            out=[]
+            for _ in range(an):
+              i=endname(i)
+              tp,klass,ttl,ln=struct.unpack("!HHIH",data[i:i+10]);i+=10
+              if tp==1 and ln==4:out.append(socket.inet_ntoa(data[i:i+4]))
+              elif tp==28 and ln==16:out.append(socket.inet_ntop(socket.AF_INET6,data[i:i+16]))
+              elif tp in (64,65):out.append("SVCB_PRESENT")
+              i+=ln
+            return "rcode="+str(flags&15)+" count="+str(an)+" values="+repr(out[:4])
+          if role=="DE89":
+            for host in hosts:
+              for typ,name in ((1,"A"),(28,"AAAA")):
+                try:emit("DOT_"+name+"_"+host,query(host,typ))
+                except Exception as ex:emit("DOT_"+name+"_"+host,"ERROR_"+type(ex).__name__)
+          emit("READONLY_COMPLETE",True)
+          PY
+          SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 - DE89' < /tmp/audit.py > de.log 2>&1 &
+          de_pid=$!
+          SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 - RU188' < /tmp/audit.py > ru.log 2>&1 &
+          ru_pid=$!
+          rc=0
+          wait "$de_pid" || rc=1
+          wait "$ru_pid" || rc=1
+          echo "DE_INTEGRATION_BEGIN";cat de.log;echo "DE_INTEGRATION_END"
+          echo "RU_INTEGRATION_BEGIN";cat ru.log;echo "RU_INTEGRATION_END"
+          test "$rc" -eq 0
+          grep -q 'INTEGRATION_DE89_READONLY_COMPLETE=True' de.log
+          grep -q 'INTEGRATION_RU188_READONLY_COMPLETE=True' ru.log
