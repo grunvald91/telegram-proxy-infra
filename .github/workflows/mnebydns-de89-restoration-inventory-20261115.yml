@@ -136,6 +136,39 @@ jobs:
           print('YOUTUBE_UDP443_RU_TO_DE='+status)
           print('RU188_READONLY_INVENTORY='+json.dumps(report,sort_keys=True))
           PY
+      - name: Differential real TLS and HTTP into the same DE89 server via public TCP and WireGuard
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@188.120.254.223 'python3 -' <<'PY'
+          import json,socket,ssl,time
+          domains=('www.youtube.com','rr1---sn-gxuo03g-ig3s.googlevideo.com','video.twimg.com','pbs.twimg.com')
+          for domain in domains:
+            for route,ip in (('PUBLIC_TCP','89.125.90.101'),('ENCRYPTED_WG_TCP','10.66.77.1')):
+              item={'domain':domain,'route':route}
+              started=time.monotonic()
+              try:
+                with socket.create_connection((ip,443),timeout=4) as sock:
+                  sock.settimeout(5)
+                  item['tcp_ms']=round(1000*(time.monotonic()-started))
+                  try:
+                    with ssl.create_default_context().wrap_socket(sock,server_hostname=domain) as tls:
+                      tls.settimeout(5)
+                      item['tls_ms']=round(1000*(time.monotonic()-started))
+                      item['tls_version']=tls.version()
+                      tls.sendall(('GET / HTTP/1.1\r\nHost: '+domain+'\r\nConnection: close\r\n\r\n').encode())
+                      try:
+                        item['http_line']=tls.recv(160).split(b'\r\n',1)[0].decode('ascii','replace')[:80]
+                      except Exception as e:
+                        item['http_error']=type(e).__name__
+                  except Exception as e:
+                    item['tls_error']=type(e).__name__
+              except Exception as e:
+                item['tcp_error']=type(e).__name__
+              item['elapsed_ms']=round(1000*(time.monotonic()-started))
+              print('MEDIA_TLS_PUBLIC_VS_WG='+json.dumps(item,sort_keys=True),flush=True)
+          PY
       - name: Read-only current DNS administration database summary (no personal rows)
         shell: bash
         run: |
