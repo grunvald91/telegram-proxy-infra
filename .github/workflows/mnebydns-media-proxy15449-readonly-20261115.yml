@@ -1,0 +1,73 @@
+name: MNEBYDNS inspect Google media proxy 15449 runtime and 13 Nov delta
+on:
+  push:
+    branches: [diag/mnebydns-live-video-stall-20261115]
+    paths: [.github/workflows/mnebydns-media-proxy15449-readonly-20261115.yml]
+permissions: {contents: read}
+jobs:
+  read-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Nginx media-stream routing and upstream inspection without changing service state
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS" && test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY'
+          import subprocess,pathlib,re,collections,time,datetime,hashlib
+          def out(key,value):print("MEDIA15449_"+key+"="+str(value),flush=True)
+          def cmd(args,t=15):
+            try:
+              p=subprocess.run(args,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,timeout=t)
+              return (p.stdout,p.returncode)
+            except Exception:return ("",999)
+          active,rc=cmd(["nginx","-T"])
+          old=pathlib.Path("/opt/mnebydns-stable-checkpoints/1794520280/nginx.stable")
+          out("NGINX_VALID",rc==0)
+          out("BASE_SHA",hashlib.sha256(pathlib.Path("/etc/nginx/nginx.conf").read_bytes()).hexdigest()[:20])
+          def filtered(conf):
+            data=conf.splitlines()
+            found=[]
+            for i,line in enumerate(data):
+              if re.search(r"\\blisten\\s+(?:127\\.0\\.0\\.1|0\\.0\\.0\\.0|10\\.66\\.77\\.1)?:?15449\\b|\\bproxy_pass\\s+\\$|\\bproxy_pass\\s+(?:127\\.0\\.0\\.1|10\\.66\\.77\\.1):15449|\\bmap\\s+\\$ssl_preread|\\bupstream\\b|googlevideo|\\bresolver\\b|proxy_timeout|proxy_connect_timeout|\\bproxy_ssl\\b|\\bproxy_socket_keepalive\\b",line,re.I):
+                if re.search(r"password|token|secret|authorization|privateKey|shortId",line,re.I):continue
+                found.append((i+1,line.strip()[:220]))
+            return found
+          for title,conf in (("OLD_NGINX",old.read_text() if old.exists() else ""),("LIVE_BASE",pathlib.Path("/etc/nginx/nginx.conf").read_text()),("LIVE_FULL",active)):
+            rows=filtered(conf)
+            out(title+"_MATCH_COUNT",len(rows))
+            for lineno,line in rows[:100]:
+              out(title+"_DIRECTIVE",str(lineno)+" "+line)
+          for unit in ("nginx","mnebydns-googlepilot","mnebydns-dot","mnebydns-de89-public-quic-20261115"):
+            a,_=cmd(["systemctl","is-active",unit])
+            out("SYSTEMD_"+unit,a.strip())
+          def showss():
+            s,_=cmd(["ss","-Htin"],7)
+            a=collections.Counter()
+            p=collections.Counter()
+            kind=None
+            for line in s.splitlines():
+              z=line.split()
+              if len(z)>4 and z[0]=="ESTAB":
+                local,remote=z[3],z[4]
+                kind=("L15449" if local.endswith(":15449") else "R15449" if remote.endswith(":15449") else
+                  "P443" if local.endswith(":443") else "E443" if remote.endswith(":443") else "")
+                if kind:a[kind+"_connections"]+=1
+              elif kind and ("bytes_sent:" in line or "rtt:" in line):
+                for x in ["bytes_sent","bytes_received","bytes_retrans","unacked"]:
+                  m=re.search(r"(?<!\\w)"+x+r":(\\d+)",line)
+                  if m:a[kind+"_"+x]+=int(m.group(1))
+                kind=None
+            return a
+          a=showss();time.sleep(8);b=showss()
+          for k in sorted(set(a)|set(b)):
+            out("SOCKET_BEFORE_"+k,a[k]);out("SOCKET_AFTER_"+k,b[k])
+          out("READONLY_COMPLETE",True)
+          PY
