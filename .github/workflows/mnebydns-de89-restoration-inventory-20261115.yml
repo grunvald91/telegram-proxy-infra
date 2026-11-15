@@ -61,6 +61,15 @@ jobs:
           print('YOUTUBE_UDP443_LISTENERS='+json.dumps([line.strip()[:240] for line in udp.splitlines() if ':443 ' in line][:10]))
           firewall=subprocess.run(['iptables','-S'],capture_output=True,text=True).stdout
           print('YOUTUBE_UDP443_FIREWALL='+json.dumps([line.strip()[:200] for line in firewall.splitlines() if '443' in line and ('udp' in line.lower() or 'DROP' in line or 'REJECT' in line)][:18]))
+          pilot=pathlib.Path('/etc/mnebydns-googlepilot/nginx.conf').read_text()
+          print('YOUTUBE_EDGE_NGINX_GOOGLEVIDEO='+json.dumps([line.strip()[:240] for line in n.splitlines() if 'googlevideo' in line.lower()][:20]))
+          print('YOUTUBE_PILOT_UPSTREAM='+json.dumps([line.strip()[:240] for line in pilot.splitlines() if any(k in line.lower() for k in ('proxy_pass','resolver','15449','googlevideo','listen','proxy_timeout'))][:28]))
+          tcp=subprocess.run(['ss','-Hlnt'],capture_output=True,text=True).stdout
+          print('YOUTUBE_15449_LISTENER='+json.dumps([line.strip() for line in tcp.splitlines() if ':15449 ' in line][:8]))
+          fw=subprocess.run(['nft','list','ruleset'],capture_output=True,text=True).stdout
+          print('YOUTUBE_NFT_UDP443='+json.dumps([line.strip()[:210] for line in fw.splitlines() if ('443' in line and 'udp' in line.lower())][:20]))
+          journal=subprocess.run(['journalctl','-u','mnebydns-googlepilot.service','--since','-15min','--no-pager','-q','-n','80'],capture_output=True,text=True).stdout
+          print('YOUTUBE_PILOT_RECENT_LOG_TYPES='+json.dumps({'lines':len(journal.splitlines()),'errors':sum(any(k in x.lower() for k in ('error','fail','timeout','refused','no resolver')) for x in journal.splitlines())}))
           print('DE89_READONLY_INVENTORY='+json.dumps({'corefile_sha256':hashlib.sha256(c.encode()).hexdigest(),'core_a_answer_counts':dict(collections.Counter(answers)),'core_a_templates':len(headers),'owner_exact_core_markers':c.count('# BEGIN MNEBYDNS_OWNER_EXACT_'),'owner_exact_nginx_markers':n.count('# BEGIN MNEBYDNS_OWNER_EXACT_'),'nginx_sni_map_exists':'map $ssl_preread_server_name $direct_mtproxy_backend {' in n,'checkpoint':ptr,'services':svcs},sort_keys=True))
           assert answers and set(answers) <= {'188.120.254.223','89.125.90.101'},'UNEXPECTED_CORE_A_ADDRESS'
           assert len(headers) >= 264 and len(headers)==len(answers),'CORE_A_STRUCTURE_DRIFT'
@@ -136,5 +145,27 @@ jobs:
                 item['https_tls_error']=type(exc).__name__
             youtube_results[host]=item
           print('YOUTUBE_PUBLIC_DOT_SNI='+json.dumps(youtube_results,sort_keys=True))
+          for host in ('www.youtube.com','redirector.googlevideo.com','i.ytimg.com'):
+            try:
+              with socket.create_connection(('89.125.90.101',443),timeout=5) as raw:
+                raw.settimeout(6)
+                with ssl.create_default_context().wrap_socket(raw,server_hostname=host) as tls:
+                  tls.sendall(('GET / HTTP/1.1\r\nHost: '+host+'\r\nUser-Agent: MNEBYDNS-readonly\r\nRange: bytes=0-1023\r\nConnection: close\r\n\r\n').encode())
+                  status_line=tls.recv(256).split(b'\r\n',1)[0]
+                  result=status_line.decode('ascii','replace')[:100]
+            except Exception as exc:
+              result='ERROR:'+type(exc).__name__
+            print('YOUTUBE_HTTP_443='+host+' '+result)
+          for ip in ('89.125.90.101','188.120.254.223'):
+            with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as udp:
+              udp.settimeout(2.5)
+              try:
+                udp.connect((ip,443))
+                udp.send(b'QUIC-READONLY-TEST-20261115')
+                udp.recv(256)
+                status='REPLIED'
+              except Exception as exc:
+                status=type(exc).__name__
+              print('YOUTUBE_UDP443_PROBE='+ip+' '+status)
           print('PUBLIC_READONLY_PROBES='+json.dumps(result,sort_keys=True))
           PY
