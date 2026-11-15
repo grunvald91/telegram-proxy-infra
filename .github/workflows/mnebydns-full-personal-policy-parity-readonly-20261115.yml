@@ -1,0 +1,61 @@
+name: MNEBYDNS read-only full CoreDNS vs active personal sidecar policy parity
+on:
+  push:
+    branches: [diag/mnebydns-live-video-stall-20261115]
+    paths: [.github/workflows/mnebydns-full-personal-policy-parity-readonly-20261115.yml]
+permissions: {contents: read}
+jobs:
+  parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Fetch only Corefile and public route patterns in memory; publish counts only
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS" && test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          umask 077
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 'cat /opt/mnebydns-dot/Corefile' > "$tmp/de-core.txt"
+          SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 'docker exec mnebydns-personal-dot-private node -e '"'"'process.stdout.write(require("fs").readFileSync(process.env.MNEBYDNS_PERSONAL_DOT_ROUTE_POLICY_FILE))'"'"'' > "$tmp/ru-policy.json"
+          python3 - "$tmp/de-core.txt" "$tmp/ru-policy.json" <<'PY'
+          import importlib.util,pathlib,json,hashlib,sys,collections
+          module_path=pathlib.Path("scripts/mnebydns-personal-shared-policy-generate-20261114.py")
+          spec=importlib.util.spec_from_file_location("personal_policy_parity",module_path)
+          module=importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          corepath,policypath=map(pathlib.Path,sys.argv[1:])
+          core=corepath.read_text()
+          policy=json.loads(policypath.read_text())
+          if not isinstance(policy,list) or len(policy)!=len(set(policy)):
+              raise SystemExit("PARITY_INVALID_POLICY_DUPLICATES=true")
+          exact, roots=module.parse(core)
+          expected=exact | roots | {"*."+s for s in roots}
+          actual=set(policy)
+          uncovered=sorted(n for n in exact|roots if not module.classify(actual,n))
+          missing_pattern=expected-actual
+          stale=actual-expected
+          print("PARITY_SHARED_EXACT="+str(len(exact)))
+          print("PARITY_SHARED_ROOTS="+str(len(roots)))
+          print("PARITY_EXPECTED_POLICY_PATTERNS="+str(len(expected)))
+          print("PARITY_ACTIVE_POLICY_PATTERNS="+str(len(actual)))
+          print("PARITY_MISSING_EXACT_PATTERNS="+str(len(missing_pattern)))
+          print("PARITY_STALE_EXTRA_PATTERNS="+str(len(stale)))
+          print("PARITY_ACTUAL_UNCOVERED_DNS_NAMES="+str(len(uncovered)))
+          print("PARITY_SOURCE_SHA256="+hashlib.sha256(corepath.read_bytes()).hexdigest())
+          print("PARITY_ACTIVE_SHA256="+hashlib.sha256(policypath.read_bytes()).hexdigest())
+          for hostname in ("www.youtube.com","generativelanguage.googleapis.com","chatgpt.com",
+                           "cloud.oracle.com","www.oracle.com","oracle.com","groq.com","www.groq.com"):
+              is_shared=hostname in exact or any(hostname==r or hostname.endswith("."+r) for r in roots)
+              in_personal=module.classify(actual,hostname)
+              print("PARITY_DOMAIN_"+hostname.replace(".","_")+"="+json.dumps({"core_approved":is_shared,"personal_premium":in_personal},sort_keys=True))
+          print("PARITY_COMPLETE=TRUE")
+          PY
