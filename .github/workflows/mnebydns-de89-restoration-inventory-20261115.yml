@@ -93,6 +93,24 @@ jobs:
           result['core_only_tls_probes']=probes
           print('DE89_OWNER_SNI_PARITY='+json.dumps(result,sort_keys=True))
           PY
+      - name: Read-only live domain catalogue and active CoreDNS count cross-check
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh -T "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY'
+          import collections,hashlib,json,pathlib,re
+          dns=pathlib.Path('/opt/mnebydns-dot/Corefile').read_text()
+          nginx=pathlib.Path('/etc/nginx/nginx.conf').read_text()
+          a=re.findall(r'(?m)^\s*answer\s+"\{\{ \.Name \}\}\s+\d+\s+IN\s+A\s+([0-9.]+)"',dns)
+          templ=re.findall(r'(?m)^\s*template\s+IN\s+A\s+([^\s{]+)\s*\{',dns)
+          core_owner=set(re.findall('(?m)^\s*# BEGIN MNEBYDNS_OWNER_EXACT_([A-Za-z0-9_]+)',dns))
+          nginx_owner=set(re.findall('(?m)^\s*# BEGIN MNEBYDNS_OWNER_EXACT_([A-Za-z0-9_]+)',nginx))
+          print('LATEST_DE89_DOMAIN_PARITY='+json.dumps({'a_templates':len(templ),'a_answers':dict(collections.Counter(a)),'unique_owner_core':len(core_owner),'unique_owner_nginx':len(nginx_owner),'missing_in_nginx':len(core_owner-nginx_owner),'sha256':hashlib.sha256(dns.encode()).hexdigest(),'checkpoint':pathlib.Path('/opt/mnebydns-stable-checkpoints/current').read_text().strip()},sort_keys=True))
+          PY
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T "${opts[@]}" root@188.120.254.223 "docker exec mnebyvpn-stage-postgres psql -XqAt -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage -c 'SELECT status,count(*) FROM dns_admin_domains GROUP BY status ORDER BY status' | sed 's/^/DOMAIN_ADMIN_DB_STATUS=/'"
       - name: Read-only public DoT and current authoritative name resolution
         shell: bash
         run: |
