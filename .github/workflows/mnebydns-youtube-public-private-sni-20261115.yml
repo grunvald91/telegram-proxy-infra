@@ -1,0 +1,71 @@
+name: MNEBYDNS YouTube Googlevideo public vs private transport truth table
+on:
+  push:
+    branches: [diag/mnebydns-live-video-stall-20261115]
+    paths: [.github/workflows/mnebydns-youtube-public-private-sni-20261115.yml]
+permissions: {contents: read}
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Compare original-SNI TLS over public DE, WG private and RU ingress; inspect backend map
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          cat > /tmp/probe.py <<'PY'
+          import socket,ssl,time,sys,datetime,subprocess,re,pathlib
+          role=sys.argv[1]
+          print("PATH_TEST_ROLE="+role+" UTC="+datetime.datetime.now(datetime.timezone.utc).isoformat(),flush=True)
+          ctx=ssl.create_default_context()
+          ctx.set_alpn_protocols(["h2","http/1.1"])
+          hosts=["www.youtube.com","rr1---sn-gxuo03g-ig3s.googlevideo.com"]
+          dest=[("public_DE","89.125.90.101"),("private_DE_WG","10.66.77.1"),("local_RU","188.120.254.223")] if role=="RU188" else [("DE_own_public","89.125.90.101"),("DE_own_WG","10.66.77.1")]
+          for tag,ip in dest:
+            for host in hosts:
+              t=time.monotonic()
+              try:
+                with socket.create_connection((ip,443),timeout=5) as tcp:
+                  tcp.settimeout(5)
+                  with ctx.wrap_socket(tcp,server_hostname=host) as tls:
+                    print("PATH_"+role+"_"+tag+"_"+host+"=OK TLS="+tls.version()+" ALPN="+str(tls.selected_alpn_protocol())+" MS="+str(round(1000*(time.monotonic()-t))),flush=True)
+              except Exception as e:
+                print("PATH_"+role+"_"+tag+"_"+host+"="+type(e).__name__+" MS="+str(round(1000*(time.monotonic()-t))),flush=True)
+          if role=="DE89":
+            p=pathlib.Path("/etc/nginx/nginx.conf")
+            data=p.read_text().splitlines()
+            start=next((i for i,x in enumerate(data) if "map $ssl_preread_server_name $direct_mtproxy_backend" in x),None)
+            if start is not None:
+              for i in range(start,min(start+30,len(data))):
+                line=data[i].strip()
+                if re.match(r"^(default|~|www[.]youtube|youtubei[.]googleapis|server\b|map\b|[}])",line):
+                  print("DE_MAP_LINE="+str(i+1)+" "+line[:170],flush=True)
+            for port in (15449,443):
+              q=subprocess.run(["ss","-H","-lntp","sport",":"+str(port)],capture_output=True,text=True).stdout
+              print("DE_LOCAL_LISTENER_"+str(port)+"_COUNT="+str(len(q.splitlines())),flush=True)
+              for row in q.splitlines()[:4]:
+                m=re.search(r'users:\(\("([^"]+)"',row)
+                print("DE_LOCAL_LISTENER_"+str(port)+"_PROCESS="+str(m.group(1) if m else "unknown"),flush=True)
+          print("PATH_TEST_DONE="+role,flush=True)
+          PY
+          SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 - DE89' < /tmp/probe.py > de.out 2>&1 &
+          de_pid=$!
+          SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 - RU188' < /tmp/probe.py > ru.out 2>&1 &
+          ru_pid=$!
+          de_rc=0;ru_rc=0
+          wait "$de_pid" || de_rc=$?
+          wait "$ru_pid" || ru_rc=$?
+          echo "DE_PATH_BEGIN";cat de.out;echo "DE_PATH_END"
+          echo "RU_PATH_BEGIN";cat ru.out;echo "RU_PATH_END"
+          test "$de_rc" -eq 0 && test "$ru_rc" -eq 0
+          grep -q PATH_TEST_DONE=RU188 ru.out
+          grep -q PATH_TEST_DONE=DE89 de.out
