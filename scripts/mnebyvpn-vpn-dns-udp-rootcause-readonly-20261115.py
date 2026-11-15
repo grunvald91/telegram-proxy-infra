@@ -34,10 +34,10 @@ def xray_owner():
     p=pathlib.Path("/etc/mnebydns/personal-sni/nginx.conf")
     if p.is_file():
         t=p.read_text(errors="replace")
-        emit("PERSONAL_ROUTER",{"default_to_core853":bool(re.search(r"default\\s+89\\.125\\.90\\.101:853\\s*;",t)),
-                 "personal_to_ru8856":bool(re.search(r"10\\.66\\.77\\.2:8856\\s*;",t)),
-                 "personal_to_old8853":bool(re.search(r"10\\.66\\.77\\.2:8853\\s*;",t)),
-                 "bind8854":bool(re.search(r"listen\\s+0\\.0\\.0\\.0:8854\\s*;",t))})
+        emit("PERSONAL_ROUTER",{"default_to_core853":bool(re.search(r"default\s+89\.125\.90\.101:853\s*;",t)),
+                 "personal_to_ru8856":bool(re.search(r"10\.66\.77\.2:8856\s*;",t)),
+                 "personal_to_old8853":bool(re.search(r"10\.66\.77\.2:8853\s*;",t)),
+                 "bind8854":bool(re.search(r"listen\s+0\.0\.0\.0:8854\s*;",t))})
 
 def errors():
     for name in ("nginx","xray.service","mnebyvpn-vpn-provisioner.service"):
@@ -77,7 +77,7 @@ def media():
         snap=[]
         for l in t.splitlines():
             if not re.search(r"youtube_quic_.*active=",l):continue
-            data={k:int(v) for k,v in re.findall(r"\\b([a-z_]+)=(\\d+)\\b",l) if k in fields}
+            data={k:int(v) for k,v in re.findall(r"\b([a-z_]+)=(\d+)\b",l) if k in fields}
             if data:snap.append(data)
         diff={}
         if snap:
