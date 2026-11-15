@@ -1,0 +1,97 @@
+name: MNEBYDNS inspect pre-migration YouTube checkpoints 14 November (read-only)
+on:
+  push:
+    branches: [restore/mnebydns-youtube-morning-20261115]
+    paths: ['.github/workflows/mnebydns-yt-morning-checkpoints-20261115.yml']
+permissions: {contents: read}
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Inspect both hosts including historical Corefile and live local routing
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS" && test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          for role in DE RU; do
+            if [ "$role" = DE ]; then pass="$DE_PASS";target="89.125.90.101";else pass="$RU_PASS";target="188.120.254.223";fi
+            SSHPASS="$pass" sshpass -e ssh "${opts[@]}" "root@$target" "python3 - $role" <<'PY'
+          import sys,os,re,json,pathlib,hashlib,datetime,subprocess
+          role=sys.argv[1]
+          def emit(k,v):
+            print("YTRESTORE_"+role+"_"+k+"="+json.dumps(v,sort_keys=True,ensure_ascii=False),flush=True)
+          def cmd(*a,timeout=8):
+            try:
+              p=subprocess.run(a,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=timeout)
+              return p.returncode,p.stdout.strip()
+            except Exception:return 255,""
+          emit("UTC",datetime.datetime.now(datetime.timezone.utc).isoformat())
+          for svc in ("nginx.service","mnebydns-dot.service","mnebydns-googlepilot.service",
+                      "mnebydns-de89-public-quic-20261115.service","mnebydns-youtube-quic-ru-43612369808.service"):
+            rc,out=cmd("systemctl","is-active",svc);emit("SERVICE_"+svc,out)
+          keys=["www.youtube.com","youtube.com","youtubei.googleapis.com","www.googlevideo.com",
+                "googlevideo.com","i.ytimg.com","s.ytimg.com","redirector.googlevideo.com",
+                "rr1---sn-gxuo03g-ig3s.googlevideo.com"]
+          def summary(path):
+            try: data=path.read_bytes()
+            except Exception:return None
+            if len(data)>5_000_000 or b'template IN A ' not in data:return None
+            txt=data.decode("utf-8","replace");res={}
+            for domain in keys:
+              pattern=r"template IN A "+re.escape(domain)+r"\s*\{(.*?)\n\s*\}"
+              m=re.search(pattern,txt,re.DOTALL)
+              if not m: continue
+              block=m.group(1)
+              ips=re.findall(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])",block)
+              res[domain]=list(dict.fromkeys(ips))
+            # Check wildcard template explicitly and previous broad mapping without printing sensitive file data
+            res["_wildcard_de_ip_occurrences"]=txt.count("89.125.90.101")
+            res["_wildcard_ru_ip_occurrences"]=txt.count("188.120.254.223")
+            return {"file":str(path),"sha256":hashlib.sha256(data).hexdigest(),"domains":res}
+          if role=="DE":
+            live=pathlib.Path("/opt/mnebydns-dot/Corefile")
+            emit("LIVE_CORE",summary(live))
+            root=pathlib.Path("/opt/mnebydns-stable-checkpoints")
+            cand=[]
+            if root.is_dir():
+              for child in root.iterdir():
+                if not child.is_dir():continue
+                try:
+                  epoch=int(child.name)
+                  date=datetime.datetime.fromtimestamp(epoch,datetime.timezone.utc)
+                  if not (datetime.datetime(2026,11,13,tzinfo=datetime.timezone.utc)<=date<=datetime.datetime(2026,11,15,23,tzinfo=datetime.timezone.utc)):continue
+                except (ValueError,OverflowError):continue
+                avail=[]
+                for p in child.rglob("*"):
+                  if not p.is_file() or p.stat().st_size>5_000_000:continue
+                  if p.name.lower() in ("corefile","dns.before","dns.pilot","corefile.before","corefile.bak") or "dns" in p.name.lower():
+                    s=summary(p)
+                    if s:avail.append(s)
+                cand.append({"checkpoint":str(child),"utc":date.isoformat(),"files":avail[:5]})
+            cand.sort(key=lambda x:x["utc"])
+            emit("HISTORICAL_CHECKPOINTS",cand[-45:])
+            for file in ["/opt/mnebydns-dot/Corefile","/etc/nginx/nginx.conf"]:
+              p=pathlib.Path(file)
+              if p.is_file(): emit("FILE_META_"+p.name,{"sha256":hashlib.sha256(p.read_bytes()).hexdigest(),"mtime_utc":datetime.datetime.fromtimestamp(p.stat().st_mtime,datetime.timezone.utc).isoformat()})
+          for domain in ("www.youtube.com","googlevideo.com","www.googlevideo.com","pbs.twimg.com"):
+            pass
+          rc,nginx=cmd("nginx","-T",timeout=10)
+          lines=nginx.splitlines()
+          relevant=[s.strip()[:330] for s in lines if ("youtube.com" in s or "googlevideo.com" in s or "15449" in s) and not s.lstrip().startswith("#")]
+          emit("NGINX_YOUTUBE",relevant[:22])
+          rc,udp=cmd("ss","-H","-lun","sport",":443")
+          emit("UDP443_LISTENING",bool(udp.strip()))
+          emit("READ_ONLY",True)
+          PY
+          done
