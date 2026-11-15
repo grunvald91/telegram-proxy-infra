@@ -24,11 +24,11 @@ jobs:
         run: |
           set -Eeuo pipefail
           python3 -m py_compile scripts/mnebydns-googlevideo-ruwg-route-20261115.py
-          grep -Fq 'www.youtube.com' scripts/mnebydns-googlevideo-ruwg-route-20261115.py
+          grep -Fq 'googlevideo[.]com[.]' scripts/mnebydns-googlevideo-ruwg-route-20261115.py
           test -s ops/mnebydns-owner-ssh-known_hosts
           test -n "$RU_PASS" && test -n "$DE_PASS"
           echo GOOGLEVIDEO_RUWG_OFFLINE_GATE=PASS
-      - name: Apply one pre-migration exact A record, verify real public DoT, persist stable checkpoint
+      - name: Apply dedicated Googlevideo wildcard A routing, verify public DoT and RU TCP H3, persist checkpoint
         shell: bash
         run: |
           set -Eeuo pipefail
