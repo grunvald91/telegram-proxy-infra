@@ -1,0 +1,96 @@
+name: MNEBYDNS two-node live YouTube stall diagnostics read-only 20261115
+on:
+  push:
+    branches: [diag/mnebydns-live-video-stall-20261115]
+    paths: [.github/workflows/mnebydns-live-video-stall-readonly-20261115.yml]
+permissions: {contents: read}
+concurrency:
+  group: mnebydns-live-video-stall-readonly-20261115
+  cancel-in-progress: false
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Measure active traffic, queues and kernel errors simultaneously on RU188 and DE89
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS" && test -n "$RU_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          cat > diag.sh <<'DIAG'
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+          export LC_ALL=C
+          role="$1"
+          echo "DIAG_ROLE=$role"
+          date -u '+DIAG_UTC=%Y-%m-%dT%H:%M:%SZ'
+          for name in nginx mnebydns-dot mnebydns-googlepilot mnebydns-youtube-quic-ru-43612369808 mnebydns-youtube-quic-de-43612369808 mnebydns-de89-public-quic-20261115 wg-quick@tg-relay xray telegram-nfqws telegram-foreign-nfqws;do
+            z=$(systemctl is-active "$name" 2>/dev/null || true)
+            [[ "$z" == "active" ]] && echo "SERVICE_$name=active"
+          done
+          echo "WG_IF_MTU=$(cat /sys/class/net/tg-relay/mtu 2>/dev/null || echo absent)"
+          wg show tg-relay transfer 2>/dev/null | awk '{inb+=$2;outb+=$3} END {printf "WG_BYTES_INITIAL_RX=%.0f\nWG_BYTES_INITIAL_TX=%.0f\n",inb,outb}'
+          wg show tg-relay latest-handshakes 2>/dev/null | awk '{if($2>max)max=$2} END {if(max>0)printf "WG_HANDSHAKE_AGE_SECONDS=%.0f\n",systime()-max;else print "WG_HANDSHAKE_AGE_SECONDS=UNKNOWN"}'
+          ip -s link show tg-relay 2>/dev/null | awk '/RX:/{getline;print "WG_LINK_RX_PACKET_ERRORS_DROPS="$3","$4","$5} /TX:/{getline;print "WG_LINK_TX_PACKET_ERRORS_DROPS="$3","$4","$5}'
+          ss -Htan 2>/dev/null | awk '
+            $4 ~ /:443$/ && $1=="ESTAB" {ing++;recv+=$2;send+=$3;if($2>100000)backlog++}
+            $5 ~ /:443$/ && $1=="ESTAB" {eg++}
+            END {printf "TCP443_INBOUND_ESTABLISHED=%d\nTCP443_OUTBOUND_ESTABLISHED=%d\nTCP443_INBOUND_RECV_QUEUE_BYTES=%.0f\nTCP443_INBOUND_SEND_QUEUE_BYTES=%.0f\nTCP443_BACKLOG_OVER_100KB=%d\n",ing,eg,recv,send,backlog}'
+          ss -Huln 2>/dev/null | awk '$5 ~ /:443$/ || $4 ~ /:443$/ {print "UDP443_LISTEN="+$5}'
+          nstat -az 2>/dev/null | awk '$1 ~ /^(TcpRetransSegs|TcpExtTCPSynRetrans|TcpExtTCPTimeouts|TcpExtTCPLossProbes|TcpExtTCPFastRetrans|UdpInErrors|UdpRcvbufErrors|UdpSndbufErrors|IpInDiscards|IpOutDiscards|TcpExtTCPBacklogDrop)$/ {print "NSTAT_INITIAL_"$1"="$2}'
+          if command -v tcpdump >/dev/null 2>&1; then
+            timeout 17 tcpdump -n -l -i any -tt '((tcp or udp) and port 443) or (udp and (port 19444 or port 56781 or port 56782))' 2>/dev/null | python3 -c '
+          import sys,re,collections
+          c=collections.Counter()
+          for l in sys.stdin:
+            if "UDP" in l: 
+              proto="UDP"
+            elif "Flags [" in l: 
+              proto="TCP"
+            else:
+              proto="OTHER"
+            if "19444:" in l or ".19444 " in l:group="PRIVATE_QUIC_19444"
+            elif ".56781 " in l or ".56782 " in l:group="WG_OUTER"
+            elif ".443 " in l or ".443:" in l:group="TCPUDP_443"
+            else:group="OTHER"
+            m=re.search(r"length (\d+)",l)
+            c[(group,proto,"PACKETS")]+=1
+            if m:c[(group,proto,"BYTES")]+=int(m.group(1))
+          for k,v in sorted(c.items()):print("CAPTURE_"+ "_".join(k)+"="+str(v),flush=True)
+          ' || true
+          else echo "CAPTURE=tcpdump_missing";sleep 15;fi
+          wg show tg-relay transfer 2>/dev/null | awk '{inb+=$2;outb+=$3} END {printf "WG_BYTES_END_RX=%.0f\nWG_BYTES_END_TX=%.0f\n",inb,outb}'
+          ss -Htan 2>/dev/null | awk '
+            $4 ~ /:443$/ && $1=="ESTAB" {ing++;recv+=$2;send+=$3;if($2>100000)backlog++}
+            $5 ~ /:443$/ && $1=="ESTAB" {eg++}
+            END {printf "TCP443_END_INBOUND_ESTABLISHED=%d\nTCP443_END_OUTBOUND_ESTABLISHED=%d\nTCP443_END_INBOUND_RECV_QUEUE_BYTES=%.0f\nTCP443_END_INBOUND_SEND_QUEUE_BYTES=%.0f\nTCP443_END_BACKLOG_OVER_100KB=%d\n",ing,eg,recv,send,backlog}'
+          nstat -az 2>/dev/null | awk '$1 ~ /^(TcpRetransSegs|TcpExtTCPSynRetrans|TcpExtTCPTimeouts|TcpExtTCPLossProbes|TcpExtTCPFastRetrans|UdpInErrors|UdpRcvbufErrors|UdpSndbufErrors|IpInDiscards|IpOutDiscards|TcpExtTCPBacklogDrop)$/ {print "NSTAT_END_"$1"="$2}'
+          for unit in nginx mnebydns-googlepilot mnebydns-youtube-quic-ru-43612369808 mnebydns-youtube-quic-de-43612369808 mnebydns-de89-public-quic-20261115;do
+            count=$(journalctl -u "$unit" --since '-3 minutes' -q --no-pager -o cat 2>/dev/null | grep -Eic 'timeout|error|fail|drop|reset|closed|expired|refused' || true)
+            echo "RECENT_ANOMALY_LINES_$unit=$count"
+          done
+          echo "DIAG_ROLE_FINISHED=$role"
+          DIAG
+          chmod 700 diag.sh
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 'bash -s -- RU188' < diag.sh > ru.out 2>&1 &
+          ru_pid=$!
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'bash -s -- DE89' < diag.sh > de.out 2>&1 &
+          de_pid=$!
+          wait "$ru_pid" || echo "RU_DIAG_REMOTE_FAILED=true"
+          wait "$de_pid" || echo "DE_DIAG_REMOTE_FAILED=true"
+          echo "RU188_LIVE_DIAG_BEGIN"
+          cat ru.out
+          echo "RU188_LIVE_DIAG_END"
+          echo "DE89_LIVE_DIAG_BEGIN"
+          cat de.out
+          echo "DE89_LIVE_DIAG_END"
