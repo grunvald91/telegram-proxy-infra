@@ -55,9 +55,13 @@ jobs:
           import socket,ssl
           ctx=ssl.create_default_context()
           for host in ("www.youtube.com","rr1---sn-gxuo03g-ig3s.googlevideo.com"):
-            with socket.create_connection(("89.125.90.101",443),timeout=9) as tcp:
-              with ctx.wrap_socket(tcp,server_hostname=host) as sock:
-                print("PRE13_DE89_ORIGINAL_SNI_TLS_"+host+"="+sock.version(),flush=True)
+            try:
+              with socket.create_connection(("89.125.90.101",443),timeout=9) as tcp:
+                with ctx.wrap_socket(tcp,server_hostname=host) as sock:
+                  print("PRE13_DE89_ORIGINAL_SNI_TLS_"+host+"="+sock.version(),flush=True)
+            except Exception as exc:
+              # Observational cross-border probe, not an exact replica of an Android phone.
+              print("PRE13_DE89_ORIGINAL_SNI_TLS_"+host+"=FAILED_"+type(exc).__name__,flush=True)
           PY
           de 'install -d -m 700 /opt/mnebydns-youtube-pre13-restore-20261115 && test ! -e /opt/mnebydns-youtube-pre13-restore-20261115/state'
           SSHPASS="$DE_PASS" sshpass -e scp "${copts[@]}" scripts/mnebydns-youtube-pre13-restore-20261115.py root@89.125.90.101:/tmp/mnebydns-youtube-pre13-restore-20261115.py
@@ -66,7 +70,7 @@ jobs:
           de 'python3 -B /opt/mnebydns-youtube-pre13-restore-20261115/manager.py apply'
           de 'python3 -B /opt/mnebydns-youtube-pre13-restore-20261115/manager.py verify'
           de 'python3 -B /opt/mnebydns-youtube-pre13-restore-20261115/manager.py confirm'
-          de 'python3 -B /opt/mnebydns-youtube-pre13-restore-20261115/manager.py verify' || true
+          de 'test -f /opt/mnebydns-youtube-pre13-restore-20261115/state/confirmed'
           echo YT_PRE13_TWO_HOST_FAMILIES_RESTORED_TO_DE89=true
           echo YT_PRE13_OTHER_ROUTES_VPN_WG_SUBSCRIBERS_UNCHANGED=true
           echo YT_PRE13_ANDROID_VIDEO_PLAYBACK_NOT_YET_VERIFIED=true
