@@ -1,0 +1,61 @@
+name: MNEBYDNS AWG stage production on both endpoints (no route switch)
+on:
+  push:
+    branches: [feat/mnebydns-amneziawg-parallel-20261115]
+    paths: ['.github/workflows/mnebydns-awg-production-stage-20261116.yml']
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: mnebydns-awg-production-migration-20261116
+  cancel-in-progress: false
+jobs:
+  stage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: awg-3.1-pinned-amd64-binaries
+          run-id: 43762614481
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/awg-build
+      - name: Install isolated AWG files and systemd unit but leave old WireGuard active
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          bash -n scripts/mnebydns-awg-prod-manage-20261116.sh
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          if ! command -v sshpass >/dev/null; then sudo apt-get update -qq && sudo apt-get -y -qq install sshpass >/dev/null; fi
+          w="$(mktemp -d)"
+          trap 'rm -rf "$w"' EXIT
+          cp "$RUNNER_TEMP/awg-build/amneziawg-pinned-linux-amd64.tar.gz" "$w/bundle.tgz"
+          mkdir -p "$w/bin"
+          tar -xzf "$w/bundle.tgz" -C "$w/bin"
+          (cd "$w/bin" && sha256sum -c SHA256SUMS)
+          key="$("$w/bin/awg" genkey)"
+          echo "::add-mask::$key"
+          printf '%s\n' "$key" > "$w/header"
+          unset key
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          copts=(-q -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          for role in DE RU; do
+            if [[ "$role" == DE ]]; then pass="$DE_PASS"; host=89.125.90.101; else pass="$RU_PASS"; host=188.120.254.223; fi
+            SSHPASS="$pass" sshpass -e scp "${copts[@]}" "$w/bundle.tgz" root@"$host":/tmp/mneby-awg-prod-bundle-20261116.tar.gz
+            SSHPASS="$pass" sshpass -e scp "${copts[@]}" "$w/header" root@"$host":/tmp/mneby-awg-prod-header-20261116.txt
+            SSHPASS="$pass" sshpass -e scp "${copts[@]}" scripts/mnebydns-awg-prod-manage-20261116.sh root@"$host":/tmp/mneby-awg-prod-manage-20261116.sh
+            SSHPASS="$pass" sshpass -e ssh "${opts[@]}" root@"$host" "bash /tmp/mneby-awg-prod-manage-20261116.sh stage $role"
+            SSHPASS="$pass" sshpass -e ssh "${opts[@]}" root@"$host" "rm -f /tmp/mneby-awg-prod-bundle-20261116.tar.gz /tmp/mneby-awg-prod-header-20261116.txt /tmp/mneby-awg-prod-manage-20261116.sh"
+          done
+          echo AWG_PRODUCTION_STAGED_BOTH=true
