@@ -1,0 +1,102 @@
+name: "MNEBYDNS Groq priority guarded production route activation"
+on:
+  push:
+    branches: [ops/mnebydns-groq-priority-20261115]
+    paths:
+      - .github/workflows/mnebydns-groq3-guarded-deploy-20261115.yml
+      - scripts/mnebydns-groq3-guarded-20261115.py
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: mnebydns-google-public-443-change
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify exact-host renderer, rollback, and candidate inventory
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-groq3-guarded-20261115.py
+          python3 scripts/mnebydns-groq3-guarded-20261115.py selftest
+          python3 -m unittest discover -s scripts/tests -p test_owner_domain_routes.py
+          bash -n scripts/mnebydns-bulk-stage-20261112.sh
+          bash -n scripts/mnebydns-bulk-compensate-20261112.sh
+          test "$(cat data/mnebydns-batch-auto-enabled-20261112.txt)" = disabled
+  guarded:
+    if: github.event.head_commit.message == 'deploy(MNEBYDNS): groq priority verified'
+    needs: offline
+    runs-on: ubuntu-latest
+    timeout-minutes: 56
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install pinned transport
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -qq -y sshpass >/dev/null
+      - name: Wait read-only for Meta trial and checkpoint stability (bounded)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for i in $(seq 1 45); do
+            if python3 - <<'PY'
+          import os,json,urllib.request,importlib.util
+          spec=importlib.util.spec_from_file_location('owner','scripts/mnebydns-owner-domain-controller-20261110.py')
+          m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+          url='https://api.github.com/repos/grunvald91/telegram-proxy-infra/actions/workflows/meta-v30-manual-two-server-canary.yml/runs?per_page=10'
+          req=urllib.request.Request(url,headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json'})
+          with urllib.request.urlopen(req,timeout=12) as response:
+              runs=json.load(response)['workflow_runs']
+          ongoing=[x['id'] for x in runs if x['status'] in ('in_progress','queued','pending','requested','waiting')]
+          quiet=m.live_checkpoint_unchanged()
+          print('GROQ_WAIT_GATE_META_ACTIVE='+json.dumps(ongoing)+' CHECKPOINT_STABLE='+str(quiet),flush=True)
+          if ongoing or not quiet:raise SystemExit(1)
+          PY
+            then
+              echo "GROQ_SAFE_WINDOW_CONFIRMED=PASS"
+              break
+            fi
+            if (( i == 45 )); then
+              echo "GROQ_WAIT_GATE_TIMED_OUT_NO_CHANGES=true"
+              exit 1
+            fi
+            sleep 55
+          done
+      - name: Stage, verify and confirm Groq via RU188 and DE89
+        shell: bash
+        run: python3 -u scripts/mnebydns-groq3-guarded-20261115.py deploy
+      - name: Report resulting exact-host states
+        if: always()
+        shell: bash
+        run: |
+          if test -f groq3-results/summary.json; then
+            cat groq3-results/summary.json >> "$GITHUB_STEP_SUMMARY"
+            cat groq3-results/per-domain.json >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if test -f groq3-results/events.jsonl; then
+            tail -n 25 groq3-results/events.jsonl >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Save verified release evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mnebydns-groq3-result-${{ github.run_id }}
+          path: groq3-results/
+          if-no-files-found: warn
+          retention-days: 30
