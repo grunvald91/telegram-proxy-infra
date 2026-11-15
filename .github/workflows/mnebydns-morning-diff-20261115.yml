@@ -1,0 +1,59 @@
+name: MNEBYDNS historical morning versus current server config audit
+on:
+  push:
+    branches: [restore/mnebydns-youtube-morning-20261115]
+    paths: ['.github/workflows/mnebydns-morning-diff-20261115.yml']
+permissions: {contents: read}
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Diff archived original DNS and proxy against current service
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -qq -y sshpass >/dev/null
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -T -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o ConnectTimeout=12 root@89.125.90.101 'python3 -' <<'PY'
+          import pathlib,re,hashlib,subprocess,json,difflib,datetime
+          def say(k,v):print('MORNING_AUDIT_'+k+'='+json.dumps(v,ensure_ascii=False,sort_keys=True),flush=True)
+          def sha(x):return hashlib.sha256(x).hexdigest()
+          b=pathlib.Path('/opt/mnebydns-stable-checkpoints/1794566430')
+          live=pathlib.Path('/opt/mnebydns-dot/Corefile')
+          def templ(s):
+            out={}
+            for m in re.finditer(r'(?ms)^[ \t]*template IN A ([^\n{]+)\{\n(.*?)^[ \t]*\}',s):
+              body=m.group(2);matcher=re.search(r'(?m)^\s*match\s+(.+)$',body)
+              answer=re.search(r'(?m)^\s*answer\s+(.+)$',body)
+              key=(m.group(1).strip(),matcher.group(1).strip() if matcher else '')
+              ips=re.findall(r'(?:\d{1,3}\.){3}\d{1,3}',answer.group(1)) if answer else []
+              out[key]=ips
+            return out
+          oldb=(b/'dns.stable').read_bytes();newb=live.read_bytes()
+          old=templ(oldb.decode());new=templ(newb.decode())
+          shared=set(old)&set(new)
+          changed=[{'key':k[0],'match':k[1][:90],'old':old[k],'new':new[k]} for k in sorted(shared) if old[k]!=new[k]]
+          added=[{'key':k[0],'match':k[1][:90],'ips':new[k]} for k in sorted(set(new)-set(old))]
+          removed=[{'key':k[0],'match':k[1][:90],'ips':old[k]} for k in sorted(set(old)-set(new))]
+          say('DNS',{'old_sha':sha(oldb),'new_sha':sha(newb),'old_a_rules':len(old),'new_a_rules':len(new),'changed':changed[:40],'added':added[:40],'removed':removed[:40],'changed_total':len(changed),'added_total':len(added),'removed_total':len(removed)})
+          for name,p in [('nginx',pathlib.Path('/etc/nginx/nginx.conf')),('proxy',pathlib.Path('/etc/mnebydns-googlepilot/nginx.conf'))]:
+            o=(b/(name+'.stable')).read_bytes();n=p.read_bytes()
+            blocks=[(op,i,j,k,l) for op,i,j,k,l in difflib.SequenceMatcher(None,o.decode().splitlines(),n.decode().splitlines(),autojunk=False).get_opcodes() if op!='equal']
+            say(name.upper(),{'same':o==n,'old_sha':sha(o),'new_sha':sha(n),'line_change_hunks':blocks[:25],'hunks_total':len(blocks)})
+          svcs=['nginx','mnebydns-dot','mnebydns-googlepilot','mnebydns-de89-public-quic-20261115','mnebydns-youtube-quic-de-43612369808','telegram-foreign-nfqws','xray']
+          def active(n):
+            p=subprocess.run(['systemctl','is-active',n],capture_output=True,text=True,timeout=6)
+            return p.stdout.strip()
+          say('DE_SERVICES',{n:active(n) for n in svcs})
+          say('DE_UDP443',subprocess.run(['ss','-H','-lun','sport',':443'],capture_output=True,text=True,timeout=6).stdout.count('\n'))
+          say('READ_ONLY',True)
+          PY
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o ConnectTimeout=12 root@188.120.254.223 'for s in mnebydns-youtube-quic-ru-43612369808 nginx telegram-nfqws xray; do echo MORNING_AUDIT_RU_SERVICE_${s}="$(systemctl is-active "$s" || true)"; done; echo MORNING_AUDIT_RU_UDP443_LISTENERS="$(ss -H -lun sport = :443 | wc -l)"'
