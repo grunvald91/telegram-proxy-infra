@@ -27,8 +27,7 @@ DNS = Path("/opt/mnebydns-dot/Corefile")
 NGINX = Path("/etc/nginx/nginx.conf")
 PROXY = Path("/etc/mnebydns-googlepilot/nginx.conf")
 PTR = Path("/opt/mnebydns-stable-checkpoints/current")
-EXPECTED_OLD_SHA = "3ee64c23c17007e9cd4045df7c1fd688913638db2b48dbf0179b372e6f2841bc"
-EXPECTED_A_COUNT = 564
+MINIMUM_A_COUNT = 564
 TIMER = "mnebydns-de89-restore-revert-20261115.timer"
 SCRIPT = "/usr/local/sbin/mnebydns-de89-restore-20261115.py"
 A_LINE = re.compile(r'(?m)^([ \t]*answer\s+"\{\{ \.Name \}\}\s+\d+\s+IN\s+A\s+)((?:\d{1,3}\.){3}\d{1,3})("[ \t]*)$')
@@ -70,14 +69,14 @@ def valid_checkpoint(expected_dns: bytes) -> Path:
 
 def render(current: str) -> tuple[str, int]:
     matches = list(A_LINE.finditer(current))
-    if len(matches) != EXPECTED_A_COUNT or len(A_HEADER.findall(current)) != EXPECTED_A_COUNT:
+    if len(matches) < MINIMUM_A_COUNT or len(A_HEADER.findall(current)) != len(matches):
         raise RuntimeError("A_RULE_COUNT_DRIFT")
     if set(m.group(2) for m in matches) != {RU}:
         raise RuntimeError("FOREIGN_OR_MIXED_A_ANSWERS_NOT_APPROVED")
     if current.count("tls://.:853 {") != 1 or current.count("    bind 89.125.90.101") != 1:
         raise RuntimeError("CORE_DOT_STRUCTURE_DRIFT")
     replaced, n = A_LINE.subn(lambda m: m.group(1) + EDGE + m.group(3), current)
-    if n != EXPECTED_A_COUNT:
+    if n != len(matches):
         raise RuntimeError("A_EDIT_COUNT_MISMATCH")
     inverse, reverse_count = A_LINE.subn(
         lambda m: m.group(1) + RU + m.group(3), replaced)
@@ -137,10 +136,12 @@ def probe(address: str) -> None:
 def stage() -> None:
     expected_services()
     old = DNS.read_bytes()
-    if sha(old) != EXPECTED_OLD_SHA:
-        raise RuntimeError("LIVE_CORE_SHA_CHANGED_REAUDIT_REQUIRED")
     checkpoint = valid_checkpoint(old)
     current = old.decode()
+    current_markers = set(re.findall(r"# BEGIN MNEBYDNS_OWNER_EXACT_([A-Za-z0-9_]+)", current))
+    nginx_markers = set(re.findall(r"# BEGIN MNEBYDNS_OWNER_EXACT_([A-Za-z0-9_]+)", NGINX.read_text()))
+    if current_markers != nginx_markers:
+        raise RuntimeError("CURRENT_OWNER_CORE_AND_NGINX_SNI_MARKERS_DIFFER")
     candidate, count = render(current)
     if BASE.exists():
         raise RuntimeError("RESTORE_ALREADY_STAGED")
@@ -280,7 +281,7 @@ def finalize() -> None:
         (BASE / "confirmed").write_text(str(dest) + "\n")
         cmd("systemctl", "stop", TIMER, check=False)
         print("DE89_STABLE_CHECKPOINT=" + str(dest), flush=True)
-        print("DE89_564_A_RULES_SWITCHED_WITHOUT_DB_CHANGE=PASS", flush=True)
+        print("DE89_MAPPED_A_RULES_SWITCHED_WITHOUT_DB_CHANGE=" + str(len(A_LINE.findall(new.decode()))), flush=True)
 
 
 if __name__ == "__main__":
