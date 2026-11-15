@@ -66,7 +66,7 @@ if ROLE=="DE":
     if p.is_file():
         s=p.read_text(errors="replace")
         emit("CORE_FILE",{"bytes":len(s),"googlevideo_present":"googlevideo" in s.lower(),
-            "cache_directives":len(re.findall(r"(?m)^\\s*cache\\b",s)),
+            "cache_directives":len(re.findall(r"(?m)^\s*cache\b",s)),
             "googlevideo_mentions":len(re.findall("googlevideo",s,re.I)),
             "youtube_mentions":len(re.findall("youtube",s,re.I))})
 else:
@@ -96,7 +96,7 @@ for name,args in (("IP_RULE",["ip","-4","rule","show"]),
                   ("WG_HANDSHAKE",["wg","show","tg-relay","latest-handshakes"])):
     rc,out,err=cmd(args)
     if name=="IP_RULE":
-        entries=[re.sub(r'\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b',"<IP>",x) for x in out.splitlines()]
+        entries=[re.sub(r'\b(?:\d{1,3}\.){3}\d{1,3}\b',"<IP>",x) for x in out.splitlines()]
         emit(name,{"rc":rc,"rules":entries[:24]})
     elif name=="WG_LINK":
         try:
@@ -111,7 +111,7 @@ for name,args in (("IP_RULE",["ip","-4","rule","show"]),
 for tag,addr in (("PUBLIC_PEER",RU if ROLE=="DE" else DE),
                  ("WG_PEER","10.66.77.2" if ROLE=="DE" else WG_DE)):
     rc,out,_=cmd(["ip","-4","route","get",addr])
-    m=re.search(r"\\bdev\\s+(\\S+)",out)
+    m=re.search(r"\bdev\s+(\S+)",out)
     emit("ROUTE_"+tag,{"rc":rc,"dev":m.group(1) if m else None})
 rc,out,err=cmd(["iptables-save"],8)
 if rc==0:
@@ -125,20 +125,20 @@ if rc==0:
         if "-j REJECT" in x and "-p udp" in x:counts["reject_udp443"]+=1
         if "TCPMSS" in x:counts["mss_rules"]+=1
         if len(sanitized)<15:
-            sanitized.append(re.sub(r'\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b',"<IP>",x)[:200])
+            sanitized.append(re.sub(r'\b(?:\d{1,3}\.){3}\d{1,3}\b',"<IP>",x)[:200])
     emit("IPTABLES",{"counts":counts,"sample":sanitized})
 else:emit("IPTABLES",{"rc":rc,"error":err})
 rc,out,err=cmd(["nft","-a","list","ruleset"],8)
 if rc==0:
     ss=[x.strip() for x in out.splitlines() if
-       re.search(r'\\b443\\b|tcp option maxseg|\\bTCPMSS\\b',x,re.I)]
-    emit("NFT443",{"matching_lines":len(ss),"sample":[re.sub(r'\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b',"<IP>",x)[:190] for x in ss[:18]]})
+       re.search(r'\b443\b|tcp option maxseg|\bTCPMSS\b',x,re.I)]
+    emit("NFT443",{"matching_lines":len(ss),"sample":[re.sub(r'\b(?:\d{1,3}\.){3}\d{1,3}\b',"<IP>",x)[:190] for x in ss[:18]]})
 else:emit("NFT443",{"rc":rc,"error":err})
 # Only RU probes: compare publicly routed ICMP and inner WireGuard with identical payload.
 if ROLE=="RU":
     for tag,host in (("PUBLIC",DE),("WG",WG_DE)):
         rc,out,err=cmd(["ping","-n","-q","-M","do","-c","12","-i","0.3","-s","1200","-W","1",host],12)
-        match=re.search(r"(\\d+) packets transmitted, (\\d+) received, ([\\d.]+)% packet loss",out)
+        match=re.search(r"(\d+) packets transmitted, (\d+) received, ([\d.]+)% packet loss",out)
         emit("PING_"+tag,{"rc":rc,"sent":int(match.group(1)) if match else None,
           "recv":int(match.group(2)) if match else None,
           "loss_pct":float(match.group(3)) if match else None,
