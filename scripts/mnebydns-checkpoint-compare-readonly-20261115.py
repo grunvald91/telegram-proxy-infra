@@ -31,6 +31,8 @@ print(owner.ssh("de",cmd,timeout=45),flush=True)
 
 # Only print safe structure counts, not rule contents.
 anchor_check = 'python3 -c '+shlex.quote("from pathlib import Path; s=Path('/opt/mnebydns-dot/Corefile').read_text(); print('ANCHOR_CACHE_OLD='+str(s.count('    cache 30\\\\n'))); print('ANCHOR_CACHE_RESILIENT='+str(s.count('    cache 30 {\\\\n'))); print('ANCHOR_GEMINI_EXACT='+str(s.count('template IN A gemini.google.com {'))); print('ANCHOR_TEMPLATE_A_GENERIC='+str(s.count('template IN A . {'))); print('ANCHOR_GEMINI_TEXT_PRESENT='+str('gemini.google.com' in s)); print('CORE_TEMPLATE_A_COUNT='+str(s.count('template IN A ')));")
+extra_check = 'python3 -c '+shlex.quote("from pathlib import Path; s=Path('/opt/mnebydns-dot/Corefile').read_text(); lines=s.splitlines(); print('CACHE_OLD_COUNT='+str(sum(x=='    cache 30' for x in lines))); print('CACHE_RESILIENT_COUNT='+str(sum(x=='    cache 30 {' for x in lines))); print('CACHE_ALL_LINES='+str(sum(x.strip().startswith('cache ') for x in lines))); print('CACHE_INDENTS='+str(sorted(set(len(x)-len(x.lstrip()) for x in lines if x.strip().startswith('cache ')))));")
+print(owner.ssh('de',extra_check,timeout=45),flush=True)
 print(owner.ssh('de',anchor_check,timeout=45),flush=True)
 print('STRUCTURAL_ANCHOR_INSPECTION=PASS',flush=True)
 
