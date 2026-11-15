@@ -160,7 +160,7 @@ cat > "$root/rollback.sh" <<ROLLBACK''')
 
 PREPARE_KEYS=r"""
 set -Eeuo pipefail
-tag="$1"; oldport="$2"; newport="$3"; other="$4"; otherold="$5"; othernew="$6"; peerpub="$7"
+tag="$1"; oldport="$2"; newport="$3"; other="$4"; otherold="$5"; othernew="$6"; peerpub="$7"; side="$8"
 [[ "$tag" =~ ^[0-9]{6}$ ]]
 [[ "$peerpub" =~ ^[A-Za-z0-9+/]{43}=$ ]]
 root="/run/mnebywgfix-$tag"
@@ -168,9 +168,9 @@ test -s "$root/new.private" && test -s "$root/new.public"
 test -s "$root/candidate.file" && test -s "$root/original.wg"
 test "$(wg show tg-relay listen-port)" = "$oldport"
 umask 077
-python3 - "$root" "$oldport" "$newport" "$other" "$otherold" "$othernew" "$peerpub" <<'PY'
+python3 - "$root" "$oldport" "$newport" "$other" "$otherold" "$othernew" "$peerpub" "$side" <<'PY'
 import pathlib,re,sys
-root,oldport,newport,other,otherold,othernew,peerpub=sys.argv[1:]
+root,oldport,newport,other,otherold,othernew,peerpub,side=sys.argv[1:]
 d=pathlib.Path(root)
 priv=(d/"new.private").read_text().strip()
 if not re.fullmatch(r"[A-Za-z0-9+/]{43}=",priv):raise ValueError("Invalid ephemeral private key")
@@ -188,12 +188,20 @@ disk=replace_unique(disk,"PrivateKey",priv)
 disk=replace_unique(disk,"PublicKey",peerpub)
 wg=(d/"original.wg").read_text()
 oldend=other+":"+oldport
-if not re.search(r"(?m)^[ \t]*Endpoint[ \t]*=[ \t]*"+re.escape(oldend)+r"[ \t]*$",wg):
-    raise ValueError("Old runtime endpoint differs from expected")
+endpoints=re.findall(r"(?m)^[ \t]*Endpoint[ \t]*=[ \t]*(\S+)[ \t]*$",wg)
+if endpoints and (len(endpoints)!=1 or endpoints[0]!=oldend):
+    raise ValueError("Unexpected pre-existing native peer endpoint")
 wg=replace_unique(wg,"PrivateKey",priv)
 wg=replace_unique(wg,"PublicKey",peerpub)
 wg=replace_unique(wg,"ListenPort",newport)
-wg=replace_unique(wg,"Endpoint",other+":"+othernew)
+if endpoints:
+    wg=replace_unique(wg,"Endpoint",other+":"+othernew)
+else:
+    if side!="DE" or wg.count("[Peer]")!=1:
+        raise ValueError("Missing peer Endpoint outside expected roaming DE role")
+    wg,n=re.subn(r"(?m)^\[Peer\][ \t]*\r?\n",
+                 lambda m:m.group(0)+"Endpoint = "+other+":"+othernew+"\n",wg,count=1)
+    if n!=1:raise ValueError("Native Peer section missing")
 (d/"candidate.file").write_text(disk)
 (d/"candidate.runtime").write_text(wg)
 (d/"expected.peer").write_text(peerpub+"\n")
@@ -330,7 +338,7 @@ def main():
             print("WG_FIX_"+role+"_STAGED=yes",flush=True)
         for role in ("DE","RU"):
             other=OTHER[role]
-            out=remote(role,PREPARE_KEYS,[TAG,OLD[role],NEW[role],HOST[other],OLD[other],NEW[other],newkeys[other]],timeout=27)
+            out=remote(role,PREPARE_KEYS,[TAG,OLD[role],NEW[role],HOST[other],OLD[other],NEW[other],newkeys[other],role],timeout=27)
             if "WG_FIX_NEW_KEYS_PREPARED=yes" not in out:raise RuntimeError("New-key candidate unverified "+role)
             print("WG_FIX_"+role+"_CANDIDATE_READY=yes",flush=True)
         for role in ("DE","RU"):
