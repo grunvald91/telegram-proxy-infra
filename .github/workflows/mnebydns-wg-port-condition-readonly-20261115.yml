@@ -44,6 +44,8 @@ jobs:
           printf 'PREFLIGHT_UFW_ENABLED=';systemctl is-enabled ufw.service 2>/dev/null || true
           printf 'PREFLIGHT_UFW_RULE_MATCH=';ufw status 2>&1 | grep -Ec "(^|[[:space:]])$target(/udp|[[:space:]])" || true
           printf 'PREFLIGHT_WG_SHOWCONF_WORKS=';wg showconf tg-relay >/dev/null 2>&1 && echo yes || echo no
+          printf 'PREFLIGHT_NATIVE_ENDPOINT=';wg showconf tg-relay 2>/dev/null | grep -E '^[[:space:]]*Endpoint[[:space:]]*=' | sed -E 's/^[[:space:]]*Endpoint[[:space:]]*=[[:space:]]*//' || true
+          printf 'PREFLIGHT_NATIVE_LISTEN_PORT=';wg showconf tg-relay 2>/dev/null | grep -E '^[[:space:]]*ListenPort[[:space:]]*=' | sed -E 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*//' || true
           printf 'PREFLIGHT_DISK_PRESENT=';test -s /etc/wireguard/tg-relay.conf && echo yes || echo no
           grep -E '^[[:space:]]*(ListenPort|Endpoint)[[:space:]]*=' /etc/wireguard/tg-relay.conf | sed 's/^/PREFLIGHT_DISK_FIELD=/' || true
           printf 'PREFLIGHT_INTERFACE_PRESENT=';ip link show tg-relay >/dev/null && echo yes || echo no
