@@ -122,6 +122,22 @@ jobs:
           nfqp=pathlib.Path('/proc/net/netfilter/nfnetlink_queue')
           activeq=nfqp.read_text(errors='replace').splitlines() if nfqp.is_file() else []
           qids=[x.split()[0] for x in activeq if x.split()]
+          queue_processes=[]
+          for entry in activeq:
+            fields=entry.split()
+            if not fields or fields[0]!='210':continue
+            portid=fields[1] if len(fields)>1 else ''
+            task=pathlib.Path('/proc')/portid
+            info={'queue_id':fields[0],'netlink_portid':portid,'proc_exists':task.is_dir(),'stats_fields':len(fields)}
+            if task.is_dir():
+              comm=task/'comm'
+              info['comm']=comm.read_text().strip() if comm.is_file() else ''
+              group=task/'cgroup'
+              info['cgroup']=[line.split(':')[-1][-130:] for line in group.read_text().splitlines()[:4]] if group.is_file() else []
+            queue_processes.append(info)
+          ps=subprocess.run(['ps','-e','-o','pid=,comm='],capture_output=True,text=True).stdout
+          consumers=[line.strip() for line in ps.splitlines() if any(token in line.lower() for token in ('nfqws','zapret','nfqueue','dpi','desync'))]
+          print('DE89_NFQUEUE210_PROCESS_AUDIT='+json.dumps({'bindings':queue_processes,'candidate_processes':consumers[:20]},sort_keys=True))
           print('DE89_LIVE_NFQUEUE_BINDINGS='+json.dumps({'queue_ids':qids,'bound_210':'210' in qids,'proc_available':nfqp.is_file()},sort_keys=True))
           print('DE89_NFQUEUE_MEDIA_PATH='+json.dumps({'exit_code':nft.returncode,'rules':matched[:14],'current_service':subprocess.run(['systemctl','is-active','telegram-nfqws.service'],capture_output=True,text=True).stdout.strip()},sort_keys=True))
           print('MEDIA_CONFIG_VS_RESTORED_CHECKPOINT='+json.dumps(snapshots,sort_keys=True))
