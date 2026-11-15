@@ -1,0 +1,56 @@
+name: MNEBYDNS identify active VPN ingress and whether generator rewrites Xray config
+on:
+  push:
+    branches: [diag/mnebydns-live-video-stall-20261115]
+    paths: [.github/workflows/mnebydns-vpn-ingress-generator-readonly-20261115.yml]
+permissions: {contents: read}
+jobs:
+  readonly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Inspect live VPN inbound usage and provisioner config writer without mutations
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS" && test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY'
+          import subprocess,pathlib,re,datetime
+          def emit(k,v):print("INBOUND_CHECK_"+k+"="+str(v),flush=True)
+          def cmd(x):
+            try:return subprocess.check_output(x,stderr=subprocess.DEVNULL,text=True,timeout=7)
+            except Exception:return ""
+          raw=cmd(["ss","-Htnp"])
+          ports=[8443,2053,18943]
+          for port in ports:
+            est=0; others=0
+            for line in raw.splitlines():
+              parts=line.split()
+              if len(parts)>4 and parts[3].endswith(":"+str(port)):
+                if parts[0]=="ESTAB":est+=1
+                else:others+=1
+            emit("CURRENT_PORT_"+str(port)+"_ESTABLISHED",est)
+            emit("CURRENT_PORT_"+str(port)+"_OTHER",others)
+          svc=pathlib.Path("/etc/systemd/system/mnebyvpn-vpn-provisioner.service")
+          lines=svc.read_text().splitlines() if svc.exists() else []
+          for x in lines:
+            if x.strip().startswith(("ExecStart=","ExecReload=","Restart=")):
+              x=re.sub(r"(?i)(password|token|secret)=\S+",r"\1=[REDACTED]",x.strip())
+              emit("SERVICE_DIRECTIVE",x[:220])
+          src=pathlib.Path("/opt/mnebyvpn/vpn-provisioner.py")
+          if src.is_file():
+            lines=src.read_text().splitlines()
+            emit("SOURCE_LINES",len(lines))
+            for i,line in enumerate(lines):
+              if any(k in line for k in ("xray-canary.json","json.dump(","write_text(","config_path","sniffing","destOverride")):
+                # Structure only, strip string literals to avoid revealing keys or creds.
+                stripped=re.sub(r"""(?:"[^"]*"|'[^']*')""","[str]",line.strip())
+                emit("GENERATOR_LINE",str(i+1)+" "+stripped[:190])
+          emit("FINISHED",True)
+          PY
