@@ -1,0 +1,45 @@
+name: MNEBYDNS WG port-change guard condition inventory read-only
+on:
+  push:
+    branches: [diag/wg-altport-isolated-20261115]
+    paths: ['.github/workflows/mnebydns-wg-port-condition-readonly-20261115.yml']
+permissions: {contents: read}
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Identify failing guard on both live nodes without writes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          for role in DE RU; do
+            if [ "$role" = DE ]; then export SSHPASS="$DE_PASS"; host=89.125.90.101; expected=51820; other=188.120.254.223:53832; target=56781; else export SSHPASS="$RU_PASS"; host=188.120.254.223; expected=53832; other=89.125.90.101:51820; target=56782; fi
+            sshpass -e ssh "${opts[@]}" "root@$host" "bash -s -- $role $expected $other $target" <<'SH'
+          set -u
+          role="$1"; expected="$2"; other="$3"; target="$4"
+          echo "PREFLIGHT_ROLE=$role"
+          systemctl is-active wg-quick@tg-relay.service | sed "s/^/PREFLIGHT_WG_SERVICE=/"
+          printf 'PREFLIGHT_LISTEN=';wg show tg-relay listen-port || true
+          printf 'PREFLIGHT_PEER_COUNT=';wg show tg-relay peers | wc -l
+          printf 'PREFLIGHT_ENDPOINT=';wg show tg-relay endpoints | awk '{print $2}'
+          echo "PREFLIGHT_EXPECTED_ENDPOINT=$other"
+          printf 'PREFLIGHT_NEW_PORT_LISTENER_COUNT=';ss -H -lun "( sport = :$target )" | wc -l
+          printf 'PREFLIGHT_UFW_FIRST=';ufw status 2>&1 | head -1
+          printf 'PREFLIGHT_UFW_RULE_MATCH=';ufw status 2>&1 | grep -Ec "(^|[[:space:]])$target(/udp|[[:space:]])" || true
+          printf 'PREFLIGHT_WG_SHOWCONF_WORKS=';wg showconf tg-relay >/dev/null 2>&1 && echo yes || echo no
+          printf 'PREFLIGHT_DISK_PRESENT=';test -s /etc/wireguard/tg-relay.conf && echo yes || echo no
+          grep -E '^[[:space:]]*(ListenPort|Endpoint)[[:space:]]*=' /etc/wireguard/tg-relay.conf | sed 's/^/PREFLIGHT_DISK_FIELD=/' || true
+          printf 'PREFLIGHT_INTERFACE_PRESENT=';ip link show tg-relay >/dev/null && echo yes || echo no
+          echo "PREFLIGHT_READONLY=YES"
+          SH
+          done
