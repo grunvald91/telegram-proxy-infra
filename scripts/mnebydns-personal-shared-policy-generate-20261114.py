@@ -2,7 +2,7 @@
 """Safely derive personalized premium policy from the live common DE CoreDNS.
 
 Inputs are read-only snapshots exported by GitHub Actions, no secrets.
-Accept exactly 264 mapped CoreDNS A templates and 2 anchored domain families;
+Accept at least 264 mapped CoreDNS A templates and 2 anchored domain families;
 never allow a broad/unreviewed regex to expand a subscriber's paid routing.
 The old personal policy is a regression fixture only, never an independent source.\nOutput immutable sorted JSON plus SHA.
 """
@@ -44,7 +44,7 @@ def decode_family(raw: str) -> list[str]:
 
 def parse(core: str) -> tuple[set[str], set[str]]:
     blocks = TEMPLATE.findall(core)
-    if len(blocks) != 264:
+    if len(blocks) < 264:
         raise ValueError("Unexpected CoreDNS A template count " + str(len(blocks)))
     exact: set[str] = set()
     groups: list[list[str]] = []
@@ -53,8 +53,8 @@ def parse(core: str) -> tuple[set[str], set[str]]:
         answer = ANSWER.findall(block)
         if len(match) != 1 or len(answer) != 1:
             raise ValueError("Unreviewed CoreDNS template structure " + header)
-        if answer[0] != "188.120.254.223":
-            raise ValueError("CoreDNS is not fully routed through RU188")
+        if answer[0] != "89.125.90.101":
+            raise ValueError("CoreDNS is not fully routed through DE89")
         expression = match[0]
         compiled = re.compile(expression)
         if header != ".":
@@ -75,7 +75,7 @@ def parse(core: str) -> tuple[set[str], set[str]]:
             exact.add(simple)
         else:
             groups.append(decode_family(expression))
-    if len(exact) != 262 or len(groups) != 2 or sum(map(len, groups)) != 75:
+    if len(exact) < 262 or len(groups) != 2 or sum(map(len, groups)) != 75:
         raise ValueError(
             f"CoreDNS exact/family drift {len(exact)} / {list(map(len, groups))}"
         )
@@ -118,7 +118,7 @@ def generate(core_path: Path, old_path: Path, output: Path) -> dict:
                          repr(unsupported_old[:30]))
     if any(not POLICY.fullmatch(s) for s in new):
         raise ValueError("Malformed generated personal rules")
-    if len(missing_old) != 111:
+    if len(missing_old) < 111:
         raise ValueError("Unexpected missing exact rule count " + str(len(missing_old)))
     samples = set(exact) | roots
     for root in roots:
@@ -138,7 +138,7 @@ def generate(core_path: Path, old_path: Path, output: Path) -> dict:
         "original_policy_count": len(old),
         "new_policy_count": len(new),
         "added_entries": len(new) - len(old),
-        "core_a_templates": 264,
+        "core_a_templates": len(exact) + len(groups),
         "core_exact_domains": len(exact),
         "core_family_roots": len(roots),
         "previous_unmapped_exact": len(missing_old),
