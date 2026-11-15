@@ -22,23 +22,23 @@ def confirm_row(status="CONFIRMING"):
     }
 
 
-class OwnerCurrentRuIngressDoTContracts(TestCase):
-    def test_exact_host_and_stable_hosts_expect_russian_dns_ingress(self):
+class OwnerCurrentDeIngressDoTContracts(TestCase):
+    def test_exact_host_and_stable_hosts_expect_de89_dns_ingress(self):
         stable = {"gemini.google.com","claude.ai","grok.com","x.com","www.tiktok.com"}
         def dns(host, kind=1):
             if kind != 1:
                 return 0, []
             if host in stable or host == "new.example.com":
-                return 0, [owner.RU]
+                return 0, [owner.EDGE]
             return 0, ["1.1.1.1"]
         with patch.object(owner, "dns_q", side_effect=dns):
             owner.oracle_canary_check("new.example.com", True)
 
-    def test_old_foreign_direct_reply_fails_closed(self):
+    def test_old_russian_ingress_reply_fails_closed(self):
         def dns(host, kind=1):
             if kind != 1:
                 return 0, []
-            return 0, [owner.EDGE]
+            return 0, [owner.RU]
         with patch.object(owner, "dns_q", side_effect=dns):
             with self.assertRaisesRegex(RuntimeError, "DOMAIN_DOT_REWRITE_NOT_EFFECTIVE"):
                 owner.oracle_canary_check("new.example.com", True)
