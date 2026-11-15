@@ -1,0 +1,44 @@
+name: "MNEBYDNS first100 three failed public 89 vs true RU188 ingress read-only"
+on:
+  push:
+    branches: [diagnostics/groq-smartdns-readonly-20261115]
+    paths: [.github/workflows/mnebydns-first100-three-ru-ingress-readonly-20261115.yml]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify TLS and HTTPS via RU188 and public DE89 from RU node without edits
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -qq -y sshpass >/dev/null
+          python3 - <<'PY'
+          import importlib.util,shlex,base64,json
+          from pathlib import Path
+          p=Path("scripts/mnebydns-bulk-deploy-20261112.py")
+          spec=importlib.util.spec_from_file_location("bulk",p)
+          b=importlib.util.module_from_spec(spec);spec.loader.exec_module(b)
+          targets=["arduino.cc","avira.com","bluehost.com",
+                   "artifacts.elastic.co","brickset.com","account.mongodb.com"]
+          payload=base64.b64encode(json.dumps(targets).encode()).decode()
+          for label,edge in [("RU188_PUBLIC_INGRESS",b.owner.RU),
+                             ("DE89_PUBLIC_ROUTE",b.owner.EDGE)]:
+              cmd="python3 -c "+shlex.quote(b.RU_HTTPS)+" "+shlex.quote(payload)+" "+edge
+              try:
+                  raw=b.owner.ssh("ru",cmd,120)
+                  rows=json.loads(raw)
+                  print("FIRST100_PATH_RESULT="+json.dumps({"path":label,"edge":edge,"results":rows},sort_keys=True),flush=True)
+              except Exception as exc:
+                  print("FIRST100_PATH_ERROR="+json.dumps({"path":label,"error":type(exc).__name__,"reason":str(exc)[:200]}),flush=True)
+          print("FIRST100_RU_INGRESS_READ_ONLY=PASS")
+          PY
