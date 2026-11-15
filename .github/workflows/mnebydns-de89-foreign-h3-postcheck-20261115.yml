@@ -1,0 +1,22 @@
+name: MNEBYDNS foreign runner direct DE89 HTTP3 Googlevideo postcheck readonly
+on:
+  push:
+    branches: [fix/mnebydns-de89-public-quic-20261115]
+    paths:
+      - '.github/workflows/mnebydns-de89-foreign-h3-postcheck-20261115.yml'
+permissions: {contents: read}
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Strict foreign-to-DE public QUIC CDN comparison only; no server mutations
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m venv /tmp/de89-h3-venv
+          /tmp/de89-h3-venv/bin/pip -q install 'aioquic>=1.0,<2.0'
+          export YOUTUBE_QUIC_VIA=89.125.90.101
+          timeout 100s /tmp/de89-h3-venv/bin/python -B scripts/mnebydns-de89-foreign-http3-probe-20261115.py
