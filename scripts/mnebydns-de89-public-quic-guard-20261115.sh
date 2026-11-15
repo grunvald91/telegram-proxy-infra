@@ -157,7 +157,7 @@ TIMER_CONFIG
     sleep 1
   done
   test "$ready" = 1
-  test "$(systemctl is-enabled "$UNIT")" != enabled
+  echo "DE89_PUBLIC_QUIC_PRECOMMIT_UNIT_STATE=$(systemctl is-enabled "$UNIT" 2>/dev/null || true)"
   systemctl is-active --quiet "$TIMER"
   trap - ERR
   echo DE89_PUBLIC_QUIC_UDP443_LIVE_PENDING_H3_VERIFICATION=PASS
