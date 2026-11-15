@@ -123,7 +123,24 @@ def canary_ready():
         raise RuntimeError("CoreDNS reload configuration missing")
     return cp,before,pilot.encode()
 def stage():
-    if STATE.exists():raise RuntimeError("Googlevideo restore state already exists")
+    if STATE.exists():
+        # Permit a retry only when the previous failed canary has been
+        # restored to the unchanged stable snapshot.
+        cp=current_checkpoint()
+        if (STATE/"confirmed").exists():
+            raise RuntimeError("prior canary already committed")
+        old=(STATE/"dns.before").read_bytes()
+        recorded=(STATE/"checkpoint.before").read_text().strip()
+        if (str(cp)!=recorded or LIVE.read_bytes()!=old
+                or (cp/"dns.stable").read_bytes()!=old):
+            raise RuntimeError("unsafe leftover canary; manual review required")
+        timer=subprocess.run(["systemctl","is-active","--quiet",UNIT+".timer"],timeout=10)
+        if timer.returncode==0:
+            run("systemctl","stop",UNIT+".timer")
+        archive=ROOT/("aborted-"+str(int(time.time())))
+        if archive.exists():raise RuntimeError("unique canary archive already exists")
+        STATE.rename(archive)
+        emit("PREVIOUS_FAILED_CANARY_ARCHIVED",str(archive))
     cp,before,pilot=canary_ready()
     baseline=query_dot()
     if baseline!=[OLDIP]:raise RuntimeError("current googlevideo DoT does not point to DE89: "+repr(baseline))
@@ -157,7 +174,7 @@ def verify():
     wait_reload()
     result=query_dot()
     emit("CURRENT_PUBLIC_DOT_GOOGLEVIDEO",repr(result))
-    if result!=[OLDIP]:raise RuntimeError("Googlevideo route not observed")
+    if result!=[NEWIP]:raise RuntimeError("Googlevideo route not observed")
     if not (STATE/"verified").exists(): (STATE/"verified").write_text(datetime.datetime.now(datetime.timezone.utc).isoformat())
     emit("ROUTE_VERIFIED",True)
 def confirm():
@@ -167,7 +184,7 @@ def confirm():
     if (cp/"dns.stable").read_bytes()!=(STATE/"dns.before").read_bytes():raise RuntimeError("checkpoint DNS changed")
     if LIVE.read_bytes()!=(STATE/"dns.pilot").read_bytes():raise RuntimeError("pilot no longer active")
     if (cp/"nginx.stable").read_bytes()!=NGINX.read_bytes() or (cp/"proxy.stable").read_bytes()!=PROXY.read_bytes():raise RuntimeError("proxy/nginx drift")
-    if query_dot()!=[OLDIP]:raise RuntimeError("verified DoT changed")
+    if query_dot()!=[NEWIP]:raise RuntimeError("verified DoT changed")
     name=str(int(time.time()))
     dest=CPROOT/name
     dest.mkdir(mode=0o700)
@@ -202,7 +219,7 @@ def rollback():
     if (cp/"dns.stable").read_bytes()!=before:raise RuntimeError("checkpoint mismatch during rollback")
     restore_file(before)
     wait_reload()
-    if query_dot()!=[NEWIP]:raise RuntimeError("rollback DNS mismatch")
+    if query_dot()!=[OLDIP]:raise RuntimeError("rollback DNS mismatch")
     emit("ROLLBACK_VERIFIED",True)
 def locked():
     lock=open("/run/lock/mnebyvpn-public-route.lock","a+")
