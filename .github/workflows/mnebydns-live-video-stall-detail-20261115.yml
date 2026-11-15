@@ -1,0 +1,86 @@
+name: MNEBYDNS explain live YouTube TCP retrans and QUIC events 20261115
+on:
+  push:
+    branches: [diag/mnebydns-live-video-stall-20261115]
+    paths: [.github/workflows/mnebydns-live-video-stall-detail-20261115.yml]
+permissions: {contents: read}
+jobs:
+  readonly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Inspect retransmitting TCP socket populations, QUIC error types and listeners
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          test -n "$DE_PASS" && test -n "$RU_PASS"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalHostKeyAlgorithms=ssh-ed25519 -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          cat > /tmp/analyze.py <<'PY'
+          import subprocess,re,collections,sys,datetime
+          role=sys.argv[1]
+          print("DETAIL_ROLE="+role,flush=True)
+          def run(cmd):
+            try:return subprocess.run(cmd,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,timeout=16).stdout
+            except Exception:return ""
+          for net in ("tcp","udp"):
+            out=run(["ss","-H","-lntp" if net=="tcp" else "-H","-lunp"] if net=="tcp" else ["ss","-H","-lunp"])
+            for l in out.splitlines():
+              cols=l.split()
+              if len(cols)>4 and (cols[4].endswith(":443") or cols[4].endswith(":19444")):
+                process=re.search(r'users:\(\("([^"]+)',l)
+                print("LISTENER_"+net+"_"+cols[4].rsplit(':',1)[-1]+"="+(process.group(1) if process else "unknown"),flush=True)
+          s=run(["ss","-H","-ti","state","established"])
+          stats=collections.defaultdict(lambda:collections.Counter())
+          interesting=[]
+          lines=s.splitlines()
+          for i in range(0,len(lines)-1,2):
+            h=lines[i].split()
+            if len(h)<5:continue
+            local,peer=h[-2:]
+            klass="PUBLIC_443" if local.endswith(":443") else ("ORIGIN_443" if peer.endswith(":443") else "OTHER")
+            st=lines[i+1]
+            n=lambda name: int((re.search(r"(?<![a-z_])"+re.escape(name)+r":([0-9]+)",st) or [None,"0"])[1])
+            t=stats[klass];t["connections"]+=1
+            for name in ["bytes_sent","bytes_received","bytes_retrans","bytes_acked","unacked"]:
+              t[name]+=n(name)
+            if n("bytes_retrans")>0 and klass!="OTHER":
+              interesting.append((klass,n("bytes_retrans"),n("bytes_sent"),n("bytes_received"),n("unacked"),re.search(r'rto:([0-9]+)',st).group(1) if re.search(r'rto:([0-9]+)',st) else "-"))
+          for klass,t in stats.items():
+            print("SOCKET_"+klass+"="+repr(dict(t)),flush=True)
+          for klass,retrans,sent,received,unacked,rto in sorted(interesting,key=lambda x:-x[1])[:10]:
+            print("SOCKET_TOP_RETRANS="+repr((klass,retrans,sent,received,unacked,rto)),flush=True)
+          units=["nginx","mnebydns-googlepilot","mnebydns-youtube-quic-ru-43612369808","mnebydns-youtube-quic-de-43612369808","mnebydns-de89-public-quic-20261115"]
+          for unit in units:
+            log=run(["journalctl","-u",unit,"--since","-8 minutes","-q","--no-pager","-o","cat"])
+            bad=[line for line in log.splitlines() if re.search(r'timeout|error|fail|drop|reset|closed|expired|refused',line,re.I)]
+            if not bad:continue
+            print("JOURNAL_UNIT="+unit+" COUNT="+str(len(bad)),flush=True)
+            groups=collections.Counter()
+            for line in bad:
+              line=re.sub(r'\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b','[redacted_ip]',line)
+              line=re.sub(r'\b[0-9a-f]{32,}\b','[redacted_hex]',line,flags=re.I)
+              line=re.sub(r'\b[0-9a-f]{1,4}(?::[0-9a-f]{0,4}){2,}\b','[redacted_ipv6]',line,flags=re.I)
+              line=re.sub(r':[0-9]{4,5}',':[port]',line)
+              line=re.sub(r'\d{10,}', '[id]',line)
+              groups[line[:190]]+=1
+            for l,count in groups.most_common(12):
+              print("JOURNAL_EVENT_COUNT="+str(count)+" LINE="+l,flush=True)
+          print("DETAIL_COMPLETE="+role,flush=True)
+          PY
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 - RU188' < /tmp/analyze.py > ru-detail.out 2>&1 &
+          ru_pid=$!
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 - DE89' < /tmp/analyze.py > de-detail.out 2>&1 &
+          de_pid=$!
+          wait "$ru_pid" || echo RU_DETAIL_REMOTE_FAILED=true
+          wait "$de_pid" || echo DE_DETAIL_REMOTE_FAILED=true
+          echo "RU_DETAIL_BEGIN";cat ru-detail.out;echo "RU_DETAIL_END"
+          echo "DE_DETAIL_BEGIN";cat de-detail.out;echo "DE_DETAIL_END"
