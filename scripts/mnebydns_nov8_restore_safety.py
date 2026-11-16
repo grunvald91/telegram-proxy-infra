@@ -153,6 +153,8 @@ def original_template_parity(original: str,current: str) -> dict:
         return items
     from collections import Counter
     old,new=parse(original),parse(current)
+    if not old or not new:
+        raise ValueError("Empty or unparseable CoreDNS template set")
     missing=Counter(old)-Counter(new)
     return {"historical_templates":len(old),"current_templates":len(new),
             "missing_or_changed_historical":sum(missing.values()),
