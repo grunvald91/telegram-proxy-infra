@@ -1,4 +1,5 @@
 name: MNEBYVPN auth runtime preflight (read-only)
+# Diagnostic second pass: preserve early browser state even if header navigation is unavailable.
 on:
   push:
     branches: [main]
