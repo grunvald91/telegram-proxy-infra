@@ -13,7 +13,7 @@ import {isIP} from 'node:net';
 
 const HEX=/^[a-f0-9]{64}$/;
 const NODE=/^[a-z0-9][a-z0-9-]{2,39}$/;
-const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const SPKI=/^[A-Za-z0-9_-]{59}$/;
 const FQDN=/^[a-z0-9](?:[a-z0-9.-]{1,251})[a-z0-9]$/;
 const VLESS_KEYS=new Set([
