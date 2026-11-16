@@ -14,22 +14,26 @@ for u in ('wg-quick@tg-relay','awg-quick@tg-relay','nginx'):
 emit('tunnel_journal',run(['journalctl','-u','wg-quick@tg-relay','-u','awg-quick@tg-relay','--since','2026-11-15 21:00:00 UTC','--no-pager','-o','short-iso'])[-18000:])
 units=run(['systemctl','list-units','--all','--no-legend','--plain']).splitlines()
 emit('monitor_units',[l for l in units if re.search('monitor|health|watch|keepalive',l,re.I)])
-for base in ('/usr/local/sbin','/opt'):
- for p in pathlib.Path(base).rglob('*'):
-  try:
-   if not p.is_file() or p.stat().st_size>200000 or p.suffix not in ('.py','.sh',''):continue
-   if not re.search('monitor|health|watch|keepalive',p.name,re.I):continue
-   s=p.read_text(errors='replace'); lines=s.splitlines()
-   if 'handshake' not in s.lower() and 'wg peer' not in s.lower():continue
-   emit('monitor_file',str(p))
-   idx=set()
-   for i,l in enumerate(lines):
-    if re.search('handshake|wg peer|wg_peer|wg show|awg show',l,re.I):idx.update(range(max(0,i-6),min(len(lines),i+9)))
-   emit('monitor_source',[[i+1,lines[i]] for i in sorted(idx) if not re.search('token|password|secret|api.telegram|chat_id',lines[i],re.I)])
-  except (OSError,ValueError):pass
+
+if role=='DE':
+ p=pathlib.Path('/usr/local/sbin/proxy-monitor.sh')
+ emit('proxy_monitor_source','\n'.join(l for l in p.read_text().splitlines() if not re.search('token|password|secret|api.telegram|chat_id',l,re.I)))
+ emit('monitor_cron',run(['crontab','-l']))
+ for path in ('/var/log/proxy-monitor.log','/var/lib/proxy-monitor/state','/var/run/proxy-monitor.state','/var/tmp/proxy-monitor.state','/tmp/proxy-monitor.state'):
+  p=pathlib.Path(path)
+  if p.is_file():emit('monitor_history_'+path,p.read_text()[-9000:])
+for size in ('32','1200'):
+ emit('ping_extended_'+size,run(['ping','-n','-q','-c','30','-i','0.2','-s',size,'-W','1','10.66.77.'+('1' if role=='RU' else '2')]))
+for tool in ('wg','awg'):
+ emit(tool+'_keepalive',[[*l.split()[1:]] for l in run([tool,'show','tg-relay','persistent-keepalive']).splitlines()])
 if role=='RU':
- for ip in ('http://127.0.0.1:8792','https://mnebyvpn.site'):
-  req=urllib.request.Request(ip+'/api/auth/email/start',data=json.dumps({'email':'yookassa-review@mnebyvpn.site'}).encode(),headers={'Content-Type':'application/json','Origin':'https://mnebyvpn.site'})
-  try:
-   with urllib.request.urlopen(req,timeout=12) as r:emit('review_start_'+ip,{'http':r.status,'body':json.load(r)})
-  except urllib.error.HTTPError as e:emit('review_start_'+ip,{'http':e.code,'body':e.read().decode()[:600]})
+ import collections
+ counts=collections.Counter()
+ for p in pathlib.Path('/var/log/nginx').glob('*log*'):
+  if not p.is_file() or p.suffix=='.gz':continue
+  for l in collections.deque(p.open(errors='replace'),maxlen=30000):
+   m=re.search(r'"POST /api/auth/email/(start|verify) HTTP/[^\"]+"\s+(\d{3})',l)
+   if m:counts[(m[1],m[2])]+=1
+ emit('auth_edge_counts',{str(k):v for k,v in counts.items()})
+ logs=run(['docker','logs','--since','2026-11-16T00:00:00+03:00','--tail','500','mnebyvpn-public-web'])
+ emit('web_log_categories',dict(collections.Counter(re.findall('permission denied|does not exist|EMAIL_NOT_SENT|EMAIL_RATE_LIMIT|error|Error|timeout',logs))))
