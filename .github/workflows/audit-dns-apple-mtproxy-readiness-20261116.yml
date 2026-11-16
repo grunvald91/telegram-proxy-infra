@@ -100,3 +100,41 @@ jobs:
                       print('DE_DoT_tls_personal_wildcard=VALID')
           except Exception as exc:print('DE_DoT_tls_personal_wildcard='+type(exc).__name__)
           PY
+
+      - name: Probe public personal DoT TLS and Telemt API envelope (read-only)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import socket,ssl
+          sni='aaaaaaaaaaaa.dns.mnebyvpn.site'
+          try:
+              addresses=sorted(set(e[4][0] for e in socket.getaddrinfo(sni,853,type=socket.SOCK_STREAM)))
+              print('DNS_WILDCARD_ADDR_COUNT='+str(len(addresses)))
+              print('DNS_WILDCARD_ADDRS='+','.join(addresses))
+          except Exception as e: print('DNS_WILDCARD_RESOLUTION='+type(e).__name__)
+          for label,host in [('DE','89.125.90.101'),('RU','188.120.254.223')]:
+              try:
+                  with socket.create_connection((host,853),timeout=6) as raw:
+                      raw.settimeout(6)
+                      with ssl.create_default_context().wrap_socket(raw,server_hostname=sni) as tls:
+                          print(label+'_PERSONAL_TLS=VALID')
+                          print(label+'_PERSONAL_TLS_PROTOCOL='+str(tls.version()))
+              except Exception as e:print(label+'_PERSONAL_TLS='+type(e).__name__)
+          PY
+          export SSHPASS="$DE_PASSWORD"
+          sshpass -e ssh -T -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@89.125.90.101 'python3 -' <<'PY'
+          import urllib.request,json,subprocess
+          req=urllib.request.Request('http://127.0.0.1:9096/v1/health')
+          try:
+              with urllib.request.urlopen(req,timeout=5) as r:
+                  obj=json.load(r)
+              print('TELEMT_HEALTH_API_ENVELOPE_OK='+str(obj.get('ok') is True and isinstance(obj.get('data'),dict)))
+              data=obj.get('data') if isinstance(obj.get('data'),dict) else {}
+              print('TELEMT_HEALTH_READ_ONLY='+str(data.get('read_only','not_reported')))
+          except Exception as e:print('TELEMT_HEALTH_READ_FAIL='+type(e).__name__)
+          p=subprocess.run(['ss','-Hlntp'],capture_output=True,text=True,timeout=6)
+          for port in (9096,55433):
+              binds=[line.split()[3] for line in p.stdout.splitlines() if ':'+str(port)+' ' in line]
+              print('DE_BIND_'+str(port)+'='+','.join(binds)[:200])
+          PY
