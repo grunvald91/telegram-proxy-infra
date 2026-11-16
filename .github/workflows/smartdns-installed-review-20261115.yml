@@ -1,4 +1,4 @@
-name: SmartDNS restore conflicting provisioner service and verify VPN fix 20261116
+name: SmartDNS verify VPN child readiness and scoped destination repair 20261116
 on:
   push:
     branches: [audit/smartdns-installed-review-20261115]

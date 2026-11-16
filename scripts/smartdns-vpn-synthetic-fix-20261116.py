@@ -6,6 +6,12 @@ IPS=['89.125.90.101','188.120.254.223']
 POOLS=[{'ipPool':'89.125.90.100/31','poolSize':1},{'ipPool':'188.120.254.222/31','poolSize':1}]
 SNIFF={'enabled':True,'destOverride':['fakedns'],'metadataOnly':False,'routeOnly':False}
 CONF=pathlib.Path('/etc/mnebyvpn/xray-canary.json')
+def wait_vpn_listener():
+ for _ in range(60):
+  try:
+   with socket.create_connection(('127.0.0.1',18943),.2):return
+  except OSError:time.sleep(.1)
+ raise RuntimeError('VPN listener did not become ready')
 # Recover the precise pre-bootstrap snapshot if the legacy push workflow ran.
 current=json.loads(CONF.read_text())
 recovered=None
@@ -26,7 +32,7 @@ if current.get('fakedns')==POOLS and len(current.get('inbounds',[]))==1:
  subprocess.run(['systemctl','disable','--now','mnebyvpn-xray-canary.service'],check=True,capture_output=True,timeout=20)
  tmp=CONF.with_name('.xray-canary-recovery.tmp');tmp.write_bytes(prior.read_bytes());os.chmod(tmp,0o640);os.chown(tmp,0,pwd.getpwnam('mnebyvpn-xray').pw_gid);os.replace(tmp,CONF)
  subprocess.run(['systemctl','start','mnebyvpn-vpn-provisioner.service'],check=True,capture_output=True,timeout=20)
- with socket.create_connection(('127.0.0.1',18943),3):pass
+ wait_vpn_listener()
  recovered=str(prior)
 original=CONF.read_bytes();production=json.loads(original)
 assert 'mneby_meta' not in subprocess.run(['nft','list','tables'],capture_output=True,text=True,check=True).stdout
@@ -141,7 +147,7 @@ try:
   new.write_text(json.dumps(candidate,indent=2)+'\n')
  replace_conf(new.read_bytes());applied=True;service('start')
  assert subprocess.run(['systemctl','is-active',unit],capture_output=True,text=True,check=True).stdout.strip()=='active'
- with socket.create_connection(('127.0.0.1',18943),3):pass
+ wait_vpn_listener()
  active=json.loads(CONF.read_text());assert active['fakedns']==POOLS
  assert next(i for i in active['inbounds'] if i['tag']=='mnebyvpn-inbound')['sniffing']==SNIFF
  # Child running with the candidate and parent has reloaded its persistent template.
