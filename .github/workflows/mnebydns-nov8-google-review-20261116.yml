@@ -1,4 +1,4 @@
-name: MNEBYDNS DoT service state after 8-Nov restore (read-only)
+name: MNEBYDNS CoreDNS permission and ACL root cause (read-only)
 on:
   push:
     branches: [audit/smartdns-installed-review-20261115]
@@ -20,7 +20,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           test -n "$DE_PASS"
-          python3 -m py_compile scripts/mnebydns-dot-restore-health-review-20261116.py
+          python3 -m py_compile scripts/mnebydns-dot-permission-rootcause-20261116.py
           if ! command -v sshpass >/dev/null; then
             sudo apt-get update -qq
             sudo apt-get install -y -qq sshpass >/dev/null
@@ -29,18 +29,18 @@ jobs:
             -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
             -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
           mkdir -p output
-          SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -B -' < scripts/mnebydns-dot-restore-health-review-20261116.py > output/integrity.json
+          SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -B -' < scripts/mnebydns-dot-permission-rootcause-20261116.py > output/integrity.json
           python3 - <<'PY'
           import json
           j=json.load(open('output/integrity.json'))
           assert j['read_only'] and j['read_only']
           print('GOOGLE_NOV8_RESTORE_REVIEW='+json.dumps(j,separators=(',',':'),sort_keys=True))
-          assert 'services' in j, 'Missing live systemd status'
+          assert 'file_access' in j, 'Missing ACL analysis'
           print('NOV8_DOT_SERVICE_STATUS_CAPTURED=true')
           PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: mnebydns-nov8-restore-dot-health
+          name: mnebydns-nov8-dot-permission-rootcause
           path: output/integrity.json
           retention-days: 10
