@@ -1,6 +1,23 @@
 #!/usr/bin/env bash
 # Independent owner-domain canary rollback. Refuses to overwrite unrelated edits.
 set -Eeuo pipefail
+owner_atomic_swap() {
+  python3 - "$1" "$2" "$3" <<'PYCODE'
+import os,sys
+from pathlib import Path
+sys.path.insert(0,"/opt/mnebydns-maintenance")
+from mnebydns_nov8_restore_safety import capture, atomic_replace, digest
+live,expected,candidate=map(Path,sys.argv[1:])
+if live not in (Path("/opt/mnebydns-dot/Corefile"),Path("/etc/nginx/nginx.conf")):
+    raise SystemExit("unsafe owner route target")
+for p in (expected,candidate):
+    if p.is_symlink() or not p.is_file():raise SystemExit("invalid owner checkpoint")
+state=capture(live)
+if state.sha256!=digest(expected.read_bytes()):
+    raise SystemExit("concurrent owner-domain config change")
+atomic_replace(live,state,candidate.read_bytes())
+PYCODE
+}
 (( EUID == 0 )) || exit 2
 [[ $# == 1 && "$1" =~ ^/opt/mnebydns-owner-domain/[0-9]{9,13}$ ]] || exit 2
 base="$1"
@@ -53,12 +70,12 @@ for kind in dns nginx; do
   fi
 done
 if cmp -s "$base/nginx.pilot" "$live_nginx"; then
-  python3 /opt/mnebydns-maintenance/mnebydns_safe_owner_swap.py shared "$base" nginx.pilot nginx.before
+  owner_atomic_swap "$live_nginx" "$base/nginx.pilot" "$base/nginx.before"
   nginx -t >/dev/null 2>&1
   systemctl reload nginx
 fi
 if cmp -s "$base/dns.pilot" "$live_dns"; then
-  python3 /opt/mnebydns-maintenance/mnebydns_safe_owner_swap.py dns "$base" dns.pilot dns.before
+  owner_atomic_swap "$live_dns" "$base/dns.pilot" "$base/dns.before"
   test -x "$base/reload.sh"
   bash "$base/reload.sh" "$live_dns"
 fi
