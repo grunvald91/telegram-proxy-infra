@@ -25,6 +25,10 @@ def original_template_parity(original, current):
     diff=Counter(before)-Counter(after)
     return {"historical_templates":len(before),"current_templates":len(after),
             "missing_or_changed_historical":sum(diff.values()),
+            "missing_templates":[{"kind":item[0],"zone":item[1],"match":str(item[2])[:180],
+                                  "expected_de89": "89.125.90.101" in str(item[3]),
+                                  "expected_ru188": "188.120.254.223" in str(item[3])}
+                                 for item in diff.elements()][:12],
             "historical_rr_types":sorted(set(x[0] for x in before)),
             "all_historical_rules_retained":not diff}
 
