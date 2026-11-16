@@ -341,6 +341,53 @@ def apply(name):
                     pass
             raise
 
+def owner_publish(phase: str, base: Path, kind: str):
+    """Publish owner-domain canary while caller holds shared route lock."""
+    verify_system()
+    if phase not in ("stage","rollback") or kind not in ("dns","nginx"):
+        raise ValueError("Unapproved owner-domain transition")
+    parent=Path("/opt/mnebydns-owner-domain")
+    if (base.parent!=parent or not re.fullmatch(r"[0-9]{9,13}",base.name)
+            or base.is_symlink() or not base.is_dir()):
+        raise ValueError("Owner-domain checkpoint path untrusted")
+    if base.stat().st_uid!=0 or stat.S_IMODE(base.stat().st_mode)!=0o700:
+        raise ValueError("Owner-domain checkpoint must be private and root-owned")
+    name="dns" if kind=="dns" else "shared"
+    live=LIVE[name]
+    before=base/(kind+".before")
+    pilot=base/(kind+".pilot")
+    source,target=(before,pilot) if phase=="stage" else (pilot,before)
+    for candidate in (source,target):
+        if candidate.is_symlink() or not candidate.is_file() or candidate.stat().st_uid!=0:
+            raise ValueError("Untrusted owner-domain candidate")
+    original=source.read_bytes()
+    changed=target.read_bytes()
+    if kind=="dns":
+        ensure_dns_reader_access()
+        domain_file=base/"domain"
+        if not domain_file.is_file() or domain_file.is_symlink():
+            raise ValueError("Owner-domain exact hostname missing")
+        domain=domain_file.read_text().strip()
+        if not re.fullmatch(r"[a-z0-9.-]{4,253}",domain):
+            raise ValueError("Owner domain invalid")
+        preserved(original,changed,scope="owner",owner_domain=domain)
+        ensure_hot_reload_config(original)
+        ensure_hot_reload_config(changed)
+    live_state,old=regular_read(live)
+    if old==changed:
+        print(json.dumps({"done":True,"changed":False,"kind":kind,"phase":phase}))
+        return
+    if old!=original:
+        raise RuntimeError("Owner-domain canary source does not match live file")
+    # Caller stage/rollback already holds /run/lock/mnebyvpn-public-route.lock.
+    new_state=atomic_replace(live,live_state,changed)
+    if kind=="dns":
+        ensure_dns_reader_access()
+    if new_state.sha256!=digest(changed):
+        raise RuntimeError("Owner-domain atomic config verification failed")
+    print(json.dumps({"done":True,"changed":True,"kind":kind,"phase":phase}))
+
+
 def status():
     verify_system()
     live={}
@@ -356,8 +403,9 @@ def status():
 
 def main():
     parser=argparse.ArgumentParser()
-    parser.add_argument("command",choices=("status","apply","recover"))
+    parser.add_argument("command",choices=("status","apply","recover","owner-publish"))
     parser.add_argument("arg",nargs="?")
+    parser.add_argument("extra",nargs="*")
     args=parser.parse_args()
     if args.command=="status":
         if args.arg:parser.error("status does not take arguments")
@@ -365,6 +413,10 @@ def main():
     elif args.command=="apply":
         if not args.arg:parser.error("apply requires pinned manifest id")
         apply(args.arg)
+    elif args.command=="owner-publish":
+        if not args.arg or len(args.extra)!=2:
+            parser.error("owner-publish requires phase, checkpoint, kind")
+        owner_publish(args.arg,Path(args.extra[0]),args.extra[1])
     else:
         if not args.arg:parser.error("recover requires transaction path")
         tx=Path(args.arg)
