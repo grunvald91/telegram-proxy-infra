@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Safely promote DE stable checkpoint ONLY when live Corefile differs solely
-by the verified Google RU ingress block (# Verified Google RU ingress 20261116).
+"""Safely promote DE stable checkpoint ONLY when live configs match the
+reviewed 2026-11-16 Corefile / googlepilot updates and nothing else drifted.
 
-Fails closed on any unexpected Corefile, nginx.conf, proxy.stable, or backup drift.
+Fails closed on any unexpected Corefile, nginx.conf, or googlepilot diff.
 """
 from __future__ import annotations
 
@@ -25,6 +25,15 @@ BACKUP_COREFILE = Path("/var/backups/mnebydns-google-route-20261116-053515/Coref
 LOCK_PATH = Path("/run/lock/mnebyvpn-public-route.lock")
 DE_STAGE_STATE = Path("/var/lib/mneby-meta-v26-de")
 DE_WATCHDOG_TIMER = "mneby-meta-v26-de-watchdog.timer"
+
+PROTOCOL_MARKER = "# Protocol-specific origin DNS exceptions 20261116"
+PROTOCOL_NAMES = (
+    ["stun.l.google.com"]
+    + [f"stun{i}.l.google.com" for i in range(1, 5)]
+    + ["stun.services.mozilla.com", "mtalk.google.com", "mtalk4.google.com", "time.google.com"]
+    + [f"alt{i}-mtalk.google.com" for i in range(1, 9)]
+)
+
 GOOGLE_MARKER = "# Verified Google RU ingress 20261116"
 GOOGLE_HOSTS = (
     "www.google.com",
@@ -100,24 +109,7 @@ def verify_manifest(checkpoint_dir: Path) -> list[str]:
     return names
 
 
-def is_expected_google_suffix(suffix: str) -> bool:
-    stripped = suffix.strip("\n")
-    lines = stripped.splitlines()
-    if len(lines) < 5:
-        return False
-    if lines[0].strip() != GOOGLE_MARKER:
-        return False
-    header = lines[1].strip()
-    expected_header = " ".join(f"tls://{h}:853" for h in GOOGLE_HOSTS) + " {"
-    if header != expected_header:
-        return False
-    body = "\n".join(lines[1:])
-    if "bind 89.125.90.101" not in body:
-        return False
-    if 'answer "{{ .Name }} 20 IN A 188.120.254.223"' not in body:
-        return False
-    if "forward . tls://9.9.9.9" not in body:
-        return False
+def _has_balanced_single_block(body: str) -> bool:
     depth = 0
     for idx, ch in enumerate(body):
         if ch == "{":
@@ -129,6 +121,58 @@ def is_expected_google_suffix(suffix: str) -> bool:
             if depth == 0 and idx != len(body) - 1:
                 return False
     return depth == 0
+
+
+def is_expected_protocol_block(block: str) -> bool:
+    lines = block.strip("\n").splitlines()
+    if len(lines) < 5 or lines[0].strip() != PROTOCOL_MARKER:
+        return False
+    expected_header = " ".join(f"tls://{h}:853" for h in PROTOCOL_NAMES) + " {"
+    if lines[1].strip() != expected_header:
+        return False
+    body = "\n".join(lines[1:])
+    if "bind 89.125.90.101" not in body or "forward . tls://9.9.9.9 tls://149.112.112.112" not in body:
+        return False
+    return _has_balanced_single_block(body)
+
+
+def is_expected_google_block(block: str) -> bool:
+    lines = block.strip("\n").splitlines()
+    if len(lines) < 5 or lines[0].strip() != GOOGLE_MARKER:
+        return False
+    expected_header = " ".join(f"tls://{h}:853" for h in GOOGLE_HOSTS) + " {"
+    if lines[1].strip() != expected_header:
+        return False
+    body = "\n".join(lines[1:])
+    if (
+        "bind 89.125.90.101" not in body
+        or 'answer "{{ .Name }} 20 IN A 188.120.254.223"' not in body
+        or "forward . tls://9.9.9.9" not in body
+    ):
+        return False
+    return _has_balanced_single_block(body)
+
+
+def verify_expected_dns_suffix(suffix: str) -> bool:
+    """Validate that suffix is 1 or 2 of the reviewed 2026-11-16 Corefile blocks."""
+    if not suffix:
+        return True
+    chunks = [chunk for chunk in re.split(r"(?m)(?=^# )", suffix.lstrip("\n")) if chunk.strip()]
+    if not chunks or len(chunks) > 2:
+        return False
+    if len(chunks) == 1:
+        return is_expected_protocol_block(chunks[0]) or is_expected_google_block(chunks[0])
+    return is_expected_protocol_block(chunks[0]) and is_expected_google_block(chunks[1])
+
+
+def is_expected_proxy_change(old_proxy: bytes, live_proxy: bytes) -> bool:
+    if old_proxy == live_proxy:
+        return True
+    old_text = old_proxy.decode("utf-8")
+    expected = old_text.replace("worker_connections 192;", "worker_connections 2048;").replace(
+        "proxy_timeout 120s;", "proxy_timeout 15m;"
+    )
+    return live_proxy == expected.encode("utf-8")
 
 
 def sync_google_checkpoint(
@@ -146,7 +190,9 @@ def sync_google_checkpoint(
     if check_services:
         _run(["systemctl", "is-active", "--quiet", "nginx.service"])
         _run(["systemctl", "is-active", "--quiet", "mnebydns-dot.service"])
+        _run(["systemctl", "is-active", "--quiet", "mnebydns-googlepilot.service"])
         _run(["nginx", "-t"])
+        _run(["/usr/sbin/nginx", "-t", "-c", str(live_proxy_path)])
         if _run(["systemctl", "is-active", "--quiet", DE_WATCHDOG_TIMER], check=False).returncode == 0:
             raise RuntimeError("active DE experiment watchdog blocks checkpoint update")
     if de_stage_state_path.exists():
@@ -168,27 +214,40 @@ def sync_google_checkpoint(
         live_nginx_bytes = live_nginx_path.read_bytes()
         if (old_dir / "nginx.stable").read_bytes() != live_nginx_bytes:
             raise RuntimeError("DE live nginx.conf differs from stable checkpoint; refusing promotion")
+
+        proxy_changed = False
+        live_proxy_bytes = b""
         if "proxy.stable" in manifest_names:
-            if not live_proxy_path.is_file() or (old_dir / "proxy.stable").read_bytes() != live_proxy_path.read_bytes():
-                raise RuntimeError("DE live proxy nginx.conf differs from stable checkpoint; refusing promotion")
+            if not live_proxy_path.is_file():
+                raise RuntimeError("DE live proxy nginx.conf missing")
+            old_proxy_bytes = (old_dir / "proxy.stable").read_bytes()
+            live_proxy_bytes = live_proxy_path.read_bytes()
+            if not is_expected_proxy_change(old_proxy_bytes, live_proxy_bytes):
+                raise RuntimeError("DE live proxy nginx.conf differs unexpectedly from stable checkpoint")
+            proxy_changed = old_proxy_bytes != live_proxy_bytes
 
         old_dns_bytes = (old_dir / "dns.stable").read_bytes()
         live_dns_bytes = live_dns_path.read_bytes()
-        if old_dns_bytes == live_dns_bytes:
+        dns_changed = old_dns_bytes != live_dns_bytes
+        if not dns_changed and not proxy_changed:
             print("de_checkpoint_already_synced=true", flush=True)
             return str(old_dir)
-
-        if backup_corefile_path.is_file():
-            if backup_corefile_path.read_bytes() != old_dns_bytes:
-                raise RuntimeError("2026-11-16 Corefile backup differs from old dns.stable; refusing promotion")
 
         old_dns_text = old_dns_bytes.decode("utf-8")
         live_dns_text = live_dns_bytes.decode("utf-8")
         if not live_dns_text.startswith(old_dns_text):
             raise RuntimeError("live Corefile modified outside appended suffix; refusing promotion")
         suffix = live_dns_text[len(old_dns_text) :]
-        if not is_expected_google_suffix(suffix):
-            raise RuntimeError("live Corefile diff does not match Verified Google RU ingress 20261116 block")
+        if not verify_expected_dns_suffix(suffix):
+            raise RuntimeError("live Corefile diff does not match reviewed 20261116 blocks")
+
+        if backup_corefile_path.is_file():
+            backup_text = backup_corefile_path.read_text("utf-8")
+            if not backup_text.startswith(old_dns_text) or not live_dns_text.startswith(backup_text):
+                raise RuntimeError("2026-11-16 Corefile backup outside expected chain; refusing promotion")
+            pre_google_suffix = backup_text[len(old_dns_text) :]
+            if pre_google_suffix and not is_expected_protocol_block(pre_google_suffix):
+                raise RuntimeError("2026-11-16 Corefile backup contains unexpected prefix diff")
 
         ts = int(time.time()) if now_epoch is None else int(now_epoch)
         new_dir = base_parent / str(ts)
@@ -202,6 +261,8 @@ def sync_google_checkpoint(
                     continue
                 shutil.copy2(item, new_dir / item.name)
             shutil.copyfile(live_dns_path, new_dir / "dns.stable")
+            if proxy_changed:
+                shutil.copyfile(live_proxy_path, new_dir / "proxy.stable")
             manifest_lines = []
             for name in manifest_names:
                 digest = _sha256_bytes((new_dir / name).read_bytes())
@@ -219,6 +280,8 @@ def sync_google_checkpoint(
                 raise RuntimeError("promoted dns.stable mismatch")
             if (new_dir / "nginx.stable").read_bytes() != live_nginx_bytes:
                 raise RuntimeError("promoted nginx.stable mismatch")
+            if proxy_changed and (new_dir / "proxy.stable").read_bytes() != live_proxy_bytes:
+                raise RuntimeError("promoted proxy.stable mismatch")
 
             pointer_mode = pointer_path.stat().st_mode & 0o777
             tmp_pointer = base_parent / f"current.next.{os.getpid()}"

@@ -9,6 +9,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import meta_de_sync_google_checkpoint as m
 
 
+VALID_PROTOCOL_BLOCK = (
+    "\n# Protocol-specific origin DNS exceptions 20261116\n"
+    + " ".join(f"tls://{h}:853" for h in m.PROTOCOL_NAMES)
+    + " {\n"
+    "    bind 89.125.90.101\n"
+    "    tls /run/credentials/mnebydns-dot.service/fullchain.pem /run/credentials/mnebydns-dot.service/privkey.pem\n"
+    "    forward . tls://9.9.9.9 tls://149.112.112.112 {\n"
+    "        tls_servername dns.quad9.net\n"
+    "        health_check 30s\n"
+    "    }\n"
+    "    cache 30\n"
+    "    errors\n"
+    "}\n"
+)
+
 VALID_GOOGLE_BLOCK = (
     "\n# Verified Google RU ingress 20261116\n"
     + " ".join(f"tls://{h}:853" for h in m.GOOGLE_HOSTS)
@@ -32,14 +47,27 @@ def _sha(data: bytes) -> str:
 
 
 class SyncGoogleCheckpointTests(unittest.TestCase):
-    def _setup_tree(self, root: Path, *, with_proxy: bool = True, with_backup: bool = True):
+    def _setup_tree(
+        self,
+        root: Path,
+        *,
+        with_proxy: bool = True,
+        with_backup: bool = True,
+        include_protocol_block: bool = True,
+        update_proxy: bool = True,
+    ):
         cp_base = root / "opt/mnebydns-stable-checkpoints"
         old_dir = cp_base / "1700000000"
         old_dir.mkdir(parents=True)
 
         old_dns = b".:853 {\n  bind 89.125.90.101\n}\n"
         old_nginx = b"stream { server { listen 89.125.90.101:443; } }\n"
-        old_proxy = b"server { listen 127.0.0.1:8080; }\n"
+        old_proxy = b"events { worker_connections 192; }\nstream { proxy_timeout 120s; }\n"
+        new_proxy = (
+            b"events { worker_connections 2048; }\nstream { proxy_timeout 15m; }\n"
+            if update_proxy
+            else old_proxy
+        )
 
         (old_dir / "dns.stable").write_bytes(old_dns)
         (old_dir / "nginx.stable").write_bytes(old_nginx)
@@ -52,16 +80,17 @@ class SyncGoogleCheckpointTests(unittest.TestCase):
             (old_dir / "proxy.stable").write_bytes(old_proxy)
             manifest.append(f"{_sha(old_proxy)}  proxy.stable\n")
             live_proxy.parent.mkdir(parents=True)
-            live_proxy.write_bytes(old_proxy)
+            live_proxy.write_bytes(new_proxy)
         (old_dir / "stable-manifest.sha256").write_text("".join(manifest), encoding="utf-8")
 
         pointer = cp_base / "current"
         pointer.write_text(str(old_dir) + "\n", encoding="utf-8")
         pointer.chmod(0o600)
 
+        pre_google = old_dns + (VALID_PROTOCOL_BLOCK.encode("utf-8") if include_protocol_block else b"")
         live_dns = root / "opt/mnebydns-dot/Corefile"
         live_dns.parent.mkdir(parents=True)
-        live_dns.write_bytes(old_dns + VALID_GOOGLE_BLOCK.encode("utf-8"))
+        live_dns.write_bytes(pre_google + VALID_GOOGLE_BLOCK.encode("utf-8"))
 
         live_nginx = root / "etc/nginx/nginx.conf"
         live_nginx.parent.mkdir(parents=True)
@@ -70,7 +99,7 @@ class SyncGoogleCheckpointTests(unittest.TestCase):
         backup = root / "var/backups/mnebydns-google-route-20261116-053515/Corefile"
         if with_backup:
             backup.parent.mkdir(parents=True)
-            backup.write_bytes(old_dns)
+            backup.write_bytes(pre_google)
 
         return {
             "pointer_path": pointer,
@@ -82,7 +111,7 @@ class SyncGoogleCheckpointTests(unittest.TestCase):
             "de_stage_state_path": root / "var/lib/mneby-meta-v26-de",
         }
 
-    def test_promotes_when_only_verified_google_block_appended(self):
+    def test_promotes_when_reviewed_blocks_and_pilot_tuning_applied(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             kw = self._setup_tree(root)
@@ -95,7 +124,6 @@ class SyncGoogleCheckpointTests(unittest.TestCase):
             names = m.verify_manifest(promoted)
             self.assertEqual(names, ["nginx.stable", "dns.stable", "proxy.stable"])
 
-            # Idempotent on second call
             second = m.sync_google_checkpoint(**kw, check_services=False, now_epoch=1800000000)
             self.assertEqual(second, str(promoted))
 
@@ -107,7 +135,7 @@ class SyncGoogleCheckpointTests(unittest.TestCase):
                 kw["live_dns_path"].read_bytes() + b"\nexample.com:853 { forward . 1.1.1.1 }\n"
             )
             before = kw["pointer_path"].read_text()
-            with self.assertRaisesRegex(RuntimeError, "Verified Google RU ingress 20261116"):
+            with self.assertRaisesRegex(RuntimeError, "reviewed 20261116 blocks"):
                 m.sync_google_checkpoint(**kw, check_services=False, now_epoch=1799999999)
             self.assertEqual(kw["pointer_path"].read_text(), before)
             self.assertFalse((kw["pointer_path"].parent / "1799999999").exists())
@@ -120,19 +148,19 @@ class SyncGoogleCheckpointTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "nginx.conf differs"):
                 m.sync_google_checkpoint(**kw, check_services=False, now_epoch=1799999999)
 
-    def test_rejects_proxy_drift_and_backup_mismatch(self):
+    def test_rejects_unexpected_proxy_drift_and_backup_mismatch(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             kw = self._setup_tree(root)
-            kw["live_proxy_path"].write_bytes(b"changed\n")
-            with self.assertRaisesRegex(RuntimeError, "proxy nginx.conf differs"):
+            kw["live_proxy_path"].write_bytes(b"events { worker_connections 2048; }\n# injected\n")
+            with self.assertRaisesRegex(RuntimeError, "proxy nginx.conf differs unexpectedly"):
                 m.sync_google_checkpoint(**kw, check_services=False, now_epoch=1799999999)
 
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             kw = self._setup_tree(root)
             kw["backup_corefile_path"].write_bytes(b"different old\n")
-            with self.assertRaisesRegex(RuntimeError, "backup differs"):
+            with self.assertRaisesRegex(RuntimeError, "backup outside expected chain"):
                 m.sync_google_checkpoint(**kw, check_services=False, now_epoch=1799999999)
 
     def test_rejects_active_de_experiment_state(self):
