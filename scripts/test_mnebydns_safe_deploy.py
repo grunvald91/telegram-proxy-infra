@@ -45,6 +45,7 @@ class DeployTests(TestCase):
             patch.object(deploy,"LIVE",{"dns":self.live}),
             patch.object(deploy,"verify_system",return_value=None),
             patch.object(deploy,"ensure_dns_reader_access",return_value=None),
+            patch.object(deploy,"verify_google_dns_canaries",return_value=None),
             patch.object(deploy,"coredns_hot_reload_supported",return_value=None),
             patch.object(deploy,"coredns_main_pid",return_value=4123),
             patch.object(deploy,"verify_hot_reload",return_value=None),
@@ -192,6 +193,24 @@ class DeployTests(TestCase):
             REAL_REVERT_SERVICES({"dns"})
             hot.assert_called_once_with(4123)
             self.assertFalse(any("restart" in call.args for call in command.call_args_list))
+
+    def test_google_route_preflight_refuses_changes_when_canary_fails(self):
+        with patch.object(deploy,"verify_google_dns_canaries",side_effect=RuntimeError("google route drift")):
+            with self.assertRaisesRegex(RuntimeError,"google route drift"):
+                deploy.apply(self.key)
+        self.assertEqual(self.live.read_bytes(),b"old policy\n")
+        self.assertEqual(list(self.tx.iterdir()),[])
+
+    def test_google_route_postflight_failure_rolls_back_only_owned_bytes(self):
+        counts={"calls":0}
+        def google_check():
+            counts["calls"]+=1
+            if counts["calls"]==2:raise RuntimeError("google postdeploy route mismatch")
+        with patch.object(deploy,"verify_google_dns_canaries",side_effect=google_check):
+            with self.assertRaisesRegex(RuntimeError,"google postdeploy route mismatch"):
+                deploy.apply(self.key)
+        self.assertEqual(counts["calls"],2)
+        self.assertEqual(self.live.read_bytes(),b"old policy\n")
 
     def test_invalid_manifest_path_does_not_escape_stage(self):
         with self.assertRaises(ValueError):
