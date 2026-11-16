@@ -44,6 +44,9 @@ class DeployTests(TestCase):
             patch.object(deploy,"LIVE",{"dns":self.live}),
             patch.object(deploy,"verify_system",return_value=None),
             patch.object(deploy,"ensure_dns_reader_access",return_value=None),
+            patch.object(deploy,"preserved",return_value={"preserved":True}),
+            patch.object(deploy,"ensure_hot_reload_config",return_value=None),
+            patch.object(deploy,"smoke_check",return_value={"all_pinned":True}),
             patch.object(deploy,"manifest_for",return_value=self.manifest),
             patch.object(deploy,"require_services_healthy",
                          return_value={"dns":{"service_active":True,"tcp_listener":True}}),
@@ -135,6 +138,62 @@ class DeployTests(TestCase):
                 deploy.apply(self.key)
         self.assertEqual(self.live.read_bytes(),b"old policy\n")
         self.assertEqual(list(self.tx.iterdir()),[])
+
+    def test_committed_timer_disable_failure_is_not_false_rollback(self):
+        def failed_disarm(*args,**kwargs):
+            if "disable" in args:raise RuntimeError("systemd failure")
+            return ""
+        with patch.object(deploy,"cmd",side_effect=failed_disarm):
+            deploy.apply(self.key)
+        self.assertEqual(self.live.read_bytes(),b"new policy\n")
+        tx=list(self.tx.iterdir())[0]
+        self.assertTrue((tx/"COMMITTED").exists())
+        self.assertFalse((tx/"ROLLED_BACK").exists())
+
+    def test_non_disruptive_hot_reload_never_calls_restart(self):
+        with patch.object(deploy,"coredns_pid",return_value="12345"), \
+             patch.object(deploy,"ensure_hot_reload_config") as check, \
+             patch.object(deploy,"time") as timer, \
+             patch.object(deploy,"require_services_healthy") as healthy:
+            deploy.hot_reload_dns()
+            check.assert_called_once()
+            timer.sleep.assert_called_once_with(7)
+            healthy.assert_called_once_with({"dns"})
+
+    def test_owner_domain_stage_and_rollback_preserve_metadata(self):
+        self.ownerroot=self.root/"owner"
+        self.ownerroot.mkdir(mode=0o700)
+        base=self.ownerroot/"123456789"
+        base.mkdir(mode=0o700)
+        (base/"domain").write_text("oracle.com")
+        (base/"dns.before").write_bytes(b"old policy\n")
+        (base/"dns.pilot").write_bytes(b"owner policy\n")
+        with patch.object(deploy,"OWNERROOT",self.ownerroot):
+            deploy.owner_publish("stage",base,"dns")
+            self.assertEqual(self.live.read_bytes(),b"owner policy\n")
+            self.assertEqual(safety.capture(self.live).mode,0o640)
+            deploy.owner_publish("rollback",base,"dns")
+            self.assertEqual(self.live.read_bytes(),b"old policy\n")
+
+    def test_owner_domain_rejects_external_edit_before_rollback(self):
+        root=self.root/"owner"
+        root.mkdir(mode=0o700)
+        base=root/"123456789"
+        base.mkdir(mode=0o700)
+        (base/"domain").write_text("oracle.com")
+        (base/"dns.before").write_bytes(b"old policy\n")
+        (base/"dns.pilot").write_bytes(b"owner policy\n")
+        with patch.object(deploy,"OWNERROOT",root):
+            deploy.owner_publish("stage",base,"dns")
+            self.live.write_bytes(b"unrelated third-party change\n")
+            with self.assertRaises(RuntimeError):
+                deploy.owner_publish("rollback",base,"dns")
+            self.assertEqual(self.live.read_bytes(),b"unrelated third-party change\n")
+
+    def test_source_candidate_without_reader_group_does_not_publish(self):
+        with patch.object(deploy,"ensure_hot_reload_config",side_effect=RuntimeError("no reload")):
+            with self.assertRaises(RuntimeError):deploy.apply(self.key)
+        self.assertEqual(self.live.read_bytes(),b"old policy\n")
 
     def test_invalid_manifest_path_does_not_escape_stage(self):
         with self.assertRaises(ValueError):
