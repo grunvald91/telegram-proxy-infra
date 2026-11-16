@@ -8,7 +8,8 @@ const owner=dnsAdminOwner(),key=ownerDnsKey(process.env.MNEBYDNS_OWNER_LINK_KEY)
 const page=await ownerDnsLinksAction(db,owner,owner,key,'dnslinks:permanent','perf-bench-20261116');
 const hostname=page.text.match(/\b[a-z0-9]{12}\.dns\.mnebyvpn\.site\b/)?.[0];
 await db.end();if(!hostname)throw Error('Owner DNS unavailable');
-const targets=[['personal-private','10.66.77.2',8856,hostname],['personal-DE','89.125.90.101',853,hostname],['personal-RU','188.120.254.223',853,hostname],['mapped-upstream','10.66.77.1',1853,'dns.mnebyvpn.site'],['direct-upstream','1.1.1.1',853,'one.one.one.one']];
+const allTargets=[['personal-private',process.env.DNS_BENCH_PRIVATE_IP??'10.66.77.2',Number(process.env.DNS_BENCH_PRIVATE_PORT??8856),hostname],['personal-DE','89.125.90.101',853,hostname],['personal-RU','188.120.254.223',853,hostname],['mapped-upstream','10.66.77.1',1853,'dns.mnebyvpn.site'],['direct-upstream','1.1.1.1',853,'one.one.one.one']];
+const targets=process.env.DNS_BENCH_PRIVATE_ONLY==='yes'?allTargets.slice(0,1):allTargets;
 const summary=values=>{
   const a=values.toSorted((a,b)=>a-b);return {n:a.length,p50_ms:a.length?+a[Math.floor(a.length/2)].toFixed(2):null,p95_ms:a.length?+a[Math.min(a.length-1,Math.ceil(a.length*.95)-1)].toFixed(2):null,max_ms:a.length?+a.at(-1).toFixed(2):null};
 };
