@@ -37,7 +37,7 @@ FILES={
 SERVICE={"dns":"mnebydns-dot.service",
          "shared":"nginx.service","pilot":"mnebydns-googlepilot.service"}
 LISTEN={"dns":853,"shared":443,"pilot":15449}
-ID=re.compile(r"[a-z][a-z0-9-]{4,55}\Z")
+ID=re.compile(r"[a-z][a-z0-9-]{4,38}\Z")
 SHA=re.compile(r"[0-9a-f]{64}\Z")
 
 
@@ -193,7 +193,8 @@ def reread(root):
     return files,state
 
 
-def reload_services(keys, allow_restart=False):
+def reload_services(keys):
+    keys=set(keys)
     # Preserve existing DoT sessions using preinstalled 5s CoreDNS reload
     # plugin. Reject Corefile changes when hot reload is not configured.
     if "shared" in keys:
@@ -226,7 +227,8 @@ def rollback(identifier):
             reload_services(modified)
         # Never mark committed during rollback, the watchdog can run again if
         # service verification fails or another process holds the lock.
-        durable_write(root/"ROLLED_BACK",(json.dumps(actions)+"\n").encode()) if not (root/"ROLLED_BACK").exists() else None
+        if not (root/"ROLLED_BACK").exists():
+            durable_write(root/"ROLLED_BACK",(json.dumps(actions)+"\n").encode())
         print(json.dumps({"mode":"rollback","done":True,"actions":actions},sort_keys=True))
 
 
@@ -238,8 +240,10 @@ def apply(folder):
         # Strict no-op operation cannot create an owner or watchdog.
         changed={k:data for k,data in new.items() if digest(data)!=full_state[k].sha256}
         if not changed:
-            audit()
-            print(json.dumps({"mode":"apply","changed":False,"done":True,"id":m["id"]}))
+            # A genuine no-op must not arm a timer or reload production.
+            wait_ready(FILES.keys(),max_seconds=3)
+            print(json.dumps({"mode":"apply","changed":False,"done":True,"id":m["id"],
+                              "corefile_hash_unchanged":True},sort_keys=True))
             return
         wait_ready(FILES.keys(),max_seconds=3)
         root=CHECKPOINTS/m["id"]
