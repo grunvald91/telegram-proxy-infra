@@ -105,3 +105,74 @@ No user needs to run commands manually.
 The coordinator installs safe **future changes**, not a second DNS rollback.
 Release automation still needs a specifically reviewed candidate and its pinned
 manifest; successful installation alone does not justify changing DNS rules.
+
+
+---
+
+## Review remediation: version 3 (16 Nov 2026)
+
+The v3 coordinator replaces the unsafe default CoreDNS \`systemctl restart\`
+on normal configuration changes with a verified, PID-preserving CoreDNS reload.
+It refuses a DNS config release without \`reload 5s 1s\` and the compiled reload
+plugin. Starting a stopped CoreDNS instance is only permitted as an emergency
+rollback recovery, never as the normal config-update path.
+
+Before applying a Corefile change, the coordinator parses the complete old and
+candidate sets of DNS templates. In the default \`additive\` scope it refuses
+deletion or modification of any existing template, including personalized DNS
+access. A proposed Google-specific change requires an explicit
+\`"scope": "google"\` in the DNS manifest and still protects non-Google templates
+and TLS/bind/import/forward/reload directives. Hash pinning alone does not waive
+these checks.
+
+The coordinator also verifies protected Google, YouTube and other existing
+AI/social service A-record routes via CA-validated DNS-over-TLS before and after
+a DNS release and after a DNS rollback. A service active flag is not proof of
+DNS answer correctness. These checks occur **only when actually changing DNS**,
+not on a regular status request.
+
+Legacy owner-domain canary additions, removals and their independent rollback
+continue using the established owner timer/DB confirmation flow, but their
+actual Nginx and CoreDNS file swaps now invoke the shared v3
+\`owner-publish\` path. That path uses the same compare-and-swap,
+owner/group/mode/xattrs preserving atomic writer and refuses other intervening
+edits. Its calling shell holds the existing global route lock.
+
+A durable COMMITTED marker is written **before** disabling the recovery timer.
+If disabling the timer fails, the already committed release is still successful:
+any subsequently triggered recovery checks COMMITTED and performs no rollback.
+The warning must be retained as \`watchdog_disarmed: false\`.
+
+**Verification limitations:** offline CI exercises simulated interrupted releases
+and rollback behavior, not a live VPS reboot or end-user media playback.
+The production v3 installation only updates the maintenance scripts, never the
+current CoreDNS configuration, Nginx routes, certificates or subscriber records.
+
+
+### 16 Nov 2026 stable-checkpoint reconciliation
+
+The historic Google DNS recovery changed two live config hashes (CoreDNS and
+GooglePilot), while the former stable-checkpoint pointer still referenced the
+pre-recovery hashes. This blocked otherwise safe owner-domain workflows.
+
+[Run 43904037640](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/43904037640)
+verified that the live configuration was exactly the previously reviewed
+Google restoration, all three listeners/services were healthy and no sensitive
+rollback timer was outstanding.
+
+[Run 43904288633](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/43904288633)
+atomically advanced only the stable-checkpoint pointer from `1794809391` to
+`1794845357`. All DNS/Nginx/GooglePilot configuration bytes and customer
+credentials were unchanged. The previous checkpoint remains available.
+
+[Run 43905222328](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/43905222328)
+validated the exact Oracle owner-route dry-run against the reconciled baseline.
+The original CoreDNS main-zone insertion location is now selected relative to
+the unique Gemini template and the first subsequent cache within that same
+zone, avoiding a false failure when a separate Google zone also contains a
+cache directive. Already installed exact owner domains are recognized and not
+re-added.
+
+One-time reconciliation and read-only probe workflows were retired after
+success. Operational policy changes still use the root-owned, hash-pinned
+maintenance manager and preserve the personal routes.

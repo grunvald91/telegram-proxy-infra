@@ -21,8 +21,10 @@ import shutil
 import stat
 import subprocess
 import sys
+import time
 import uuid
 
+from mnebydns_dns_policy_guard import preserved, smoke_check
 from mnebydns_nov8_restore_safety import (
     FileState, atomic_replace, capture, commit_marker, conditional_rollback,
     digest, persistent_watchdog, route_lock,
@@ -42,6 +44,7 @@ PORT={"dns":853,"shared":443,"pilot":15449}
 NAME=re.compile(r"^[a-z0-9][a-z0-9-]{5,32}$")
 SHA=re.compile(r"^[0-9a-f]{64}$")
 UNITPREFIX="mnebydns-safe-recover-"
+OWNERROOT=Path("/opt/mnebydns-owner-domain")
 
 def cmd(*argv,timeout=25):
     p=subprocess.run(argv,text=True,capture_output=True,timeout=timeout)
@@ -143,9 +146,12 @@ def manifest_for(name):
     if not isinstance(files,dict) or not 1<=len(files)<=3 or not set(files)<=set(LIVE):
         raise ValueError("Unexpected config paths in manifest")
     for key,v in files.items():
-        if set(v)!={"expected_sha256","candidate_sha256"}:
+        allowed={"expected_sha256","candidate_sha256"} | ({"scope"} if key=="dns" else set())
+        if not {"expected_sha256","candidate_sha256"}<=set(v) or not set(v)<=allowed:
             raise ValueError("Config manifest key not allowlisted")
-        if any(not SHA.fullmatch(v[h]) for h in v):
+        if key=="dns" and v.get("scope","additive") not in ("additive","google"):
+            raise ValueError("DNS policy scope not approved")
+        if any(not SHA.fullmatch(v[h]) for h in ("expected_sha256","candidate_sha256")):
             raise ValueError("Invalid pinned SHA256")
     return files
 
@@ -177,6 +183,31 @@ def systemd_files(key,deadline,tx):
         raise
     return unit
 
+def coredns_pid():
+    value=cmd("systemctl","show","--value","-p","MainPID",SERVICE["dns"])
+    if not value.isdigit() or int(value)<1:
+        raise RuntimeError("CoreDNS MainPID unavailable")
+    return value
+
+
+def ensure_hot_reload_config(data: bytes):
+    if b"    reload 5s 1s" not in data:
+        raise RuntimeError("Refuse CoreDNS update without hot reload plugin")
+    p=subprocess.run(["/opt/mnebydns-dot/coredns","-plugins"],
+                     text=True,capture_output=True,timeout=10)
+    if p.returncode or not re.search(r"(?m)(^|\s)reload(\s|$)",p.stdout+p.stderr):
+        raise RuntimeError("CoreDNS reload plugin unavailable")
+
+
+def hot_reload_dns():
+    old=coredns_pid()
+    ensure_hot_reload_config(LIVE["dns"].read_bytes())
+    time.sleep(7)
+    if coredns_pid()!=old:
+        raise RuntimeError("CoreDNS PID changed during hot reload")
+    require_services_healthy({"dns"})
+
+
 def revert_services(files):
     # Reload only what this transaction actually touched.
     for key in ("shared","pilot","dns"):
@@ -188,7 +219,13 @@ def revert_services(files):
             cmd("/usr/sbin/nginx","-t","-c",str(LIVE[key]),timeout=15)
             cmd("/usr/sbin/nginx","-s","reload","-c",str(LIVE[key]),timeout=20)
         else:
-            cmd("systemctl","restart",SERVICE[key],timeout=35)
+            if services_ok({"dns"})["dns"]["service_active"]:
+                hot_reload_dns()
+            else:
+                # Recovery exception: a stopped resolver cannot hot reload.
+                ensure_hot_reload_config(LIVE["dns"].read_bytes())
+                cmd("systemctl","start",SERVICE["dns"],timeout=35)
+                require_services_healthy({"dns"})
 
 def tx_read(tx):
     if tx.parent!=TXROOT or not re.fullmatch("[0-9a-f]{16}",tx.name):
@@ -219,6 +256,9 @@ def recover_locked(tx):
     if changed:
         revert_services(changed)
     require_services_healthy(set(files)|{"dns","pilot","shared"})
+    if "dns" in changed:
+        ensure_dns_reader_access()
+        smoke_check()
     write_durable(tx/"ROLLED_BACK",b"rollback complete\n")
     return {"committed":False,"rolled_back":True,"files":sorted(actions)}
 
@@ -251,6 +291,13 @@ def apply(name):
             print(json.dumps({"done":True,"changed":False,
                               "reason":"payload_identical_to_live","files":sorted(manifest)}))
             return
+        if "dns" in prepared:
+            old=prepared["dns"][1]
+            new=prepared["dns"][2]
+            preserved(old,new,scope=manifest["dns"].get("scope","additive"))
+            ensure_hot_reload_config(old)
+            ensure_hot_reload_config(new)
+            smoke_check()
         # Validate Nginx before swapping any live file.
         for key,(_,_,payload) in prepared.items():
             if key in ("shared","pilot"):
@@ -272,16 +319,22 @@ def apply(name):
             revert_services(prepared)
             healthy=require_services_healthy(set(SERVICE))
             ensure_dns_reader_access()
+            if "dns" in prepared:
+                smoke_check()
             for n,(_,_,payload) in prepared.items():
                 if digest(payload)!=capture(LIVE[n]).sha256:
                     raise RuntimeError("Published config changed during activation")
             commit_marker(tx,{n:digest(v[2]) for n,v in prepared.items()})
-            # If the timer still runs, it sees COMMITTED and cannot restore
-            # a confirmed deployment.
-            cmd("systemctl","disable","--now",unit+".timer",timeout=16)
+            # COMMITTED is fsync-durable; watchdog recovery treats it as final.
+            # Failure to disable an obsolete timer is NOT a failed deployment.
+            disarmed=True
+            try:
+                cmd("systemctl","disable","--now",unit+".timer",timeout=16)
+            except Exception:
+                disarmed=False
             print(json.dumps({"done":True,"changed":True,
                   "files":sorted(prepared),"healthy":healthy,"committed":True,
-                  "watchdog_disarmed":True,"transaction_id":key},sort_keys=True))
+                  "watchdog_disarmed":disarmed,"transaction_id":key},sort_keys=True))
         except Exception:
             if unit:
                 try:
@@ -291,6 +344,60 @@ def apply(name):
                     # Keep persistent watchdog: it will recover after reboot.
                     pass
             raise
+
+def validate_owner_checkpoint(base: Path):
+    if (base.parent!=OWNERROOT or not re.fullmatch(r"[0-9]{9,13}",base.name)
+            or base.is_symlink() or not base.is_dir()):
+        raise ValueError("Owner-domain checkpoint path untrusted")
+    if base.stat().st_uid!=0 or stat.S_IMODE(base.stat().st_mode)!=0o700:
+        raise ValueError("Owner-domain checkpoint must be private and root-owned")
+
+
+def validate_owner_candidate(candidate: Path):
+    if candidate.is_symlink() or not candidate.is_file() or candidate.stat().st_uid!=0:
+        raise ValueError("Untrusted owner-domain candidate")
+
+
+def owner_publish(phase: str, base: Path, kind: str):
+    """Publish owner-domain canary while caller holds shared route lock."""
+    verify_system()
+    if phase not in ("stage","rollback") or kind not in ("dns","nginx"):
+        raise ValueError("Unapproved owner-domain transition")
+    validate_owner_checkpoint(base)
+    name="dns" if kind=="dns" else "shared"
+    live=LIVE[name]
+    before=base/(kind+".before")
+    pilot=base/(kind+".pilot")
+    source,target=(before,pilot) if phase=="stage" else (pilot,before)
+    for candidate in (source,target):
+        validate_owner_candidate(candidate)
+    original=source.read_bytes()
+    changed=target.read_bytes()
+    if kind=="dns":
+        ensure_dns_reader_access()
+        domain_file=base/"domain"
+        if not domain_file.is_file() or domain_file.is_symlink():
+            raise ValueError("Owner-domain exact hostname missing")
+        domain=domain_file.read_text().strip()
+        if not re.fullmatch(r"[a-z0-9.-]{4,253}",domain):
+            raise ValueError("Owner domain invalid")
+        preserved(original,changed,scope="owner",owner_domain=domain)
+        ensure_hot_reload_config(original)
+        ensure_hot_reload_config(changed)
+    live_state,old=regular_read(live)
+    if old==changed:
+        print(json.dumps({"done":True,"changed":False,"kind":kind,"phase":phase}))
+        return
+    if old!=original:
+        raise RuntimeError("Owner-domain canary source does not match live file")
+    # Caller stage/rollback already holds /run/lock/mnebyvpn-public-route.lock.
+    new_state=atomic_replace(live,live_state,changed)
+    if kind=="dns":
+        ensure_dns_reader_access()
+    if new_state.sha256!=digest(changed):
+        raise RuntimeError("Owner-domain atomic config verification failed")
+    print(json.dumps({"done":True,"changed":True,"kind":kind,"phase":phase}))
+
 
 def status():
     verify_system()
@@ -303,12 +410,13 @@ def status():
     print(json.dumps({"read_only":True,"files":live,
         "services":services_ok(set(SERVICE)),
         "dns_reader_group_verified":True,
-        "installer_version":"2026-11-16-safe-deploy-v2"},sort_keys=True))
+        "installer_version":"2026-11-16-safe-deploy-v3"},sort_keys=True))
 
 def main():
     parser=argparse.ArgumentParser()
-    parser.add_argument("command",choices=("status","apply","recover"))
+    parser.add_argument("command",choices=("status","apply","recover","owner-publish"))
     parser.add_argument("arg",nargs="?")
+    parser.add_argument("extra",nargs="*")
     args=parser.parse_args()
     if args.command=="status":
         if args.arg:parser.error("status does not take arguments")
@@ -316,6 +424,10 @@ def main():
     elif args.command=="apply":
         if not args.arg:parser.error("apply requires pinned manifest id")
         apply(args.arg)
+    elif args.command=="owner-publish":
+        if not args.arg or len(args.extra)!=2:
+            parser.error("owner-publish requires phase, checkpoint, kind")
+        owner_publish(args.arg,Path(args.extra[0]),args.extra[1])
     else:
         if not args.arg:parser.error("recover requires transaction path")
         tx=Path(args.arg)

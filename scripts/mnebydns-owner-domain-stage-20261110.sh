@@ -38,6 +38,8 @@ done
 test -s "$work/mnebydns-owner-domain-render-20261110.py"
 test -s "$work/mnebydns-owner-domain-rollback-20261110.sh"
 test -s "$work/mnebydns-dot-config-change-20261111.sh"
+test -x /opt/mnebydns-maintenance/mnebydns_safe_deploy.py
+python3 /opt/mnebydns-maintenance/mnebydns_safe_deploy.py status >/dev/null
 # Refuse any route edit BEFORE touching nginx or Corefile when a non-disruptive
 # CoreDNS reload cannot be verified. Legacy config needs separate maintenance.
 grep -Fxq '    reload 5s 1s' "$dns" || {
@@ -118,14 +120,12 @@ abort(){
   exit "$code"
 }
 trap abort EXIT
-cp -p "$base/nginx.pilot" "$nginx.owner-stage-$id"
-mv -f "$nginx.owner-stage-$id" "$nginx"
+python3 /opt/mnebydns-maintenance/mnebydns_safe_deploy.py owner-publish stage "$base" nginx
 nginx -t >/dev/null 2>&1
 systemctl reload nginx
 systemctl is-active --quiet nginx
 cmp -s "$base/nginx.pilot" "$nginx"
-cp -p "$base/dns.pilot" "$dns.owner-stage-$id"
-mv -f "$dns.owner-stage-$id" "$dns"
+python3 /opt/mnebydns-maintenance/mnebydns_safe_deploy.py owner-publish stage "$base" dns
 bash "$base/reload.sh" "$dns"
 for attempt in $(seq 1 45); do
   if systemctl is-active --quiet mnebydns-dot.service &&

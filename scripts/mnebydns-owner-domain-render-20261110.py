@@ -194,15 +194,20 @@ def core_add(stable: str, domain: str) -> str:
     begin, end = _block_bounds(stable, domain)
     if begin in stable or end in stable:
         raise ValueError("Already has owner domain route")
-    # Preserve strict exact-template collision checks, but support the new
-    # CoreDNS cache block after the resilient upstream upgrade. Legacy cache
-    # syntax remains valid for owner deployments during migration.
-    anchor = next((item for item in (CACHE_ANCHOR, RESILIENT_CACHE_ANCHOR)
-                   if stable.count(item) == 1), None)
-    if (anchor is None or
-        sum(stable.count(item) for item in (CACHE_ANCHOR, RESILIENT_CACHE_ANCHOR)) != 1 or
-        "template IN A gemini.google.com {" not in stable):
-        raise ValueError("Unrecognized CoreDNS stable baseline")
+    # A second Google-only zone can independently contain a cache directive.
+    # Anchor to the FIRST cache after the unique original Gemini template,
+    # *within that same server block*, not to a global cache count.
+    gemini="    template IN A gemini.google.com {"
+    if stable.count(gemini)!=1:
+        raise ValueError("Original Google DNS insertion anchor missing")
+    start=stable.index(gemini)
+    caches=sorted((pos,anchor) for anchor in (CACHE_ANCHOR, RESILIENT_CACHE_ANCHOR)
+                  for pos in (stable.find(anchor,start),) if pos>=0)
+    if not caches:
+        raise ValueError("CoreDNS cache anchor absent after Gemini")
+    pos,anchor=caches[0]
+    if re.search(r"(?m)^tls://",stable[start:pos]):
+        raise ValueError("CoreDNS cache lies in another DNS zone")
     _assert_no_existing_core_route(stable, domain)
     hostname = re.escape(domain).replace(r"\.", "[.]")
     prefix = begin + "    # Owner-only exact domain, independent public TLS ingress\n"
@@ -217,7 +222,7 @@ def core_add(stable: str, domain: str) -> str:
             "    }\n"
         )
     prefix += end
-    out = stable.replace(anchor, prefix+anchor, 1)
+    out = stable[:pos]+prefix+stable[pos:]
     if out.replace(prefix, "", 1) != stable:
         raise AssertionError("CoreDNS edit must be additive")
     return out
@@ -274,6 +279,11 @@ def self_test() -> None:
          "  default 127.0.0.1:9443;\n"
          "  gemini.google.com 127.0.0.1:15443;\n"
          "}\n  server { proxy_pass $direct_mtproxy_backend; }\n}\n")
+    # Regression: a second cache in an independent zone must not block
+    # exact owner additions to the original DoT zone.
+    mixed=c.rstrip()+"\n"+("tls://other.example:853 {\n"+RESILIENT_CACHE_ANCHOR+"}\n")
+    cp=core_add(mixed,"oracle.com")
+    assert core_remove(cp,"oracle.com")==mixed
     for name in ("oracle.com", "cloud.oracle.com", "www.oracle.com"):
         cp=core_add(c,name)
         np=nginx_add(n,name,"93.184.215.14")
