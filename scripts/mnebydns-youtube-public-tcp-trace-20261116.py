@@ -47,6 +47,7 @@ def tls(ip, hostname, timeout=6):
 def probe_client():
     paths=[("DE_PUBLIC",DE)]
     if MODE=="client-ru":paths.extend([("DE_PRIVATE",PRIVATE_DE),("RU_PUBLIC",RU)])
+    if MODE=="client-runner":paths.append(("RU_PUBLIC",RU))
     jobs=[(p,ip,h) for p,ip in paths for h in HOSTS]
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(jobs)) as pool:
         results=list(pool.map(lambda x:{"path":x[0],"host_type":"youtube_web" if x[2]==HOSTS[0] else "googlevideo_cdn",**tls(x[1],x[2])},jobs))
