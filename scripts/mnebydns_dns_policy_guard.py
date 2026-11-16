@@ -28,7 +28,7 @@ def blocks(content: str):
     result=[(m.group(2),m.group(3),m.group(0)) for m in TEMPLATE.finditer(content)]
     # Reject partial/malformed parsing: an omitted unmatched template must
     # never be silently ignored when protecting existing customer routes.
-    total=len(re.findall(r"(?m)^\\s*template IN \\S+ \\S+ \\{",content))
+    total=len(re.findall(r"(?m)^\s*template IN \S+ \S+ \{",content))
     if not result or total!=len(result):
         raise ValueError("Corefile template parser did not cover every route")
     return result
