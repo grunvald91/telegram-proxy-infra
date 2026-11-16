@@ -42,6 +42,11 @@ class GuardTests(unittest.TestCase):
     def test_bind_and_reload_cannot_be_removed(self):
         new=(HEAD.replace("    reload 5s 1s\n","")+self.personal+self.google+self.nongoogle+TAIL).encode()
         with self.assertRaises(ValueError):preserved(self.base,new)
+    def test_unmatched_personal_template_cannot_be_ignored(self):
+        broken=self.base.decode().replace("    }\\n", "", 1).encode()
+        with self.assertRaises(ValueError):
+            preserved(self.base,broken)
+
     def test_empty_unparseable_config_is_rejected(self):
         with self.assertRaises(ValueError):preserved(b"bad",b"bad",scope="google")
     def test_google_and_ai_probe_failure_fails_closed(self):
