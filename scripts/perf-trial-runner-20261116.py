@@ -12,17 +12,25 @@ def ssh(role,command,timeout=140):return execute(role,['ssh','-T']+opts+['root@'
 def stage(role):
     ssh(role,"install -d -m 700 '"+ROOT+"'")
     for src,dst in [('scripts/perf-transport-trial-20261116.py','perf.py'),('scripts/perf-dns-bench-20261116.mjs','dns-bench.mjs')]:execute(role,['scp']+opts+[src,'root@'+roles[role]+':'+ROOT+'/'+dst])
+    previous=json.loads(ssh(role,'python3 '+ROOT+'/perf.py collect '+role))
+    (OUT/('previous-'+role+'.json')).write_text(json.dumps(previous,indent=2))
     return role,json.loads(ssh(role,'python3 '+ROOT+'/perf.py stage '+role))
 def remote_measure(role):return role,json.loads(ssh(role,'python3 '+ROOT+'/perf.py measure '+role))
 def dns():
     # Existing live image only; credentials stay in the server's env file.
-    cmd="image=$(docker inspect -f '{{.Config.Image}}' mnebyvpn-public-web); docker run --rm --network host --read-only --cap-drop ALL --security-opt no-new-privileges --env-file /opt/mnebyvpn/bot/web.env --mount type=bind,source="+ROOT+"/dns-bench.mjs,target=/dns-bench.mjs,readonly --entrypoint node \"$image\" --experimental-strip-types --input-type=module -e \"\$(cat "+ROOT+"/dns-bench.mjs)\""
+    cmd=("image=$(docker inspect -f '{{.Config.Image}}' mnebyvpn-public-web); "
+         "docker run --rm --network host --read-only --cap-drop ALL --security-opt no-new-privileges "
+         "--env-file /opt/mnebyvpn/bot/web.env --mount type=bind,source="+ROOT+"/dns-bench.mjs,target=/dns-bench.mjs,readonly "
+         '--entrypoint node "$image" --experimental-strip-types --input-type=module -e "$(cat '+ROOT+'/dns-bench.mjs)"')
     return json.loads(ssh('RU',cmd,150))
 try:
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as p:stages=dict(p.map(stage,roles))
     (OUT/'stage.json').write_text(json.dumps(stages,indent=2))
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as p:
-        future_dns=p.submit(dns);measures=dict(p.map(remote_measure,roles));dn=future_dns.result()
+        future_dns=p.submit(dns);measures=dict(p.map(remote_measure,roles))
+        (OUT/'pings.json').write_text(json.dumps(measures,indent=2))
+        try:dn=future_dns.result()
+        except Exception as e:dn={'error':type(e).__name__}
     (OUT/'pings.json').write_text(json.dumps(measures,indent=2));(OUT/'dns-before.json').write_text(json.dumps(dn,indent=2))
     bench=json.loads(ssh('RU','python3 '+ROOT+'/perf.py bench RU',90));(OUT/'tcp-client.json').write_text(json.dumps(bench,indent=2))
     for role in roles:

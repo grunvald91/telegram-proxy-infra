@@ -1,4 +1,4 @@
-name: Compare current AWG with isolated WG and alternate-port AWG plus DNS baseline
+name: Compare isolated transports and DNS baseline with validated shell invocation
 on:
   push:
     branches: [fix/dns-tunnel-performance-20261116]
@@ -27,7 +27,7 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          python3 -m py_compile scripts/perf-transport-trial-20261116.py scripts/perf-trial-runner-20261116.py
+          python3 -W error -m py_compile scripts/perf-transport-trial-20261116.py scripts/perf-trial-runner-20261116.py
           node --check scripts/perf-dns-bench-20261116.mjs
           if ! command -v sshpass >/dev/null; then sudo apt-get update -qq; sudo apt-get install -y -qq sshpass >/dev/null; fi
           python3 scripts/perf-trial-runner-20261116.py

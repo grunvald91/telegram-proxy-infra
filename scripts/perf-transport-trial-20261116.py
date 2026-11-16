@@ -51,9 +51,11 @@ def inspect_runtime():
     return {'params':params,'udp_socket_memory':selected,'sysctl':{k:pathlib.Path('/proc/sys/net/core/'+k).read_text().strip() for k in ['rmem_max','rmem_default','wmem_max','wmem_default']},'counters':counters()}
 def stage():
     ROOT.mkdir(mode=0o700,parents=True,exist_ok=True)
-    if STATE.exists():raise RuntimeError('Trial state already exists')
+    if STATE.exists() and not json.loads(STATE.read_text()).get('cleaned'):raise RuntimeError('Uncleaned trial state already exists')
     for name in ['mn-perf-wg','mn-perf-awg']:
         if run(['ip','link','show',name],check=False).returncode==0:raise RuntimeError('Trial interface already exists')
+    if STATE.exists():
+        for name in ['mn-perf-wg.conf','mn-perf-awg.conf']:(ROOT/name).unlink(missing_ok=True)
     state={'role':ROLE,'started_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),'interfaces':[],'rules':[],'available':{'current':'10.66.77.'+LOCAL},'before':inspect_runtime()};save(STATE,state)
     deadline=(datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(minutes=4)).strftime('%Y-%m-%d %H:%M:%S UTC')
     pathlib.Path('/etc/systemd/system/'+TIMER+'.service').write_text('[Service]\nType=oneshot\nExecStart=/usr/bin/python3 '+str(ROOT/'perf.py')+' cleanup '+ROLE+'\n')
