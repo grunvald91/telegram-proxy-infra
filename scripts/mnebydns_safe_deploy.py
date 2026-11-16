@@ -114,7 +114,13 @@ def verify_system():
 
 def manifest_for(name):
     if not NAME.fullmatch(name):raise ValueError("Invalid deployment identifier")
-    path=STAGE/name/"manifest.json"
+    directory=STAGE/name
+    if not directory.is_dir() or directory.is_symlink() or directory.resolve().parent!=STAGE.resolve():
+        raise ValueError("Untrusted staged deployment directory")
+    ds=directory.stat()
+    if ds.st_uid!=0 or stat.S_IMODE(ds.st_mode)!=0o700:
+        raise ValueError("Stage must be private and root-owned")
+    path=directory/"manifest.json"
     if path.is_symlink() or not path.is_file():raise ValueError("Missing pinned manifest")
     j=json.loads(path.read_text())
     if j.get("version")!=1 or j.get("id")!=name:
@@ -171,7 +177,7 @@ def revert_services(files):
             cmd("systemctl","restart",SERVICE[key],timeout=35)
 
 def tx_read(tx):
-    if tx.parent!=TXROOT or not NAME.fullmatch(tx.name) and not re.fullmatch("[0-9a-f]{16}",tx.name):
+    if tx.parent!=TXROOT or not re.fullmatch("[0-9a-f]{16}",tx.name):
         raise ValueError("Invalid recovery path")
     if tx.is_symlink() or not tx.is_dir():raise ValueError("No prepared transaction")
     p=tx/"state.json"
@@ -217,8 +223,8 @@ def apply(name):
             if state.sha256!=pins["expected_sha256"]:
                 raise RuntimeError("Live configuration changed; "+key)
             newpath=STAGE/name/(key+".new")
-            if newpath.parent.resolve()!= (STAGE/name).resolve():
-                raise RuntimeError("Invalid stage directory")
+            if newpath.is_symlink() or newpath.parent.resolve()!= (STAGE/name).resolve():
+                raise RuntimeError("Untrusted staged candidate")
             _,payload=regular_read(newpath)
             if digest(payload)!=pins["candidate_sha256"]:
                 raise RuntimeError("Proposed configuration hash mismatch")
