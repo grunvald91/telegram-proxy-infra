@@ -1,0 +1,43 @@
+name: Guarded direct-ozon API persistence and disable canary v2
+on:
+  push:
+    branches: [feat/mtproxy-bonus-activation-20261116]
+    paths: ['.github/workflows/dns-mtproxy-telemt-guarded-repair-v2-20261116.yml']
+  workflow_dispatch:
+permissions: {contents: read}
+concurrency:
+  group: direct-ozon-guarded-maintenance
+  cancel-in-progress: false
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      DE_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Checkout guarded script
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate Python script
+        run: python3 -m py_compile scripts/mnebyvpn-telemt-guarded-repair-v2-20261116.py
+      - name: Install SSH client
+        run: sudo apt-get update -qq >/dev/null && sudo apt-get install -qq -y sshpass >/dev/null
+      - name: Safely repair direct-ozon and prove create/get/disable/delete
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASSWORD"
+          export SSHPASS="$DE_PASSWORD"
+          sha="$(git rev-parse --short=12 HEAD)"
+          local_script=scripts/mnebyvpn-telemt-guarded-repair-v2-20261116.py
+          remote_script="/tmp/mnebyvpn-telemt-guarded-repair-$sha.py"
+          sshpass -e scp -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR "$local_script" "root@89.125.90.101:$remote_script"
+          cleanup() { sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@89.125.90.101 "rm -f '$remote_script'" || true; }
+          trap cleanup EXIT
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@89.125.90.101 \
+            "flock -w 40 /run/lock/mnebyvpn-direct-ozon-api-mutation.lock python3 '$remote_script'"
+          echo "telemt_guarded_repair=successful" >> "$GITHUB_STEP_SUMMARY"
+          echo "telemt_existing_users_preserved=yes" >> "$GITHUB_STEP_SUMMARY"
+          echo "telemt_canary_created_disabled_deleted=yes"
+          echo "telemt_client_handshake=not_verified" >> "$GITHUB_STEP_SUMMARY"
