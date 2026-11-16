@@ -1,0 +1,59 @@
+name: MNEBYVPN — activate YuKassa reviewer (private)
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mnebyvpn-yookassa-review-activation
+  cancel-in-progress: false
+
+jobs:
+  activate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      HOST: '188.120.254.223'
+      SSHPASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Checkout approved infrastructure helper
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Checkout latest customer website
+        uses: actions/checkout@v4
+        with:
+          repository: grunvald91/Mnebyvpn
+          ref: main
+          path: vpn
+          persist-credentials: false
+      - name: Validate helper and identify tested source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/mnebyvpn-yookassa-review-provision.py
+          sha="$(git -C vpn rev-parse HEAD)"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "SOURCE_SHA=$sha" >> "$GITHUB_ENV"
+          test -n "$SSHPASS" || { echo 'Existing server SSH secret is unavailable'; exit 2; }
+      - name: Use existing secure server transport
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          export SSHPASS
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          remote='/tmp/mnebyvpn-yookassa-review-activation.py'
+          cleanup() {
+            sshpass -e ssh "${opts[@]}" "root@$HOST" "rm -f '$remote'" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          sshpass -e scp "${opts[@]}" scripts/mnebyvpn-yookassa-review-provision.py "root@$HOST:$remote"
+          sshpass -e ssh "${opts[@]}" "root@$HOST" "python3 '$remote' '$SOURCE_SHA'"
+      - name: Report only safe status
+        if: success()
+        run: |
+          echo 'Reviewer verified on deployed public backend with two independent sessions.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Credentials were sent to the configured private Telegram operator, never logged here.' >> "$GITHUB_STEP_SUMMARY"
