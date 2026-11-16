@@ -1,0 +1,22 @@
+name: MNEBYDNS Nov8 restore safety offline regressions
+on:
+  push:
+    branches: [audit/smartdns-installed-review-20261115]
+    paths:
+      - '.github/workflows/mnebydns-nov8-restore-safety-ci-20261116.yml'
+      - 'scripts/mnebydns_nov8_restore_safety.py'
+      - 'scripts/test_mnebydns_nov8_restore_safety.py'
+permissions: {contents: read}
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Pure offline unit tests (no production connections)
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns_nov8_restore_safety.py scripts/test_mnebydns_nov8_restore_safety.py
+          python3 -m unittest discover -s scripts -p 'test_mnebydns_nov8_restore_safety.py' -v
+          echo "NOV8_RESTORE_SAFETY_OFFLINE_TESTS_PASS=true"
