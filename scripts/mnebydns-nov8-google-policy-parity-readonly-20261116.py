@@ -46,15 +46,21 @@ def original_template_parity(original, current):
         if len(old_samples)!=len(samples):
             unresolved.append((kind,zone))
             continue
-        compatible=False
-        for candidate in candidates:
-            t,z,match,answer,rcode=candidate
-            if t!=kind or z!=zone or answer!=oldanswer or rcode!=oldrcode or len(match)!=1:
-                continue
-            try:rx=re.compile(match[0])
-            except re.error:continue
-            if all(rx.fullmatch(s) for s in old_samples):
-                compatible=True
+        compatible=True
+        # Current A policy may split the historical 8-family regex across
+        # multiple disjoint rules, while keeping the same answers.
+        for sample in old_samples:
+            first_match=None
+            for candidate in candidates:
+                t,z,match,answer,rcode=candidate
+                if t!=kind or z!=zone or len(match)!=1:continue
+                try:rx=re.compile(match[0])
+                except re.error:continue
+                if rx.fullmatch(sample):
+                    first_match=(answer,rcode)
+                    break
+            if first_match!=(oldanswer,oldrcode):
+                compatible=False
                 break
         if compatible:expanded.append(kind)
         else:unresolved.append((kind,zone))
