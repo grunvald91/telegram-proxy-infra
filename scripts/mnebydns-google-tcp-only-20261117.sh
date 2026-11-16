@@ -58,14 +58,14 @@ owned_service_files_absent() {
   test ! -e "/etc/systemd/system/$REVERT"
 }
 base_healthy() {
-  ip -4 -o addr show | grep -Fq "$ADDR/"
+  ip -4 -o addr show | grep -F "$ADDR/" >/dev/null
   systemctl is-active --quiet nginx.service
-  ss -Hlnpt '( sport = :443 )' | grep -q .
-  ss -Hlnpt '( sport = :853 )' | grep -q .
+  ss -Hlnpt '( sport = :443 )' | grep . >/dev/null
+  ss -Hlnpt '( sport = :853 )' | grep . >/dev/null
   if [[ "$ROLE" = de ]]; then
     systemctl is-active --quiet mnebydns-dot.service
     systemctl is-active --quiet mnebydns-googlepilot.service
-    ss -Hlnpt '( sport = :15449 )' | grep -Fq '127.0.0.1:15449'
+    ss -Hlnpt '( sport = :15449 )' | grep -F '127.0.0.1:15449' >/dev/null
   fi
 }
 verify_quic_original() {
@@ -73,9 +73,9 @@ verify_quic_original() {
     systemctl is-active --quiet "$unit"
     test "$(systemctl is-enabled "$unit")" = enabled
   done
-  ss -Hlunp '( sport = :443 )' | grep -Fq "$EXPECT_SOCKET"
+  ss -Hlunp '( sport = :443 )' | grep -F "$EXPECT_SOCKET" >/dev/null
   if [[ "$ROLE" = de ]]; then
-    ss -Hlunp '( sport = :19444 )' | grep -Fq '10.66.77.1:19444'
+    ss -Hlunp '( sport = :19444 )' | grep -F '10.66.77.1:19444' >/dev/null
   fi
 }
 verify_tcp_only() {
