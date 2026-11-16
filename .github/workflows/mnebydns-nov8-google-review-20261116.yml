@@ -1,4 +1,4 @@
-name: MNEBYDNS Nov8 Google RR wildcard expanded equivalence audit (read-only)
+name: MNEBYDNS Google A wildcard ingress address review Nov8 (read-only)
 on:
   push:
     branches: [audit/smartdns-installed-review-20261115]
