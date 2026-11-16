@@ -1,0 +1,76 @@
+name: MNEBYVPN live VPN and SmartDNS link speed read-only one-shot
+on:
+  push:
+    branches: [audit/mnebyvpn-live-throughput-20261116]
+    paths: ['.github/workflows/mnebyvpn-live-speed-audit-20261116.yml']
+permissions: {contents: read}
+concurrency:
+  group: mnebyvpn-current-speed-measurement-readonly
+  cancel-in-progress: false
+jobs:
+  diagnostic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 14
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Verify no changes to production routing or service configuration
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          test "$(grep -c ' ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts)" -eq 2
+          python3 -m py_compile scripts/mnebyvpn-live-links-readonly-20261116.py scripts/mnebydns-speed-readonly-20261113.py
+          python3 scripts/mnebyvpn-live-links-readonly-20261116.py --self-test
+          python3 scripts/mnebydns-speed-readonly-20261113.py --self-test
+          ! grep -Eq 'systemctl (restart|reload|stop)|iptables|nft add|ip route add|wg set|StrictHostKeyChecking=no|accept-new' scripts/mnebyvpn-live-links-readonly-20261116.py
+          echo LIVE_SPEED_DIAGNOSTIC_READONLY_OFFLINE=PASS
+      - name: Install pinned SSH transport on temporary runner only
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+      - name: Test RU and DE VPN Xray and WireGuard tunnel, synthetic 8MiB each direction
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/mnebyvpn-live-links-readonly-20261116.py --run
+      - name: Measure DNS-over-TLS cold/warm latency and proxy TLS paths
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/mnebydns-speed-readonly-20261113.py --run
+      - name: Attach measurement summary without client IPs or secrets
+        if: always()
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json,pathlib
+          p=pathlib.Path("live-link-results/link_metrics.json")
+          if not p.exists():
+              print("No link measurements collected.")
+          else:
+              d=json.loads(p.read_text())
+              print("Measured",d.get("measurement_utc"))
+              for role in ("ru","de"):
+                  n=d.get(role,{})
+                  print(role,"services",n.get("services"),"wg",n.get("wg",{}).get("tg_relay",{}).get("mtu"))
+                  for k in ("ping_wg_32","ping_wg_1200","ping_wg_1320","ping_public_1200","direct_public_https_reference_1mib"):
+                      print(role,k,n.get(k,{}))
+              print("WG private transfers",d.get("wg_bulk"))
+          PY
+          if test -s speed-readonly-results/report.md; then
+            cat speed-readonly-results/report.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mnebyvpn-current-speed-20261116
+          path: |
+            live-link-results/
+            speed-readonly-results/
+          retention-days: 14
+          if-no-files-found: warn
