@@ -25,6 +25,7 @@ jobs:
           test -s ops/mnebydns-owner-ssh-known_hosts
           test -s scripts/mnebydns-google-tcp-only-20261117.sh
           bash -n scripts/mnebydns-google-tcp-only-20261117.sh
+          grep -Fq 'grep -F "$ADDR/" >/dev/null' scripts/mnebydns-google-tcp-only-20261117.sh
           grep -Fq 'mnebydns-googlepilot.service' scripts/mnebydns-google-tcp-only-20261117.sh
           grep -Fq -- '--reject-with icmp-port-unreachable' scripts/mnebydns-google-tcp-only-20261117.sh
           grep -Fq 'flock -w 45 9' scripts/mnebydns-google-tcp-only-20261117.sh
