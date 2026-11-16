@@ -32,6 +32,26 @@ jobs:
             "$RUNNER_TEMP/mnebyvpn-browser-probe/node_modules/.bin/playwright" install chromium >/dev/null
           fi
           node scripts/mnebyvpn-live-web-readonly.mjs
+      - name: Public HTTPS route checks from external GitHub runner (read-only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          for suffix in / /api/plans /api/auth/options /app.js /journey.js /landing-art.html /healthz; do
+            name="${suffix//\//_}"
+            for ipmode in -4 -6; do
+              result="$(curl "$ipmode" -sS --connect-timeout 4 --max-time 10 --retry 0 -o /dev/null -w '%{http_code}|%{time_total}|%{remote_ip}' "https://mnebyvpn.site$suffix" 2>/dev/null || true)"
+              code="${result%%|*}"
+              echo "runner_${name:-home}_${ipmode#-}_http=$code"
+            done
+          done
+      - name: Public edge, IPv6, database-upstream and proxy error counters (read-only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          test -n "$SERVER188_SSH_PASSWORD"
+          SSHPASS="$SERVER188_SSH_PASSWORD" sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@188.120.254.223 'python3 -' < scripts/mnebyvpn-web-route-audit.py
       - name: Check available isolated SSH credentials without revealing them
         shell: bash
         run: |
