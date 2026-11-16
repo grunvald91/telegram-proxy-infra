@@ -1,0 +1,36 @@
+name: MNEBYDNS isolated HTTP-01 trusted TLS certificate preparation
+on:
+  push:
+    branches: ['feature/mnebydns-public-dot-preflight-20261108']
+    paths: ['.github/workflows/mnebydns-acme-cert.yml']
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-acme-cert-foreign
+  cancel-in-progress: false
+jobs:
+  issue-cert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      SSHPASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check certificate issuance code before SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n scripts/mnebydns-acme-cert-issue.sh
+          test -n "$SSHPASS" || { echo "existing SSH credential unavailable"; exit 2; }
+      - name: Issue trusted DNS hostname certificate without touching existing HTTPS proxy
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass dnsutils
+          bash scripts/mnebydns-acme-cert-issue.sh
+      - name: Outcome
+        if: success()
+        run: |
+          echo "MNEBYDNS_cert_issued=yes"
+          echo "MNEBYDNS_public_DoT_started=no"

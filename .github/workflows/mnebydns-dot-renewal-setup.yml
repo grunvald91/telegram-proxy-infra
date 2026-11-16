@@ -1,0 +1,70 @@
+name: MNEBYDNS test auto-renewal and install scoped Certbot hook
+on:
+  push:
+    branches: ['feature/mnebydns-public-dot-preflight-20261108']
+    paths: ['.github/workflows/mnebydns-dot-renewal-setup.yml']
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-dot-renewal-foreign
+  cancel-in-progress: false
+jobs:
+  renewal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      SSHPASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: grunvald91/Mnebyvpn
+          ref: 71afee9bd4345d967448edb6a26790118fbe2961
+          path: mnebyvpn-source
+          persist-credentials: false
+      - name: Install exact-name renewal hook, dry-run and verify public DNS
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          bash -n scripts/mnebydns-cert-renew-hook.sh
+          test -n "$SSHPASS"
+          [[ "$GITHUB_RUN_ID" =~ ^[0-9]+$ ]] || exit 2
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          server="root@89.125.90.101"
+          opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -o LogLevel=ERROR)
+          sshpass -e scp "${opts[@]}" \
+            scripts/mnebydns-cert-renew-hook.sh \
+            "$server:/tmp/mnebydns-renew-$GITHUB_RUN_ID.sh"
+          sshpass -e ssh "${opts[@]}" "$server" "RUN_ID=$GITHUB_RUN_ID bash -se" <<'REMOTE'
+          set -Eeuo pipefail
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]] || exit 2
+          temporary="/tmp/mnebydns-renew-$RUN_ID.sh"
+          destination="/etc/letsencrypt/renewal-hooks/deploy/93-mnebydns-dot-reload.sh"
+          test -s "$temporary"
+          test ! -e "$destination" || { echo "existing_hook: refuse overwrite"; exit 2; }
+          test -s /etc/letsencrypt/live/dns.mnebyvpn.site/cert.pem
+          systemctl is-active --quiet mnebydns-dot.service
+          nginx -t >/dev/null 2>&1
+          install -d -m 755 /etc/letsencrypt/renewal-hooks/deploy
+          install -m 755 -o root -g root "$temporary" "$destination"
+          rollback() { rm -f -- "$destination"; echo "hook_install_rolled_back=yes"; }
+          trap rollback ERR
+          bash -n "$destination"
+          echo "certbot_renewal_dry_run_started=yes"
+          certbot renew --dry-run --cert-name dns.mnebyvpn.site
+          # Older Certbot lacks --run-deploy-hooks during --dry-run. Execute
+          # only this MNEBYDNS hook explicitly against its current certificate.
+          RENEWED_LINEAGE=/etc/letsencrypt/live/dns.mnebyvpn.site bash "$destination"
+          test "$(systemctl is-active mnebydns-dot.service)" = active
+          ss -H -lnt 'sport = :853' | grep -Fq '89.125.90.101:853'
+          test "$(systemctl is-active nginx)" = active
+          nginx -t >/dev/null 2>&1
+          rm -f -- "$temporary"
+          trap - ERR
+          echo "certbot_renewal_dry_run=success"
+          echo "certificate_restart_hook=installed"
+          REMOTE
+          python3 mnebyvpn-source/ops/smart-dns-poc/probe-public-dot.py \
+            --hostname dns.mnebyvpn.site --server-ip 89.125.90.101
+          echo "public_dot_after_renewal_test=healthy"
