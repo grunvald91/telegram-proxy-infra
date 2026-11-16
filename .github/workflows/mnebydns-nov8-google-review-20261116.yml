@@ -1,4 +1,4 @@
-name: MNEBYDNS verify DoT restart after Corefile group fix (read-only)
+name: MNEBYDNS 8-Nov Google domain policy parity (read-only)
 on:
   push:
     branches: [audit/smartdns-installed-review-20261115]
@@ -20,7 +20,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           test -n "$DE_PASS"
-          python3 -m py_compile scripts/mnebydns-dot-restore-health-review-20261116.py
+          python3 -m py_compile scripts/mnebydns-nov8-google-policy-parity-readonly-20261116.py
           if ! command -v sshpass >/dev/null; then
             sudo apt-get update -qq
             sudo apt-get install -y -qq sshpass >/dev/null
@@ -29,18 +29,18 @@ jobs:
             -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
             -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
           mkdir -p output
-          SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -B -' < scripts/mnebydns-dot-restore-health-review-20261116.py > output/integrity.json
+          SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -B -' < scripts/mnebydns-nov8-google-policy-parity-readonly-20261116.py > output/integrity.json
           python3 - <<'PY'
           import json
           j=json.load(open('output/integrity.json'))
           assert j['read_only'] and j['read_only']
           print('GOOGLE_NOV8_RESTORE_REVIEW='+json.dumps(j,separators=(',',':'),sort_keys=True))
-          assert 'services' in j and 'listeners' in j
+          assert 'google_dns_rr_template_parity' in j
           print('NOV8_DOT_SERVICE_STATUS_CAPTURED=true')
           PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: mnebydns-nov8-dot-permission-rootcause
+          name: mnebydns-nov8-google-policy-parity
           path: output/integrity.json
           retention-days: 10
