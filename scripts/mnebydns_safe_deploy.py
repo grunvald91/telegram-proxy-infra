@@ -21,8 +21,10 @@ import shutil
 import stat
 import subprocess
 import sys
+import time
 import uuid
 
+from mnebydns_dns_policy_guard import preserved, smoke_check
 from mnebydns_nov8_restore_safety import (
     FileState, atomic_replace, capture, commit_marker, conditional_rollback,
     digest, persistent_watchdog, route_lock,
@@ -143,9 +145,12 @@ def manifest_for(name):
     if not isinstance(files,dict) or not 1<=len(files)<=3 or not set(files)<=set(LIVE):
         raise ValueError("Unexpected config paths in manifest")
     for key,v in files.items():
-        if set(v)!={"expected_sha256","candidate_sha256"}:
+        allowed={"expected_sha256","candidate_sha256"} | ({"scope"} if key=="dns" else set())
+        if not {"expected_sha256","candidate_sha256"}<=set(v) or not set(v)<=allowed:
             raise ValueError("Config manifest key not allowlisted")
-        if any(not SHA.fullmatch(v[h]) for h in v):
+        if key=="dns" and v.get("scope","additive") not in ("additive","google"):
+            raise ValueError("DNS policy scope not approved")
+        if any(not SHA.fullmatch(v[h]) for h in ("expected_sha256","candidate_sha256")):
             raise ValueError("Invalid pinned SHA256")
     return files
 
@@ -177,6 +182,31 @@ def systemd_files(key,deadline,tx):
         raise
     return unit
 
+def coredns_pid():
+    value=cmd("systemctl","show","--value","-p","MainPID",SERVICE["dns"])
+    if not value.isdigit() or int(value)<1:
+        raise RuntimeError("CoreDNS MainPID unavailable")
+    return value
+
+
+def ensure_hot_reload_config(data: bytes):
+    if b"    reload 5s 1s" not in data:
+        raise RuntimeError("Refuse CoreDNS update without hot reload plugin")
+    p=subprocess.run(["/opt/mnebydns-dot/coredns","-plugins"],
+                     text=True,capture_output=True,timeout=10)
+    if p.returncode or not re.search(r"(?m)(^|\s)reload(\s|$)",p.stdout+p.stderr):
+        raise RuntimeError("CoreDNS reload plugin unavailable")
+
+
+def hot_reload_dns():
+    old=coredns_pid()
+    ensure_hot_reload_config(LIVE["dns"].read_bytes())
+    time.sleep(7)
+    if coredns_pid()!=old:
+        raise RuntimeError("CoreDNS PID changed during hot reload")
+    require_services_healthy({"dns"})
+
+
 def revert_services(files):
     # Reload only what this transaction actually touched.
     for key in ("shared","pilot","dns"):
@@ -188,7 +218,13 @@ def revert_services(files):
             cmd("/usr/sbin/nginx","-t","-c",str(LIVE[key]),timeout=15)
             cmd("/usr/sbin/nginx","-s","reload","-c",str(LIVE[key]),timeout=20)
         else:
-            cmd("systemctl","restart",SERVICE[key],timeout=35)
+            if services_ok({"dns"})["dns"]["service_active"]:
+                hot_reload_dns()
+            else:
+                # Recovery exception: a stopped resolver cannot hot reload.
+                ensure_hot_reload_config(LIVE["dns"].read_bytes())
+                cmd("systemctl","start",SERVICE["dns"],timeout=35)
+                require_services_healthy({"dns"})
 
 def tx_read(tx):
     if tx.parent!=TXROOT or not re.fullmatch("[0-9a-f]{16}",tx.name):
@@ -251,6 +287,13 @@ def apply(name):
             print(json.dumps({"done":True,"changed":False,
                               "reason":"payload_identical_to_live","files":sorted(manifest)}))
             return
+        if "dns" in prepared:
+            old=prepared["dns"][1]
+            new=prepared["dns"][2]
+            preserved(old,new,scope=manifest["dns"].get("scope","additive"))
+            ensure_hot_reload_config(old)
+            ensure_hot_reload_config(new)
+            smoke_check()
         # Validate Nginx before swapping any live file.
         for key,(_,_,payload) in prepared.items():
             if key in ("shared","pilot"):
@@ -272,16 +315,22 @@ def apply(name):
             revert_services(prepared)
             healthy=require_services_healthy(set(SERVICE))
             ensure_dns_reader_access()
+            if "dns" in prepared:
+                smoke_check()
             for n,(_,_,payload) in prepared.items():
                 if digest(payload)!=capture(LIVE[n]).sha256:
                     raise RuntimeError("Published config changed during activation")
             commit_marker(tx,{n:digest(v[2]) for n,v in prepared.items()})
-            # If the timer still runs, it sees COMMITTED and cannot restore
-            # a confirmed deployment.
-            cmd("systemctl","disable","--now",unit+".timer",timeout=16)
+            # COMMITTED is fsync-durable; watchdog recovery treats it as final.
+            # Failure to disable an obsolete timer is NOT a failed deployment.
+            disarmed=True
+            try:
+                cmd("systemctl","disable","--now",unit+".timer",timeout=16)
+            except Exception:
+                disarmed=False
             print(json.dumps({"done":True,"changed":True,
                   "files":sorted(prepared),"healthy":healthy,"committed":True,
-                  "watchdog_disarmed":True,"transaction_id":key},sort_keys=True))
+                  "watchdog_disarmed":disarmed,"transaction_id":key},sort_keys=True))
         except Exception:
             if unit:
                 try:
@@ -303,7 +352,7 @@ def status():
     print(json.dumps({"read_only":True,"files":live,
         "services":services_ok(set(SERVICE)),
         "dns_reader_group_verified":True,
-        "installer_version":"2026-11-16-safe-deploy-v2"},sort_keys=True))
+        "installer_version":"2026-11-16-safe-deploy-v3"},sort_keys=True))
 
 def main():
     parser=argparse.ArgumentParser()
