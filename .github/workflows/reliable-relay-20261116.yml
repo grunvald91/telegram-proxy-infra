@@ -1,4 +1,4 @@
-name: Gate authenticated TLS underlay against current packet loss throughput and live DNS
+name: Compare guarded TLS underlay using bounded node-local pinned downloads
 on:
   push:
     branches: [fix/dns-tunnel-performance-20261116]

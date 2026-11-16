@@ -7,7 +7,8 @@ ssh,execute,roles,OUT=ns['ssh'],ns['execute'],ns['roles'],ns['OUT'];ROOT='/opt/m
 def call(role,mode,timeout=90):return ssh(role,'python3 '+ROOT+'/relay.py '+mode+' '+role,timeout)
 def upload(role):
  ssh(role,'install -d -m 700 '+ROOT)
- for src,dst in [('scripts/reliable-relay-20261116.py','relay.py'),('release.tar.gz','release.tar.gz')]:execute(role,['scp']+ns['opts']+[src,'root@'+roles[role]+':'+ROOT+'/'+dst])
+ for src,dst in [('scripts/reliable-relay-20261116.py','relay.py')]:execute(role,['scp']+ns['opts']+[src,'root@'+roles[role]+':'+ROOT+'/'+dst])
+ ssh(role,"curl -4 -fLsS --connect-timeout 10 --max-time 55 https://github.com/erebe/wstunnel/releases/download/v11.1.0/wstunnel_11.1.0_linux_amd64.tar.gz -o "+ROOT+"/release.tar.gz",70)
  return role,call(role,'cert')
 def bench_dns():
  return json.loads(ssh('RU','docker exec --env-file /opt/mnebyvpn/bot/web.env -e DNS_BENCH_PRIVATE_ONLY=yes -i mnebydns-personal-dot-private node --experimental-strip-types --input-type=module < /opt/mnebyvpn/perf-trial-20261116/dns-bench.mjs',90))
