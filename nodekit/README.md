@@ -29,3 +29,14 @@
 5. Запуск через GitHub Actions или API хостера после покупки нового VPS, проверка бюджета и политики. Создание и биллинг VPS этим v1 не реализованы.
 
 См. docs/mnebydns-safe-config-deployment.md в этом репозитории и https://github.com/grunvald91/Mnebyvpn/blob/main/docs/scale-out-contract.md.
+
+## Подготовка через GitHub Actions (без ручного SSH)
+
+После слияния ветки доступен ручной workflow **MNEBYVPN prepare NEW VPS (no production changes)**. Он не запускается по push или pull_request. Для первого VPS требуется отдельно настроить в GitHub Actions secrets:
+
+- MNEBYVPN_NEW_NODE_SSH_KEY — специальный приватный SSH-ключ только для нового VPS (не ключи старых узлов).
+- MNEBYVPN_NEW_NODE_KNOWN_HOSTS — заранее проверенный pinned SSH host key для этого нового VPS; workflow не выполняет автоматическое доверие незнакомому ключу.
+
+Запуск в Actions -> Run workflow: host, node_id, advertise_host, mode=preflight|stage. Текущий шаблон готовит только роль combined с портами DoT TCP/853, VPN TCP/2053, SNI TCP/443 и tunnel UDP/51820. Прочие роли и порты поддерживает JSON CLI, но не этот первый workflow. Для запуска требуется root SSH на новом VPS и Python 3; работающие серверы не переписываются. Вывод workflow не означает, что хотя бы одна служба установлена или клиенты переключены.
+
+Для следующего узла нельзя переиспользовать SSH ключи и идентичности VPN предыдущего узла. Позднее нужна регистрация одноразовым enrollment-токеном вместо общего GitHub secret.
