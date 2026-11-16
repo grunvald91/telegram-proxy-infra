@@ -1,0 +1,76 @@
+name: Install reviewed MNEBYDNS safe deploy v3 on DE89 (no DNS config changes)
+on:
+  push:
+    branches: [fix/mnebydns-safe-deploy-review-20261116]
+    paths:
+      - '.github/workflows/mnebydns-safe-deploy-v3-install-20261116.yml'
+permissions: {contents: read}
+concurrency:
+  group: mnebydns-google-public-443-change
+  cancel-in-progress: false
+jobs:
+  install:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Verify candidate is valid and all offline guards pass
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns_safe_deploy.py scripts/mnebydns_nov8_restore_safety.py scripts/mnebydns_dns_policy_guard.py
+          python3 -m unittest discover -s scripts -p 'test_mnebydns_safe_deploy.py'
+          python3 -m unittest discover -s scripts -p 'test_mnebydns_nov8_restore_safety.py'
+          python3 -m unittest discover -s scripts -p 'test_mnebydns_dns_policy_guard.py'
+          bash -n scripts/mnebydns-owner-domain-stage-20261110.sh scripts/mnebydns-owner-domain-remove-20261110.sh scripts/mnebydns-owner-domain-rollback-20261110.sh
+      - name: Install only maintenance code and attest unchanged DNS hashes and healthy listeners
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS"
+          if ! command -v sshpass >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq sshpass >/dev/null
+          fi
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          host=root@89.125.90.101
+          remote() {
+            SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" "$host" "$@"
+          }
+          mkdir -p output
+          remote 'python3 -B /opt/mnebydns-maintenance/mnebydns_safe_deploy.py status' > output/before.json
+          remote 'set -eu; test -d /opt/mnebydns-maintenance && test ! -L /opt/mnebydns-maintenance'
+          for name in mnebydns_dns_policy_guard.py mnebydns_safe_deploy.py; do
+            SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" "$host" \
+              "set -eu; umask 077; cat > /opt/mnebydns-maintenance/$name.incoming; python3 -m py_compile /opt/mnebydns-maintenance/$name.incoming; chmod 0755 /opt/mnebydns-maintenance/$name.incoming; mv -f /opt/mnebydns-maintenance/$name.incoming /opt/mnebydns-maintenance/$name" \
+              < "scripts/$name"
+            expected="$(sha256sum "scripts/$name" | cut -d' ' -f1)"
+            current="$(remote "sha256sum /opt/mnebydns-maintenance/$name" | cut -d' ' -f1)"
+            test "$expected" = "$current"
+          done
+          remote 'python3 -B /opt/mnebydns-maintenance/mnebydns_safe_deploy.py status' > output/after.json
+          python3 - <<'PY'
+          import json
+          old=json.load(open('output/before.json'))
+          new=json.load(open('output/after.json'))
+          assert new['installer_version']=='2026-11-16-safe-deploy-v3'
+          assert new['dns_reader_group_verified'] is True
+          assert old['files']==new['files'], 'Production DNS/Nginx/GooglePilot files must remain byte-identical'
+          for key in ('dns','shared','pilot'):
+              assert new['services'][key]['service_active'] and new['services'][key]['tcp_listener'], key
+          print('MNEBYDNS_SAFE_DEPLOY_V3_INSTALLED=true')
+          print('GOOGLE_DNS_AND_CUSTOMER_CONFIGS_UNCHANGED=true')
+          print('COREDNS_NGINX_GOOGLEPILOT_ACTIVE=true')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mnebydns-safe-deploy-v3-install-status
+          path: output/*.json
+          retention-days: 7
+          if-no-files-found: warn
