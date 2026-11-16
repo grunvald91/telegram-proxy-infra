@@ -70,12 +70,18 @@ credential=pathlib.Path(sys.argv[2]).read_text().strip()
 uuid.UUID(credential)
 config={
  "log":{"loglevel":"warning"},
+ # Xray 26.3.27 requires each FakeDNS pool to have more addresses than its LRU.
+ # No DNS queries use these pools; they scope SNI recovery for SmartDNS ingress IPs.
+ "fakedns":[{"ipPool":"89.125.90.100/31","poolSize":1},
+            {"ipPool":"188.120.254.222/31","poolSize":1}],
  "inbounds":[{
   "listen":"127.0.0.1","port":18943,"protocol":"vless",
   "settings":{"clients":[{"id":credential,"level":0}],"decryption":"none"},
   "streamSettings":{"network":"ws","security":"none",
     "wsSettings":{"path":"/mnebyvpn-vpn/ws"}},
-  "tag":"mnebyvpn-inbound"
+  "tag":"mnebyvpn-inbound",
+  "sniffing":{"enabled":True,"destOverride":["fakedns"],
+              "metadataOnly":False,"routeOnly":False}
  }],
  "outbounds":[
   {"protocol":"freedom","tag":"direct"},
