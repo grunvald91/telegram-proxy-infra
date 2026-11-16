@@ -1,0 +1,48 @@
+name: MNEBYDNS controlled Wi-Fi video QUIC ingress and return observation
+on:
+  push:
+    branches: [feat/mnebydns-youtube-quic-ru188-de89-20261114]
+    paths: ['.github/workflows/mnebydns-youtube-session-readonly.yml']
+permissions: {contents: read}
+concurrency:
+  group: mnebydns-youtube-session-readonly
+  cancel-in-progress: true
+jobs:
+  observe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Validate observer and prepare pinned SSH
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY_CHECK'
+          import ast,pathlib
+          ast.parse(pathlib.Path('scripts/mnebydns-youtube-session-readonly.py').read_text())
+          PY_CHECK
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          if ! command -v sshpass >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -qq -y sshpass >/dev/null
+          fi
+      - name: Observe ingress and egress on both nodes during controlled local Wi-Fi probes
+        run: |
+          set -Eeuo pipefail
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 \
+            'python3 -B - RU 90' < scripts/mnebydns-youtube-session-readonly.py &
+          ru_pid=$!
+          SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
+            'python3 -B - DE 90' < scripts/mnebydns-youtube-session-readonly.py &
+          de_pid=$!
+          status=0
+          wait "$ru_pid" || status=1
+          wait "$de_pid" || status=1
+          exit "$status"

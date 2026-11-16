@@ -1,0 +1,42 @@
+name: MNEBYDNS large YouTube thumbnail delivery RU188 versus DE89 (read only)
+on:
+  push:
+    branches: [feat/mnebydns-youtube-quic-ru188-de89-20261114]
+    paths: ['.github/workflows/mnebydns-youtube-media-payload-audit-20261114.yml']
+permissions: {contents: read}
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Pinned SSH
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS" && test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+      - name: Compare real content body delivery via RU and DE using same YouTube-owned thumbnail
+        run: |
+          set -Eeuo pipefail
+          for role in RU DE; do
+            if [[ "$role" == RU ]];then ip=188.120.254.223;export SSHPASS="$RU_PASS";else ip=89.125.90.101;export SSHPASS="$DE_PASS";fi
+            sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@"$ip" python3 - "$role" <<'PY'
+          import subprocess,sys
+          role=sys.argv[1]
+          host='i.ytimg.com'
+          path='/vi/aqz-KE-bpKQ/hqdefault.jpg'
+          for label,ip in [('loopback','127.0.0.1'),('wireguard_de','10.66.77.1')]:
+              if role=='DE' and label=='wireguard_de':continue
+              cmd=['curl','-4','--http1.1','--noproxy','*','-sS','-L','--max-time','24','--connect-timeout','6',
+                   '--resolve',host+':443:'+ip,'-o','/dev/null',
+                   '-w','HTTP=%{http_code} BYTES=%{size_download} SECONDS=%{time_total}',
+                   'https://'+host+path]
+              p=subprocess.run(cmd,text=True,capture_output=True,timeout=29)
+              print('THUMBNAIL_'+role+'_'+label+'=RC'+str(p.returncode)+' '+p.stdout[:100]+' ERR='+('YES' if p.stderr else 'NO'),flush=True)
+          print('THUMBNAIL_READONLY=true')
+          PY
+          done

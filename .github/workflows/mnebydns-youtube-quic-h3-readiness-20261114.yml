@@ -1,0 +1,35 @@
+name: MNEBYDNS YouTube QUIC H3 dependency RU read-only
+on:
+  push:
+    branches: [feat/mnebydns-youtube-quic-ru188-de89-20261114]
+    paths: ['.github/workflows/mnebydns-youtube-quic-h3-readiness-20261114.yml']
+permissions: {contents: read}
+jobs:
+  read:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Pinned SSH RU inspection without modifications
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          test -n "$RU_PASS"
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@188.120.254.223 'python3 -' <<'PY'
+          import sys,subprocess,importlib.util,pathlib
+          print('RU_PYTHON='+sys.version.split()[0])
+          work=pathlib.Path('/tmp/mnebydns-youtube-quic-43612369808')
+          print('RU_WHEEL_DIR_EXISTS='+(str((work/'wheels').is_dir()).lower()))
+          print('RU_WHEELS_COUNT='+str(sum(1 for _ in (work/'wheels').glob('*.whl'))))
+          print('RU_TEMP_DEPS_AIOQUIC='+str((work/'deps'/'aioquic').is_dir()).lower())
+          print('RU_SYSTEM_AIOQUIC='+str(importlib.util.find_spec('aioquic') is not None).lower())
+          a=subprocess.run(['curl','--version'],text=True,capture_output=True,timeout=5).stdout.splitlines()
+          print('RU_CURL_FEATURES='+next((x for x in a if x.startswith('Features:')),'UNKNOWN'))
+          r=subprocess.run(['systemctl','is-active','mnebydns-youtube-quic-ru-43612369808.service'],text=True,capture_output=True,timeout=5)
+          print('RU_UDP_SERVICE='+r.stdout.strip())
+          print('STATUS_READ_ONLY=true')
+          PY

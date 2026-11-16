@@ -1,0 +1,64 @@
+name: MNEBYDNS diagnose video delivery counters both nodes (read-only)
+on:
+  push:
+    branches: [feat/mnebydns-youtube-quic-ru188-de89-20261114]
+    paths: ['.github/workflows/mnebydns-video-delivery-counters-20261114.yml']
+permissions: {contents: read}
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: SSH preflight
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS" && test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+      - name: RU UDP ingress counters MTU and transport
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@188.120.254.223 'python3 -' <<'PY'
+          import subprocess,re
+          def sh(cmd,timeout=9):
+              p=subprocess.run(cmd,text=True,capture_output=True,timeout=timeout)
+              return p.stdout.strip()
+          unit='mnebydns-youtube-quic-ru-43612369808.service'
+          print('RU_UNIT='+sh(['systemctl','is-active',unit]))
+          print('RU_UDP443='+repr(sh(['ss','-Hlunp','sport = :443'])[:180]))
+          print('RU_WG_LINK='+sh(['ip','-o','link','show','dev','tg-relay'])[:220])
+          print('RU_WG_IPV4='+sh(['ip','-o','-4','addr','show','dev','tg-relay']).split('scope')[0].strip()[:130])
+          print('RU_WG_STATS='+repr(sh(['ip','-s','link','show','dev','tg-relay'])[:530]))
+          data=sh(['journalctl','--no-pager','-o','cat','-u',unit,'--since','20 minutes ago'],timeout=12)
+          counters=[x for x in data.splitlines() if 'youtube_quic_ru_active=' in x]
+          print('RU_COUNTER_SAMPLES='+str(len(counters)))
+          for x in (counters[:1]+counters[-8:]):
+              print('RU_COUNTER='+x[:440])
+          print('RU_READONLY=true')
+          PY
+      - name: DE UDP origin counters resolver and MTU
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@89.125.90.101 'python3 -' <<'PY'
+          import subprocess
+          def sh(cmd,timeout=9):
+              p=subprocess.run(cmd,text=True,capture_output=True,timeout=timeout)
+              return p.stdout.strip()
+          unit='mnebydns-youtube-quic-de-43612369808.service'
+          print('DE_UNIT='+sh(['systemctl','is-active',unit]))
+          print('DE_UDP19444='+repr(sh(['ss','-Hlunp','sport = :19444'])[:180]))
+          print('DE_WG_LINK='+sh(['ip','-o','link','show','dev','tg-relay'])[:200])
+          print('DE_WG_STATS='+repr(sh(['ip','-s','link','show','dev','tg-relay'])[:530]))
+          data=sh(['journalctl','--no-pager','-o','cat','-u',unit,'--since','20 minutes ago'],timeout=12)
+          counters=[x for x in data.splitlines() if 'youtube_quic_de_active=' in x]
+          print('DE_COUNTER_SAMPLES='+str(len(counters)))
+          for x in (counters[:1]+counters[-8:]):
+              print('DE_COUNTER='+x[:440])
+          print('DE_READONLY=true')
+          PY

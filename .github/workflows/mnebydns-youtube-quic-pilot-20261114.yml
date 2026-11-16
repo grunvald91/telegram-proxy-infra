@@ -1,0 +1,103 @@
+name: MNEBYDNS YouTube QUIC RU188 WG DE89 guarded 55m live pilot
+on:
+  push:
+    branches: [feat/mnebydns-youtube-quic-ru188-de89-20261114]
+    paths: ['.github/workflows/mnebydns-youtube-quic-pilot-20261114.yml']
+permissions: {contents: read}
+concurrency:
+  group: mnebydns-youtube-quic-udp443-live
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Fail closed unless QUIC v1 v2 tests and rollback compile
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/test-mnebydns-youtube-quic.py
+          python3 -m py_compile scripts/mnebydns-youtube-quic.py
+          bash -n scripts/mnebydns-youtube-quic-stage.sh scripts/mnebydns-youtube-quic-rollback.sh
+  pilot:
+    needs: offline
+    runs-on: ubuntu-latest
+    timeout-minutes: 16
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Prepare securely pinned SSH
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+      - name: Install QUIC-only listeners on two nodes with independent auto rollback
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          id="$GITHUB_RUN_ID"
+          [[ "$id" =~ ^[0-9]{9,13}$ ]]
+          work="/tmp/mnebydns-youtube-quic-$id"
+          base="/opt/mnebydns-youtube-quic-$id"
+          deadline="$(date -u -d '+55 minutes' +'%Y-%m-%d %H:%M:%S UTC')"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          cp_opts=(-q -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          de_ssh() { SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 "$@"; }
+          ru_ssh() { SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 "$@"; }
+          undo() {
+            rc=$?
+            trap - EXIT
+            if ((rc!=0)); then
+              echo 'YOUTUBE_QUIC_PILOT_FAILURE_ROLLBACK=true'
+              ru_ssh "test ! -s '$base/rollback.sh' || bash '$base/rollback.sh' ru '$id'" || echo 'RU_ROLLBACK_NEEDS_ATTENTION=true'
+              de_ssh "test ! -s '$base/rollback.sh' || bash '$base/rollback.sh' de '$id'" || echo 'DE_ROLLBACK_NEEDS_ATTENTION=true'
+            fi
+            exit "$rc"
+          }
+          trap undo EXIT
+          de_ssh "test ! -e '$work' && mkdir -m 700 '$work'"
+          ru_ssh "test ! -e '$work' && mkdir -m 700 '$work'"
+          for f in mnebydns-youtube-quic.py mnebydns-youtube-quic-stage.sh mnebydns-youtube-quic-rollback.sh test-mnebydns-youtube-quic.py;do
+            SSHPASS="$DE_PASS" sshpass -e scp "${cp_opts[@]}" "scripts/$f" "root@89.125.90.101:$work/$f"
+            SSHPASS="$RU_PASS" sshpass -e scp "${cp_opts[@]}" "scripts/$f" "root@188.120.254.223:$work/$f"
+          done
+          # Staging only owns new UDP listeners and rollback timers. No CoreDNS or TCP changes.
+          de_ssh "bash '$work/mnebydns-youtube-quic-stage.sh' de '$id' '$deadline'"
+          ru_ssh "bash '$work/mnebydns-youtube-quic-stage.sh' ru '$id' '$deadline'"
+          de_ssh "systemctl is-active --quiet 'mnebydns-youtube-quic-de-$id.service' && systemctl is-active --quiet 'mnebydns-youtube-quic-de-$id-rollback.timer'"
+          ru_ssh "systemctl is-active --quiet 'mnebydns-youtube-quic-ru-$id.service' && systemctl is-active --quiet 'mnebydns-youtube-quic-ru-$id-rollback.timer'"
+          echo 'YOUTUBE_QUIC_UDP443_RU_ACTIVE=true'
+          echo 'YOUTUBE_QUIC_UDP19444_DE_ACTIVE=true'
+          echo "YOUTUBE_QUIC_AUTOROLLBACK_UTC=$deadline"
+          # Bounded synthetic Initial from RU localhost through both listeners.
+          ru_ssh "python3 - '$work'" <<'PY'
+          import importlib.util,socket,sys,pathlib
+          path=pathlib.Path(sys.argv[1])/'test-mnebydns-youtube-quic.py'
+          spec=importlib.util.spec_from_file_location('quic_test',path)
+          mod=importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(mod)
+          s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+          s.sendto(mod.fixture_sni('www.youtube.com'),('127.0.0.1',443))
+          s.close()
+          print('RU_SYNTHETIC_QUIC_INITIAL_SENT=true')
+          PY
+          sleep 14
+          # Require both relays to admit and forward at least one bounded synthetic packet.
+          ru_ssh "journalctl --no-pager -u 'mnebydns-youtube-quic-ru-$id.service' --since '2 minutes ago' | grep -E 'youtube_quic_ru_active=.*admitted=[1-9][0-9]*.*to_upstream='"
+          de_ssh "journalctl --no-pager -u 'mnebydns-youtube-quic-de-$id.service' --since '2 minutes ago' | grep -E 'youtube_quic_de_active=.*admitted=[1-9][0-9]*.*to_upstream='"
+          echo 'YOUTUBE_QUIC_SYNTHETIC_RU_WG_DE_FORWARD=PASS'
+          ru_ssh "systemctl is-active --quiet nginx && ss -Hlnpt 'sport = :443' | grep -q nginx"
+          de_ssh "systemctl is-active --quiet mnebydns-dot.service && systemctl is-active --quiet mnebydns-googlepilot.service"
+          echo 'YOUTUBE_QUIC_TCP443_DNS_EXISTING_SERVICES=ACTIVE'
+          echo 'YOUTUBE_QUIC_REAL_PHONE_APP_NOT_YET_VERIFIED=true'
+          trap - EXIT

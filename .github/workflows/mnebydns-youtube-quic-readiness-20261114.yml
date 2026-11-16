@@ -1,0 +1,80 @@
+name: MNEBYDNS YouTube QUIC v1 v2 offline and RU DE readiness
+on:
+  push:
+    branches: [feat/mnebydns-youtube-quic-ru188-de89-20261114]
+    paths: ['.github/workflows/mnebydns-youtube-quic-readiness-20261114.yml']
+permissions: {contents: read}
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Compile and verify dual-hop UDP and QUIC v1/v2 SNI synthetic fixtures
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-youtube-quic.py scripts/test-mnebydns-youtube-quic.py
+          python3 scripts/test-mnebydns-youtube-quic.py
+          bash -n scripts/mnebydns-youtube-quic-stage.sh scripts/mnebydns-youtube-quic-rollback.sh
+          echo 'YOUTUBE_QUIC_OFFLINE_FIXTURES=PASS'
+  readiness:
+    needs: offline
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Prepare pinned SSH access
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+      - name: Verify RU 443 UDP free, crypto module, WireGuard and TCP stable
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@188.120.254.223 'bash -s' <<'SH'
+          set -Eeuo pipefail
+          python3 -c 'import cryptography;print("RU_PY_CRYPTO=PASS")'
+          ip -4 -o addr show dev tg-relay | grep -Fq '10.66.77.2/'
+          ip -4 route get 10.66.77.1 | grep -Fq tg-relay
+          systemctl is-active --quiet nginx
+          if ss -H -lun 'sport = :443' | grep -q .;then echo 'RU_UDP443_FREE=false';exit 2;fi
+          test ! -e /etc/mnebydns-meta-pilot
+          echo 'RU_UDP443_FREE=true'
+          echo 'RU_WG_NGINX=PASS'
+          SH
+      - name: Verify DE 19444 UDP free, Google origin resolver and stable services
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@89.125.90.101 'python3 -' <<'PY'
+          import socket,ipaddress,subprocess
+          import cryptography
+          def check(a):
+              p=subprocess.run(a,text=True,capture_output=True,timeout=8)
+              if p.returncode!=0:raise SystemExit('DE_PRECHECK_FAILED_'+a[0]+' '+p.stdout[:80])
+              return p.stdout
+          assert '10.66.77.1/' in check(['ip','-4','-o','addr','show','dev','tg-relay'])
+          assert 'tg-relay' in check(['ip','-4','route','get','10.66.77.2'])
+          for service in ('mnebydns-dot.service','mnebydns-googlepilot.service'):
+              assert check(['systemctl','is-active',service]).strip()=='active',service
+          assert not check(['ss','-H','-lun','sport = :19444']).strip()
+          for host in ('www.youtube.com','www.googlevideo.com','youtubei.googleapis.com'):
+              ips=sorted({x[4][0] for x in socket.getaddrinfo(host,443,socket.AF_INET,socket.SOCK_DGRAM)})
+              assert ips and any(ipaddress.ip_address(ip).is_global and ip not in ('188.120.254.223','89.125.90.101') for ip in ips),(host,ips)
+              print('DE_ORIGIN_RESOLVER_'+host+'=PASS',flush=True)
+          print('DE_PY_CRYPTO_WG_GOOGLEPILOT=PASS')
+          print('DE_UDP19444_FREE=true')
+          print('READINESS_MUTATION=NONE')
+          PY
+
+# v1-v2 synthetic recheck after router class naming repair
+
+# recheck after all legacy router test references were updated

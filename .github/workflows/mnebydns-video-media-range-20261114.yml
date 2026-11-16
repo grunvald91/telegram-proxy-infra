@@ -1,0 +1,88 @@
+name: Diagnose signed YouTube media CDN URL and ranged payload (read only)
+on:
+  push:
+    branches: [feat/mnebydns-youtube-quic-ru188-de89-20261114]
+    paths: ['.github/workflows/mnebydns-video-media-range-20261114.yml']
+permissions: {contents: read}
+jobs:
+  cdn:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Find a public test video's signed HTTPS media URL
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m pip install --disable-pip-version-check --quiet 'yt-dlp>=2025.1.1'
+          python3 - <<'PY'
+          import subprocess,urllib.parse,pathlib,os
+          ids=['BaW_jenozKc','aqz-KE-bpKQ']
+          url=None
+          for video in ids:
+              p=subprocess.run(['yt-dlp','--no-playlist','--no-warnings','-g','-f','bestaudio[protocol=https]/best[protocol=https]',
+                                'https://www.youtube.com/watch?v='+video],
+                               text=True,capture_output=True,timeout=65)
+              if p.returncode:
+                  print('MEDIA_METADATA_'+video+'=FAILED_'+str(p.returncode))
+                  continue
+              for line in p.stdout.splitlines():
+                  u=urllib.parse.urlsplit(line)
+                  if u.scheme=='https' and u.hostname and u.hostname.endswith('.googlevideo.com'):
+                      url=line;break
+              if url:break
+          if url:
+              p=pathlib.Path('media-url.txt')
+              p.write_text(url+'\n')
+              p.chmod(0o600)
+              print('MEDIA_SIGNED_URL_FOUND=true')
+              print('MEDIA_CDN_HOST_SUFFIX_GOOGLEVIDEO=true')
+          else:
+              print('MEDIA_SIGNED_URL_FOUND=false')
+              print('MEDIA_STREAM_TEST_SKIPPED=NO_TOKEN_FREE_MEDIA_URL')
+          PY
+      - name: Upload only ephemeral signed URL to RU/DE and verify ranged media bytes without logging URL
+        if: ${{ hashFiles('media-url.txt') != '' }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          opts=(-q -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+             -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+             -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          id="$GITHUB_RUN_ID"
+          RU_FILE="/tmp/mnebydns-media-range-$id"
+          DE_FILE="/tmp/mnebydns-media-range-$id"
+          SSHPASS="$RU_PASS" sshpass -e scp "${opts[@]}" media-url.txt "root@188.120.254.223:$RU_FILE"
+          SSHPASS="$DE_PASS" sshpass -e scp "${opts[@]}" media-url.txt "root@89.125.90.101:$DE_FILE"
+          for role in RU DE;do
+            if [[ "$role" == RU ]];then host=188.120.254.223;export SSHPASS="$RU_PASS";else host=89.125.90.101;export SSHPASS="$DE_PASS";fi
+            sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR "root@$host" 'python3 -' "$id" "$role" <<'PY'
+          import pathlib,subprocess,urllib.parse,sys,os
+          id,role=sys.argv[1:3]
+          p=pathlib.Path('/tmp/mnebydns-media-range-'+id)
+          url=p.read_text().strip()
+          try:
+              host=urllib.parse.urlsplit(url).hostname
+              assert host.endswith('.googlevideo.com')
+              for label,ip in [('local188_or_de','127.0.0.1'),('wireguard_de','10.66.77.1')]:
+                  if role=='DE' and label=='wireguard_de':continue
+                  cmd=['curl','--http1.1','-sS','-L','--max-time','20','--connect-timeout','6',
+                       '--noproxy','*','--range','0-131071','-o','/dev/null',
+                       '-w','%{http_code} %{size_download} %{time_total} %{errormsg}',
+                       '--resolve',host+':443:'+ip,url]
+                  try:
+                      out=subprocess.run(cmd,text=True,capture_output=True,timeout=26)
+                      print('MEDIA_RANGE_'+role+'_'+label+'=curl_rc_'+str(out.returncode)+' '+out.stdout[:110],flush=True)
+                  except Exception as ex: print('MEDIA_RANGE_'+role+'_'+label+'='+type(ex).__name__,flush=True)
+          finally:
+              p.unlink(missing_ok=True)
+          PY
+          done
+          rm -f media-url.txt
+          echo 'MEDIA_SIGNED_URL_REMOVED=true'

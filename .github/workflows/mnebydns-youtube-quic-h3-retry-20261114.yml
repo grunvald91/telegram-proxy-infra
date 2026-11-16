@@ -1,0 +1,46 @@
+name: Retry real YouTube H3 after offline pure Python typing extensions wheel
+on:
+  push:
+    branches: [feat/mnebydns-youtube-quic-ru188-de89-20261114]
+    paths: ['.github/workflows/mnebydns-youtube-quic-h3-retry-20261114.yml']
+permissions: {contents: read}
+concurrency:
+  group: mnebydns-youtube-quic-udp443-live
+  cancel-in-progress: false
+jobs:
+  retry:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Fetch missing universal dependency and pinned SSH tool
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          python3 -m pip download --disable-pip-version-check --no-deps --only-binary=:all: -d "$RUNNER_TEMP" 'typing-extensions>=4.9'
+      - name: Install test dependencies from existing temporary wheelhouse without network
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          work=/tmp/mnebydns-youtube-quic-43612369808
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          cp_opts=(-q -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 "test -s '$work/pip.whl' && test -s '$work/http3-probe.py' && systemctl is-active --quiet mnebydns-youtube-quic-ru-43612369808.service"
+          for f in "$RUNNER_TEMP"/typing_extensions-*.whl;do
+            test -s "$f"
+            sshpass -e scp "${cp_opts[@]}" "$f" "root@188.120.254.223:$work/wheels/"
+          done
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 "PYTHONPATH='$work/pip.whl' timeout 50s python3 -m pip install --disable-pip-version-check --no-index --find-links '$work/wheels' --target '$work/deps' --no-cache-dir --no-input --quiet 'aioquic==1.2.0'"
+          echo 'H3_TEMP_DEPS_COMPLETE=true'
+      - name: Strict HTTPS certificate and H3 response from YouTube through RU localhost
+        run: |
+          set -Eeuo pipefail
+          work=/tmp/mnebydns-youtube-quic-43612369808
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@188.120.254.223 "PYTHONPATH='$work/deps' YOUTUBE_QUIC_VIA=127.0.0.1 timeout 55s python3 '$work/http3-probe.py'"
+          echo 'REAL_YOUTUBE_H3_RU_WG_DE=PASS'

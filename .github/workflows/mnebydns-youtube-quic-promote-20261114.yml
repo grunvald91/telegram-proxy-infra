@@ -1,0 +1,80 @@
+name: MNEBYDNS promote validated YouTube QUIC RU WG DE pilot to persistent services
+on:
+  push:
+    branches: [feat/mnebydns-youtube-quic-ru188-de89-20261114]
+    paths: ['.github/workflows/mnebydns-youtube-quic-promote-20261114.yml']
+permissions: {contents: read}
+concurrency:
+  group: mnebydns-youtube-quic-udp443-live
+  cancel-in-progress: false
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Local safety checks and pinned SSH
+        run: |
+          set -Eeuo pipefail
+          bash -n scripts/mnebydns-youtube-quic-commit.sh scripts/mnebydns-youtube-quic-rollback.sh
+          grep -Fq 'WantedBy=multi-user.target' scripts/mnebydns-youtube-quic-commit.sh
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+      - name: Verify real H3 first, then enable permanent RU/DE UDP units with rollback on failure
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          id=43612369808
+          work="/tmp/mnebydns-youtube-quic-$id"
+          base="/opt/mnebydns-youtube-quic-$id"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          cp_opts=(-q -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          de() { SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 "$@"; }
+          ru() { SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 "$@"; }
+          undo() {
+            rc=$?
+            trap - EXIT
+            if ((rc!=0));then
+              echo 'QUIC_COMMIT_FAILURE_ROLLBACK_BOTH=true'
+              ru "test ! -s '$base/rollback.sh' || bash '$base/rollback.sh' ru '$id'" || echo 'RU_ROLLBACK_ATTENTION=true'
+              de "test ! -s '$base/rollback.sh' || bash '$base/rollback.sh' de '$id'" || echo 'DE_ROLLBACK_ATTENTION=true'
+            fi
+            exit "$rc"
+          }
+          trap undo EXIT
+          # Do not commit based solely on fabricated QUIC fixtures. Use actual H3 with verified TLS.
+          ru "PYTHONPATH='$work/deps' YOUTUBE_QUIC_VIA=127.0.0.1 timeout 55s python3 '$work/http3-probe.py'"
+          echo 'QUIC_BEFORE_COMMIT_REAL_YOUTUBE_H3=PASS'
+          for host in 89.125.90.101 188.120.254.223;do
+            if [[ "$host" == 89.125.90.101 ]];then
+              SSHPASS="$DE_PASS" sshpass -e scp "${cp_opts[@]}" scripts/mnebydns-youtube-quic-commit.sh "root@$host:$work/commit.sh"
+            else
+              SSHPASS="$RU_PASS" sshpass -e scp "${cp_opts[@]}" scripts/mnebydns-youtube-quic-commit.sh "root@$host:$work/commit.sh"
+            fi
+          done
+          # Foreign endpoint first; once healthy, enable the Russian entry.
+          de "bash '$work/commit.sh' de '$id'"
+          ru "bash '$work/commit.sh' ru '$id'"
+          de "systemctl is-active --quiet 'mnebydns-youtube-quic-de-$id.service' && systemctl is-enabled --quiet 'mnebydns-youtube-quic-de-$id.service'"
+          ru "systemctl is-active --quiet 'mnebydns-youtube-quic-ru-$id.service' && systemctl is-enabled --quiet 'mnebydns-youtube-quic-ru-$id.service'"
+          de "! systemctl is-active --quiet 'mnebydns-youtube-quic-de-$id-rollback.timer'"
+          ru "! systemctl is-active --quiet 'mnebydns-youtube-quic-ru-$id-rollback.timer'"
+          ru "PYTHONPATH='$work/deps' YOUTUBE_QUIC_VIA=127.0.0.1 timeout 55s python3 '$work/http3-probe.py'"
+          ru "systemctl is-active --quiet nginx && ss -Hlnt 'sport = :443' | grep -q ."
+          de "systemctl is-active --quiet mnebydns-dot.service && systemctl is-active --quiet mnebydns-googlepilot.service"
+          echo 'YOUTUBE_QUIC_RU188_PUBLIC_UDP443_PERMANENT=PASS'
+          echo 'YOUTUBE_QUIC_DE89_WG_UDP19444_PERMANENT=PASS'
+          echo 'YOUTUBE_QUIC_REAL_H3_AFTER_COMMIT=PASS'
+          echo 'YOUTUBE_QUIC_BOOT_ENABLED=YES'
+          echo 'YOUTUBE_QUIC_MANUAL_ROLLBACK_AVAILABLE=YES'
+          echo 'YOUTUBE_QUIC_PHONE_NETWORK_STILL_NEEDS_USER_TEST=true'
+          trap - EXIT
