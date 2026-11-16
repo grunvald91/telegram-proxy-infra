@@ -6,6 +6,10 @@ umask 077
 [[ "$(id -u)" == 0 ]] || exit 2
 exec 9>/run/lock/mnebyvpn-xray-canary.lock
 flock -n 9 || exit 2
+# This bootstrap installer must never overwrite the live provisioner template.
+if systemctl is-active --quiet mnebyvpn-vpn-provisioner.service; then
+  echo 'active_provisioner_owns_vpn_config_use_transactional_update'; exit 2
+fi
 XRAY=/opt/xray/xray
 [[ -x "$XRAY" ]] || { echo "xray_binary_missing"; exit 2; }
 test -s /etc/letsencrypt/live/cdn.servgo.ru/fullchain.pem

@@ -1,9 +1,5 @@
 name: MNEBYVPN isolated VPN canary over foreign HTTPS 8443
 on:
-  push:
-    paths:
-      - '.github/workflows/mnebyvpn-vpn-canary-deploy.yml'
-      - 'scripts/mnebyvpn-vpn-canary-install.sh'
   workflow_dispatch:
 permissions:
   contents: read
