@@ -15,7 +15,10 @@ OLD_BOT='mnebyvpn-owner-link-previous'
 TIMER='mnebydns-owner-link-recovery-20261116'
 def run(args,timeout=30,data=None):
     p=subprocess.run(args,input=data,capture_output=True,text=True,timeout=timeout)
-    if p.returncode:raise RuntimeError('Command failed: '+args[0]+' code '+str(p.returncode))
+    if p.returncode:
+        # Only explicit non-sensitive probe errors may reach Actions logs.
+        safe=re.findall(r'^Error: (Temporary link not issued|Permanent link not issued|DNS probe timeout|TLS or DNS failure|Bad DNS reply|Expired/unknown link accepted|Owner configuration unavailable)$',p.stderr,re.M)
+        raise RuntimeError('Command failed: '+args[0]+' code '+str(p.returncode)+(' : '+safe[0] if safe else ''))
     return p.stdout
 def private(path,content):
     path=pathlib.Path(path)

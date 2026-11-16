@@ -1,4 +1,4 @@
-name: Release CI-verified owner personal DNS links with private canary
+name: Release CI-verified owner personal DNS links with isolated expiry fixtures
 on:
   push:
     branches: [audit/recovery-personal-only-20261116]

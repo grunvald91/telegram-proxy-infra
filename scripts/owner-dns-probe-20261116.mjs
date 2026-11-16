@@ -1,6 +1,6 @@
 import {Pool} from 'pg';
 import {connect} from 'node:tls';
-import {publicEncrypt,constants,randomBytes} from 'node:crypto';
+import {publicEncrypt,constants,randomBytes,randomUUID} from 'node:crypto';
 import {readFileSync} from 'node:fs';
 import {ownerDnsLinksAction,ownerDnsKey} from './apps/service/src/owner-dns-links.ts';
 import {dnsAdminOwner} from './apps/service/src/dns-admin.ts';
@@ -34,10 +34,13 @@ try{
   const local=process.env.OWNER_TEST_PUBLIC==='yes'?'10.66.77.2':'127.0.0.1';
   for(const domain of ['example.org','www.youtube.com','rr1---sn-gxuo03g-ig3s.googlevideo.com'])await query(hostname,local,port,domain);
   await query(randomBytes(8).toString('hex').slice(0,12)+'.dns.mnebyvpn.site',local,port,'example.org',true);
-  const temporary=await ownerDnsLinksAction(db,owner,owner,key,'dnslinks:new:1h','probe-'+port);
+  // Each probe intentionally expires its fixture. A later probe must not
+  // reuse that idempotency key and mistake the old expiry for issuance failure.
+  const probeId='probe-'+randomUUID();
+  const temporary=await ownerDnsLinksAction(db,owner,owner,key,'dnslinks:new:1h',probeId);
   const expired=temporary.text.match(/\b[a-z0-9]{12}\.dns\.mnebyvpn\.site\b/)?.[0];
   if(!expired)throw Error('Temporary link not issued');
-  await db.query(`UPDATE owner_dns_links SET expires_at=clock_timestamp()-interval '1 second' WHERE owner_telegram_id=$1 AND request_key=$2 AND NOT permanent`,[String(owner),'new:probe-'+port]);
+  await db.query(`UPDATE owner_dns_links SET expires_at=clock_timestamp()-interval '1 second' WHERE owner_telegram_id=$1 AND request_key=$2 AND NOT permanent`,[String(owner),'new:'+probeId]);
   await query(expired,local,port,'example.org',true);
   if(process.env.OWNER_TEST_PUBLIC==='yes'){
     for(const address of ['89.125.90.101','188.120.254.223']){
