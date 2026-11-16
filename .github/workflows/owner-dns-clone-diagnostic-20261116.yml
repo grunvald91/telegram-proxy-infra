@@ -1,8 +1,7 @@
 name: Diagnose owner DNS bot backup failure without changing live services
+# Completed one-shot; no automatic rerun on future edits.
 on:
-  push:
-    branches: [audit/recovery-personal-only-20261116]
-    paths: [.github/workflows/owner-dns-clone-diagnostic-20261116.yml]
+  workflow_dispatch:
 permissions:
   contents: read
 concurrency:

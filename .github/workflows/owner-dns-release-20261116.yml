@@ -1,8 +1,7 @@
 name: Release CI-verified owner personal DNS links with isolated expiry fixtures
+# Completed one-shot; no automatic rerun on future edits.
 on:
-  push:
-    branches: [audit/recovery-personal-only-20261116]
-    paths: [.github/workflows/owner-dns-release-20261116.yml]
+  workflow_dispatch:
 permissions:
   contents: read
 concurrency:
