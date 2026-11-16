@@ -1,0 +1,65 @@
+name: MNEBYVPN AWG fallback transport readiness and unit safety read-only
+on:
+  push:
+    branches: [audit/mnebyvpn-853-wg-rootcause-20261116]
+    paths: ['.github/workflows/mnebyvpn-awg-fallback-safety-readonly-20261116.yml']
+permissions: {contents: read}
+jobs:
+  status:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Inspect inactive fallback definitions without logging credentials or changing data plane
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          for role in DE RU; do
+            if [ "$role" = DE ]; then host=89.125.90.101; export SSHPASS="$DE_PASS"; else host=188.120.254.223; export SSHPASS="$RU_PASS"; fi
+            sshpass -e ssh "${opts[@]}" "root@$host" "python3 - $role" <<'PY'
+          import sys,subprocess,re,pathlib,os,json,shlex
+          role=sys.argv[1]
+          def cmd(*args):
+              try:
+                  p=subprocess.run(args,text=True,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=8)
+                  return (p.returncode,p.stdout.strip())
+              except Exception:return (255,"")
+          result={"role":role}
+          for label,unit in (("main","mneby-awg-tg-relay.service"),("fallback","mneby-awg-fallback-"+role+".service")):
+              rc,show=cmd("systemctl","show",unit,"-p","Type,ActiveState,SubState,UnitFileState,FragmentPath,MainPID,NRestarts,ExecMainStatus")
+              props=dict(x.split('=',1) for x in show.splitlines() if '=' in x)
+              if 'FragmentPath' in props:props['FragmentPath']=pathlib.Path(props['FragmentPath']).name
+              rc,body=cmd("systemctl","cat",unit)
+              starts=[];flags=[]
+              for s in body.splitlines():
+                  key,val=(s.split('=',1) if '=' in s else ('',''))
+                  if key in ("ExecStart","ExecStop","ExecStartPre","ExecStopPost","EnvironmentFile"):
+                      try:args=shlex.split(val.lstrip('-'))
+                      except ValueError:args=[]
+                      starts.append({"type":key,"program":pathlib.Path(args[0]).name if args else None,
+                                     "argument_basenames":[pathlib.Path(x).name[:75] for x in args[1:5] if not x.startswith('-')]})
+                  if key in ("OnFailure","PartOf","BindsTo","Requires","After","Conflicts"):
+                      flags.append(key)
+              result[label]={"properties":props,"unit_executables":starts[:8],"unit_dependency_kinds":flags}
+          rc,units=cmd("systemctl","list-unit-files","--type=service","--no-legend")
+          result["related_unit_names"]=[line.split()[0] for line in units.splitlines()
+              if any(x in line.lower() for x in ("mneby-awg","awg","amneziawg","wg-quick"))][:20]
+          counts={}
+          for base in ("/etc/amneziawg","/etc/wireguard","/etc/mneby-awg","/opt/mneby-awg"):
+              p=pathlib.Path(base)
+              if p.exists() and p.is_dir():
+                  counts[p.name]=len([x for x in p.iterdir() if x.suffix==".conf" and not x.is_symlink()])
+          result["vpn_config_count_by_dir"]=counts
+          result["main_udp_socket_count"]=len([s for s in cmd("ss","-H","-unp")[1].splitlines() if "amneziawg-go" in s])
+          print("AWG_FALLBACK_READONLY="+json.dumps(result,separators=(",",":")),flush=True)
+          PY
+          done
+          echo FALLBACK_READONLY_COMPLETE=true
