@@ -1,0 +1,109 @@
+name: MNEBYDNS guarded Google TCP-only production cutover 20261117
+on:
+  push:
+    branches: [fix/mnebydns-google-tcp-only-20261117]
+    paths: ['.github/workflows/mnebydns-google-tcp-only-cutover-20261117.yml']
+permissions: {contents: read}
+concurrency:
+  group: mnebydns-google-tcp-only-20261117
+  cancel-in-progress: false
+jobs:
+  guarded-tcp-cutover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Offline fail-closed preflight and SSH dependencies
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          test -s scripts/mnebydns-google-tcp-only-20261117.sh
+          bash -n scripts/mnebydns-google-tcp-only-20261117.sh
+          grep -Fq 'grep -F "$ADDR/" >/dev/null' scripts/mnebydns-google-tcp-only-20261117.sh
+          grep -Fq 'mnebydns-googlepilot.service' scripts/mnebydns-google-tcp-only-20261117.sh
+          grep -Fq -- '--reject-with icmp-port-unreachable' scripts/mnebydns-google-tcp-only-20261117.sh
+          grep -Fq 'flock -w 45 9' scripts/mnebydns-google-tcp-only-20261117.sh
+          grep -Fq 'OnCalendar=' scripts/mnebydns-google-tcp-only-20261117.sh
+          ! grep -Eq 'systemctl (stop|disable|restart) (nginx|mnebydns-dot|mnebydns-googlepilot|wg-quick)' scripts/mnebydns-google-tcp-only-20261117.sh
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          echo TCP_ONLY_OFFLINE_PREFLIGHT=PASS
+      - name: Stage, apply, verify real TCP TLS, commit or independently rollback both nodes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          copts=(-q -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          de() { SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 "$@"; }
+          ru() { SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 "$@"; }
+          undo_on_failure() {
+            rc=$?
+            trap - EXIT
+            if ((rc != 0)); then
+              echo "TCP_ONLY_CUTOVER_FAILED_ROLLBACK_BOTH_NODES=true"
+              ru 'if test -s /opt/mnebydns-google-tcp-only-20261117/manager.sh;then bash /opt/mnebydns-google-tcp-only-20261117/manager.sh ru undo;fi' \
+                || echo 'TCP_ONLY_RU_MANUAL_REVIEW_REQUIRED=true'
+              de 'if test -s /opt/mnebydns-google-tcp-only-20261117/manager.sh;then bash /opt/mnebydns-google-tcp-only-20261117/manager.sh de undo;fi' \
+                || echo 'TCP_ONLY_DE_MANUAL_REVIEW_REQUIRED=true'
+              echo 'TCP_ONLY_CUTOVER_FAILED_CHECK_ROLLBACK_LOGS=true'
+            fi
+            exit "$rc"
+          }
+          trap undo_on_failure EXIT
+          SSHPASS="$DE_PASS" sshpass -e scp "${copts[@]}" scripts/mnebydns-google-tcp-only-20261117.sh root@89.125.90.101:/tmp/mnebydns-google-tcp-only-20261117.sh
+          SSHPASS="$RU_PASS" sshpass -e scp "${copts[@]}" scripts/mnebydns-google-tcp-only-20261117.sh root@188.120.254.223:/tmp/mnebydns-google-tcp-only-20261117.sh
+          de 'if test -s /opt/mnebydns-google-tcp-only-20261117/manager.sh;then cmp -s /opt/mnebydns-google-tcp-only-20261117/manager.sh /tmp/mnebydns-google-tcp-only-20261117.sh && test ! -e /etc/systemd/system/mnebydns-google-tcp-only-20261117.service && test ! -e /opt/mnebydns-google-tcp-only-20261117/COMMITTED && echo TCP_ONLY_DE_PREVIOUS_STAGE_RECOVERED=PASS;else bash /tmp/mnebydns-google-tcp-only-20261117.sh de stage;fi'
+          ru 'if test -s /opt/mnebydns-google-tcp-only-20261117/manager.sh;then cmp -s /opt/mnebydns-google-tcp-only-20261117/manager.sh /tmp/mnebydns-google-tcp-only-20261117.sh && test ! -e /etc/systemd/system/mnebydns-google-tcp-only-20261117.service && test ! -e /opt/mnebydns-google-tcp-only-20261117/COMMITTED && echo TCP_ONLY_RU_PREVIOUS_STAGE_RECOVERED=PASS;else bash /tmp/mnebydns-google-tcp-only-20261117.sh ru stage;fi'
+          echo TCP_ONLY_BOTH_NODES_STAGED=PASS
+          de 'bash /opt/mnebydns-google-tcp-only-20261117/manager.sh de apply'
+          ru 'bash /opt/mnebydns-google-tcp-only-20261117/manager.sh ru apply'
+          de 'bash /opt/mnebydns-google-tcp-only-20261117/manager.sh de status'
+          ru 'bash /opt/mnebydns-google-tcp-only-20261117/manager.sh ru status'
+          python3 - <<'PY'
+          import socket, ssl, time, sys
+          nodes={'DE89':'89.125.90.101','RU188':'188.120.254.223'}
+          names=('www.youtube.com','youtubei.googleapis.com','i.ytimg.com','rr1---sn-gxuo03g-ig3s.googlevideo.com')
+          failures=[]
+          for label,ip in nodes.items():
+              for name in names:
+                  started=time.monotonic()
+                  try:
+                      with socket.create_connection((ip,443),timeout=9) as s:
+                          with ssl.create_default_context().wrap_socket(s,server_hostname=name) as tls:
+                              print('TCP_ONLY_PUBLIC_TLS',label,name,'PASS',round((time.monotonic()-started)*1000),'ms',tls.version(),flush=True)
+                  except Exception as exc:
+                      print('TCP_ONLY_PUBLIC_TLS',label,name,'FAIL',type(exc).__name__,flush=True)
+                      failures.append(label+':'+name)
+          if failures:
+              print('TCP_ONLY_PUBLIC_TLS_FAILURES='+','.join(failures),flush=True)
+          # RU188 Googlevideo public SNI was already blocked in the pre-cutover
+          # baseline; the canonical DE89 route must fully pass, while RU188
+          # control-plane SNI must pass. Do not treat the known RU CDN timeout
+          # as proof that the newly deployed DE89 TCP-only route is broken.
+          allowed_known={'RU188:rr1---sn-gxuo03g-ig3s.googlevideo.com'}
+          unexpected=[f for f in failures if f not in allowed_known]
+          if unexpected:
+              print('TCP_ONLY_UNEXPECTED_PUBLIC_TLS_FAILURES='+','.join(unexpected),flush=True)
+              sys.exit(1)
+          print('TCP_ONLY_DE89_ALL_FOUR_AND_RU188_CONTROL_SNI=PASS',flush=True)
+          print('TCP_ONLY_RU188_CDN_SNI_IS_NOT_ACCEPTANCE_GATE=true',flush=True)
+          PY
+          de 'bash /opt/mnebydns-google-tcp-only-20261117/manager.sh de status'
+          ru 'bash /opt/mnebydns-google-tcp-only-20261117/manager.sh ru status'
+          de 'bash /opt/mnebydns-google-tcp-only-20261117/manager.sh de finalize'
+          ru 'bash /opt/mnebydns-google-tcp-only-20261117/manager.sh ru finalize'
+          de 'bash /opt/mnebydns-google-tcp-only-20261117/manager.sh de status'
+          ru 'bash /opt/mnebydns-google-tcp-only-20261117/manager.sh ru status'
+          echo GOOGLE_TCP_ONLY_BOTH_NODES_PERSISTENT=PASS
+          echo DNS_GOOGLEPILOT_WIREGUARD_VPN_SUBSCRIBERS_UNCHANGED=true
+          echo ANDROID_REAL_MEDIA_PLAYBACK_NOT_MEASURED=true
+          trap - EXIT

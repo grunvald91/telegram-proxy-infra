@@ -1,0 +1,64 @@
+name: MNEBYDNS Google TCP-only baseline 20261117
+on:
+  push:
+    branches: [fix/mnebydns-google-tcp-only-20261117]
+    paths: ['.github/workflows/mnebydns-google-tcp-only-baseline-20261117.yml']
+permissions: {contents: read}
+concurrency:
+  group: mnebydns-google-tcp-only-20261117
+  cancel-in-progress: false
+jobs:
+  baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Read-only inventories on both ingress nodes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          check() {
+            echo "=== $1 BASELINE BEGIN ==="
+            SSHPASS="$3" sshpass -e ssh "${opts[@]}" "root@$2" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          echo NODE="$(hostname)" UTC="$(date -u +%FT%TZ)"
+          echo "UDP443:"; ss -Hlunp '( sport = :443 )' || true
+          echo "WG_PRIVATE_UDP19444:"; ss -Hlunp '( sport = :19444 )' || true
+          echo "TCP443_853_15449:"; ss -Hlnpt | grep -E '(:443 |:853 |:15449 )' | head -n 18 || true
+          echo "QUIC_UNITS:"
+          systemctl list-units --all --no-legend --plain '*quic*' || true
+          echo "QUIC_UNIT_FILES:"
+          systemctl list-unit-files --no-legend --plain '*quic*' || true
+          echo "CORE_SERVICES:"
+          for u in nginx.service mnebydns-dot.service mnebydns-googlepilot.service mnebydns-de89-public-quic-20261115.service mnebydns-youtube-quic-de-43612369808.service mnebydns-youtube-quic-ru-43612369808.service;do
+            printf '%s=' "$u";systemctl is-active "$u" 2>/dev/null || true
+          done
+          echo "UDP443_FIREWALL_RULES:"
+          { iptables -w -S INPUT 2>/dev/null; iptables -w -S OUTPUT 2>/dev/null; } | grep -Ei '(udp|quic)' | grep -E '(443|QUIC)' | head -n 16 || true
+          echo "GOOGLE_TCP_TLS_LOOPBACK:"
+          python3 - <<'PY'
+          import socket,ssl,time
+          for h in ('www.youtube.com','youtubei.googleapis.com','i.ytimg.com','rr1---sn-gxuo03g-ig3s.googlevideo.com'):
+              try:
+                  t=time.monotonic()
+                  with socket.create_connection(('127.0.0.1',443),timeout=5) as s:
+                      with ssl.create_default_context().wrap_socket(s,server_hostname=h):
+                          print(h,'PASS',round((time.monotonic()-t)*1000),'ms',flush=True)
+              except Exception as e:print(h,'FAIL',type(e).__name__,flush=True)
+          PY
+          REMOTE
+            echo "=== $1 BASELINE END ==="
+          }
+          check DE89 89.125.90.101 "$DE_PASS"
+          check RU188 188.120.254.223 "$RU_PASS"
+          echo TCP_ONLY_BASELINE_READONLY_COMPLETE=true
