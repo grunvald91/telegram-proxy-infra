@@ -353,6 +353,11 @@ def validate_owner_checkpoint(base: Path):
         raise ValueError("Owner-domain checkpoint must be private and root-owned")
 
 
+def validate_owner_candidate(candidate: Path):
+    if candidate.is_symlink() or not candidate.is_file() or candidate.stat().st_uid!=0:
+        raise ValueError("Untrusted owner-domain candidate")
+
+
 def owner_publish(phase: str, base: Path, kind: str):
     """Publish owner-domain canary while caller holds shared route lock."""
     verify_system()
@@ -365,8 +370,7 @@ def owner_publish(phase: str, base: Path, kind: str):
     pilot=base/(kind+".pilot")
     source,target=(before,pilot) if phase=="stage" else (pilot,before)
     for candidate in (source,target):
-        if candidate.is_symlink() or not candidate.is_file() or candidate.stat().st_uid!=0:
-            raise ValueError("Untrusted owner-domain candidate")
+        validate_owner_candidate(candidate)
     original=source.read_bytes()
     changed=target.read_bytes()
     if kind=="dns":
