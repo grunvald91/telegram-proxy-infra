@@ -1,4 +1,4 @@
-name: SmartDNS verified Google RU ingress 20261116
+name: SmartDNS finite live media flow trace 20261116
 on:
   push:
     branches: [audit/smartdns-installed-review-20261115]
@@ -19,12 +19,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Apply guarded reviewed fixes and verify live DNS
+      - name: Read actual server sources and aggregate errors
         shell: bash
         run: |
           set -Eeuo pipefail
           test -n "$DE_PASS" && test -n "$RU_PASS"
-          python3 -m py_compile scripts/smartdns-google-route-20261116.py
+          python3 -m py_compile scripts/smartdns-live-stream-trace-20261116.py
           if ! command -v sshpass >/dev/null; then
             sudo apt-get update -qq
             sudo apt-get install -y -qq sshpass >/dev/null
@@ -34,18 +34,19 @@ jobs:
             -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
             -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
           mkdir output
-          SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -B - RU' < scripts/smartdns-google-route-20261116.py > output/DE.json
-          python3 - <<'PY'
-          import json,pathlib
-          for p in pathlib.Path('output').glob('*.json'):
-              j=json.loads(p.read_text());assert j['ok']
-              print(j['role'], 'ok='+str(j['ok']), 'backup='+j['backup'])
-          print('PRODUCTION_FIXES_VERIFIED=true')
-          PY
+          SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -B - DE' < scripts/smartdns-live-stream-trace-20261116.py > output/DE.jsonl &
+          de_pid=$!
+          SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -B - RU' < scripts/smartdns-live-stream-trace-20261116.py > output/RU.jsonl &
+          ru_pid=$!
+          sleep 3
+          head -1 output/DE.jsonl
+          head -1 output/RU.jsonl
+          wait "$de_pid"
+          wait "$ru_pid"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: smartdns-google-route-20261116
-          path: output/*.json
+          name: smartdns-live-media-20261116
+          path: output/*.jsonl
           retention-days: 2
           if-no-files-found: error
