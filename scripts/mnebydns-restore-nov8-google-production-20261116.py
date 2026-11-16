@@ -195,18 +195,19 @@ def main():
         run(["/usr/sbin/nginx","-t","-c",str(backup/"pilot.after")],timeout=15)
     # Recovery independent of this SSH/GitHub process.
     rollback=backup/"rollback.sh"
-    rollback.write_text(
+    rollback_contents=(
       "#!/bin/bash\nset -Eeuo pipefail\n"
-      "for name in "+ " ".join(changed)+"; do\n"
+      "for name in " + " ".join(changed) + "; do\n"
       " case \"$name\" in dns) target=/opt/mnebydns-dot/Corefile;;"
       " shared) target=/etc/nginx/nginx.conf;;"
       " pilot) target=/etc/mnebydns-googlepilot/nginx.conf;; esac\n"
-      " cp -p "+str(backup)+"/$name.before \"$target\"\n"
+      " cp -p " + str(backup) + "/$name.before \"$target\"\n"
       "done\n"
-      ("systemctl restart mnebydns-dot.service\n" if "dns" in changed else "")+
-      ("nginx -s reload -c /etc/mnebydns-googlepilot/nginx.conf\n" if "pilot" in changed else "")+
-      ("systemctl reload nginx\n" if "shared" in changed else "")
+      + ("systemctl restart mnebydns-dot.service\n" if "dns" in changed else "")
+      + ("nginx -s reload -c /etc/mnebydns-googlepilot/nginx.conf\n" if "pilot" in changed else "")
+      + ("systemctl reload nginx\n" if "shared" in changed else "")
     )
+    rollback.write_text(rollback_contents)
     rollback.chmod(0o700)
     unit="mnebydns-nov8-google-recovery-"+stamp.replace("-","")
     timer_active=False
