@@ -1,8 +1,13 @@
 name: MNEBYDNS guarded production cutover tg-relay WireGuard to AWG3
 on:
-  push:
-    branches: [feat/mnebydns-amneziawg-parallel-20261115]
-    paths: ['.github/workflows/mnebydns-awg-production-cutover-20261116.yml']
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Read-only verification or explicit production cutover
+        type: choice
+        options: [verify, cutover]
+        default: verify
+        required: true
 permissions: {contents: read}
 concurrency:
   group: mnebydns-awg-production-migration-20261116
@@ -17,7 +22,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: {persist-credentials: false}
+      - name: Verify current production service baseline before any mutation
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o LogLevel=ERROR)
+          SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 - RU' < scripts/mnebydns-awg-data-health-20261116.py
+          SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 - DE' < scripts/mnebydns-awg-data-health-20261116.py
+          echo AWG_BASELINE_SERVICES_OK=true
       - name: Migrate identical tg-relay interfaces with per-node autonomous rescue
+        if: inputs.operation == 'cutover'
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -91,23 +107,10 @@ jobs:
                           emit("TCP_TLS_"+host,{"version":tls.version(),"verified":bool(tls.getpeercert())})
               except Exception as exc:
                   emit("TCP_TLS_"+host,{"error":type(exc).__name__});sys.exit(34)
-          try:
-              with socket.create_connection(("10.66.77.1",853),timeout=5) as sock:
-                  with ssl.create_default_context().wrap_socket(sock,server_hostname="dns.mnebyvpn.site") as tls:
-                      emit("DOT_853",{"version":tls.version(),"verified":bool(tls.getpeercert())})
-          except Exception as exc:
-              emit("DOT_853",{"error":type(exc).__name__});sys.exit(35)
           PY
-          de 'python3 -' <<'PY'
-          import ssl,socket,json,sys
-          try:
-              with socket.create_connection(("10.66.77.2",8856),timeout=5) as s:
-                  with ssl.create_default_context().wrap_socket(s,server_hostname="aaaaaaaaaaaa.dns.mnebyvpn.site") as tls:
-                      print("AWG_PROD_DATA_PERSONAL_DOT_8856="+json.dumps({"version":tls.version(),"verified":bool(tls.getpeercert())}))
-          except Exception as e:
-              print("AWG_PROD_DATA_PERSONAL_DOT_8856="+json.dumps({"error":type(e).__name__}))
-              sys.exit(36)
-          PY
+          # Reuse the exact service matrix that passed before stopping WireGuard.
+          ru 'python3 - RU' < scripts/mnebydns-awg-data-health-20261116.py
+          de 'python3 - DE' < scripts/mnebydns-awg-data-health-20261116.py
           # Do not cancel the 7-minute timer: each timer retains crash recovery.
           # After both commits it leaves healthy AWG in place, or restores WG if unhealthy.
           de '/opt/mnebydns-awg-prod-20261116/manage.sh commit DE'
