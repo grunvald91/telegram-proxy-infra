@@ -14,6 +14,9 @@ import argparse
 import base64
 import hashlib
 import grp
+import socket
+import ssl
+import struct
 import json
 import collections
 import time
@@ -195,6 +198,72 @@ def verify_hot_reload(pid):
     require_services_healthy({"dns"})
 
 
+def dns_dot_a(host, timeout=5):
+    """Strict TLS local DoT lookup; no external tests or user data in logs."""
+    if not re.fullmatch(r"[a-z0-9.-]{4,200}",host):
+        raise ValueError("Invalid DNS canary hostname")
+    name=host.rstrip(".")
+    wire=b"".join(bytes([len(label)])+label.encode("ascii")
+                  for label in name.split("."))+b"\x00"
+    request=struct.pack("!HHHHHH",0xA321,0x100,1,0,0,0)+wire+struct.pack("!HH",1,1)
+    context=ssl.create_default_context()
+    with socket.create_connection(("89.125.90.101",853),timeout=timeout) as sock:
+        with context.wrap_socket(sock,server_hostname="dns.mnebyvpn.site") as tls:
+            tls.settimeout(timeout)
+            tls.sendall(struct.pack("!H",len(request))+request)
+            def exact(length):
+                data=b""
+                while len(data)<length:
+                    part=tls.recv(length-len(data))
+                    if not part:raise RuntimeError("DoT truncated response")
+                    data+=part
+                return data
+            length=struct.unpack("!H",exact(2))[0]
+            if not 12<=length<=65535:
+                raise RuntimeError("Invalid DoT response length")
+            response=exact(length)
+    qid,flags,questions,answers,*_=struct.unpack_from("!HHHHHH",response,0)
+    if qid!=0xA321 or not flags&0x8000 or flags&0xf!=0 or questions!=1:
+        raise RuntimeError("Invalid DoT answer code")
+    def skipname(offset):
+        for _ in range(128):
+            if offset>=len(response):raise RuntimeError("Truncated DNS label")
+            l=response[offset]
+            if l&0xc0==0xc0:
+                if offset+2>len(response):raise RuntimeError("Truncated compression pointer")
+                return offset+2
+            if l&0xc0:raise RuntimeError("Invalid DNS name")
+            offset+=1
+            if l==0:return offset
+            offset+=l
+        raise RuntimeError("DNS name recursion limit")
+    pos=skipname(12)+4
+    found=[]
+    for _ in range(min(answers,64)):
+        pos=skipname(pos)
+        if pos+10>len(response):raise RuntimeError("Truncated resource record")
+        typ,cl,ttl,size=struct.unpack_from("!HHIH",response,pos)
+        pos+=10
+        if pos+size>len(response):raise RuntimeError("Truncated RR data")
+        if typ==1 and cl==1 and size==4:
+            found.append(socket.inet_ntoa(response[pos:pos+4]))
+        pos+=size
+    if not found:raise RuntimeError("DoT A canary answer empty")
+    return sorted(set(found))
+
+
+def verify_google_dns_canaries():
+    """Route correctness check, not a YouTube/media delivery test.
+
+    These historical Google names must continue to route through DE89.
+    """
+    hosts=("www.youtube.com","www.google.com","gemini.google.com",
+           "rr1---sn-gxuo03g-ig3s.googlevideo.com")
+    for host in hosts:
+        if dns_dot_a(host)!=["89.125.90.101"]:
+            raise RuntimeError("Google DoT route canary disagrees with DE89 baseline")
+
+
 def manifest_for(name):
     if not NAME.fullmatch(name):raise ValueError("Invalid deployment identifier")
     directory=STAGE/name
@@ -304,6 +373,7 @@ def apply(name):
     with route_lock():
         require_services_healthy(set(SERVICE))
         ensure_dns_reader_access()
+        verify_google_dns_canaries()
         prepared={}
         dns_pid=None
         for key,pins in manifest.items():
@@ -349,6 +419,7 @@ def apply(name):
                 raise RuntimeError("CoreDNS PID changed during guarded update")
             healthy=require_services_healthy(set(SERVICE))
             ensure_dns_reader_access()
+            verify_google_dns_canaries()
             for n,(_,_,payload) in prepared.items():
                 if digest(payload)!=capture(LIVE[n]).sha256:
                     raise RuntimeError("Published config changed during activation")
