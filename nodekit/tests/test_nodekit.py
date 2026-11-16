@@ -53,6 +53,7 @@ class TestNodekit(unittest.TestCase):
             self.assertFalse(manifest["activation_enabled"])
             self.assertFalse(manifest["registration_enabled"])
             self.assertEqual(manifest["state"], "testing")
+            self.assertEqual(manifest["advertise_host"], BASE["advertise_host"])
             with self.assertRaises(nodekit.SpecError):
                 nodekit.stage(BASE, report, root)
 
