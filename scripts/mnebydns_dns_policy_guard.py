@@ -15,7 +15,20 @@ import secrets
 TEMPLATE = re.compile(r"(?ms)^([ \t]*)template IN (A|AAAA|CNAME|HTTPS|SVCB) (\S+) \{(.*?)^\1\}")
 CRITICAL = re.compile(r"(?m)^\s*(?:tls|bind|import|forward|reload|acl|hosts)\s+[^\n]+$")
 OWNER = re.compile(r"(?i)MNEBYDNS OWNER DOMAIN")
-GOOGLE = re.compile(r"(?i)(?:google|youtube|youtu\.be|ytimg|ggpht|gstatic|withgoogle)")
+GOOGLE_ROOTS = ("google.com","google.ru","google.de","google.co.uk",
+                "googleapis.com","googlevideo.com","googleusercontent.com",
+                "youtube.com","youtube-nocookie.com","ytimg.com","ggpht.com",
+                "gstatic.com","withgoogle.com","googletagmanager.com")
+GOOGLE_TOKEN = re.compile(r"(?i)(?:googlevideo|googleapis|googleusercontent|google|youtube|ytimg|ggpht|gstatic|withgoogle)")
+
+def is_google_template(zone: str, raw: str) -> bool:
+    if OWNER.search(raw) or "dns.mnebyvpn.site" in raw:
+        return False
+    if zone==".":
+        # Google-family wildcard: only the known router's broad Google pattern.
+        return bool(GOOGLE_TOKEN.search(raw))
+    normalized=zone.rstrip(".").lower()
+    return any(normalized==root or normalized.endswith("."+root) for root in GOOGLE_ROOTS)
 PIN = "89.125.90.101"
 DOT_TLS_NAME = "dns.mnebyvpn.site"
 # All known to be SmartDNS-synthetic at the verified initial release.
@@ -48,7 +61,7 @@ def preserved(old: bytes,new: bytes,scope: str="additive",owner_domain: str|None
     oldblocks,newblocks=blocks(a),blocks(b)
     missing=Counter(oldblocks)-Counter(newblocks)
     for kind,zone,raw in missing.elements():
-        if scope=="google" and GOOGLE.search(zone+" "+raw) and not OWNER.search(raw) and "dns.mnebyvpn.site" not in raw:
+        if scope=="google" and is_google_template(zone,raw):
             continue
         if scope=="owner" and owner_domain and re.search(r"(?i)"+re.escape(owner_domain),raw):
             continue
