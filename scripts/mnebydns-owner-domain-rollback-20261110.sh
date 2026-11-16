@@ -53,14 +53,12 @@ for kind in dns nginx; do
   fi
 done
 if cmp -s "$base/nginx.pilot" "$live_nginx"; then
-  cp -p "$base/nginx.before" "$live_nginx.owner-rollback-$id"
-  mv -f "$live_nginx.owner-rollback-$id" "$live_nginx"
+  python3 /opt/mnebydns-maintenance/mnebydns_safe_owner_swap.py shared "$base" nginx.pilot nginx.before
   nginx -t >/dev/null 2>&1
   systemctl reload nginx
 fi
 if cmp -s "$base/dns.pilot" "$live_dns"; then
-  cp -p "$base/dns.before" "$live_dns.owner-rollback-$id"
-  mv -f "$live_dns.owner-rollback-$id" "$live_dns"
+  python3 /opt/mnebydns-maintenance/mnebydns_safe_owner_swap.py dns "$base" dns.pilot dns.before
   test -x "$base/reload.sh"
   bash "$base/reload.sh" "$live_dns"
 fi
