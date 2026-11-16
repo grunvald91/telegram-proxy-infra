@@ -1,0 +1,99 @@
+name: Inspect private Telemt worker deployment prerequisites
+on:
+  push:
+    branches: [feat/mtproxy-bonus-activation-20261116]
+    paths: ['.github/workflows/dns-mtproxy-bonus-live-preflight-20261116.yml']
+  workflow_dispatch:
+permissions: {contents: read}
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Install ssh client
+        run: sudo apt-get update -qq >/dev/null && sudo apt-get install -qq -y sshpass >/dev/null
+      - name: Inspect RU deployment and canonical database (read only; no customer records)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASSWORD"
+          export SSHPASS="$RU_PASSWORD"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@188.120.254.223 'python3 -' <<'PY'
+          import pathlib,subprocess,urllib.request,json,os
+          def run(cmd, input=None, timeout=10):
+              return subprocess.run(cmd,input=input,text=True,capture_output=True,timeout=timeout)
+          print('RU_PYTHON='+run(['python3','--version']).stdout.strip())
+          print('RU_SSH_CLIENT='+str(run(['which','ssh']).returncode==0))
+          print('RU_OPENSSL='+str(run(['which','openssl']).returncode==0))
+          print('RU_DISK_AVAILABLE_GB='+str(round(os.statvfs('/opt').f_bavail*os.statvfs('/opt').f_frsize/(1024**3),1)))
+          print('RU_NODE='+run(['node','--version']).stdout.strip())
+          p=pathlib.Path('/opt/mnebyvpn/public/web.env')
+          cfg={}
+          for line in p.read_text().splitlines() if p.is_file() else []:
+              if '=' in line and not line.startswith('#'):
+                  k,v=line.split('=',1);cfg[k]=v
+          for k in ('WEB_DNS_MT_PROXY_BONUS_ENABLED','WEB_DNS_MT_PROXY_BONUS_E2E_VERIFIED','WEB_DNS_MT_PROXY_BONUS_REVOKER_VERIFIED','WEB_PERSONAL_DNS_APPLE_ENABLED','WEB_PERSONAL_DNS_DOT_E2E_VERIFIED'):
+              print('RU_FLAG_'+k+'='+str(cfg.get(k,'ABSENT')))
+          print('RU_WEB_ENV_KEY_PRESENT='+str(bool(cfg.get('WEB_DNS_MT_PROXY_BONUS_KEY'))))
+          print('RU_WEB_ENV_ROUTES_PRESENT='+str(bool(cfg.get('WEB_DNS_MT_PROXY_BONUS_ROUTES_JSON'))))
+          for name in ('mnebyvpn-public-web','mnebyvpn-stage-postgres'):
+              print('RU_DOCKER_'+name+'='+run(['docker','inspect','--format','{{.State.Status}}',name]).stdout.strip())
+          p=run(['ss','-lntH']).stdout
+          for port in (55433,9096,8792,853,8443):
+              print('RU_LISTEN_'+str(port)+'='+str(any(line.split()[3].endswith(':'+str(port)) for line in p.splitlines())))
+          source=pathlib.Path('/opt/mnebyvpn/public/active_sha')
+          print('RU_ACTIVE_SHA='+source.read_text().strip()[:40] if source.is_file() else 'none')
+          print('RU_RELEASE_PRESENT='+str((pathlib.Path('/opt/mnebyvpn/releases')/(source.read_text().strip() if source.is_file() else 'none')/'apps/service/src/dns-mtproxy-bonus-worker.ts').is_file()))
+          print('RU_DOCKER_WORKER_IMAGE_PRESENT='+str(run(['docker','image','inspect','mnebyvpn-stage-web:'+(source.read_text().strip() if source.is_file() else 'none')]).returncode==0))
+          sql="""SELECT 'ROLE|'||rolname||'|'||rolcanlogin FROM pg_roles WHERE rolname IN ('mnebyvpn_stage','mnebyvpn_site_auth','mnebyvpn_dns_proxy_worker') ORDER BY rolname;
+          SELECT 'BONUS_TABLE='||count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name='dns_mtproxy_bonus_credentials';
+          SELECT 'PAID_ACTIVE_DNS='||count(*) FROM entitlements e JOIN orders o ON o.id=e.source_order_id AND o.account_id=e.account_id WHERE e.product='smart_dns' AND e.state='ACTIVE' AND e.starts_at<=clock_timestamp() AND e.expires_at>clock_timestamp() AND o.state='PAID';
+          """
+          res=run(['docker','exec','-i','mnebyvpn-stage-postgres','psql','-qAt','-X','-v','ON_ERROR_STOP=1','-U','mnebyvpn_stage','-d','mnebyvpn_stage'],sql)
+          print('RU_DB_READ_OK='+str(res.returncode==0))
+          print(res.stdout[:1000])
+          for url in ('http://127.0.0.1:8792/healthz', 'http://127.0.0.1:8792/readyz'):
+              try:
+                  with urllib.request.urlopen(url,timeout=6) as x:print('RU_URL_'+url.rsplit('/',1)[1]+'='+str(x.status))
+              except Exception as e:print('RU_URL_'+url.rsplit('/',1)[1]+'='+type(e).__name__)
+          PY
+      - name: Inspect DE Telemt API capability, systemd and SSH (read only)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASSWORD"
+          export SSHPASS="$DE_PASSWORD"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@89.125.90.101 'python3 -' <<'PY'
+          import pathlib,subprocess,urllib.request,urllib.error,json,os
+          def run(cmd, input=None, timeout=10):
+              return subprocess.run(cmd,input=input,text=True,capture_output=True,timeout=timeout)
+          print('DE_SSHD='+run(['systemctl','is-active','ssh']).stdout.strip())
+          print('DE_PYTHON='+run(['python3','--version']).stdout.strip())
+          print('DE_DISK_AVAILABLE_GB='+str(round(os.statvfs('/opt').f_bavail*os.statvfs('/opt').f_frsize/(1024**3),1)))
+          print('DE_TELEMT='+run(['systemctl','is-active','telemt-direct-ozon']).stdout.strip())
+          p=run(['ss','-lntH']).stdout
+          for port in (9096,9446,853,22):
+              print('DE_LISTEN_'+str(port)+'='+str(any(line.split()[3].endswith(':'+str(port)) for line in p.splitlines())))
+          config=pathlib.Path('/etc/telemt/direct-ozon.toml')
+          print('DE_CONFIG_PRESENT='+str(config.is_file()))
+          if config.is_file():
+              text=config.read_text()
+              # Reveal option names only. Never echo any tokens or user secrets.
+              print('DE_CONFIG_API_SECTIONS='+str([x.strip() for x in text.splitlines() if x.strip().startswith('[') and any(p in x.lower() for p in ('api','admin','auth'))][:15]))
+              print('DE_CONFIG_API_KEY_NAMES='+str(sorted(set(line.split('=',1)[0].strip() for line in text.splitlines() if '=' in line and any(x in line.split('=',1)[0].lower() for x in ('token','password','secret','api','auth'))))[:20]))
+          for endpoint in ('/v1/health','/v1/users','/v1/users/dns_000000000000000000000000'):
+              req=urllib.request.Request('http://127.0.0.1:9096'+endpoint)
+              try:
+                  with urllib.request.urlopen(req,timeout=6) as r:
+                      payload=json.load(r)
+                      print('DE_API_'+endpoint.replace('/','_')+'_HTTP='+str(r.status))
+                      print('DE_API_'+endpoint.replace('/','_')+'_WRAPPER='+str(isinstance(payload,dict) and payload.get('ok') is True))
+                      if endpoint=='/v1/health':
+                          print('DE_API_HEALTH_READONLY='+str(payload.get('data',{}).get('read_only','unknown')))
+              except urllib.error.HTTPError as e:print('DE_API_'+endpoint.replace('/','_')+'_HTTP='+str(e.code))
+              except Exception as e:print('DE_API_'+endpoint.replace('/','_')+'_ERROR='+type(e).__name__)
+          print('DE_SSHD_AUTH_KEYS_AVAILABLE='+str(pathlib.Path('/etc/ssh/sshd_config').is_file()))
+          PY
