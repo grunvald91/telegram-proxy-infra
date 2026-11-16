@@ -1,0 +1,61 @@
+name: Diagnose Telemt 500 without touching active users
+on:
+  push:
+    branches: [feat/mtproxy-bonus-activation-20261116]
+    paths: ['.github/workflows/dns-mtproxy-telemt-500-diagnostic-20261116.yml']
+  workflow_dispatch:
+permissions: {contents: read}
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      DE_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - run: sudo apt-get update -qq >/dev/null && sudo apt-get install -qq -y sshpass >/dev/null
+      - name: Inspect Telemt write prerequisites and redacted error codes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASSWORD"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@89.125.90.101 'python3 -' <<'PY'
+          import pathlib,os,stat,subprocess,json,urllib.request,urllib.error,re
+          svc='telemt-direct-ozon'
+          def run(cmd):
+              return subprocess.run(cmd,capture_output=True,text=True,timeout=7)
+          for prop in ('User','Group','ProtectSystem','ReadWritePaths','StateDirectory','WorkingDirectory'):
+              p=run(['systemctl','show',svc,'-p',prop])
+              print('SYSTEMD_'+p.stdout.strip()[:240])
+          unit=run(['systemctl','show',svc,'-p','FragmentPath']).stdout.strip().split('=',1)[-1]
+          print('SYSTEMD_UNIT_EXISTS='+str(pathlib.Path(unit).is_file()))
+          for p in ('/etc/telemt','/etc/telemt/direct-ozon.toml','/etc/telemt/direct-ozon.toml.lock'):
+              f=pathlib.Path(p)
+              if f.exists():
+                  st=f.stat()
+                  print('PATH='+p+' FILE='+str(f.is_file())+
+                     ' OWNER_UID='+str(st.st_uid)+' GROUP='+str(st.st_gid)+
+                     ' MODE='+oct(stat.S_IMODE(st.st_mode))+' LINKS='+str(st.st_nlink)+
+                     ' SYMLINK='+str(f.is_symlink()))
+              else: print('PATH='+p+' NOT_FOUND')
+          p=run(['systemctl','is-active',svc])
+          print('SERVICE_ACTIVE='+p.stdout.strip())
+          for path in ('/v1/security/posture','/v1/config/state','/v1/capabilities'):
+              try:
+                  with urllib.request.urlopen('http://127.0.0.1:9096'+path,timeout=5) as r:
+                      obj=json.load(r)
+                      print('API_'+path.replace('/','_')+'_HTTP='+str(r.status))
+                      print('API_'+path.replace('/','_')+'_OK='+str(obj.get('ok')))
+              except urllib.error.HTTPError as e: print('API_'+path.replace('/','_')+'_HTTP='+str(e.code))
+              except Exception as e:print('API_'+path.replace('/','_')+'_ERROR='+type(e).__name__)
+          # Only high-level error classifications; no customer keys or full journal lines.
+          journal=run(['journalctl','-u',svc,'--since','2026-11-16 10:03:30 UTC',
+                       '--until','2026-11-16 10:04:30 UTC','--no-pager','-o','cat','-n','150'])
+          words={'permission','atomic','persist','write','error','fail','read-only','rename','lock','config','source','quota','validation'}
+          for i,line in enumerate(journal.stdout.splitlines()):
+              if not any(w in line.lower() for w in words):continue
+              sanitized=re.sub(r'dns_[0-9a-f]{24}','[CANARY_USER]',line,flags=re.I)
+              sanitized=re.sub(r'\b[a-f0-9]{24,}\b','[REDACTED_HEX]',sanitized,flags=re.I)
+              sanitized=re.sub(r'([0-9]{1,3}\.){3}[0-9]{1,3}','[IP]',sanitized)
+              sanitized=re.sub(r'(?i)(secret|token|password|authorization)["=: ]+[^ ,"\\}]+',r'\1=[REDACTED]',sanitized)
+              print('JOURNAL_ERROR_'+str(i)+'='+sanitized[:350])
+          PY
