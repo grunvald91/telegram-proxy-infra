@@ -1,0 +1,24 @@
+name: MNEBYDNS safe deploy and rollback offline CI
+on:
+  push:
+    branches: [main, fix/mnebydns-safe-config-deployer-20261116]
+    paths:
+      - '.github/workflows/mnebydns-nov8-restore-safety-ci-20261116.yml'
+      - 'scripts/mnebydns_nov8_restore_safety.py'
+      - 'scripts/test_mnebydns_nov8_restore_safety.py'
+      - 'scripts/mnebydns_safe_deploy.py'
+      - 'scripts/test_mnebydns_safe_deploy.py'
+permissions: {contents: read}
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Pure offline unit tests (no production connections)
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns_nov8_restore_safety.py scripts/test_mnebydns_nov8_restore_safety.py scripts/mnebydns_safe_deploy.py scripts/test_mnebydns_safe_deploy.py
+          python3 -m unittest discover -s scripts -p 'test_mnebydns*safe*.py' -v
+          echo "NOV8_RESTORE_SAFETY_OFFLINE_TESTS_PASS=true"
