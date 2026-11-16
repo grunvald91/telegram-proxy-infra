@@ -30,7 +30,11 @@ try{
       days:x.dataset.d,disabled:x.disabled,price:x.querySelector('strong')?.textContent
     }))
   })).catch(e=>({error:String(e.message).slice(0,160)}));
-  await page.locator('.journey-header-account').click({timeout:6000});
+  console.log('READONLY_LIVE_INITIAL='+JSON.stringify(out));
+  const headerVisible=await page.locator('.journey-header-account').isVisible();
+  out.headerVisible=headerVisible;
+  if(headerVisible)await page.locator('.journey-header-account').click({timeout:6000});
+  else await page.evaluate(()=>{location.hash='#account';});
   await page.waitForTimeout(800);
   out.account=await page.evaluate(()=>{
     const el=document.getElementById('email-auth-panel');
