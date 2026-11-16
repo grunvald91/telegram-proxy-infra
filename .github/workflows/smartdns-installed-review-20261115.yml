@@ -1,12 +1,11 @@
-name: MNEBYDNS 2026-11-08 vs live YouTube exact ports and residual route (read-only)
+name: MNEBYDNS RU-to-DE public Googlevideo TCP443 packet trace (read-only)
 on:
   push:
     branches: [audit/smartdns-installed-review-20261115]
     paths: ['.github/workflows/smartdns-installed-review-20261115.yml']
-permissions:
-  contents: read
+permissions: {contents: read}
 concurrency:
-  group: mnebydns-youtube-baseline-readonly-20261116
+  group: mnebydns-googlevideo-public-path-trace-20261116
   cancel-in-progress: false
 jobs:
   review:
@@ -17,37 +16,41 @@ jobs:
       RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Two-node strictly read-only snapshot from actual VPS
+        with: {persist-credentials: false}
+      - name: Read-only trace of actual packets and current routing on both VPS
         shell: bash
         run: |
           set -Eeuo pipefail
           test -n "$DE_PASS" && test -n "$RU_PASS"
-          python3 -m py_compile scripts/mnebydns-youtube-live-baseline-readonly-20261116.py
-          if ! command -v sshpass >/dev/null; then
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq sshpass >/dev/null
-          fi
+          python3 -m py_compile scripts/mnebydns-youtube-public-tcp-trace-20261116.py
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass >/dev/null
           opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
             -o HostKeyAlgorithms=ssh-ed25519
             -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
             -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
           mkdir -p output
-          SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -B - DE' < scripts/mnebydns-youtube-live-baseline-readonly-20261116.py > output/de.json
-          SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -B - RU' < scripts/mnebydns-youtube-live-baseline-readonly-20261116.py > output/ru.json
+          SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -B - read-de' < scripts/mnebydns-youtube-public-tcp-trace-20261116.py > output/de-routes.json
+          SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -B - read-ru' < scripts/mnebydns-youtube-public-tcp-trace-20261116.py > output/ru-routes.json
+          SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -B - capture-de' < scripts/mnebydns-youtube-public-tcp-trace-20261116.py > output/de-packet-metadata.json &
+          capture_pid=$!
+          sleep 2
+          SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -B - client-ru' < scripts/mnebydns-youtube-public-tcp-trace-20261116.py > output/ru-probes.json
+          python3 scripts/mnebydns-youtube-public-tcp-trace-20261116.py client-runner > output/runner-probes.json
+          wait "$capture_pid"
           python3 - <<'PY'
           import json
-          for role in ("de","ru"):
-              with open("output/"+role+".json") as f: j=json.load(f)
-              assert j["read_only"] is True and j["role"].lower()==role
-              print("LIVE_BASELINE_"+role.upper()+"="+json.dumps(j,sort_keys=True,separators=(",",":")),flush=True)
-          print("MNEBYDNS_LIVE_BASELINE_BOTH_NODES_READ_ONLY_COMPLETE=true")
+          for name in ("de-routes","ru-routes","de-packet-metadata","ru-probes","runner-probes"):
+              with open("output/"+name+".json") as fh:
+                  j=json.load(fh)
+              assert j["read_only"] is True
+              print("TRACE_"+name.upper().replace("-","_")+"="+json.dumps(j,separators=(",",":"),sort_keys=True),flush=True)
+          print("GOOGLEVIDEO_PUBLIC_PATH_READ_ONLY_TRACE_COMPLETE=true",flush=True)
           PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: mnebydns-youtube-8nov-vs-live-16nov-readonly
-          path: output/*
+          name: googlevideo-public-path-20261116-readonly
+          path: output/*.json
           retention-days: 3
           if-no-files-found: warn
