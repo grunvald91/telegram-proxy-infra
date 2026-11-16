@@ -1,4 +1,4 @@
-name: SmartDNS owner TCP89 handshake read-only 20261116
+name: SmartDNS owner TCP89 reassembly read-only 20261116
 on:
   push:
     branches: [audit/smartdns-installed-review-20261115]
@@ -38,7 +38,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: smartdns-tcp89-owner-readonly-20261116
+          name: smartdns-tcp89-owner-detail-20261116
           path: output/*
           retention-days: 2
           if-no-files-found: error

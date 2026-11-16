@@ -1,35 +1,40 @@
-"""Read-only 35-second owner TCP handshake observer; no payload storage or firewall edits."""
-import socket,struct,time,json,subprocess,datetime
-MARKERS={'4e5a1d4706841871bb795faef6608d49c9f0c26f5832e36d4d82b02d190819c2': 'video_lower', 'ae617752ad54d9fe7f00ab708f92ad3336c92ca52c8e0b156cbbfda1275bee9a': 'video_upper', '5d1332e081e3bab1b1f0c897c4a3242195000df048f14aa20aab5ba241faea06': 'site_control'}
-START=time.monotonic();events=[];owned=set();flows={};seen=set()
-s=socket.socket(socket.AF_PACKET,socket.SOCK_RAW,socket.htons(3));s.settimeout(.25)
-while time.monotonic()-START<35:
+"""Read-only bounded TCP reassembly metadata; no packet contents persisted."""
+import socket,struct,time,json,subprocess,datetime,pathlib,hashlib
+MARKERS={'36ad283ffcba50d5e07ef4db823106afbc1c80030d2ea91b56bfb3ed06802477': 'video_lower_large', 'd12583c06f79b5a1741ec5a3c9136ba394eb9eaeac749628c83e731fbfbaffc0': 'video_upper_large', '05accab9bdfe5067eecd0a8606393eae8766e31cb742042d01fe5382b1eb246c': 'video_lower_tls12', '5a75ec4dae8535c70cbfa9e90cf799400db462a2aab821df84a13ebf649e4022': 'video_upper_tls12'}
+start=time.monotonic();flows={};reverse={};seen=set();s=socket.socket(socket.AF_PACKET,socket.SOCK_RAW,socket.htons(3));s.settimeout(.25)
+while time.monotonic()-start<35:
  try:b,addr=s.recvfrom(65535)
  except socket.timeout:continue
- if addr[0]=='lo' or len(b)<54 or b[12:14]!=b'\x08\x00' or b[23]!=6:continue
- ihl=(b[14]&15)*4;o=14+ihl
- if len(b)<o+20:continue
- src,dst=socket.inet_ntoa(b[26:30]),socket.inet_ntoa(b[30:34]);sp,dp=struct.unpack('!HH',b[o:o+4]);flags=b[o+13];payload=b[o+(b[o+12]>>4)*4:]
- incoming=dst=='89.125.90.101' and dp==443;outgoing=src=='89.125.90.101' and sp==443
- if not(incoming or outgoing):continue
- client,port=(src,sp) if incoming else (dst,dp);flow=(client,port);label=flows.get(flow)
- if incoming and len(payload)>=43 and payload[0]==22 and payload[5]==1:
-  marker=payload[11:43].hex()
-  if marker in MARKERS:
-   label=MARKERS[marker];owned.add(client);flows[flow]=label
-   events.append(dict(kind='client_hello_arrived',client=client,port=port,label=label,payload_bytes=len(payload),ms=round(1000*(time.monotonic()-START))))
- if flags&2 or label:
-  kind=('synack' if outgoing else 'syn') if flags&2 else ('server_tls_record' if outgoing and payload and payload[0] in [20,21,22,23] else 'server_data' if outgoing and payload else 'tcp_reset' if flags&4 else None)
-  ident=(flow,kind)
-  if kind and ident not in seen:
-   seen.add(ident);events.append(dict(kind=kind,client=client,port=port,label=label,bytes=len(payload),ms=round(1000*(time.monotonic()-START))))
-s.close()
-result=[]
-for e in events:
- if e['client'] not in owned:continue
- e['client']='owner_public_ip';e['label']=e.get('label') or flows.get((next(iter(owned)),e['port']))
- result.append(e)
-services={}
-for name in ['nginx.service','mnebydns-googlepilot.service','mnebydns-de89-public-quic-20261115.service']:
- p=subprocess.run(['systemctl','is-active',name],capture_output=True,text=True,timeout=4);services[name]=p.stdout.strip()
-print(json.dumps(dict(utc=datetime.datetime.now(datetime.timezone.utc).isoformat(),observation_seconds=35,production_changed=False,owner_detected=bool(owned),events=result,services=services)))
+ if len(b)<54 or b[12:14]!=b'\x08\x00' or b[23]!=6:continue
+ off=14+(b[14]&15)*4
+ if len(b)<off+20:continue
+ src,dst=socket.inet_ntoa(b[26:30]),socket.inet_ntoa(b[30:34]);sp,dp=struct.unpack('!HH',b[off:off+4]);seq,ack=struct.unpack('!II',b[off+4:off+12]);flags=b[off+13];payload=b[off+(b[off+12]>>4)*4:]
+ key=(src,sp,dst,dp);rev=(dst,dp,src,sp)
+ if len(payload)>=43 and payload[0]==22 and payload[5]==1 and payload[11:43].hex() in MARKERS:
+  if key not in flows:
+   stage='googlepilot_loopback' if dp==15449 else 'public_ingress' if dst=='89.125.90.101' and dp==443 else 'google_origin_egress'
+   flows[key]=dict(label=MARKERS[payload[11:43].hex()],stage=stage,interface=addr[0],expected_clienthello_bytes=5+int.from_bytes(payload[3:5],'big'),first_seq=seq,events=[],ranges=[])
+ if key in flows:f=flows[key];direction='client_to_server'
+ elif rev in flows:f=flows[rev];direction='server_to_client'
+ else:continue
+ ident=(key,seq,ack,flags,len(payload),addr[0])
+ if ident in seen:continue
+ seen.add(ident)
+ e=dict(direction=direction,bytes=len(payload),flags=flags,ms=round(1000*(time.monotonic()-start)))
+ if direction=='client_to_server':
+  e['client_seq_offset']=(seq-f['first_seq'])%(2**32)
+  if payload:f['ranges'].append([e['client_seq_offset'],e['client_seq_offset']+len(payload)])
+ else:e['acknowledged_client_bytes']=(ack-f['first_seq'])%(2**32)
+ if payload:e['tls_record_type']=payload[0] if payload[0] in [20,21,22,23] else None
+ if len(f['events'])<70:f['events'].append(e)
+s.close();result=[]
+for f in flows.values():
+ f.pop('first_seq');ranges=sorted(f.pop('ranges'));end=0
+ for a,b in ranges:
+  if a>end:break
+  end=max(end,b)
+ f['contiguous_client_bytes_observed']=end;f['complete_clienthello_observed']=end>=f['expected_clienthello_bytes'];result.append(f)
+configs={}
+for name in ['/etc/nginx/nginx.conf','/etc/mnebydns-googlepilot/nginx.conf']:
+ p=pathlib.Path(name);text=p.read_text();configs[name]=dict(sha256=hashlib.sha256(p.read_bytes()).hexdigest(),selected=[line.strip() for line in text.splitlines() if any(x in line for x in ['googlevideo','resolver ','proxy_pass','listen 127.0.0.1:15449','ssl_preread','proxy_protocol'])])
+print(json.dumps(dict(utc=datetime.datetime.now(datetime.timezone.utc).isoformat(),observation_seconds=35,production_changed=False,flows=result,configs=configs)))
