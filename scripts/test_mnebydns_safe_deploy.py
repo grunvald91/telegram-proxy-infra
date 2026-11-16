@@ -44,6 +44,9 @@ class DeployTests(TestCase):
             patch.object(deploy,"LIVE",{"dns":self.live}),
             patch.object(deploy,"verify_system",return_value=None),
             patch.object(deploy,"ensure_dns_reader_access",return_value=None),
+            patch.object(deploy,"coredns_hot_reload_supported",return_value=None),
+            patch.object(deploy,"coredns_main_pid",return_value=4123),
+            patch.object(deploy,"verify_hot_reload",return_value=None),
             patch.object(deploy,"manifest_for",return_value=self.manifest),
             patch.object(deploy,"require_services_healthy",
                          return_value={"dns":{"service_active":True,"tcp_listener":True}}),
@@ -135,6 +138,59 @@ class DeployTests(TestCase):
                 deploy.apply(self.key)
         self.assertEqual(self.live.read_bytes(),b"old policy\n")
         self.assertEqual(list(self.tx.iterdir()),[])
+
+    def test_protected_personal_hostname_cannot_be_removed(self):
+        old=(b'tls://.:853 {\n'
+             b'  template IN A aaaaabbbbbcccc.dns.mnebyvpn.site {\n'
+             b'    match ^aaaaabbbbbcccc[.]dns[.]mnebyvpn[.]site[.]$\n'
+             b'    answer "{{ .Name }} 20 IN A 89.125.90.101"\n'
+             b'  }\n}\n')
+        self.live.write_bytes(old)
+        self.manifest["dns"]["expected_sha256"]=safety.digest(old)
+        self.candidate.write_bytes(b'tls://.:853 {\n}\n')
+        self.manifest["dns"]["candidate_sha256"]=safety.digest(self.candidate.read_bytes())
+        with self.assertRaisesRegex(RuntimeError,"Protected personal"):
+            deploy.apply(self.key)
+        self.assertEqual(self.live.read_bytes(),old)
+        self.assertEqual(list(self.tx.iterdir()),[])
+
+    def test_protected_personal_answer_cannot_be_rewritten(self):
+        original=(b'template IN A abcdabcdabcd.dns.mnebyvpn.site {\n'
+                  b'  match ^abcdabcdabcd[.]dns[.]mnebyvpn[.]site[.]$\n'
+                  b'  answer "{{ .Name }} 20 IN A 89.125.90.101"\n'
+                  b'}\n')
+        after=original.replace(b"89.125.90.101",b"188.120.254.223")
+        with self.assertRaisesRegex(RuntimeError,"Protected personal"):
+            deploy.preserve_protected_dns_rules(original,after)
+
+    def test_google_only_changes_do_not_require_personal_rules(self):
+        before=b'template IN A www.google.com {\n  answer "{{ .Name }} 20 IN A 89.125.90.101"\n}\n'
+        after=before.replace(b"89.125.90.101",b"188.120.254.223")
+        deploy.preserve_protected_dns_rules(before,after)
+
+    def test_hot_reload_rejects_plugin_missing(self):
+        with patch.object(deploy,"coredns_hot_reload_supported",side_effect=RuntimeError("no reload")):
+            with self.assertRaisesRegex(RuntimeError,"no reload"):
+                deploy.apply(self.key)
+        self.assertEqual(self.live.read_bytes(),b"old policy\n")
+
+    def test_commit_success_when_timer_cleanup_fails(self):
+        real_cmd=deploy.cmd
+        def fail_disarm(*args,**kwargs):
+            if args[:3]==("systemctl","disable","--now"):
+                raise RuntimeError("timer disarm failed")
+            return ""
+        with patch.object(deploy,"cmd",side_effect=fail_disarm):
+            deploy.apply(self.key)
+        tx=list(self.tx.iterdir())[0]
+        self.assertTrue((tx/"COMMITTED").is_file())
+        self.assertEqual(self.live.read_bytes(),b"new policy\n")
+
+    def test_changed_corefile_does_not_call_systemctl_restart(self):
+        with patch.object(deploy,"cmd") as command, patch.object(deploy,"verify_hot_reload") as hot:
+            deploy.revert_services({"dns"})
+            hot.assert_called_once_with(4123)
+            self.assertFalse(any("restart" in call.args for call in command.call_args_list))
 
     def test_invalid_manifest_path_does_not_escape_stage(self):
         with self.assertRaises(ValueError):
