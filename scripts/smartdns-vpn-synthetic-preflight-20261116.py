@@ -49,7 +49,8 @@ with tempfile.TemporaryDirectory(prefix='smartdns-vpn-preflight-') as temp:
       with socket.create_connection(('127.0.0.1',port),.1):pass
       break
      except OSError:time.sleep(.05)
-    else:raise RuntimeError('Isolated listener unavailable')
+    else:
+     log.flush();result['tests'].append({'mode':mode,'startup_error':(folder/'process.log').read_text()[-3000:],'exit':p.poll()});continue
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
      result['tests']+=list(pool.map(probe,[(mode,port,h,ip) for h in HOSTS for ip in IPS]))
    finally:

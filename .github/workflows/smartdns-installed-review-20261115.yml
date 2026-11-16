@@ -1,4 +1,4 @@
-name: SmartDNS isolated VPN synthetic destination preflight 20261116
+name: SmartDNS isolated VPN startup diagnostics 20261116
 on:
   push:
     branches: [audit/smartdns-installed-review-20261115]
