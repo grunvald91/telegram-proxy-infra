@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import stat
 import subprocess
+import time
 
 SERVICE="mnebydns-dot.service"
 CORE=Path("/opt/mnebydns-dot/Corefile")
@@ -61,8 +62,12 @@ def main():
         if not alive():
             command("systemctl","reset-failed",SERVICE)
             command("systemctl","start",SERVICE,timeout=35)
-        if not alive() or not listening():
-            raise RuntimeError("DoT unit or TCP853 not active after metadata repair")
+        for attempt in range(40):
+            if alive() and listening():
+                break
+            time.sleep(0.25)
+        else:
+            raise RuntimeError("DoT did not become active/listen TCP853 during bounded readiness window")
         OUT.update(done=True,dns_active=True,tcp853_listening=True,
                    config_sha256=digest,group_is_reader=True,
                    file_mode="0640",certificates_unchanged=True)
