@@ -61,8 +61,8 @@ jobs:
           trap undo_on_failure EXIT
           SSHPASS="$DE_PASS" sshpass -e scp "${copts[@]}" scripts/mnebydns-google-tcp-only-20261117.sh root@89.125.90.101:/tmp/mnebydns-google-tcp-only-20261117.sh
           SSHPASS="$RU_PASS" sshpass -e scp "${copts[@]}" scripts/mnebydns-google-tcp-only-20261117.sh root@188.120.254.223:/tmp/mnebydns-google-tcp-only-20261117.sh
-          de 'bash /tmp/mnebydns-google-tcp-only-20261117.sh de stage'
-          ru 'bash /tmp/mnebydns-google-tcp-only-20261117.sh ru stage'
+          de 'if test -s /opt/mnebydns-google-tcp-only-20261117/manager.sh;then cmp -s /opt/mnebydns-google-tcp-only-20261117/manager.sh /tmp/mnebydns-google-tcp-only-20261117.sh && test ! -e /etc/systemd/system/mnebydns-google-tcp-only-20261117.service && test ! -e /opt/mnebydns-google-tcp-only-20261117/COMMITTED && echo TCP_ONLY_DE_PREVIOUS_STAGE_RECOVERED=PASS;else bash /tmp/mnebydns-google-tcp-only-20261117.sh de stage;fi'
+          ru 'if test -s /opt/mnebydns-google-tcp-only-20261117/manager.sh;then cmp -s /opt/mnebydns-google-tcp-only-20261117/manager.sh /tmp/mnebydns-google-tcp-only-20261117.sh && test ! -e /etc/systemd/system/mnebydns-google-tcp-only-20261117.service && test ! -e /opt/mnebydns-google-tcp-only-20261117/COMMITTED && echo TCP_ONLY_RU_PREVIOUS_STAGE_RECOVERED=PASS;else bash /tmp/mnebydns-google-tcp-only-20261117.sh ru stage;fi'
           echo TCP_ONLY_BOTH_NODES_STAGED=PASS
           de 'bash /opt/mnebydns-google-tcp-only-20261117/manager.sh de apply'
           ru 'bash /opt/mnebydns-google-tcp-only-20261117/manager.sh ru apply'
@@ -85,8 +85,17 @@ jobs:
                       failures.append(label+':'+name)
           if failures:
               print('TCP_ONLY_PUBLIC_TLS_FAILURES='+','.join(failures),flush=True)
+          # RU188 Googlevideo public SNI was already blocked in the pre-cutover
+          # baseline; the canonical DE89 route must fully pass, while RU188
+          # control-plane SNI must pass. Do not treat the known RU CDN timeout
+          # as proof that the newly deployed DE89 TCP-only route is broken.
+          allowed_known={'RU188:rr1---sn-gxuo03g-ig3s.googlevideo.com'}
+          unexpected=[f for f in failures if f not in allowed_known]
+          if unexpected:
+              print('TCP_ONLY_UNEXPECTED_PUBLIC_TLS_FAILURES='+','.join(unexpected),flush=True)
               sys.exit(1)
-          print('TCP_ONLY_PUBLIC_TLS_ALL_EIGHT=PASS',flush=True)
+          print('TCP_ONLY_DE89_ALL_FOUR_AND_RU188_CONTROL_SNI=PASS',flush=True)
+          print('TCP_ONLY_RU188_CDN_SNI_IS_NOT_ACCEPTANCE_GATE=true',flush=True)
           PY
           de 'bash /opt/mnebydns-google-tcp-only-20261117/manager.sh de status'
           ru 'bash /opt/mnebydns-google-tcp-only-20261117/manager.sh ru status'
