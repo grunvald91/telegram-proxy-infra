@@ -138,3 +138,56 @@ jobs:
               binds=[line.split()[3] for line in p.stdout.splitlines() if ':'+str(port)+' ' in line]
               print('DE_BIND_'+str(port)+'='+','.join(binds)[:200])
           PY
+
+      - name: Confirm deployed public DNS links, Apple route and protected auth (read-only)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASSWORD"
+          sshpass -e ssh -T -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@188.120.254.223 'python3 -' <<'PY'
+          import urllib.request,urllib.error,json,pathlib,subprocess
+          base='http://127.0.0.1:8792'
+          def get(path):
+              try:
+                  with urllib.request.urlopen(base+path,timeout=6) as r:
+                      return r.status,r.read(300000).decode('utf-8','replace')
+              except urllib.error.HTTPError as ex:
+                  return ex.code,ex.read(2000).decode('utf-8','replace')
+          s,html=get('/')
+          print('LIVE_HOME_STATUS='+str(s))
+          for token in ('data-journey-product="smart_dns"',
+                        'data-journey-product="bundle"',
+                        '/?product=smart_dns&amp;days=14#plans',
+                        '/?product=smart_dns&amp;days=30#plans',
+                        '/?product=smart_dns&amp;days=60#plans',
+                        '/?product=smart_dns&amp;days=90#plans',
+                        'href="https://t.me/MNEBYVPN_bot"'):
+              print('LIVE_HTML_'+('DNS_PRODUCT' if 'journey-product="smart_dns"' in token
+                   else 'BUNDLE_PRODUCT' if 'bundle' in token
+                   else 'DNS_LINK_'+token.split('days=')[-1].split('#')[0] if 'days=' in token
+                   else 'TELEGRAM_LINK')+'='+('PRESENT' if token in html else 'MISSING'))
+          s,js=get('/app.js')
+          print('LIVE_APP_JS_STATUS='+str(s))
+          print('LIVE_APPLE_DOWNLOAD_CLIENT='+str('downloadAppleDnsProfile' in js))
+          print('LIVE_TELEGRAM_PROXY_CLIENT='+str('loadTelegramProxyBonus' in js))
+          s,plans=get('/api/plans')
+          catalog=json.loads(plans) if s==200 else {}
+          print('LIVE_PLAN_API_STATUS='+str(s))
+          print('LIVE_APPROVED_DNS_PREVIEW='+str(catalog.get('dnsPreviewOffers')))
+          print('LIVE_PAID_DNS_RUB_COUNT='+str(sum(1 for x in catalog.get('plans',[])
+                     if x.get('product')=='smart_dns' and x.get('rubMinor'))))
+          s,res=get('/api/dns/apple/status?entitlementId=11111111-1111-4111-8111-111111111111')
+          print('LIVE_UNAUTHENTICATED_APPLE_HTTP='+str(s))
+          s,res=get('/api/telegram-proxy-bonus?entitlementId=11111111-1111-4111-8111-111111111111')
+          print('LIVE_UNAUTHENTICATED_TELEGRAM_HTTP='+str(s))
+          active=pathlib.Path('/opt/mnebyvpn/public/active_sha').read_text().strip()
+          print('LIVE_DEPLOYED_SHA='+active if len(active)==40 else 'UNEXPECTED')
+          try:
+              r=subprocess.run(['docker','exec','-i','mnebyvpn-stage-postgres',
+                'psql','-qAt','-X','-v','ON_ERROR_STOP=1','-U','mnebyvpn_stage','-d','mnebyvpn_stage'],
+                input="SELECT 'LIVE_APPLE_PROFILE_SQL='||count(*) FROM pg_proc WHERE proname='website_issue_personal_dns_credential';",text=True,capture_output=True,timeout=8)
+              print(r.stdout.strip() if r.returncode==0 else 'LIVE_APPLE_PROFILE_SQL=UNAVAILABLE')
+          except Exception:print('LIVE_APPLE_PROFILE_SQL=UNAVAILABLE')
+          if s!=401 or 'data-journey-product="smart_dns"' not in html:
+              raise SystemExit('Live verification failed')
+          PY
