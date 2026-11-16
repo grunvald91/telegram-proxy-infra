@@ -118,14 +118,12 @@ abort(){
   exit "$code"
 }
 trap abort EXIT
-cp -p "$base/nginx.pilot" "$nginx.owner-stage-$id"
-mv -f "$nginx.owner-stage-$id" "$nginx"
+python3 /opt/mnebydns-maintenance/mnebydns_safe_owner_swap.py shared "$base" nginx.before nginx.pilot
 nginx -t >/dev/null 2>&1
 systemctl reload nginx
 systemctl is-active --quiet nginx
 cmp -s "$base/nginx.pilot" "$nginx"
-cp -p "$base/dns.pilot" "$dns.owner-stage-$id"
-mv -f "$dns.owner-stage-$id" "$dns"
+python3 /opt/mnebydns-maintenance/mnebydns_safe_owner_swap.py dns "$base" dns.before dns.pilot
 bash "$base/reload.sh" "$dns"
 for attempt in $(seq 1 45); do
   if systemctl is-active --quiet mnebydns-dot.service &&
