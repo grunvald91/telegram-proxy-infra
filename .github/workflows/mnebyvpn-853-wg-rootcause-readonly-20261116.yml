@@ -1,0 +1,141 @@
+name: MNEBYVPN forensic RU 853 vs private DoT and WG directional errors readonly
+on:
+  push:
+    branches: [audit/mnebyvpn-853-wg-rootcause-20261116]
+    paths: ['.github/workflows/mnebyvpn-853-wg-rootcause-readonly-20261116.yml']
+permissions: {contents: read}
+concurrency:
+  group: mnebyvpn-853-wg-rootcause-20261116
+  cancel-in-progress: false
+jobs:
+  observe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Pinned access and read-only service route and TLS stage audit
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          test "$(grep -c ' ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts)" -eq 2
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          for role in RU DE; do
+            if [[ "$role" == RU ]]; then host=188.120.254.223; export SSHPASS="$RU_PASS"; else host=89.125.90.101; export SSHPASS="$DE_PASS"; fi
+            sshpass -e ssh "${opts[@]}" "root@$host" "python3 - $role" <<'PY'
+          import sys,subprocess,json,os,time,statistics,math,re,socket,ssl,struct
+          role=sys.argv[1]
+          RU="188.120.254.223";DE="89.125.90.101"
+          WG_RU="10.66.77.2";WG_DE="10.66.77.1"
+          def run(*args,timeout=8):
+              try:
+                  p=subprocess.run(args,capture_output=True,text=True,timeout=timeout)
+                  return p.returncode,p.stdout.strip()
+              except Exception as e:
+                  return -1,type(e).__name__
+          def pci(values,p):
+              if not values:return None
+              a=sorted(values)
+              return round(a[min(len(a)-1,max(0,math.ceil(len(a)*p/100)-1))],1)
+          def recvn(s,n):
+              b=bytearray()
+              while len(b)<n:
+                  q=s.recv(n-len(b))
+                  if not q:raise EOFError('Truncated DoT reply')
+                  b+=q
+              return b
+          def dot(addr,port,n=5):
+              x={"target":addr+":"+str(port),"samples":n,"ok":0,
+                 "tcp_ms":[],"tls_ms":[],"dns_ms":[],"errors":{}}
+              ctx=ssl.create_default_context()
+              for _ in range(n):
+                  a=time.monotonic()
+                  try:
+                      with socket.create_connection((addr,port),timeout=4) as sock:
+                          b=time.monotonic()
+                          sock.settimeout(4)
+                          with ctx.wrap_socket(sock,server_hostname="dns.mnebyvpn.site") as tls:
+                              c=time.monotonic()
+                              qid=10854
+                              label=b"\x07example\x03org\x00"
+                              payload=struct.pack("!HHHHHH",qid,0x100,1,0,0,0)+label+struct.pack("!HH",1,1)
+                              tls.sendall(struct.pack("!H",len(payload))+payload)
+                              size=struct.unpack("!H",recvn(tls,2))[0]
+                              if not 12<=size<=4096:raise ValueError('Invalid DNS frame')
+                              resp=recvn(tls,size)
+                              if int.from_bytes(resp[:2],'big')!=qid or resp[3]&15:raise ValueError('DNS reply failed')
+                              d=time.monotonic()
+                      x["ok"]+=1
+                      x["tcp_ms"].append(round((b-a)*1000,1))
+                      x["tls_ms"].append(round((c-b)*1000,1))
+                      x["dns_ms"].append(round((d-c)*1000,1))
+                  except Exception as e:
+                      k=type(e).__name__;x["errors"][k]=x["errors"].get(k,0)+1
+              return {"target":x["target"],"attempted":n,"ok":x["ok"],"errors":x["errors"],
+                      "tcp_p50_ms":pci(x["tcp_ms"],50),"tls_p50_ms":pci(x["tls_ms"],50),
+                      "dns_p50_ms":pci(x["dns_ms"],50),"tls_p95_ms":pci(x["tls_ms"],95)}
+          def ping(addr,size=1200,n=45):
+              rc,out=run("ping","-n","-q","-M","do","-c",str(n),"-i","0.2","-s",str(size),"-W","1",addr,timeout=22)
+              m=re.search(r"(\d+) packets transmitted,\s*(\d+) (?:packets )?received,\s*([\d.]+)% packet loss",out)
+              r=re.search(r"(?:rtt|round-trip) min/avg/max/(?:mdev|stddev) = ([\d.]+)/([\d.]+)/([\d.]+)/([\d.]+) ms",out)
+              return {"sent":int(m[1]) if m else None,"received":int(m[2]) if m else None,
+                      "loss_pct":float(m[3]) if m else None,"rtt_avg_ms":float(r[2]) if r else None,
+                      "rtt_max_ms":float(r[3]) if r else None,"returncode":rc}
+          def counters(name):
+              base="/sys/class/net/"+name
+              if not os.path.exists(base):return {"exists":False}
+              d={"exists":True}
+              for k in ("rx_bytes","tx_bytes","rx_errors","tx_errors","rx_dropped","tx_dropped"):
+                  try:d[k]=int(open(base+"/statistics/"+k).read())
+                  except OSError:pass
+              try:d["mtu"]=int(open(base+"/mtu").read())
+              except OSError:pass
+              return d
+          def unit(name):
+              a,b=run("systemctl","is-active",name)
+              return b if a==0 else "not_active_or_unknown"
+          def listener(port):
+              rc,text=run("ss","-Hlntp","sport = :"+str(port))
+              names=re.findall(r'users:\(\("([^"]+)"',text)
+              return {"count":len(text.splitlines()) if rc==0 else None,
+                      "process_names":sorted(set(names))}
+          def journal(name):
+              rc,data=run("journalctl","-q","-u",name,"--since","-20min","--no-pager","-o","cat","-n","250")
+              low=data.lower() if rc==0 else ""
+              return {"log_lines":len(low.splitlines()) if rc==0 else None,
+                      "errors":sum(low.count(w) for w in ("error","failed","timeout","reset","network unreachable"))}
+          def route(addr):
+              rc,line=run("ip","-4","route","get",addr)
+              return {"dev":(re.search(r"\bdev\s+(\S+)",line).group(1) if rc==0 and re.search(r"\bdev\s+(\S+)",line) else None)}
+          def nginfo():
+              rc,out=run("nginx","-T",timeout=15)
+              if rc!=0:return {"valid":False}
+              # Avoid emitting routes, hostnames, private domains or credentials.
+              return {"valid":True,"ssl_preread_mentions":out.count("ssl_preread"),
+                      "ru853_target_mentions":out.count("$mnebydns_ru853_target"),
+                      "wg8854_mentions":out.count("10.66.77.1:8854"),
+                      "owner_blocks":out.count("BEGIN MNEBYDNS_OWNER_EXACT_"),
+                      "listen853":len(re.findall(r"\blisten\s+(?:\S+:)?853\b",out))}
+          peer=WG_DE if role=="RU" else WG_RU
+          other=DE if role=="RU" else RU
+          targets=[("ru_public",RU,853),("de_public",DE,853),("de_private",WG_DE,8854)]
+          if role=="RU":targets.insert(0,("ru_local","127.0.0.1",853))
+          result={"role":role,"unix":int(time.time()),
+                  "services":{n:unit(n) for n in ("nginx.service","xray.service","mnebyvpn-xray.service","mnebydns-dot.service","mnebydns-googlepilot.service","mnebydns-personal-sni-stream.service","mnebydns-personal-sni-redirect.service","wg-quick@tg-relay.service","awg-quick@tg-relay.service")},
+                  "ports":{str(p):listener(p) for p in (443,853,8854,8856)},
+                  "nginx":nginfo(),"tg_relay":counters("tg-relay"),
+                  "physical":counters("ens3" if role=="RU" else "eth0"),
+                  "route_wg":route(peer),"route_853":route(RU),"route_de_wg8854":route(WG_DE),
+                  "dns_paths":{label:dot(ip,p) for label,ip,p in targets},
+                  "ping_private_45":ping(peer),"ping_public_45":ping(other),
+                  "recent_log_aggregates":{n:journal(n) for n in ("nginx.service","xray.service","mnebydns-dot.service")}}
+          print("MNEBY_DIAG_NODE="+json.dumps(result,separators=(",",":")),flush=True)
+          PY
+          done
+          echo "MNEBY_DIAG_READONLY_FINISHED=true"
