@@ -66,15 +66,10 @@ jobs:
               echo '::error::vpn_stage requires an independently verified Xray SHA256'; exit 2;
             }
           fi
-          # An SSH hostname must not be an alias for any live MNEBYVPN VPS.
-          python3 - <<'PY'
-          import os,socket,ipaddress
-          host=os.environ['INPUT_HOST']
-          forbidden={'89.125.90.101','188.120.254.223'}
-          resolved={a[4][0] for a in socket.getaddrinfo(host,None,type=socket.SOCK_STREAM)}
-          if not resolved or resolved & forbidden:
-              raise SystemExit('SSH host aliases a production VPS or cannot resolve')
-          PY
+          # Resolve exactly once and use the resulting IP in every SSH/SCP.
+          # Pinned original alias is checked via the private known_hosts file.
+          target_ip="$(python3 nodekit/resolve_new_vps.py "$INPUT_HOST")"
+          printf 'TARGET_IP=%s\n' "$target_ip" >> "$GITHUB_ENV"
           mkdir -m 700 -p "$RUNNER_TEMP/nodekit-credentials"
           printf '%s\n' "$NEW_NODE_SSH_KEY" > "$RUNNER_TEMP/nodekit-credentials/id_key"
           printf '%s\n' "$NEW_NODE_KNOWN_HOSTS" > "$RUNNER_TEMP/nodekit-credentials/known_hosts"
@@ -106,33 +101,39 @@ jobs:
           target="root@$INPUT_HOST"
           remote_dir="$(ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes \
             -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known" \
+            -o HostName="$TARGET_IP" -o HostKeyAlias="$INPUT_HOST" \
             -o ConnectTimeout=12 "$target" \
             'umask 077; mktemp -d /tmp/mnebyvpn-nodekit.XXXXXXXX')"
           [[ "$remote_dir" =~ ^/tmp/mnebyvpn-nodekit\.[a-zA-Z0-9]{8}$ ]]
           cleanup() {
             ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes \
               -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known" \
+            -o HostName="$TARGET_IP" -o HostKeyAlias="$INPUT_HOST" \
               -o ConnectTimeout=12 "$target" \
               "rm -rf -- '$remote_dir'" >/dev/null 2>&1 || true
           }
           trap cleanup EXIT
           scp -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes \
             -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known" \
+            -o HostName="$TARGET_IP" -o HostKeyAlias="$INPUT_HOST" \
             -o ConnectTimeout=12 nodekit/nodekit.py nodekit/identity.py nodekit/vpn_stage.py \
             "$RUNNER_TEMP/nodekit-credentials/spec.json" "$target:$remote_dir/"
           if [[ "$MODE" == 'identity' ]]; then
             ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes \
               -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known" \
+            -o HostName="$TARGET_IP" -o HostKeyAlias="$INPUT_HOST" \
               -o ConnectTimeout=12 "$target" \
               "python3 '$remote_dir/identity.py' --node-id '$NODE_ID'"
           elif [[ "$MODE" == 'vpn_stage' ]]; then
             ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes \
               -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known" \
+            -o HostName="$TARGET_IP" -o HostKeyAlias="$INPUT_HOST" \
               -o ConnectTimeout=12 "$target" \
               "python3 '$remote_dir/vpn_stage.py' --node-id '$NODE_ID' --xray /opt/xray/xray --xray-sha256 '$XRAY_SHA256'"
           else
             ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes \
               -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known" \
+            -o HostName="$TARGET_IP" -o HostKeyAlias="$INPUT_HOST" \
               -o ConnectTimeout=12 "$target" \
               "python3 '$remote_dir/nodekit.py' '$MODE' --spec '$remote_dir/spec.json'"
           fi
