@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "node_id": "de-frankfurt-02",
+  "role": "combined",
+  "services": ["dns", "vpn", "sni-proxy", "tunnel"],
+  "advertise_host": "node02.example.net",
+  "listeners": {
+    "dot_tcp": 853,
+    "vpn_tcp": 2053,
+    "sni_tcp": 443,
+    "tunnel_udp": 51820
+  },
+  "region": "de",
+  "provider": "example-provider"
+}

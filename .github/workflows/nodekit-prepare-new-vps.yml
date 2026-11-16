@@ -1,0 +1,106 @@
+# Manual-only preflight/staging on an already owned NEW VPS; no services installed.
+name: MNEBYVPN prepare NEW VPS (no production changes)
+on:
+  workflow_dispatch:
+    inputs:
+      host:
+        description: SSH host of new VPS (not production)
+        required: true
+        type: string
+      node_id:
+        description: Unique lowercase ID
+        required: true
+        type: string
+      advertise_host:
+        description: New node FQDN
+        required: true
+        type: string
+      mode:
+        description: Preflight or staged inventory
+        required: true
+        default: preflight
+        type: choice
+        options:
+          - preflight
+          - stage
+permissions:
+  contents: read
+concurrency:
+  group: mnebyvpn-new-node-${{ inputs.node_id }}
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      INPUT_HOST: ${{ inputs.host }}
+      NODE_ID: ${{ inputs.node_id }}
+      ADVERTISE_HOST: ${{ inputs.advertise_host }}
+      MODE: ${{ inputs.mode }}
+      NEW_NODE_SSH_KEY: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_KEY }}
+      NEW_NODE_KNOWN_HOSTS: ${{ secrets.MNEBYVPN_NEW_NODE_KNOWN_HOSTS }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate remote target and create non-secret spec
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          test -n "$NEW_NODE_SSH_KEY" && test -n "$NEW_NODE_KNOWN_HOSTS"
+          [[ "$INPUT_HOST" =~ ^[a-zA-Z0-9.-]+$ ]]
+          test "$INPUT_HOST" != '89.125.90.101'
+          test "$INPUT_HOST" != '188.120.254.223'
+          [[ "$NODE_ID" =~ ^[a-z0-9][a-z0-9-]{2,39}$ ]]
+          [[ "$MODE" == 'preflight' || "$MODE" == 'stage' ]]
+          mkdir -m 700 -p "$RUNNER_TEMP/nodekit-credentials"
+          printf '%s\n' "$NEW_NODE_SSH_KEY" > "$RUNNER_TEMP/nodekit-credentials/id_key"
+          printf '%s\n' "$NEW_NODE_KNOWN_HOSTS" > "$RUNNER_TEMP/nodekit-credentials/known_hosts"
+          chmod 600 "$RUNNER_TEMP/nodekit-credentials/"*
+          ssh-keygen -F "$INPUT_HOST" -f "$RUNNER_TEMP/nodekit-credentials/known_hosts" >/dev/null
+          python3 - <<'PY'
+          import json, os, pathlib
+          data = {
+              "schema_version": 1,
+              "node_id": os.environ["NODE_ID"],
+              "role": "combined",
+              "services": ["dns", "vpn", "sni-proxy", "tunnel"],
+              "advertise_host": os.environ["ADVERTISE_HOST"],
+              "listeners": {
+                  "dot_tcp": 853, "vpn_tcp": 2053, "sni_tcp": 443,
+                  "tunnel_udp": 51820
+              }
+          }
+          path = pathlib.Path(os.environ["RUNNER_TEMP"]) / "nodekit-credentials" / "spec.json"
+          path.write_text(json.dumps(data))
+          PY
+      - name: Transfer staged tools and run remote preflight
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          key="$RUNNER_TEMP/nodekit-credentials/id_key"
+          known="$RUNNER_TEMP/nodekit-credentials/known_hosts"
+          target="root@$INPUT_HOST"
+          remote_dir="$(ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known" \
+            -o ConnectTimeout=12 "$target" \
+            'umask 077; mktemp -d /tmp/mnebyvpn-nodekit.XXXXXXXX')"
+          [[ "$remote_dir" =~ ^/tmp/mnebyvpn-nodekit\.[a-zA-Z0-9]{8}$ ]]
+          cleanup() {
+            ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes \
+              -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known" \
+              -o ConnectTimeout=12 "$target" \
+              "rm -rf -- '$remote_dir'" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          scp -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known" \
+            -o ConnectTimeout=12 nodekit/nodekit.py \
+            "$RUNNER_TEMP/nodekit-credentials/spec.json" "$target:$remote_dir/"
+          ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known" \
+            -o ConnectTimeout=12 "$target" \
+            "python3 '$remote_dir/nodekit.py' '$MODE' --spec '$remote_dir/spec.json'"
+          echo "No packages/services changed; success does not imply public readiness."
