@@ -8,6 +8,7 @@ It does not activate, publish, touch nginx/WireGuard/firewall, or edit /etc.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import base64
 import hashlib
 import json
@@ -28,6 +29,25 @@ PREFIX_ED25519_SPKI = bytes.fromhex("302a300506032b6570032100")
 HEX = re.compile(r"[a-f0-9]{64}")
 KEY = re.compile(r"[A-Za-z0-9_-]{43}")
 NODE = re.compile(r"[a-z0-9][a-z0-9-]{2,39}")
+
+
+def _promote_stage_noreplace(source: Path, destination: Path) -> None:
+    """Linux atomic rename that never replaces a concurrently created node."""
+    if sys.platform != "linux":
+        raise OSError("Atomic no-replace staging requires Linux")
+    libc = ctypes.CDLL(None, use_errno=True)
+    try:
+        renameat2 = libc.renameat2
+    except AttributeError as exc:
+        raise OSError("renameat2 unavailable; refusing unsafe staging") from exc
+    renameat2.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int,
+                          ctypes.c_char_p, ctypes.c_uint)
+    renameat2.restype = ctypes.c_int
+    result = renameat2(-100, os.fsencode(source), -100,
+                       os.fsencode(destination), 1)
+    if result != 0:
+        error_number = ctypes.get_errno()
+        raise OSError(error_number, os.strerror(error_number), str(destination))
 
 
 class VpnStageError(ValueError):
@@ -189,7 +209,7 @@ def stage_vpn(stage_root: Path, node_id: str, xray: Path,
         pub.chmod(0o600)
         if vpn_dir.exists() or vpn_dir.is_symlink():
             raise VpnStageError('VPN state appeared during staging: refuse overwrite')
-        stage.rename(vpn_dir)
+        _promote_stage_noreplace(stage, vpn_dir)
         return report
     except Exception:
         shutil.rmtree(stage)
