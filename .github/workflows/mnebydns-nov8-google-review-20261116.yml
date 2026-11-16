@@ -1,4 +1,4 @@
-name: MNEBYDNS 8-Nov Google domain policy parity (read-only)
+name: MNEBYDNS 8-Nov Google RR semantic parity verified parser (read-only)
 on:
   push:
     branches: [audit/smartdns-installed-review-20261115]
