@@ -121,7 +121,7 @@ def persistent_watchdog(unit: str,deadline: datetime,command: str) -> tuple[str,
     service=("[Unit]\nDescription=MNEBYDNS config restoration if uncommitted\n"
              "[Service]\nType=oneshot\nExecStart="+command+"\n")
     timer=("[Unit]\nDescription=Persistent MNEBYDNS rollback\n"
-           "[Timer]\nOnCalendar="+stamp+"\nPersistent=true\nAccuracySec=1s\n"
+           "[Timer]\nOnCalendar="+stamp+"\nOnUnitInactiveSec=60s\nPersistent=true\nAccuracySec=1s\n"
            "Unit="+unit+".service\n[Install]\nWantedBy=timers.target\n")
     return service,timer
 
