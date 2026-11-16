@@ -1,0 +1,63 @@
+name: MNEBYVPN isolate reverse tunnel packet loss by size and interface type read only
+on:
+  push:
+    branches: [audit/mnebyvpn-853-wg-rootcause-20261116]
+    paths: ['.github/workflows/mnebyvpn-reverse-tunnel-loss-localize-20261116.yml']
+permissions: {contents: read}
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Inspect tunnel protocol and correlation of packet size with loss on both servers
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          for role in DE RU; do
+            if [[ "$role" == DE ]]; then host=89.125.90.101; export SSHPASS="$DE_PASS"; else host=188.120.254.223; export SSHPASS="$RU_PASS"; fi
+            sshpass -e ssh "${opts[@]}" "root@$host" "python3 - $role" <<'PY'
+          import sys,json,subprocess,re,os,time
+          role=sys.argv[1]
+          peer="10.66.77.2" if role=="DE" else "10.66.77.1"
+          def cmd(*args,timeout=10):
+              try:
+                  p=subprocess.run(args,capture_output=True,text=True,timeout=timeout)
+                  return p.returncode,p.stdout.strip()
+              except Exception as e:return -1,type(e).__name__
+          def ping(n,size):
+              rc,text=cmd("ping","-n","-q","-M","do","-c",str(n),"-i","0.18",
+                          "-W","1","-s",str(size),peer,timeout=30)
+              m=re.search(r"(\d+) packets transmitted,\s*(\d+) (?:packets )?received,\s*([\d.]+)% packet loss",text)
+              return {"payload":size,"sent":int(m[1]) if m else None,"received":int(m[2]) if m else None,"loss_pct":float(m[3]) if m else None,"status":rc}
+          rc,info=cmd("ip","-d","-j","link","show","dev","tg-relay")
+          if rc==0:
+              try:
+                  j=json.loads(info)[0]
+                  extra=j.get("linkinfo") or {}
+                  device={"mtu":j.get("mtu"),"link_type":j.get("link_type"),
+                          "linkinfo_kind":extra.get("info_kind"),
+                          "iftype":j.get("ifindex"),"flags":j.get("flags")}
+              except Exception:device={"error":"metadata_parse_failed"}
+          else:device={"error":"ip_link_failed"}
+          rc,unitnames=cmd("systemctl","list-units","--type=service","--all","--plain","--no-legend",timeout=10)
+          active_units=[x.split()[0] for x in unitnames.splitlines() if x and any(word in x.lower() for word in ("wireguard","awg","amnezia","wg-quick","tun","relay"))][:20]
+          rc,ps=cmd("ps","-eo","comm=",timeout=10)
+          process_names=sorted(set(x for x in ps.splitlines() if any(w in x.lower() for w in ("awg","wg","gost","tun","udp","xray","sing-box","boring","cloak"))))[:25]
+          rc,iprule=cmd("ip","-4","rule","show")
+          report={"role":role,"interface":device,
+                  "units":active_units,"process_names":process_names,
+                  "route_rule_count":len(iprule.splitlines()),
+                  "ping_bysize":{str(size):ping(36,size) for size in (32,400,900,1100,1200)}}
+          print("MNEBY_MTU_DIRECTIONAL="+json.dumps(report,separators=(",",":")),flush=True)
+          PY
+          done
+          echo REVERSE_LOSS_SIZE_PROFILE_COMPLETE=true
