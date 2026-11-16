@@ -1,4 +1,4 @@
-name: MNEBYDNS restore Nov8 Google map preparation
+name: MNEBYDNS exact Nov8 Google map preparation (correct source)
 on:
   push:
     branches: [audit/smartdns-installed-review-20261115]
@@ -28,7 +28,7 @@ jobs:
             -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
             -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
           mkdir -p output
-          SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -B -' < scripts/mnebydns-8nov-restore-checkpoint-find-20261116.py > output/original-checkpoint.json
+          SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -B -' < scripts/mnebydns-nov8-google-restore-map-20261116.py > output/original-checkpoint.json
           python3 - <<'PY'
           import json
           with open("output/original-checkpoint.json") as f: j=json.load(f)
