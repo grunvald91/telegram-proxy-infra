@@ -1,5 +1,10 @@
 name: MNEBYVPN — activate YuKassa reviewer (private)
 on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scripts/mnebyvpn-yookassa-review-provision.py'
+      - '.github/workflows/mnebyvpn-yookassa-review-activate.yml'
   workflow_dispatch:
 
 permissions:
@@ -10,7 +15,16 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  lint:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile reviewer helper without executing it
+        run: python3 -m py_compile scripts/mnebyvpn-yookassa-review-provision.py
   activate:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 12
     env:
