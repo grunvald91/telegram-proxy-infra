@@ -1,4 +1,4 @@
-name: MNEBYDNS 8-Nov Google RR semantic parity verified parser (read-only)
+name: MNEBYDNS inspect five historical CoreDNS rule diffs (read-only)
 on:
   push:
     branches: [audit/smartdns-installed-review-20261115]
