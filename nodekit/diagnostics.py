@@ -63,9 +63,13 @@ def report(node_id: str, expected: dict[str, dict[str, str]],
                 not isinstance(item, dict) or set(item) != {"path", "sha256"}):
             raise ContractError("Invalid fingerprint item")
         filename = item["path"]
-        if not isinstance(filename, str) or not filename.startswith("/etc/mnebyvpn-nodekit/"):
-            raise ContractError("Only nodekit-owned configuration may be fingerprinted")
-        results[alias] = config_fingerprint(Path(filename), item["sha256"])
+        base = Path("/etc/mnebyvpn-nodekit")
+        path = Path(filename) if isinstance(filename, str) else Path("/")
+        if (not isinstance(filename, str) or not path.is_absolute() or
+                base.is_symlink() or not path.resolve().is_relative_to(base.resolve()) or
+                path.name.lower().endswith((".key", ".pem", ".env", ".secret"))):
+            raise ContractError("Only non-secret nodekit-owned configuration may be fingerprinted")
+        results[alias] = config_fingerprint(path, item["sha256"])
     units = {}
     for service in sorted(ALLOWED_COMPONENTS):
         name = "mnebyvpn-nodekit-" + node_id + "-" + service + ".service"
