@@ -1,59 +1,46 @@
-name: MNEBYDNS Googlevideo compare RU egress and DE ingress TCP443 read-only
+name: MNEBYDNS restore 8 November 2026 exact production checkpoint
 on:
   push:
     branches: [audit/smartdns-installed-review-20261115]
     paths: ['.github/workflows/smartdns-installed-review-20261115.yml']
 permissions: {contents: read}
 concurrency:
-  group: mnebydns-googlevideo-public-path-trace-20261116
+  group: mnebydns-google-public-443-change
   cancel-in-progress: false
 jobs:
-  review:
+  snapshot:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
       DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
-      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
         with: {persist-credentials: false}
-      - name: Read-only trace of actual packets and current routing on both VPS
+      - name: Locate original 8 November 2026 production Nginx and CoreDNS snapshot
         shell: bash
         run: |
           set -Eeuo pipefail
-          test -n "$DE_PASS" && test -n "$RU_PASS"
-          python3 -m py_compile scripts/mnebydns-youtube-public-tcp-trace-20261116.py
+          test -n "$DE_PASS"
+          python3 -m py_compile scripts/mnebydns-8nov-restore-checkpoint-find-20261116.py
           sudo apt-get update -qq
           sudo apt-get install -y -qq sshpass >/dev/null
-          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
-            -o HostKeyAlgorithms=ssh-ed25519
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519
             -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
             -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
           mkdir -p output
-          SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -B - read-de' < scripts/mnebydns-youtube-public-tcp-trace-20261116.py > output/de-routes.json
-          SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -B - read-ru' < scripts/mnebydns-youtube-public-tcp-trace-20261116.py > output/ru-routes.json
-          SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -B - capture-de' < scripts/mnebydns-youtube-public-tcp-trace-20261116.py > output/de-packet-metadata.json &
-          capture_pid=$!
-          SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -B - capture-ru' < scripts/mnebydns-youtube-public-tcp-trace-20261116.py > output/ru-packet-metadata.json &
-          ru_capture_pid=$!
-          sleep 2
-          SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -B - client-ru' < scripts/mnebydns-youtube-public-tcp-trace-20261116.py > output/ru-probes.json
-          python3 scripts/mnebydns-youtube-public-tcp-trace-20261116.py client-runner > output/runner-probes.json
-          wait "$capture_pid"
-          wait "$ru_capture_pid"
+          SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -B -' < scripts/mnebydns-8nov-restore-checkpoint-find-20261116.py > output/original-checkpoint.json
           python3 - <<'PY'
           import json
-          for name in ("de-routes","ru-routes","de-packet-metadata","ru-packet-metadata","ru-probes","runner-probes"):
-              with open("output/"+name+".json") as fh:
-                  j=json.load(fh)
-              assert j["read_only"] is True
-              print("TRACE_"+name.upper().replace("-","_")+"="+json.dumps(j,separators=(",",":"),sort_keys=True),flush=True)
-          print("GOOGLEVIDEO_PUBLIC_PATH_READ_ONLY_TRACE_COMPLETE=true",flush=True)
+          with open("output/original-checkpoint.json") as f: j=json.load(f)
+          print("EXACT_NOV8_ORIGINAL_BACKUP_AVAILABLE="+str(j["backup_present"]).lower())
+          print("EXACT_NOV8_BACKUP_FILE_SUMMARY="+json.dumps(j["backup_files"],sort_keys=True,separators=(",",":")))
+          print("CURRENT_GOOGLEPILOT_SUMMARY="+json.dumps(j["active_files"],sort_keys=True,separators=(",",":")))
+          print("MNEBYDNS_ORIGINAL_CHECKPOINT_LOOKUP_FINISHED=true")
           PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: googlevideo-public-path-20261116-readonly
-          path: output/*.json
-          retention-days: 3
+          name: mnebydns-original-8nov-googlepilot-checkpoint
+          path: output/original-checkpoint.json
+          retention-days: 2
           if-no-files-found: warn
