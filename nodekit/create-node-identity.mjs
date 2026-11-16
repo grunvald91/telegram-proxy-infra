@@ -9,7 +9,7 @@
 import {
   existsSync,lstatSync,mkdirSync,readFileSync,writeFileSync,
 } from 'node:fs';
-import {join} from 'node:path';
+import {join,resolve} from 'node:path';
 import {generateKeyPairSync,createHash} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 
@@ -67,7 +67,7 @@ function main(args) {
   const result=createNodeIdentity(args[1],args[0]);
   process.stdout.write(JSON.stringify(result)+'\n');
 }
-if(process.argv[1]&&fileURLToPath(import.meta.url)===process.argv[1]){
+if(process.argv[1]&&fileURLToPath(import.meta.url)===resolve(process.argv[1])){
   try{main(process.argv.slice(2));}
   catch(error){
     process.stderr.write('node_identity_error='+error.constructor.name+'\n');
