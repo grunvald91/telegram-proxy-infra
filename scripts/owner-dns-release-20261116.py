@@ -4,7 +4,7 @@
 Reuses existing mounts, certificates, upstreams and container limits. A failed
 canary changes no listener. Both old containers survive until final commit.
 """
-import datetime, fcntl, json, os, pathlib, re, subprocess, sys, tempfile, time, urllib.parse
+import datetime, fcntl, json, os, pathlib, re, shutil, subprocess, sys, tempfile, time, urllib.parse
 
 ROOT=pathlib.Path('/opt/mnebyvpn/owner-dns-release-20261116')
 PRIVATE='mnebydns-personal-dot-private'
@@ -44,6 +44,7 @@ def create(d,name,image=None,overrides=None,mounts=None,start=True):
     h=d['HostConfig'];c=d['Config']
     args=['docker','run' if start else 'create','--name',name,'--network','host',
           '--env-file',str(envfile),'--user',c['User'],'--read-only','--cap-drop','ALL',
+          '--workdir',c.get('WorkingDir') or '/',
           '--security-opt','no-new-privileges','--pids-limit',str(h.get('PidsLimit') or 96),
           '--memory',str(h['Memory'] or 268435456),'--cpus',str((h.get('NanoCpus') or 500000000)/1e9),
           '--tmpfs','/tmp:rw,nosuid,nodev,size=16m','--restart','unless-stopped']
@@ -80,6 +81,36 @@ def arm():
     pathlib.Path('/etc/systemd/system/'+TIMER+'.service').write_text(service)
     pathlib.Path('/etc/systemd/system/'+TIMER+'.timer').write_text(timer)
     run(['systemctl','daemon-reload']);run(['systemctl','enable','--now',TIMER+'.timer'])
+def bot_backup_image(bot):
+    try:
+        run(['docker','image','inspect',bot['Image']])
+        return bot['Image']
+    except RuntimeError:
+        # The live container can survive removal of its image metadata. This
+        # state was confirmed by the read-only diagnostic, not assumed.
+        # Export its immutable rootfs; preserve env/command/user/working dir
+        # separately through the saved inspect record and create(). No volumes
+        # may be lost from this recovery snapshot.
+        if bot.get('Mounts') or not bot['HostConfig'].get('ReadonlyRootfs'):
+            raise RuntimeError('Missing-image backup requires an immutable bot without mounts')
+        if shutil.disk_usage(ROOT).free<512*1024*1024:
+            raise RuntimeError('Insufficient free space for a verified bot backup')
+        archive=ROOT/'bot-rootfs.tar'
+        archive.touch(mode=0o600,exist_ok=False)
+        try:
+            run(['docker','export','--output',str(archive),BOT],90)
+            image='mnebyvpn-owner-recovery-bot:20261116'
+            run(['docker','import',str(archive),image],90)
+        finally:archive.unlink(missing_ok=True)
+        # Verify an actual recovery container before any live service stops.
+        name='mnebyvpn-owner-recovery-check'
+        if exists(name):raise RuntimeError('Recovery canary name is occupied')
+        if re.search(r':18798\s',run(['ss','-Hlnt'])):raise RuntimeError('Recovery canary port occupied')
+        create(bot,name,image,{'BOT_PORT':'18798'})
+        try:ready(18798)
+        finally:run(['docker','rm','-f',name])
+        print('ORIGINAL_BOT_MISSING_IMAGE_RECOVERY_VERIFIED=true',flush=True)
+        return image
 def test_links(image,port,public=False):
     args=['docker','run','--rm','--network','host','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges',
         '--env-file','/opt/mnebyvpn/bot/web.env','--mount','type=bind,source='+str(ROOT/'response.pub')+',target=/response.pub,readonly',
@@ -148,15 +179,15 @@ def apply(sha):
         private(ROOT/'owner-key-backup.env','MNEBYDNS_OWNER_LINK_KEY='+key+'\n')
         private(env_path,env_text.rstrip()+'\nMNEBYDNS_OWNER_LINK_KEY='+key+'\n')
     elif not re.fullmatch('[a-f0-9]{64}',existing['MNEBYDNS_OWNER_LINK_KEY']):raise RuntimeError('Invalid existing encryption key')
-    create(d,CANARY,image,{'MNEBYDNS_PERSONAL_DOT_BIND_IP':'127.0.0.1','MNEBYDNS_PERSONAL_DOT_PORT':'18856','MNEBYDNS_PERSONAL_DOT_HEALTH_PORT':'18857'},mounts)
+    create(d,CANARY,image,{'MNEBYDNS_PERSONAL_DOT_BIND_IP':'127.0.0.1','MNEBYDNS_PERSONAL_DOT_PORT':'18856','MNEBYDNS_PERSONAL_DOT_HEALTH_PORT':'18857','MNEBYDNS_OWNER_LINKS_ENABLED':'yes'},mounts)
     ready(18857)
     if inspect(CANARY)['State']['Status']!='running':raise RuntimeError('Candidate exited')
     test_links(image,18856)
     # Retain an exact stopped bot clone for emergency recovery as well.
-    create(bot,OLD_BOT,start=False)
+    create(bot,OLD_BOT,bot_backup_image(bot),start=False)
     arm()
     run(['docker','stop','-t','10',PRIVATE]);run(['docker','rename',PRIVATE,OLD_PRIVATE])
-    create(d,PRIVATE,image,{},mounts);ready(int(dot_env['MNEBYDNS_PERSONAL_DOT_HEALTH_PORT']))
+    create(d,PRIVATE,image,{'MNEBYDNS_OWNER_LINKS_ENABLED':'yes'},mounts);ready(int(dot_env['MNEBYDNS_PERSONAL_DOT_HEALTH_PORT']))
     test_links(image,int(dot_env['MNEBYDNS_PERSONAL_DOT_PORT']),True)
     run(['bash','/opt/mnebyvpn/owner-dns-release-20261116/promote.sh',sha],160)
     ready(8793)

@@ -63,7 +63,9 @@ jobs:
           sshpass -e scp "${opts[@]}" infra/scripts/mnebyvpn-stage-install.sh "$remote:$root/stage.sh"
           sshpass -e scp "${opts[@]}" infra/ops/owner-dns-response-20261116.pub "$remote:$root/response.pub"
           sshpass -e scp "${opts[@]}" "$RUNNER_TEMP/owner-dns-source.tgz" "$remote:$root/source.tgz"
-          sshpass -e ssh "${opts[@]}" "$remote" "bash '$root/stage.sh' '$root/source.tgz' '$SOURCE_SHA'"
+          # Source and schema already passed staging in the first attempt.
+          # Reuse exactly that image when its SHA and staging pointer match.
+          sshpass -e ssh "${opts[@]}" "$remote" "if test \"\$(cat /opt/mnebyvpn/staging/active_sha)\" = '$SOURCE_SHA' && docker image inspect 'mnebyvpn-stage-web:$SOURCE_SHA' >/dev/null 2>&1; then echo VERIFIED_STAGE_REUSED=true; else bash '$root/stage.sh' '$root/source.tgz' '$SOURCE_SHA'; fi"
           sshpass -e ssh "${opts[@]}" "$remote" "python3 '$root/release.py' '$SOURCE_SHA'"
           mkdir output
           sshpass -e ssh "${opts[@]}" "$remote" "cat '$root/result.json'" > output/owner-link-encrypted.json

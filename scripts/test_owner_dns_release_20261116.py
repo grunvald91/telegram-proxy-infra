@@ -42,4 +42,20 @@ class RecoveryTests(unittest.TestCase):
                 env=root/'canary.env';self.assertEqual(env.stat().st_mode&0o777,0o600)
                 self.assertEqual(env.read_text(),'PASSWORD=private-value\n')
 
+    def test_missing_image_recovery_preserves_original_working_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(directory)
+            original={'Config':{'Env':['PATH=/usr/local/bin:/usr/bin'],'User':'1000:1000','WorkingDir':'/srv/mnebyvpn','Entrypoint':['node'],'Cmd':['server.ts']},'HostConfig':{'PidsLimit':96,'Memory':268435456,'NanoCpus':350000000},'Mounts':[],'Image':'missing-original'}
+            with patch.object(m,'ROOT',root),patch.object(m,'run') as run:
+                m.create(original,'backup','recovery-image',start=False)
+                args=run.call_args.args[0]
+                self.assertEqual(args[args.index('--workdir')+1],'/srv/mnebyvpn')
+                self.assertIn('recovery-image',args);self.assertNotIn('missing-original',args)
+
+    def test_missing_image_backup_refuses_unpreserved_volume_data(self):
+        original={'Image':'missing','Mounts':[{'Source':'/data'}],'HostConfig':{'ReadonlyRootfs':True}}
+        with patch.object(m,'run',side_effect=RuntimeError('missing')):
+            with self.assertRaisesRegex(RuntimeError,'immutable bot without mounts'):
+                m.bot_backup_image(original)
+
 if __name__=='__main__':unittest.main()
