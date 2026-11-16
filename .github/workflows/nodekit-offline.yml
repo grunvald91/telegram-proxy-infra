@@ -19,9 +19,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.16.0'
       - name: Test bootstrap and preflight staging locally
         run: |
           set -euo pipefail
           bash -n nodekit/bootstrap.sh
           python3 -m py_compile nodekit/nodekit.py nodekit/control_plane.py nodekit/incident_gateway.py nodekit/monitor_policy.py nodekit/owned_runbook.py nodekit/diagnostics.py
           python3 -m unittest discover -s nodekit/tests -v
+          node --test nodekit/tests/test_grant_issuer.mjs
