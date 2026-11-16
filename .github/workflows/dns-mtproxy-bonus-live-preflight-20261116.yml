@@ -74,8 +74,17 @@ jobs:
           print('DE_PYTHON='+run(['python3','--version']).stdout.strip())
           print('DE_DISK_AVAILABLE_GB='+str(round(os.statvfs('/opt').f_bavail*os.statvfs('/opt').f_frsize/(1024**3),1)))
           print('DE_TELEMT='+run(['systemctl','is-active','telemt-direct-ozon']).stdout.strip())
+          print('DE_NODE_ON_HOST='+str(run(['which','node']).returncode==0))
+          print('DE_NPM_ON_HOST='+str(run(['which','npm']).returncode==0))
+          print('DE_DOCKER_ON_HOST='+str(run(['which','docker']).returncode==0))
+          print('DE_DOCKER_READY='+str(run(['docker','info'],timeout=6).returncode==0) if run(['which','docker']).returncode==0 else 'False')
+          import socket
+          s=socket.socket();s.settimeout(4)
+          try: s.connect(('188.120.254.223',22)); print('DE_TO_RU_SSH_TCP=True')
+          except Exception as e: print('DE_TO_RU_SSH_TCP='+type(e).__name__)
+          finally:s.close()
           p=run(['ss','-lntH']).stdout
-          for port in (9096,9446,853,22):
+          for port in (9096,9446,853,22,55433):
               print('DE_LISTEN_'+str(port)+'='+str(any(line.split()[3].endswith(':'+str(port)) for line in p.splitlines())))
           config=pathlib.Path('/etc/telemt/direct-ozon.toml')
           print('DE_CONFIG_PRESENT='+str(config.is_file()))
