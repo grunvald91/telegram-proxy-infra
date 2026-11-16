@@ -52,3 +52,32 @@ Do not rerun the old production script. Any subsequent change should use a new r
 4. separates configuration integrity from end-user application verification.
 
 This review did **not** change production.
+
+
+---
+
+## Remediation and subsequent evidence — 16 Nov 2026
+
+### Live DoT service recovered
+
+Read-only Actions [43890768074](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/43890768074) discovered that mnebydns-dot.service had failed and TCP 853 was not listening after the earlier Google restore.
+
+[Root-cause check 43890985878](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/43890985878) showed the actual CoreDNS error: permission denied opening /opt/mnebydns-dot/Corefile. The service uses DynamicUser=yes and supplementary group mnebydns-corefile-readers, but the configuration had root:root and 0640 permissions. Its effective service user could not read the file.
+
+A narrowly scoped production repair changed only the Corefile group to the intended reader group (gid 999). No DNS policy bytes, keys, certificates, subscriber access or firewall rules were changed.
+
+[Repair Actions 43891290243](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/43891290243) reported failure because its immediate post-startup readiness check raced the new process; the service subsequently became healthy. Independent [read-only verification 43891571867](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/43891571867) confirmed active CoreDNS, GooglePilot, Nginx and TCP/853 listener. The Corefile SHA remained 27623cd07fb895664089de7a621de536d6eeec8f40d005546470852cb9f7775a.
+
+The repair code now polls bounded readiness instead of checking the listener immediately. The temporary production repair workflow was archived.
+
+### Historical Google route semantics
+
+[Read-only comparison 43893827715](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/43893827715) analyzed 321 historical and 1377 current CoreDNS RR templates (A, AAAA, HTTPS, SVCB, CNAME). Original exact Google Nginx routes and GooglePilot origins are retained. Five historical wildcard templates changed textually because original Google media families were expanded, with Googlevideo A separated into its own rule. The old eight-family sample set retains its original synthetic DE89 A address and the other RR responses. The six-host extra Google A zone also targets DE89. GooglePilot has the original 120s inactivity timeout.
+
+This establishes static configuration parity for historical Google name samples, not all Google domains in existence and not mobile YouTube playback.
+
+### Safety fixes and remaining boundary
+
+The legacy one-shot restorer was disabled at its main entrypoint, and the previous production-deploying workflow was archived. The new safety module at scripts/mnebydns_nov8_restore_safety.py implements exclusive locking, pre-image hash validation, preserving owner/group/mode/xattrs, guarded rollback refusing third-party config changes, a persistent calendar watchdog renderer and a durable commit marker. [13 offline unit tests passed](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/43892933686).
+
+The safety module has NOT been used to deploy a new production configuration. Future deployment workflows must integrate it before activation; the tested watchdog template is not an installed production timer. The existing production services are active as of the cited on-node check.
