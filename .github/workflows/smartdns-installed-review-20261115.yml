@@ -1,4 +1,4 @@
-name: RESTORE MNEBYDNS original Nov8 Google services production routes
+name: RESTORE MNEBYDNS Nov8 all-Google production routes retry corrected
 on:
   push:
     branches: [audit/smartdns-installed-review-20261115]
