@@ -50,7 +50,6 @@ def current_source():
         raise RuntimeError("Unexpected stable pointer format")
     root=Path(old)
     if root.is_symlink() or not root.is_dir():raise RuntimeError("Stable source invalid")
-    run("sha256sum","-c","stable-manifest.sha256",timeout=6) if False else None
     p=subprocess.run(["sha256sum","-c","stable-manifest.sha256"],
                      cwd=root,capture_output=True,text=True,timeout=9)
     if p.returncode:raise RuntimeError("Previous stable checkpoint integrity failed")
@@ -63,10 +62,13 @@ def inspect():
     oldhash={name:sha(old/(name+".stable")) for name in LIVE}
     for key,v in EXPECTED_LIVE.items():
         if hashes[key]!=v:raise RuntimeError("Production config drift; refuse checkpoint promotion: "+key)
-    if (oldhash["dns"]!=EXPECTED_PREVIOUS_DNS or
-        oldhash["proxy"]!=EXPECTED_PREVIOUS_PROXY or
+    outdated=(oldhash["dns"]==EXPECTED_PREVIOUS_DNS and
+              oldhash["proxy"]==EXPECTED_PREVIOUS_PROXY)
+    current=(oldhash["dns"]==EXPECTED_LIVE["dns"] and
+             oldhash["proxy"]==EXPECTED_LIVE["proxy"])
+    if (not (outdated or current) or
         oldhash["nginx"]!=EXPECTED_LIVE["nginx"]):
-        raise RuntimeError("Historic stable checkpoint no longer expected")
+        raise RuntimeError("Unexpected prior stable checkpoint")
     dns=LIVE["dns"].stat()
     if not (dns.st_uid==0 and dns.st_gid==grp.getgrnam("mnebydns-corefile-readers").gr_gid
             and stat.S_IMODE(dns.st_mode)==0o640):
@@ -89,7 +91,8 @@ def inspect():
                            "proxy":oldhash["proxy"]!=hashes["proxy"]},
             "sensitive_timers_present":pending,
             "services":states,"listeners":listeners,
-            "ready_to_promote":not pending}
+            "ready_to_promote":outdated and not pending,
+            "already_reconciled":current}
     return old,status
 
 
