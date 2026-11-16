@@ -1,4 +1,4 @@
-name: MNEBYDNS safe deploy and rollback offline CI
+name: MNEBYDNS single safe-deploy engine regression suite
 on:
   push:
     branches: [audit/smartdns-installed-review-20261115]
@@ -6,8 +6,6 @@ on:
       - '.github/workflows/mnebydns-nov8-restore-safety-ci-20261116.yml'
       - 'scripts/mnebydns_nov8_restore_safety.py'
       - 'scripts/test_mnebydns_nov8_restore_safety.py'
-      - 'scripts/mnebydns_nov8_safe_release.py'
-      - 'scripts/test_mnebydns_nov8_safe_release.py'
       - 'scripts/mnebydns_safe_deploy.py'
       - 'scripts/test_mnebydns_safe_deploy.py'
 permissions: {contents: read}
@@ -21,6 +19,6 @@ jobs:
       - name: Pure offline unit tests (no production connections)
         run: |
           set -Eeuo pipefail
-          python3 -m py_compile scripts/mnebydns_nov8_restore_safety.py scripts/test_mnebydns_nov8_restore_safety.py scripts/mnebydns_nov8_safe_release.py scripts/test_mnebydns_nov8_safe_release.py scripts/mnebydns_safe_deploy.py scripts/test_mnebydns_safe_deploy.py
+          python3 -m py_compile scripts/mnebydns_nov8_restore_safety.py scripts/test_mnebydns_nov8_restore_safety.py scripts/mnebydns_safe_deploy.py scripts/test_mnebydns_safe_deploy.py
           python3 -m unittest discover -s scripts -p 'test_mnebydns*safe*.py' -v
           echo "NOV8_RESTORE_SAFETY_OFFLINE_TESTS_PASS=true"
