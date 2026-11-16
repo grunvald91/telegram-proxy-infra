@@ -4,11 +4,12 @@ on:
     paths:
       - 'nodekit/**'
       - '.github/workflows/nodekit-offline.yml'
+      - '.github/workflows/nodekit-prepare-new-vps.yml'
   workflow_dispatch:
 permissions:
   contents: read
 concurrency:
-  group: nodekit-offline
+  group: nodekit-offline-${{ github.ref }}
   cancel-in-progress: true
 jobs:
   test:
