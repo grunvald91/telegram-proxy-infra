@@ -35,3 +35,10 @@ jobs:
           SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
             'python3 -B -' < scripts/mnebydns-google-effective-routes-audit-20261117.py
           echo GOOGLE_AUDIT_LIVE_COMPLETED_NO_MODIFICATIONS=true
+      - name: Public DoT actual DNS replies A AAAA HTTPS (generic SNI only)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-public-dot-route-probe-20261117.py
+          python3 scripts/mnebydns-public-dot-route-probe-20261117.py
+          echo GOOGLE_AUDIT_PUBLIC_DOT_PROBE_COMPLETE=true
