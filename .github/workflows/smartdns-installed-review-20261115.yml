@@ -1,4 +1,4 @@
-name: SmartDNS VPN video DNS compatibility repair 20261116
+name: SmartDNS Google proxy live FD limit repair 20261116
 on:
   push:
     branches: [audit/smartdns-installed-review-20261115]
@@ -11,19 +11,19 @@ concurrency:
 jobs:
   review:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 3
     env:
       DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Stage and verify VPN DNS compatibility with rollback
+      - name: Raise dedicated Google proxy FD limit without restart
         shell: bash
         run: |
           set -Eeuo pipefail
           test -n "$DE_PASS"
-          python3 -m py_compile scripts/smartdns-vpn-video-origin-dns-20261116.py scripts/smartdns-vpn-video-dns-external-20261116.py
+          python3 -m py_compile scripts/smartdns-google-fd-limit-20261116.py
           if ! command -v sshpass >/dev/null; then
             sudo apt-get update -qq
             sudo apt-get install -y -qq sshpass >/dev/null
@@ -33,21 +33,12 @@ jobs:
             -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
             -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
           mkdir output
-          python3 scripts/smartdns-vpn-video-dns-external-20261116.py before
-          recover() {
-            SSHPASS="$DE_PASS" sshpass -e ssh -T "${opts[@]}" root@89.125.90.101 'if test -f /opt/mnebydns-vpn-video-origin-20261116/rollback.py; then python3 /opt/mnebydns-vpn-video-origin-20261116/rollback.py rollback; fi' > output/rollback.json || true
-          }
-          trap recover ERR
-          SSHPASS="$DE_PASS" sshpass -e scp "${opts[@]}" scripts/smartdns-vpn-video-origin-dns-20261116.py root@89.125.90.101:/tmp/mnebydns-vpn-video-origin-20261116.py
-          SSHPASS="$DE_PASS" sshpass -e ssh -T "${opts[@]}" root@89.125.90.101 'python3 /tmp/mnebydns-vpn-video-origin-20261116.py' > output/applied.json
-          python3 scripts/smartdns-vpn-video-dns-external-20261116.py after
-          SSHPASS="$DE_PASS" sshpass -e ssh -T "${opts[@]}" root@89.125.90.101 'python3 /opt/mnebydns-vpn-video-origin-20261116/rollback.py finalize' > output/finalized.json
-          trap - ERR
-          python3 -c 'import json; a=json.load(open("output/applied.json")); f=json.load(open("output/finalized.json")); assert a["done"] and f["finalized"]; print("VPN_VIDEO_DNS_COMPATIBILITY_VERIFIED=true")'
+          SSHPASS="$DE_PASS" sshpass -e ssh -T "${opts[@]}" root@89.125.90.101 'python3 -B -' < scripts/smartdns-google-fd-limit-20261116.py > output/fd-limit.json
+          python3 -c 'import json; j=json.load(open("output/fd-limit.json")); assert j["done"] and not j["process_restarted"]; print("GOOGLE_PROXY_LIVE_FD_LIMIT_VERIFIED=true")'
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: smartdns-vpn-video-dns-20261116
+          name: smartdns-google-fd-limit-20261116
           path: output/*
           retention-days: 2
           if-no-files-found: error
