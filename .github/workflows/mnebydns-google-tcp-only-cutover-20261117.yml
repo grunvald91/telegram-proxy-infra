@@ -42,8 +42,8 @@ jobs:
           copts=(-q -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
             -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
             -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
-          de() { SSHPASS="$DE_PASS" sshpass -e ssh "\${opts[@]}" root@89.125.90.101 "$@"; }
-          ru() { SSHPASS="$RU_PASS" sshpass -e ssh "\${opts[@]}" root@188.120.254.223 "$@"; }
+          de() { SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 "$@"; }
+          ru() { SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 "$@"; }
           undo_on_failure() {
             rc=$?
             trap - EXIT
@@ -58,8 +58,8 @@ jobs:
             exit "$rc"
           }
           trap undo_on_failure EXIT
-          SSHPASS="$DE_PASS" sshpass -e scp "\${copts[@]}" scripts/mnebydns-google-tcp-only-20261117.sh root@89.125.90.101:/tmp/mnebydns-google-tcp-only-20261117.sh
-          SSHPASS="$RU_PASS" sshpass -e scp "\${copts[@]}" scripts/mnebydns-google-tcp-only-20261117.sh root@188.120.254.223:/tmp/mnebydns-google-tcp-only-20261117.sh
+          SSHPASS="$DE_PASS" sshpass -e scp "${copts[@]}" scripts/mnebydns-google-tcp-only-20261117.sh root@89.125.90.101:/tmp/mnebydns-google-tcp-only-20261117.sh
+          SSHPASS="$RU_PASS" sshpass -e scp "${copts[@]}" scripts/mnebydns-google-tcp-only-20261117.sh root@188.120.254.223:/tmp/mnebydns-google-tcp-only-20261117.sh
           de 'bash /tmp/mnebydns-google-tcp-only-20261117.sh de stage'
           ru 'bash /tmp/mnebydns-google-tcp-only-20261117.sh ru stage'
           echo TCP_ONLY_BOTH_NODES_STAGED=PASS
