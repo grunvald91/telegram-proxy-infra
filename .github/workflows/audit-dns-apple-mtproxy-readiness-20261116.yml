@@ -1,0 +1,102 @@
+name: Read-only Apple DNS and Telemt release readiness
+on:
+  push:
+    branches: [audit/dns-apple-mtproxy-readiness-20261116]
+    paths: ['.github/workflows/audit-dns-apple-mtproxy-readiness-20261116.yml']
+  workflow_dispatch:
+permissions: {contents: read}
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Inspect RU website, DB schema and current public checkout (read-only)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASSWORD" && test -n "$DE_PASSWORD"
+          sudo apt-get update -qq >/dev/null && sudo apt-get install -qq -y sshpass >/dev/null
+          export SSHPASS="$RU_PASSWORD"
+          sshpass -e ssh -T -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@188.120.254.223 'python3 -' <<'PY'
+          import pathlib,subprocess,urllib.request,json
+          root=pathlib.Path('/opt/mnebyvpn/public')
+          print('RU_web_env_present='+str((root/'web.env').is_file()))
+          flags={}
+          for line in (root/'web.env').read_text().splitlines() if (root/'web.env').is_file() else []:
+              if '=' in line and not line.startswith('#'):
+                  k,v=line.split('=',1)
+                  if k.isidentifier():flags[k]=v
+          for k in ['WEB_NETWORK_PROVISIONING_VERIFIED','WEB_CHECKOUT_ENABLED',
+                    'WEB_PERSONAL_DNS_APPLE_ENABLED','WEB_PERSONAL_DNS_DOT_E2E_VERIFIED',
+                    'WEB_DNS_MT_PROXY_BONUS_ENABLED','WEB_DNS_MT_PROXY_BONUS_E2E_VERIFIED',
+                    'WEB_DNS_MT_PROXY_BONUS_REVOKER_VERIFIED',
+                    'WEB_PRODAMUS_WEBHOOK_ENABLED','WEB_PAYMENT_PROVIDER_TESTED',
+                    'WEB_EMAIL_LOGIN_ENABLED','WEB_LEGAL_PAGES_PUBLISHED']:
+              print('RU_flag_'+k+'='+('YES' if flags.get(k) in ('yes','1') else 'NO'))
+          for k in ['WEB_DNS_MT_PROXY_BONUS_KEY','WEB_DNS_MT_PROXY_BONUS_ROUTES_JSON']:
+              print('RU_key_'+k+'_present='+str(bool(flags.get(k))))
+          p=pathlib.Path('/opt/mnebyvpn/public/active_sha')
+          print('RU_public_sha='+p.read_text().strip()[:40] if p.is_file() else 'RU_public_sha=none')
+          for name in ['mnebyvpn-public-web','mnebyvpn-stage-postgres']:
+              cp=subprocess.run(['docker','inspect','-f','{{.State.Status}}',name],capture_output=True,text=True,timeout=8)
+              print('RU_'+name+'_status='+cp.stdout.strip())
+          for path in ['/healthz','/api/plans','/readyz']:
+              try:
+                  with urllib.request.urlopen('http://127.0.0.1:8792'+path,timeout=6) as resp:
+                      print('RU_web_'+path.replace('/','_')+'_status='+str(resp.status))
+                      if path=='/api/plans':
+                          j=json.load(resp)
+                          print('RU_catalog_checkout='+str(j.get('checkoutEnabled') is True))
+                          print('RU_catalog_public_plans='+str([(p.get('product'),p.get('durationDays'),bool(p.get('rubMinor'))) for p in j.get('plans',[])][:20]))
+              except Exception as exc:print('RU_web_'+path.replace('/','_')+'_error='+type(exc).__name__)
+          query="""SELECT 'schema|'||file_name FROM deployment_schema_migrations
+              WHERE file_name IN ('0111_dns_mtproxy_bonus_credentials.sql',
+              '0120_personal_dot_query_quota.sql','0124_smart_dns_four_stars_offers.sql',
+              '0125_website_personal_dns_apple.sql') ORDER BY file_name;
+              SELECT 'plan|'||product||'|'||duration_seconds||'|'||enabled||'|'||
+                 coalesce(rub_minor::text,'null')||'|'||coalesce(stars::text,'null')
+                 FROM billing_plans WHERE product='smart_dns' ORDER BY duration_seconds LIMIT 12;
+              SELECT 'dns_entitlements_active='||count(*) FROM entitlements
+                 WHERE product='smart_dns' AND state='ACTIVE' AND expires_at>clock_timestamp();
+              SELECT 'mtproxy_bonus_rows='||count(*) FROM dns_mtproxy_bonus_credentials;
+           """
+          cmd=['docker','exec','-i','mnebyvpn-stage-postgres','psql','-qAt','-X','-v','ON_ERROR_STOP=1',
+               '-U','mnebyvpn_stage','-d','mnebyvpn_stage']
+          result=subprocess.run(cmd,input=query,text=True,capture_output=True,timeout=13)
+          print('RU_schema_read_ok='+str(result.returncode==0))
+          print(result.stdout.strip()[:3000])
+          if result.returncode!=0: print('RU_schema_error_type=SQL_QUERY_FAILURE')
+          PY
+      - name: Inspect DE Telemt runtime and DoT TLS without changing listeners (read-only)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASSWORD"
+          sshpass -e ssh -T -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@89.125.90.101 'python3 -' <<'PY'
+          import subprocess,urllib.request,urllib.error,ssl,socket
+          for svc in ['telemt-direct-ozon','nginx','mnebydns-dot']:
+              proc=subprocess.run(['systemctl','is-active',svc],capture_output=True,text=True,timeout=7)
+              print('DE_service_'+svc+'='+proc.stdout.strip())
+          p=subprocess.run(['ss','-Hlntp'],capture_output=True,text=True,timeout=7)
+          for port in [853,9096,9446,9470]:
+              hits=[x for x in p.stdout.splitlines() if ':'+str(port)+' ' in x]
+              print('DE_port_'+str(port)+'_listeners='+str(len(hits)))
+          for route in ['/v1/health','/v1/health/ready','/v1/users']:
+              try:
+                  with urllib.request.urlopen('http://127.0.0.1:9096'+route,timeout=5) as x:
+                      print('DE_telemt_'+route.replace('/','_')+'_http='+str(x.status))
+              except urllib.error.HTTPError as err:
+                  print('DE_telemt_'+route.replace('/','_')+'_http='+str(err.code))
+              except Exception as exc:
+                  print('DE_telemt_'+route.replace('/','_')+'_error='+type(exc).__name__)
+          testhost='aaaaaaaaaaaa.dns.mnebyvpn.site'
+          try:
+              context=ssl.create_default_context()
+              with socket.create_connection(('127.0.0.1',853),timeout=4) as sock:
+                  with context.wrap_socket(sock,server_hostname=testhost) as tls:
+                      print('DE_DoT_tls_personal_wildcard=VALID')
+          except Exception as exc:print('DE_DoT_tls_personal_wildcard='+type(exc).__name__)
+          PY
