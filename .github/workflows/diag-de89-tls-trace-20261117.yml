@@ -1,8 +1,10 @@
 name: One-shot DE89 TLS ingress trace (headers only)
 on:
-  push:
-    branches: [diag/de89-tls-trace-20261117]
+  pull_request:
+    types: [opened, synchronize]
+    branches: [main]
     paths: [.github/workflows/diag-de89-tls-trace-20261117.yml]
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
