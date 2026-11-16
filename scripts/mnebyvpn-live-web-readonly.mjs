@@ -66,7 +66,38 @@ try{
     const r=await fetch('/api/auth/options');
     return {http:r.status,body:r.ok?await r.json():null};
   });
+  // Reproduce the owner's screenshot on the ACTUAL public site: HTML loads,
+  // but the separate catalog endpoint is completely unreachable from mobile.
+  // No login, orders or payment requests are issued.
+  const isolated=await browser.newPage({viewport:{width:390,height:844},deviceScaleFactor:1});
+  await isolated.route('**/api/plans',route=>route.abort('failed'));
+  const isolatedNav=await isolated.goto('https://mnebyvpn.site/#plans',{
+    waitUntil:'domcontentloaded',timeout:25000});
+  await isolated.waitForFunction(()=>{
+    const inner=document.querySelector('#journey-front-frame')?.contentDocument;
+    return inner?.querySelector('.plans-vpn .plan[data-d="30"] strong')?.textContent?.includes('₽') &&
+      !inner?.querySelector('.cta')?.disabled;
+  },null,{timeout:12000});
+  const embedded=await isolated.evaluate(()=>{
+    const inner=document.querySelector('#journey-front-frame').contentDocument;
+    return {
+      metaPresent:!!document.querySelector('meta[name="mnebyvpn-public-catalog"]'),
+      price:inner.querySelector('.plans-vpn .plan[data-d="30"] strong').textContent,
+      buyDisabled:inner.querySelector('.cta').disabled,
+      retryVisible:!inner.querySelector('#front-retry').hidden,
+    };
+  });
+  await isolated.frameLocator('#journey-front-frame').locator('.top-links a[href="/#account"]').click();
+  await isolated.waitForFunction(()=>document.body.dataset.journeyView==='account');
+  embedded.loginVisible=await isolated.locator('#email-input').isVisible();
+  out.mobileCatalogNetworkLoss={http:isolatedNav?.status(),...embedded};
+  await isolated.close();
   console.log('READONLY_LIVE_WEB_AUDIT='+JSON.stringify(out));
+  if(out.mobileCatalogNetworkLoss?.http!==200||
+     !out.mobileCatalogNetworkLoss?.metaPresent||
+     out.mobileCatalogNetworkLoss?.buyDisabled||
+     out.mobileCatalogNetworkLoss?.retryVisible||
+     !out.mobileCatalogNetworkLoss?.loginVisible)throw Error('Live embedded catalog fails when mobile API is unreachable');
   if(out.document_http!==200||!out.site_catalog_api_status.includes('200')||
      out.site_browser_errors.length||out.selected30?.pressed!=='true'||
      out.selected30?.disabled||out.buyAfterRetap?.disabled||
