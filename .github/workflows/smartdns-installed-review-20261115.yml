@@ -1,4 +1,4 @@
-name: SmartDNS active WebSocket VPN process route audit 20261116
+name: SmartDNS isolated VPN synthetic destination preflight 20261116
 on:
   push:
     branches: [audit/smartdns-installed-review-20261115]
@@ -24,7 +24,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           test -n "$DE_PASS" && test -n "$RU_PASS"
-          python3 -m py_compile scripts/smartdns-ws-vpn-read-20261116.py
+          python3 -m py_compile scripts/smartdns-vpn-synthetic-preflight-20261116.py
           if ! command -v sshpass >/dev/null; then
             sudo apt-get update -qq
             sudo apt-get install -y -qq sshpass >/dev/null
@@ -34,19 +34,18 @@ jobs:
             -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
             -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
           mkdir output
-          SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -B - DE' < scripts/smartdns-ws-vpn-read-20261116.py > output/DE.json
-          SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -B - RU' < scripts/smartdns-ws-vpn-read-20261116.py > output/RU.json
+          SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -B - DE' < scripts/smartdns-vpn-synthetic-preflight-20261116.py > output/DE.json
           python3 - <<'PY'
           import json,pathlib
           for p in pathlib.Path('output').glob('*.json'):
               j=json.loads(p.read_text());assert j['done']
-              print(j['role'], 'snapshot_utc='+j['utc'], 'done='+str(j['done']))
+              print('isolated_DE', 'snapshot_utc='+j['utc'], 'done='+str(j['done']))
           print('PRODUCTION_CONFIG_MUTATIONS=false')
           PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: smartdns-ws-vpn-20261116
+          name: smartdns-vpn-synthetic-preflight-20261116
           path: output/*.json
           retention-days: 2
           if-no-files-found: error
