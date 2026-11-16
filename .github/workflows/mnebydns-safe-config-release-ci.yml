@@ -11,10 +11,11 @@ on:
       - 'scripts/mnebydns-owner-domain-remove-20261110.sh'
       - 'scripts/mnebydns-owner-domain-rollback-20261110.sh'
       - 'scripts/test_mnebydns_safe_deploy.py'
+      - 'scripts/test_mnebydns_safe_deploy_crash_recovery.py'
       - 'scripts/test_mnebydns_nov8_restore_safety.py'
       - '.github/workflows/mnebydns-safe-config-release-ci.yml'
   push:
-    branches: [main, fix/mnebydns-safe-deploy-review-20261116]
+    branches: [main, fix/mnebydns-reboot-recovery-pid-guard-20261116]
     paths:
       - 'scripts/mnebydns_safe_deploy.py'
       - 'scripts/mnebydns_nov8_restore_safety.py'
@@ -42,8 +43,9 @@ jobs:
           set -Eeuo pipefail
           python3 -m py_compile \
             scripts/mnebydns_safe_deploy.py scripts/mnebydns_nov8_restore_safety.py scripts/mnebydns_dns_policy_guard.py \
-            scripts/test_mnebydns_safe_deploy.py scripts/test_mnebydns_nov8_restore_safety.py scripts/test_mnebydns_dns_policy_guard.py
+            scripts/test_mnebydns_safe_deploy.py scripts/test_mnebydns_safe_deploy_crash_recovery.py scripts/test_mnebydns_nov8_restore_safety.py scripts/test_mnebydns_dns_policy_guard.py
           python3 -m unittest discover -s scripts -p 'test_mnebydns_safe_deploy.py' -v
+          python3 -m unittest discover -s scripts -p 'test_mnebydns_safe_deploy_crash_recovery.py' -v
           python3 -m unittest discover -s scripts -p 'test_mnebydns_nov8_restore_safety.py' -v
           python3 -m unittest discover -s scripts -p 'test_mnebydns_dns_policy_guard.py' -v
           bash -n scripts/mnebydns-owner-domain-stage-20261110.sh scripts/mnebydns-owner-domain-remove-20261110.sh scripts/mnebydns-owner-domain-rollback-20261110.sh

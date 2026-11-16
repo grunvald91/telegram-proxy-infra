@@ -49,6 +49,7 @@ class DeployTests(TestCase):
             patch.object(deploy,"preserved",return_value={"preserved":True}),
             patch.object(deploy,"ensure_hot_reload_config",return_value=None),
             patch.object(deploy,"smoke_check",return_value={"all_pinned":True}),
+            patch.object(deploy,"coredns_pid",return_value="23456"),
             patch.object(deploy,"manifest_for",return_value=self.manifest),
             patch.object(deploy,"require_services_healthy",
                          return_value={"dns":{"service_active":True,"tcp_listener":True}}),
@@ -95,7 +96,7 @@ class DeployTests(TestCase):
 
     def test_activation_failure_rolls_back_owned_bytes(self):
         counts={"n":0}
-        def fail_once(files):
+        def fail_once(files,**kwargs):
             counts["n"]+=1
             if counts["n"]==1:
                 raise RuntimeError("simulated service startup failure")
@@ -161,6 +162,34 @@ class DeployTests(TestCase):
             check.assert_called_once()
             timer.sleep.assert_called_once_with(7)
             healthy.assert_called_once_with({"dns"})
+
+    def test_pre_publish_pid_change_triggers_rollback(self):
+        # Model an external service restart occurring between preflight
+        # and the end of the atomic file swap.
+        counts={"n":0}
+        def pid():
+            counts["n"]+=1
+            return "23456" if counts["n"]==1 else "23457"
+        with patch.object(deploy,"coredns_pid",side_effect=pid):
+            with self.assertRaisesRegex(RuntimeError,"PID changed"):
+                deploy.apply(self.key)
+        self.assertEqual(self.live.read_bytes(),b"old policy\n")
+        tx=list(self.tx.iterdir())[0]
+        self.assertTrue((tx/"ROLLED_BACK").is_file())
+        self.assertFalse((tx/"COMMITTED").exists())
+
+    def test_pre_publish_pid_is_forwarded_to_hot_reload_verification(self):
+        # Ensure the actual original resolver PID is passed to the
+        # post-replace hot-reload path, not sampled only after replace.
+        with patch.object(deploy,"revert_services") as reload:
+            deploy.apply(self.key)
+            reload.assert_any_call({"dns": reload.call_args.args[0]["dns"]},
+                                   dns_expected_pid="23456")
+
+    def test_hot_reload_rejects_restart_before_check(self):
+        with patch.object(deploy,"coredns_pid",return_value="34567"):
+            with self.assertRaisesRegex(RuntimeError,"restarted before"):
+                deploy.hot_reload_dns(expected_pid="23456")
 
     def test_owner_domain_stage_and_rollback_preserve_metadata(self):
         self.ownerroot=self.root/"owner"

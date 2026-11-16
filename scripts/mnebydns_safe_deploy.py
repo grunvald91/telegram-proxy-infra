@@ -199,8 +199,12 @@ def ensure_hot_reload_config(data: bytes):
         raise RuntimeError("CoreDNS reload plugin unavailable")
 
 
-def hot_reload_dns():
-    old=coredns_pid()
+def hot_reload_dns(expected_pid=None):
+    # A caller that just published a file must supply the PID captured BEFORE
+    # replacement; sampling it afterward could miss a crash/restart window.
+    old=expected_pid if expected_pid is not None else coredns_pid()
+    if coredns_pid()!=old:
+        raise RuntimeError("CoreDNS restarted before hot-reload verification")
     ensure_hot_reload_config(LIVE["dns"].read_bytes())
     time.sleep(7)
     if coredns_pid()!=old:
@@ -208,7 +212,7 @@ def hot_reload_dns():
     require_services_healthy({"dns"})
 
 
-def revert_services(files):
+def revert_services(files,dns_expected_pid=None):
     # Reload only what this transaction actually touched.
     for key in ("shared","pilot","dns"):
         if key not in files:continue
@@ -220,7 +224,7 @@ def revert_services(files):
             cmd("/usr/sbin/nginx","-s","reload","-c",str(LIVE[key]),timeout=20)
         else:
             if services_ok({"dns"})["dns"]["service_active"]:
-                hot_reload_dns()
+                hot_reload_dns(expected_pid=dns_expected_pid)
             else:
                 # Recovery exception: a stopped resolver cannot hot reload.
                 ensure_hot_reload_config(LIVE["dns"].read_bytes())
@@ -311,12 +315,17 @@ def apply(name):
             record["files"][n]={"before":state_obj(state),"staged":state_obj(stage)}
         write_durable(tx/"state.json",(json.dumps(record,sort_keys=True)+"\n").encode())
         unit=None
+        # Record resolver identity BEFORE replacing any live files. A short
+        # crash followed by a restart must not be mistaken for a clean reload.
+        dns_original_pid=coredns_pid() if "dns" in prepared else None
         try:
             # The persistent calendar unit must be active before any live write.
             unit=systemd_files(key,datetime.now(timezone.utc)+timedelta(minutes=8),tx)
             for n,(state,old,payload) in prepared.items():
                 atomic_replace(LIVE[n],state,payload)
-            revert_services(prepared)
+            if dns_original_pid is not None and coredns_pid()!=dns_original_pid:
+                raise RuntimeError("CoreDNS PID changed while publishing config")
+            revert_services(prepared,dns_expected_pid=dns_original_pid)
             healthy=require_services_healthy(set(SERVICE))
             ensure_dns_reader_access()
             if "dns" in prepared:
