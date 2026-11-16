@@ -34,7 +34,7 @@ jobs:
           remote "$RU_PASS" 188.120.254.223 "$cap" > "$RUNNER_TEMP/ru-flow.txt" &
           ru_pid=$!
           sleep 4
-          remote "$DE_PASS" 89.125.90.101 "ping -n -q -M do -e 31277 -c 45 -i 0.35 -s 1200 -W 1 10.66.77.2" > "$RUNNER_TEMP/ping.txt" || true
+          remote "$DE_PASS" 89.125.90.101 "ping -n -q -M do -c 45 -i 0.35 -s 1200 -W 1 10.66.77.2" > "$RUNNER_TEMP/ping.txt" || true
           wait "$de_pid" || true
           wait "$ru_pid" || true
           python3 - "$RUNNER_TEMP/de-flow.txt" "$RUNNER_TEMP/ru-flow.txt" "$RUNNER_TEMP/ping.txt" <<'PY'
@@ -43,7 +43,7 @@ jobs:
           def extract(text,kind):
               out=set()
               for line in text.splitlines():
-                  if "id 31277" not in line or "ICMP echo "+kind not in line:continue
+                  if "ICMP echo "+kind not in line:continue
                   m=re.search(r"\bseq (\d+)\b",line)
                   if m and 1<=int(m[1])<=45:out.add(int(m[1]))
               return out
