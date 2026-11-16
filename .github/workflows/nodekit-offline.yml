@@ -23,5 +23,5 @@ jobs:
         run: |
           set -euo pipefail
           bash -n nodekit/bootstrap.sh
-          python3 -m py_compile nodekit/nodekit.py nodekit/control_plane.py nodekit/incident_gateway.py nodekit/monitor_policy.py nodekit/owned_runbook.py
+          python3 -m py_compile nodekit/nodekit.py nodekit/control_plane.py nodekit/incident_gateway.py nodekit/monitor_policy.py nodekit/owned_runbook.py nodekit/diagnostics.py
           python3 -m unittest discover -s nodekit/tests -v
