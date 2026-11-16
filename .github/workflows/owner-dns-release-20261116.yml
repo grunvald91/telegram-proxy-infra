@@ -1,0 +1,76 @@
+name: Release CI-verified owner personal DNS links with private canary
+on:
+  push:
+    branches: [audit/recovery-personal-only-20261116]
+    paths: [.github/workflows/owner-dns-release-20261116.yml]
+permissions:
+  contents: read
+concurrency:
+  group: mnebyvpn-owner-dns-release
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      SOURCE_SHA: 7ab8740a3233f248925d42c83a3d5aab6e11d3b3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: infra
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: grunvald91/Mnebyvpn
+          ref: 7ab8740a3233f248925d42c83a3d5aab6e11d3b3
+          path: source
+          persist-credentials: false
+      - name: Verify exact green source and bounded installer syntax
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(git -C source rev-parse HEAD)" = "$SOURCE_SHA"
+          gh api "repos/grunvald91/Mnebyvpn/actions/workflows/offline-contracts.yml/runs?branch=main&per_page=8" > "$RUNNER_TEMP/ci.json"
+          python3 - <<'PY'
+          import json,os
+          runs=json.load(open(os.environ['RUNNER_TEMP']+'/ci.json'))['workflow_runs']
+          assert any(r['head_sha']==os.environ['SOURCE_SHA'] and r['event']=='push' and r['head_branch']=='main' and r['conclusion']=='success' for r in runs),'Exact main source CI must pass'
+          PY
+          python3 -m py_compile infra/scripts/owner-dns-release-20261116.py
+          node --check infra/scripts/owner-dns-probe-20261116.mjs
+          bash -n infra/scripts/mnebyvpn-stage-install.sh
+          bash -n infra/scripts/mnebyvpn-main-bot-promote.sh
+      - name: Stage verified source and run private canary before scoped promotion
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if ! command -v sshpass >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq sshpass >/dev/null
+          fi
+          export SSHPASS="$RU_PASS"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/infra/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          remote=root@188.120.254.223
+          root=/opt/mnebyvpn/owner-dns-release-20261116
+          tar -czf "$RUNNER_TEMP/owner-dns-source.tgz" --exclude=.git -C source .
+          sshpass -e ssh "${opts[@]}" "$remote" "install -d -m 755 '$root'"
+          sshpass -e scp "${opts[@]}" infra/scripts/owner-dns-release-20261116.py "$remote:$root/release.py"
+          sshpass -e scp "${opts[@]}" infra/scripts/owner-dns-probe-20261116.mjs "$remote:$root/probe.mjs"
+          sshpass -e scp "${opts[@]}" infra/scripts/mnebyvpn-main-bot-promote.sh "$remote:$root/promote.sh"
+          sshpass -e scp "${opts[@]}" infra/scripts/mnebyvpn-stage-install.sh "$remote:$root/stage.sh"
+          sshpass -e scp "${opts[@]}" infra/ops/owner-dns-response-20261116.pub "$remote:$root/response.pub"
+          sshpass -e scp "${opts[@]}" "$RUNNER_TEMP/owner-dns-source.tgz" "$remote:$root/source.tgz"
+          sshpass -e ssh "${opts[@]}" "$remote" "bash '$root/stage.sh' '$root/source.tgz' '$SOURCE_SHA'"
+          sshpass -e ssh "${opts[@]}" "$remote" "python3 '$root/release.py' '$SOURCE_SHA'"
+          mkdir output
+          sshpass -e ssh "${opts[@]}" "$remote" "cat '$root/result.json'" > output/owner-link-encrypted.json
+          echo 'Personal link verified via both public DNS ingress addresses. Shared resolver is retained until clients migrate.' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: owner-dns-encrypted-result
+          path: output/owner-link-encrypted.json
+          retention-days: 2
+          if-no-files-found: error
