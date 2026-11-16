@@ -1,4 +1,4 @@
-name: MNEBYDNS 2026-11-08 vs live YouTube configuration (read-only)
+name: MNEBYDNS 2026-11-08 vs live YouTube exact ports and residual route (read-only)
 on:
   push:
     branches: [audit/smartdns-installed-review-20261115]
