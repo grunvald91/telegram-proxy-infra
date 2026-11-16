@@ -21,9 +21,12 @@ if current.get('fakedns')==POOLS and len(current.get('inbounds',[]))==1:
  assert len(matches)==1,'Ambiguous recovery snapshot; refuse automatic overwrite'
  prior=matches[0];recovery=pathlib.Path('/opt/mnebyvpn/backups/legacy-push-recovery-'+str(int(time.time())))
  recovery.mkdir(mode=0o700);bad=recovery/'overwritten-config.json';bad.write_bytes(CONF.read_bytes());os.chmod(bad,0o600)
- state=subprocess.run(['systemctl','is-active','mnebyvpn-vpn-provisioner.service'],capture_output=True,text=True,check=True).stdout.strip();assert state=='active'
+ # The legacy unit conflicts with (and therefore stops) the provisioner.
+ assert subprocess.run(['systemctl','show','mnebyvpn-vpn-provisioner.service','-p','LoadState','--value'],capture_output=True,text=True,check=True).stdout.strip()=='loaded'
  subprocess.run(['systemctl','disable','--now','mnebyvpn-xray-canary.service'],check=True,capture_output=True,timeout=20)
  tmp=CONF.with_name('.xray-canary-recovery.tmp');tmp.write_bytes(prior.read_bytes());os.chmod(tmp,0o640);os.chown(tmp,0,pwd.getpwnam('mnebyvpn-xray').pw_gid);os.replace(tmp,CONF)
+ subprocess.run(['systemctl','start','mnebyvpn-vpn-provisioner.service'],check=True,capture_output=True,timeout=20)
+ with socket.create_connection(('127.0.0.1',18943),3):pass
  recovered=str(prior)
 original=CONF.read_bytes();production=json.loads(original)
 assert 'mneby_meta' not in subprocess.run(['nft','list','tables'],capture_output=True,text=True,check=True).stdout
