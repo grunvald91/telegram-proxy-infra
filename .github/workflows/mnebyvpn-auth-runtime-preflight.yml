@@ -1,3 +1,4 @@
+# 2026-11-16 post-release assertion: production web source fde98cafb1ae386f6bb9ed191b32a035395319b3; browser isolates /api/plans outage to verify HTML bootstrapped VPN and My VPN email form; no payments, credentials or server mutation.
 name: MNEBYVPN auth runtime preflight (read-only)
 # Diagnostic second pass: preserve early browser state even if header navigation is unavailable.
 on:
