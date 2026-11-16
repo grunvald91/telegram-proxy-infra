@@ -1,4 +1,4 @@
-name: Install reviewed MNEBYDNS safe deploy v3 on DE89 (no DNS config changes)
+name: Finalize MNEBYDNS safe deploy v3 with full template coverage parser
 on:
   push:
     branches: [fix/mnebydns-safe-deploy-review-20261116]
