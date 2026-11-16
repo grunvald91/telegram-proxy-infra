@@ -14,6 +14,7 @@ import mnebydns_safe_deploy as deploy
 import mnebydns_nov8_restore_safety as safety
 
 REAL_MANIFEST_FOR=deploy.manifest_for
+REAL_REVERT_SERVICES=deploy.revert_services
 
 
 class DeployTests(TestCase):
@@ -188,7 +189,7 @@ class DeployTests(TestCase):
 
     def test_changed_corefile_does_not_call_systemctl_restart(self):
         with patch.object(deploy,"cmd") as command, patch.object(deploy,"verify_hot_reload") as hot:
-            deploy.revert_services({"dns"})
+            REAL_REVERT_SERVICES({"dns"})
             hot.assert_called_once_with(4123)
             self.assertFalse(any("restart" in call.args for call in command.call_args_list))
 
