@@ -1,0 +1,46 @@
+name: MNEBYDNS 8-Nov Google restore audit (no production writes)
+on:
+  push:
+    branches: [audit/smartdns-installed-review-20261115]
+    paths: ['.github/workflows/mnebydns-nov8-google-review-20261116.yml']
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify post-restore files on DE89 without changing them
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS"
+          python3 -m py_compile scripts/mnebydns-nov8-google-restore-review-20261116.py
+          if ! command -v sshpass >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq sshpass >/dev/null
+          fi
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          mkdir -p output
+          SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -B -' < scripts/mnebydns-nov8-google-restore-review-20261116.py > output/integrity.json
+          python3 - <<'PY'
+          import json
+          j=json.load(open('output/integrity.json'))
+          assert j['read_only'] and j['network_probes'] is False
+          print('GOOGLE_NOV8_RESTORE_REVIEW='+json.dumps(j,separators=(',',':'),sort_keys=True))
+          assert j['review_pass_core_only_intended_changes'], 'Unexpected drift in deployed DNS/Googlepilot'
+          print('NOV8_GOOGLE_FILE_DIFF_REVIEW_OK=true')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mnebydns-nov8-restore-file-audit
+          path: output/integrity.json
+          retention-days: 10
