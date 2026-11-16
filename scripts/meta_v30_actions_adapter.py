@@ -145,6 +145,7 @@ class Remote:
             "sshpass","-e","ssh","-T","-o","BatchMode=no",
             "-o","ConnectTimeout=12","-o","StrictHostKeyChecking=yes",
             "-o","HostKeyAlgorithms=ssh-ed25519",
+            "-o","ServerAliveInterval=10","-o","ServerAliveCountMax=2",
             "-o","UserKnownHostsFile="+str(self.known),
             "-o","GlobalKnownHostsFile=/dev/null",
             "-o","UpdateHostKeys=no","-o","LogLevel=ERROR",
@@ -162,6 +163,16 @@ class Remote:
             raise RuntimeError(role+" SSH operation failed: exit "+str(result.returncode)+"\n"+detail)
         return result.stdout.decode("utf-8",errors="replace")
 
+    def _call_with_transport_retry(self,role,command,*,data=None,timeout=75):
+        for attempt in (1,2):
+            try:
+                return self.call(role,command,data=data,timeout=timeout)
+            except subprocess.TimeoutExpired:
+                if attempt==2:raise
+            except RuntimeError as exc:
+                if attempt==2 or "SSH operation failed: exit 255\n" not in str(exc):
+                    raise
+
     def preflight(self,role):
         command=(
             "set -eu; umask 077; "
@@ -170,7 +181,7 @@ class Remote:
             "tar -xf - -C \"$d\"; "
             f"python3 \"$d/meta_v26_readonly_preflight.py\" {role}"
         )
-        out=self.call(role,command,data=self.payload,timeout=95)
+        out=self._call_with_transport_retry(role,command,data=self.payload,timeout=95)
         if "meta_v26_"+role+"_live_preflight=PASS" not in out:
             raise RuntimeError(role+" real read-only preflight did not pass")
         if role=="de" and "meta_v26_de_loopback_dot_tls_source_split=PASS" not in out:
@@ -211,7 +222,7 @@ class Remote:
             f"mv -- \"$d\" {STAGE}; "
             "trap - EXIT"
         )
-        self.call(role,command,data=self.payload,timeout=50)
+        self._call_with_transport_retry(role,command,data=self.payload,timeout=75)
 
     def run(self,role,action,peer=None):
         if role not in COMMANDS or action not in COMMANDS[role]:

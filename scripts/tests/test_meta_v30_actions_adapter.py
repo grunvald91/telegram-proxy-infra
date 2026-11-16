@@ -233,6 +233,20 @@ class AdapterTests(unittest.TestCase):
             m.main(["--mode","preflight"])
         self.assertEqual(calls,["de","ru"])
 
+    def test_stage_files_retries_once_on_ssh_transport_timeout(self):
+        import subprocess
+        remote=object.__new__(m.Remote)
+        remote.payload=b"fixture"
+        attempts={"n":0}
+        def flaky(role,command,**kw):
+            attempts["n"]+=1
+            if attempts["n"]==1:
+                raise subprocess.TimeoutExpired(["ssh"],75)
+            return ""
+        remote.call=flaky
+        remote.stage_files("ru")
+        self.assertEqual(attempts["n"],2)
+
     def test_live_never_runs_without_approval_even_with_valid_ip(self):
         with patch.object(m,"Remote",side_effect=AssertionError("must not connect")), \
              patch.dict(os.environ,{"GITHUB_EVENT_NAME":"pull_request",
