@@ -10,16 +10,18 @@ import json
 import re
 from collections import Counter
 def original_template_parity(original, current):
-    pattern=re.compile(r"(?ms)^[ \\t]*template IN (A|AAAA|HTTPS|SVCB|CNAME) (\\S+) \\{(.*?)^[ \\t]*\\}")
+    pattern=re.compile(r"(?ms)^[ \t]*template IN (A|AAAA|HTTPS|SVCB|CNAME) (\S+) \{(.*?)^[ \t]*\}")
     def parse(src):
         result=[]
         for m in pattern.finditer(src):
             body=m.group(3)
-            vals=[tuple(x.strip() for x in re.findall(r"(?m)^\\s*"+w+r"\\s+(.+)$",body))
+            vals=[tuple(x.strip() for x in re.findall(r"(?m)^\s*"+w+r"\s+(.+)$",body))
                   for w in ("match","answer","rcode")]
             result.append((m.group(1),m.group(2),*vals))
         return result
     before,after=parse(original),parse(current)
+    if len(before) < 300 or len(after) < len(before):
+        raise ValueError('No genuine historical CoreDNS template coverage; refuse false PASS')
     diff=Counter(before)-Counter(after)
     return {"historical_templates":len(before),"current_templates":len(after),
             "missing_or_changed_historical":sum(diff.values()),
