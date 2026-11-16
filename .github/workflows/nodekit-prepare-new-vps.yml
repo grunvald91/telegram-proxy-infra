@@ -1,4 +1,4 @@
-# Manual-only preflight/staging on an already owned NEW VPS; no services installed.
+# Manual-only preflight, staging, and unique identity on a NEW VPS; no services installed.
 name: MNEBYVPN prepare NEW VPS (no production changes)
 on:
   workflow_dispatch:
@@ -16,13 +16,14 @@ on:
         required: true
         type: string
       mode:
-        description: Preflight or staged inventory
+        description: Preflight, staged inventory, or unique identity after stage
         required: true
         default: preflight
         type: choice
         options:
           - preflight
           - stage
+          - identity
 permissions:
   contents: read
 concurrency:
@@ -53,7 +54,16 @@ jobs:
           test "$INPUT_HOST" != '89.125.90.101'
           test "$INPUT_HOST" != '188.120.254.223'
           [[ "$NODE_ID" =~ ^[a-z0-9][a-z0-9-]{2,39}$ ]]
-          [[ "$MODE" == 'preflight' || "$MODE" == 'stage' ]]
+          [[ "$MODE" == 'preflight' || "$MODE" == 'stage' || "$MODE" == 'identity' ]]
+          # An SSH hostname must not be an alias for any live MNEBYVPN VPS.
+          python3 - <<'PY'
+          import os,socket,ipaddress
+          host=os.environ['INPUT_HOST']
+          forbidden={'89.125.90.101','188.120.254.223'}
+          resolved={a[4][0] for a in socket.getaddrinfo(host,None,type=socket.SOCK_STREAM)}
+          if not resolved or resolved & forbidden:
+              raise SystemExit('SSH host aliases a production VPS or cannot resolve')
+          PY
           mkdir -m 700 -p "$RUNNER_TEMP/nodekit-credentials"
           printf '%s\n' "$NEW_NODE_SSH_KEY" > "$RUNNER_TEMP/nodekit-credentials/id_key"
           printf '%s\n' "$NEW_NODE_KNOWN_HOSTS" > "$RUNNER_TEMP/nodekit-credentials/known_hosts"
@@ -97,10 +107,17 @@ jobs:
           trap cleanup EXIT
           scp -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes \
             -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known" \
-            -o ConnectTimeout=12 nodekit/nodekit.py \
+            -o ConnectTimeout=12 nodekit/nodekit.py nodekit/identity.py \
             "$RUNNER_TEMP/nodekit-credentials/spec.json" "$target:$remote_dir/"
-          ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes \
-            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known" \
-            -o ConnectTimeout=12 "$target" \
-            "python3 '$remote_dir/nodekit.py' '$MODE' --spec '$remote_dir/spec.json'"
+          if [[ "$MODE" == 'identity' ]]; then
+            ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes \
+              -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known" \
+              -o ConnectTimeout=12 "$target" \
+              "python3 '$remote_dir/identity.py' --node-id '$NODE_ID'"
+          else
+            ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes \
+              -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known" \
+              -o ConnectTimeout=12 "$target" \
+              "python3 '$remote_dir/nodekit.py' '$MODE' --spec '$remote_dir/spec.json'"
+          fi
           echo "No packages/services changed; success does not imply public readiness."
