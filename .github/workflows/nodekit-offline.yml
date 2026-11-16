@@ -1,0 +1,26 @@
+name: MNEBYVPN new-node bootstrap contract (offline)
+on:
+  pull_request:
+    paths:
+      - 'nodekit/**'
+      - '.github/workflows/nodekit-offline.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: nodekit-offline
+  cancel-in-progress: true
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Test bootstrap and preflight staging locally
+        run: |
+          set -euo pipefail
+          bash -n nodekit/bootstrap.sh
+          python3 -m py_compile nodekit/nodekit.py
+          python3 -m unittest discover -s nodekit/tests -v
