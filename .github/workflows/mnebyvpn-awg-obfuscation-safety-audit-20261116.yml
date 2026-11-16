@@ -1,0 +1,120 @@
+name: MNEBYVPN AmneziaWG header-range and RandomTrailers vulnerability audit read-only
+on:
+  push:
+    branches: [audit/mnebyvpn-853-wg-rootcause-20261116]
+    paths: ['.github/workflows/mnebyvpn-awg-obfuscation-safety-audit-20261116.yml']
+permissions: {contents: read}
+concurrency:
+  group: mnebyvpn-awg-obfuscation-readonly-20261116
+  cancel-in-progress: false
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Inspect only permitted AWG parameter names and range widths (no private keys or addresses)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          for role in DE RU; do
+            if [ "$role" = DE ]; then host=89.125.90.101; export SSHPASS="$DE_PASS"; else host=188.120.254.223; export SSHPASS="$RU_PASS"; fi
+            sshpass -e ssh "${opts[@]}" "root@$host" "python3 - $role" <<'PY'
+          import os,sys,re,subprocess,pathlib,stat,json,shlex,math
+          role=sys.argv[1]
+          def cmd(*a):
+              try:
+                  p=subprocess.run(a,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,timeout=8)
+                  return p.stdout if p.returncode==0 else ""
+              except Exception:return ""
+          unit=cmd("systemctl","cat","mneby-awg-tg-relay.service")
+          execs=[]
+          candidate=set()
+          for line in unit.splitlines():
+              match=re.match(r"^(?:ExecStart(?:Pre|Post)?|EnvironmentFile|WorkingDirectory)=(.*)$",line.strip())
+              if not match:continue
+              try:parts=shlex.split(match.group(1).lstrip("-"))
+              except ValueError:parts=[]
+              execs.extend(os.path.basename(p) for p in parts[:4] if p.startswith("/"))
+              for token in parts:
+                  p=pathlib.Path(token)
+                  if p.is_absolute() and p.exists() and p.is_file() and p.stat().st_size<300000:
+                      candidate.add(str(p))
+          for root in ("/etc","/opt/mnebyvpn","/opt/mnebydns","/usr/local/sbin"):
+              if not os.path.isdir(root):continue
+              budget=0
+              for d,dirs,files in os.walk(root):
+                  dirs[:]=[x for x in dirs if x not in ("node_modules",".git",".venv","site-packages","backups","archive","cache")][:100]
+                  budget+=1
+                  if budget>2200:break
+                  for name in files:
+                      p=pathlib.Path(d)/name
+                      path=str(p).lower()
+                      if not any(w in path for w in ("amnezia","awg","tg-relay","wireguard","wg-quick")):continue
+                      if not p.is_symlink() and p.is_file():
+                          try:
+                              if p.stat().st_size<=300000:candidate.add(str(p))
+                          except OSError:pass
+          keys=("H1","H2","H3","H4","S1","S2","S3","S4","Jc","Jmin","Jmax","RandomTrailers","ContentPaddingAddition","HeaderProtectionKey")
+          names=set(x.lower() for x in keys)
+          def summarize(raw):
+              report={}
+              for line in raw.splitlines():
+                  m=re.search(r"(?i)^\s*(H[1234]|S[1234]|Jc|Jmin|Jmax|RandomTrailers|ContentPaddingAddition|HeaderProtectionKey)\s*[:=]\s*(.*?)\s*(?:#.*)?$",line)
+                  if not m:continue
+                  key=m.group(1)
+                  val=m.group(2).strip().strip("'\"")
+                  if key not in keys: key=next((n for n in keys if n.lower()==key.lower()),key)
+                  if key in ("H1","H2","H3","H4"):
+                      mm=re.fullmatch(r"(\d+)\s*[-:]\s*(\d+)",val)
+                      if mm:
+                          start,end=int(mm[1]),int(mm[2])
+                          width=max(0,end-start+1)
+                          report[key]={"form":"range","width_percent_of_uint32":round(100*width/4294967296,4),"valid":start<=end}
+                      elif val.isdecimal():
+                          report[key]={"form":"scalar","width_percent_of_uint32":round(100/4294967296,9)}
+                      else:report[key]={"form":"other_or_invalid"}
+                  elif key=="RandomTrailers":
+                      report[key]={"enabled":val.lower() in ("on","1","true","yes")}
+                  elif key=="ContentPaddingAddition":
+                      report[key]={"configured":bool(val),"is_nonzero":val not in ("","0","off")}
+                  elif key=="HeaderProtectionKey":
+                      report[key]={"configured":bool(val),"value_redacted":True}
+                  else:
+                      report[key]={"configured":bool(val),"value_redacted":True}
+              return report
+          targets=[]
+          for name in sorted(candidate):
+              try:
+                  p=pathlib.Path(name)
+                  if p.is_symlink() or p.stat().st_size>300000:continue
+                  raw=p.read_text(errors="replace")
+              except (OSError,UnicodeError):continue
+              s=summarize(raw)
+              if s:
+                  targets.append({"basename":p.name[:75],"parameter_names":sorted(s),"settings":s})
+          t=sorted(targets,key=lambda x:len(x["parameter_names"]),reverse=True)[:12]
+          matched=[x for x in t if "RandomTrailers" in x["settings"] and any(k in x["settings"] for k in ("H1","H2","H3"))]
+          vulnerable=False
+          for x in matched:
+              settings=x["settings"]
+              trailer=settings.get("RandomTrailers",{}).get("enabled")
+              widths=[settings.get(k,{}).get("width_percent_of_uint32",0) for k in ("H1","H2","H3")]
+              if trailer and sum(widths)>0.1:vulnerable=True
+          version=cmd("amneziawg-go","--version")[:100]
+          result={"role":role,"unit_exec_file_basenames":sorted(set(execs))[:12],
+                  "candidate_files_scanned":len(candidate),"files_with_obfuscation_settings":len(targets),
+                  "parameter_files":t,"random_trailers_wide_h_range_combination":vulnerable,
+                  "version_known":bool(version),"version_excerpt":version[:80]}
+          print("AWG_OBFUSCATION_SAFE_AUDIT="+json.dumps(result,separators=(",",":")),flush=True)
+          PY
+          done
+          echo AWG_OBFUSCATION_AUDIT_DONE=true
