@@ -1,0 +1,48 @@
+name: MNEBYDNS sync latest maintenance code without touching DNS rules
+on:
+  push:
+    branches: [ops/mnebydns-safe-v3-main-sync-20261116]
+    paths: ['.github/workflows/mnebydns-safe-main-sync-20261116.yml']
+permissions: {contents: read}
+concurrency:
+  group: mnebydns-google-public-443-change
+  cancel-in-progress: false
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Check maintenance code syntax before any SSH
+        run: python3 -m py_compile scripts/mnebydns_nov8_restore_safety.py scripts/mnebydns_dns_policy_guard.py scripts/mnebydns_safe_deploy.py
+      - name: Synchronize only maintenance scripts to DE89 and verify services
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          remote() { SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 "$@"; }
+          before="$(remote 'sha256sum /opt/mnebydns-dot/Corefile /etc/nginx/nginx.conf /etc/mnebydns-googlepilot/nginx.conf')"
+          remote 'install -d -o root -g root -m 0700 /opt/mnebydns-maintenance /opt/mnebydns-maintenance/stage /var/lib/mnebydns-safe-deploy'
+          for file in mnebydns_nov8_restore_safety.py mnebydns_dns_policy_guard.py mnebydns_safe_deploy.py; do
+            SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 "set -eu; umask 077; cat > /opt/mnebydns-maintenance/$file.incoming; python3 -m py_compile /opt/mnebydns-maintenance/$file.incoming; chmod 0600 /opt/mnebydns-maintenance/$file.incoming; mv -f /opt/mnebydns-maintenance/$file.incoming /opt/mnebydns-maintenance/$file" < "scripts/$file"
+            expected="$(sha256sum "scripts/$file" | cut -d ' ' -f 1)"
+            remote "printf '%s  %s\n' '$expected' '/opt/mnebydns-maintenance/$file' | sha256sum -c --status"
+          done
+          after="$(remote 'sha256sum /opt/mnebydns-dot/Corefile /etc/nginx/nginx.conf /etc/mnebydns-googlepilot/nginx.conf')"
+          test "$before" = "$after"
+          remote 'python3 -B /opt/mnebydns-maintenance/mnebydns_safe_deploy.py status' > status.json
+          python3 -c 'import json; x=json.load(open("status.json")); assert x["read_only"] and x["dns_reader_group_verified"]; assert all(v["service_active"] and v["tcp_listener"] for v in x["services"].values())'
+          echo MAINTENANCE_SYNC_SUCCESS=true
+          echo LIVE_DNS_NGINX_CONFIGS_UNCHANGED=true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mnebydns-maintenance-sync-status
+          path: status.json
+          retention-days: 7
