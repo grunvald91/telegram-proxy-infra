@@ -29,7 +29,7 @@ jobs:
           print('RU_SSH_CLIENT='+str(run(['which','ssh']).returncode==0))
           print('RU_OPENSSL='+str(run(['which','openssl']).returncode==0))
           print('RU_DISK_AVAILABLE_GB='+str(round(os.statvfs('/opt').f_bavail*os.statvfs('/opt').f_frsize/(1024**3),1)))
-          print('RU_NODE='+run(['node','--version']).stdout.strip())
+          print('RU_NODE_ON_HOST='+str(run(['which','node']).returncode==0))
           p=pathlib.Path('/opt/mnebyvpn/public/web.env')
           cfg={}
           for line in p.read_text().splitlines() if p.is_file() else []:
