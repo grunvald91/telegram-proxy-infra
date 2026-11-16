@@ -14,6 +14,7 @@ jobs:
     timeout-minutes: 8
     env:
       SERVER188_SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
       SERVGO_SSH_PASSWORD: ${{ secrets.SERVER_SSH_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
@@ -138,3 +139,9 @@ jobs:
           except Exception: print('site_html_status=unverified')
           print('production_changed=false')
           PY
+      - name: Combined WG peer incident and reviewer start diagnostics
+        run: |
+          set -euo pipefail
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o LogLevel=ERROR)
+          SSHPASS="$SERVER188_SSH_PASSWORD" sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 - RU' < scripts/auth-wg-diagnostic.py
+          SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 - DE' < scripts/auth-wg-diagnostic.py
