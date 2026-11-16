@@ -32,6 +32,13 @@ class GuardTests(unittest.TestCase):
         new=(HEAD+self.personal+rule("www.youtube.com",answer="188.120.254.223")+self.nongoogle+TAIL).encode()
         with self.assertRaises(ValueError):preserved(self.base,new)
         self.assertTrue(preserved(self.base,new,scope="google")["preserved"])
+    def test_google_scope_cannot_modify_similarly_named_customer_domain(self):
+        customer=rule("mygoogleproduct.example.com")
+        old=(HEAD+customer+self.google+self.nongoogle+TAIL).encode()
+        new=(HEAD+rule("mygoogleproduct.example.com",answer="188.120.254.223")+self.google+self.nongoogle+TAIL).encode()
+        with self.assertRaises(ValueError):
+            preserved(old,new,scope="google")
+
     def test_owner_domain_exact_removal_can_be_allowed(self):
         owner=rule("oracle.com")
         old=(HEAD+self.personal+self.google+owner+TAIL).encode()
