@@ -5,7 +5,7 @@ on:
       operation:
         description: Read-only verification or explicit production cutover
         type: choice
-        options: [verify, cutover]
+        options: [verify, cutover, finalize]
         default: verify
         required: true
 permissions: {contents: read}
@@ -119,3 +119,11 @@ jobs:
           ru '/opt/mnebydns-awg-prod-20261116/manage.sh status RU'
           completed=1
           echo AWG_PRODUCTION_MIGRATION_COMPLETE=true
+      - name: Verify committed AWG and adapt the legacy peer monitor
+        if: inputs.operation == 'finalize'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o LogLevel=ERROR)
+          SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 - DE repair-monitor' < scripts/mnebydns-awg-live-verify-20261116.py
+          SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 - RU' < scripts/mnebydns-awg-live-verify-20261116.py
