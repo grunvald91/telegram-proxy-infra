@@ -1,4 +1,4 @@
-name: MNEBYDNS RU-to-DE public Googlevideo TCP443 packet trace (read-only)
+name: MNEBYDNS Googlevideo compare RU egress and DE ingress TCP443 read-only
 on:
   push:
     branches: [audit/smartdns-installed-review-20261115]
@@ -34,13 +34,16 @@ jobs:
           SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -B - read-ru' < scripts/mnebydns-youtube-public-tcp-trace-20261116.py > output/ru-routes.json
           SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -B - capture-de' < scripts/mnebydns-youtube-public-tcp-trace-20261116.py > output/de-packet-metadata.json &
           capture_pid=$!
+          SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -B - capture-ru' < scripts/mnebydns-youtube-public-tcp-trace-20261116.py > output/ru-packet-metadata.json &
+          ru_capture_pid=$!
           sleep 2
           SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -B - client-ru' < scripts/mnebydns-youtube-public-tcp-trace-20261116.py > output/ru-probes.json
           python3 scripts/mnebydns-youtube-public-tcp-trace-20261116.py client-runner > output/runner-probes.json
           wait "$capture_pid"
+          wait "$ru_capture_pid"
           python3 - <<'PY'
           import json
-          for name in ("de-routes","ru-routes","de-packet-metadata","ru-probes","runner-probes"):
+          for name in ("de-routes","ru-routes","de-packet-metadata","ru-packet-metadata","ru-probes","runner-probes"):
               with open("output/"+name+".json") as fh:
                   j=json.load(fh)
               assert j["read_only"] is True
