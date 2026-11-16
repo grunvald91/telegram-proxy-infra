@@ -147,3 +147,32 @@ The warning must be retained as \`watchdog_disarmed: false\`.
 and rollback behavior, not a live VPS reboot or end-user media playback.
 The production v3 installation only updates the maintenance scripts, never the
 current CoreDNS configuration, Nginx routes, certificates or subscriber records.
+
+
+### 16 Nov 2026 stable-checkpoint reconciliation
+
+The historic Google DNS recovery changed two live config hashes (CoreDNS and
+GooglePilot), while the former stable-checkpoint pointer still referenced the
+pre-recovery hashes. This blocked otherwise safe owner-domain workflows.
+
+[Run 43904037640](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/43904037640)
+verified that the live configuration was exactly the previously reviewed
+Google restoration, all three listeners/services were healthy and no sensitive
+rollback timer was outstanding.
+
+[Run 43904288633](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/43904288633)
+atomically advanced only the stable-checkpoint pointer from `1794809391` to
+`1794845357`. All DNS/Nginx/GooglePilot configuration bytes and customer
+credentials were unchanged. The previous checkpoint remains available.
+
+[Run 43905222328](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/43905222328)
+validated the exact Oracle owner-route dry-run against the reconciled baseline.
+The original CoreDNS main-zone insertion location is now selected relative to
+the unique Gemini template and the first subsequent cache within that same
+zone, avoiding a false failure when a separate Google zone also contains a
+cache directive. Already installed exact owner domains are recognized and not
+re-added.
+
+One-time reconciliation and read-only probe workflows were retired after
+success. Operational policy changes still use the root-owned, hash-pinned
+maintenance manager and preserve the personal routes.
