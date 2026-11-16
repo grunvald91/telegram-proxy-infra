@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 9
     env:
-      DE_PASS: \${{ secrets.RELAY89_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
         with:
