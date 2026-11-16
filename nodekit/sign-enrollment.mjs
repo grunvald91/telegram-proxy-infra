@@ -113,6 +113,9 @@ export function signEnrollmentFile({
     throw new NodekitEnrollmentError('Invalid node ID');
   protectedDir(stageRoot,uid);
   const nodeDir=join(stageRoot,nodeId);
+  if(resolve(challengeFile)!==resolve(join(nodeDir,'enrollment-challenge.json'))||
+     resolve(responseFile)!==resolve(join(nodeDir,'enrollment-response.json')))
+    throw new NodekitEnrollmentError('Enrollment files must stay inside the staged node directory');
   const challenge=JSON.parse(ownedFile(challengeFile,uid,{maxSize:2048}).toString('utf8'));
   const controllerPublicDer=ownedFile(controllerKeyFile,uid,{minSize:44,maxSize:44});
   const response=createEnrollmentResponse(nodeDir,challenge,controllerPublicDer,{uid,now});
