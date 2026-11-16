@@ -23,6 +23,41 @@ def original_template_parity(original, current):
     if len(before) < 300 or len(after) < len(before):
         raise ValueError('No genuine historical CoreDNS template coverage; refuse false PASS')
     diff=Counter(before)-Counter(after)
+    # Five Nov8 wildcard templates were expanded to additional Google
+    # domains. Their regex strings differ, but outputs may be equivalent.
+    old_roots=("googlevideo.com","ytimg.com","ggpht.com","gstatic.com",
+               "googleusercontent.com","youtube.com","youtube-nocookie.com",
+               "withgoogle.com")
+    samples=[n+"." for root in old_roots for n in (root,"r1---sn-test."+root)]
+    candidates=list(after)
+    expanded=[]
+    unresolved=[]
+    for item in diff.elements():
+        kind,zone,oldmatch,oldanswer,oldrcode=item
+        if zone!="." or len(oldmatch)!=1:
+            unresolved.append((kind,zone))
+            continue
+        try:
+            oldrx=re.compile(oldmatch[0])
+            old_samples=[s for s in samples if oldrx.fullmatch(s)]
+        except re.error:
+            unresolved.append((kind,zone))
+            continue
+        if len(old_samples)!=len(samples):
+            unresolved.append((kind,zone))
+            continue
+        compatible=False
+        for candidate in candidates:
+            t,z,match,answer,rcode=candidate
+            if t!=kind or z!=zone or answer!=oldanswer or rcode!=oldrcode or len(match)!=1:
+                continue
+            try:rx=re.compile(match[0])
+            except re.error:continue
+            if all(rx.fullmatch(s) for s in old_samples):
+                compatible=True
+                break
+        if compatible:expanded.append(kind)
+        else:unresolved.append((kind,zone))
     return {"historical_templates":len(before),"current_templates":len(after),
             "missing_or_changed_historical":sum(diff.values()),
             "missing_templates":[{"kind":item[0],"zone":item[1],"match":str(item[2])[:180],
@@ -30,7 +65,10 @@ def original_template_parity(original, current):
                                   "expected_ru188": "188.120.254.223" in str(item[3])}
                                  for item in diff.elements()][:12],
             "historical_rr_types":sorted(set(x[0] for x in before)),
-            "all_historical_rules_retained":not diff}
+            "all_historical_rules_retained":not diff,
+            "equivalent_widened_historical_rr_types":sorted(expanded),
+            "unresolved_historical_rr_types":sorted(set(k for k,_ in unresolved)),
+            "historical_semantics_covered_by_exact_or_wider_rule":not unresolved}
 
 
 BASE=Path("/opt/mnebydns-googlepilot-backups/42519046699")
