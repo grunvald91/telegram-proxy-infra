@@ -54,6 +54,7 @@ class TestNodekit(unittest.TestCase):
             self.assertFalse(manifest["registration_enabled"])
             self.assertEqual(manifest["state"], "testing")
             self.assertEqual(manifest["advertise_host"], BASE["advertise_host"])
+            self.assertEqual(manifest["listeners"]["vpn_tcp"], 2053)
             with self.assertRaises(nodekit.SpecError):
                 nodekit.stage(BASE, report, root)
 
