@@ -14,6 +14,23 @@ jobs:
       SERVER188_SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
       SERVGO_SSH_PASSWORD: ${{ secrets.SERVER_SSH_PASSWORD }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Read-only real mobile browser reproduction for VPN and login
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --prefix "$RUNNER_TEMP/mnebyvpn-browser-probe" --no-save --no-audit --no-fund playwright@1.56.1 >/dev/null
+          export VISUAL_PLAYWRIGHT_PACKAGE="$RUNNER_TEMP/mnebyvpn-browser-probe/node_modules/playwright/index.mjs"
+          if command -v google-chrome >/dev/null 2>&1; then
+            export VISUAL_CHROME_PATH="$(command -v google-chrome)"
+          elif command -v chromium >/dev/null 2>&1; then
+            export VISUAL_CHROME_PATH="$(command -v chromium)"
+          else
+            "$RUNNER_TEMP/mnebyvpn-browser-probe/node_modules/.bin/playwright" install chromium >/dev/null
+          fi
+          node scripts/mnebyvpn-live-web-readonly.mjs
       - name: Check available isolated SSH credentials without revealing them
         shell: bash
         run: |
