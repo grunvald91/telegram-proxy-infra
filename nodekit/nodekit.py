@@ -187,6 +187,7 @@ def stage(spec: dict[str, Any], report: dict[str, Any], root: Path) -> Path:
             "state": "testing",
             "spec_sha256": hashlib.sha256(canonical.encode()).hexdigest(),
             "roles": spec["services"],
+            "advertise_host": spec["advertise_host"],
             "activation_enabled": False,
             "registration_enabled": False,
             "pending": [
