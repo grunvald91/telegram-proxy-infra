@@ -6,6 +6,13 @@ umask 077
 [[ "$(id -u)" == 0 ]] || exit 2
 exec 9>/run/lock/mnebyvpn-xray-canary.lock
 flock -n 9 || exit 2
+# Bootstrap owns only a fresh installation. A provisioner deployment owns its
+# configuration even while the service is stopped for maintenance.
+if [[ -e /etc/systemd/system/mnebyvpn-vpn-provisioner.service ]] || \
+   [[ -e /var/lib/mnebyvpn-vpn/state.json ]] || \
+   systemctl is-active --quiet mnebyvpn-vpn-provisioner.service; then
+  echo 'provisioner_owns_vpn_config_use_transactional_update'; exit 2
+fi
 XRAY=/opt/xray/xray
 [[ -x "$XRAY" ]] || { echo "xray_binary_missing"; exit 2; }
 test -s /etc/letsencrypt/live/cdn.servgo.ru/fullchain.pem
