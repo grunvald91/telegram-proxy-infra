@@ -43,6 +43,7 @@ class DeployTests(TestCase):
             patch.object(deploy,"STAGE",self.stage),
             patch.object(deploy,"LIVE",{"dns":self.live}),
             patch.object(deploy,"verify_system",return_value=None),
+            patch.object(deploy,"ensure_dns_reader_access",return_value=None),
             patch.object(deploy,"manifest_for",return_value=self.manifest),
             patch.object(deploy,"require_services_healthy",
                          return_value={"dns":{"service_active":True,"tcp_listener":True}}),
@@ -117,6 +118,23 @@ class DeployTests(TestCase):
         self.assertTrue(result["committed"])
         self.assertFalse(result["rolled_back"])
         self.assertEqual(self.live.read_bytes(),b"new policy\n")
+
+    def test_recovery_without_live_changes_never_restarts_dns(self):
+        deploy.apply(self.key)
+        tx=list(self.tx.iterdir())[0]
+        (tx/"COMMITTED").unlink()
+        self.live.write_bytes(b"old policy\n")
+        with patch.object(deploy,"revert_services") as reload_mock:
+            result=deploy.recover_locked(tx)
+            self.assertTrue(result["rolled_back"])
+            reload_mock.assert_not_called()
+
+    def test_missing_dns_reader_group_fails_before_writes(self):
+        with patch.object(deploy,"ensure_dns_reader_access",side_effect=RuntimeError("no access")):
+            with self.assertRaises(RuntimeError):
+                deploy.apply(self.key)
+        self.assertEqual(self.live.read_bytes(),b"old policy\n")
+        self.assertEqual(list(self.tx.iterdir()),[])
 
     def test_invalid_manifest_path_does_not_escape_stage(self):
         with self.assertRaises(ValueError):
