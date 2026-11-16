@@ -1,4 +1,4 @@
-name: MNEBYDNS inspect five historical CoreDNS rule diffs (read-only)
+name: MNEBYDNS Nov8 Google RR wildcard expanded equivalence audit (read-only)
 on:
   push:
     branches: [audit/smartdns-installed-review-20261115]
