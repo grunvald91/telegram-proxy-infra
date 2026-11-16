@@ -89,7 +89,7 @@ def validate_tz_report(report,*,require_split=True,now=None):
 
 
 def validate_geneva_report(report, *, now=None):
-    """Validate finalized capture for Geneva dup-ACK (allows unsplit ClientHello)."""
+    """Validate finalized capture for Geneva probes (allows unsplit ClientHello)."""
     _validate_report_base(report, final=True, now=now)
     if report.get("final") is not True:
         raise RuntimeError("RU Geneva measurement: CAPTURING")
@@ -99,8 +99,16 @@ def validate_geneva_report(report, *, now=None):
     gm = report.get("geneva_metrics") or {}
     if not stats["syn"] and not gm.get("egress_synack"):
         raise RuntimeError("RU Geneva measurement: NO_TRAFFIC")
-    if gm.get("egress_synack", 0) > 0 and gm.get("egress_dupack_badsum", 0) == 0:
-        raise RuntimeError("RU Geneva measurement: GENEVA_BADSUM_NOT_OBSERVED")
+    variant = report.get("geneva_variant")
+    if gm.get("egress_synack", 0) > 0:
+        if variant == "synack-rst-badsum":
+            if gm.get("egress_synack_badsum", 0) == 0 and gm.get("egress_rst_badsum", 0) == 0:
+                raise RuntimeError("RU Geneva measurement: GENEVA_BADSUM_NOT_OBSERVED")
+        elif variant in ("rst-badseq", "ttl4-rst"):
+            if gm.get("egress_rst_valid_sum", 0) == 0:
+                raise RuntimeError("RU Geneva measurement: GENEVA_RST_PROBE_NOT_OBSERVED")
+        elif gm.get("egress_dupack_badsum", 0) == 0:
+            raise RuntimeError("RU Geneva measurement: GENEVA_BADSUM_NOT_OBSERVED")
     if not stats["target_clienthello"]:
         raise RuntimeError("RU Geneva measurement: GENEVA_SENT_CLIENTHELLO_DROPPED")
     return "GENEVA_CLIENTHELLO_REACHED_RU"
@@ -125,10 +133,11 @@ def write_report(path,report):
     os.replace(tmp,path)
 
 class CaptureEvidence:
-    def __init__(self,peer,path,*,geneva_egress=False,geneva_stats_fn=None):
+    def __init__(self,peer,path,*,geneva_egress=False,geneva_stats_fn=None,geneva_variant=None):
         self.path=Path(path)
         self.geneva_egress=bool(geneva_egress)
         self.geneva_stats_fn=geneva_stats_fn
+        self.geneva_variant=geneva_variant
         self.command=capture_command(
             edge="188.120.254.223",
             peer=None if peer=="all" else peer,
@@ -192,6 +201,8 @@ class CaptureEvidence:
             if self.geneva_stats_fn is not None:
                 gm.update(self.geneva_stats_fn())
             result["geneva_metrics"] = gm
+            if self.geneva_variant is not None:
+                result["geneva_variant"] = self.geneva_variant
         if proxy_stats is not None:result["proxy"]=dict(proxy_stats)
         return result
 

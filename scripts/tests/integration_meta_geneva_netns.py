@@ -195,8 +195,11 @@ def client_process_main(
     Path(result_file).write_text(
         f"synack_valid={synack_valid_sum}\n"
         f"egress_synack={snap['egress_synack']}\n"
+        f"egress_synack_badsum={snap['egress_synack_badsum']}\n"
         f"egress_dupack_badsum={snap['egress_dupack_badsum']}\n"
-        f"egress_dupack_valid_sum={snap['egress_dupack_valid_sum']}\n",
+        f"egress_dupack_valid_sum={snap['egress_dupack_valid_sum']}\n"
+        f"egress_rst_badsum={snap['egress_rst_badsum']}\n"
+        f"egress_rst_valid_sum={snap['egress_rst_valid_sum']}\n",
         encoding="utf-8",
     )
     os.write(done_fd, b"D")
@@ -340,14 +343,21 @@ def run_netns_test(variant: str = "ack-exact") -> None:
         nfq_stats = nfq.snapshot()
         print(f"variant={variant} client={client_metrics} nfq={nfq_stats}", flush=True)
         assert nfq_stats["synack_seen"] >= 1, nfq_stats
-        assert nfq_stats["dupack_sent"] >= 2, nfq_stats
+        expected_sent = 4 if variant == "synack-rst-badsum" else 2
+        assert nfq_stats["dupack_sent"] >= expected_sent, nfq_stats
         assert nfq_stats["send_errors"] == 0, nfq_stats
         assert int(client_metrics["synack_valid"]) >= 1, client_metrics
-        assert int(client_metrics["egress_dupack_badsum"]) == nfq_stats["dupack_sent"] == 2, client_metrics
+        if variant == "synack-rst-badsum":
+            assert int(client_metrics["egress_synack_badsum"]) >= 2, client_metrics
+            assert int(client_metrics["egress_rst_badsum"]) >= 2, client_metrics
+        elif variant == "rst-badseq":
+            assert int(client_metrics["egress_rst_valid_sum"]) >= 2, client_metrics
+        else:
+            assert int(client_metrics["egress_dupack_badsum"]) == nfq_stats["dupack_sent"] == 2, client_metrics
         assert proxy.stats["target_sni"] == 1, proxy.stats
 
 
 if __name__ == "__main__":
-    for mode in ("ack-exact", "ack-desync"):
+    for mode in ("ack-exact", "ack-desync", "synack-rst-badsum", "rst-badseq"):
         run_netns_test(mode)
     print("GENEVA_DUPACK_NETNS_TEST=PASS", flush=True)

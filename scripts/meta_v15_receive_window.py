@@ -385,6 +385,7 @@ def main():
                 args.evidence_file,
                 geneva_egress=(args.experiment_mode=="geneva"),
                 geneva_stats_fn=(nfq_worker.snapshot if nfq_worker is not None else None),
+                geneva_variant=(args.geneva_variant if args.experiment_mode=="geneva" else None),
             )
             evidence.start()
         proxy.start()

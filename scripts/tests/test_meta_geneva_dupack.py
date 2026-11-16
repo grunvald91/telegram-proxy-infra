@@ -135,6 +135,35 @@ class GenevaDupAckPacketTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             gd.build_geneva_dupack(make_tcp_ipv4_packet(flags=0x12), variant="unknown")
 
+    def test_build_geneva_probes_new_variants(self):
+        synack = make_tcp_ipv4_packet(seq=1000, ack=2001, flags=0x12, window=64240)
+
+        pre, post = gd.build_geneva_probes(synack, variant="synack-rst-badsum", public_sport=443)
+        self.assertEqual(len(pre), 1)
+        self.assertEqual(len(post), 1)
+        self.assertEqual(_ip_checksum(pre[0][:20]), 0)
+        self.assertEqual(_ip_checksum(post[0][:20]), 0)
+        self.assertFalse(gd.verify_ipv4_tcp_checksum(pre[0])[0])
+        self.assertFalse(gd.verify_ipv4_tcp_checksum(post[0])[0])
+        _, _, seq_pre, ack_pre, _, fl_pre, _ = struct.unpack_from("!HHIIBBH", pre[0], 20)
+        _, _, seq_post, ack_post, _, fl_post, _ = struct.unpack_from("!HHIIBBH", post[0], 20)
+        self.assertEqual((fl_pre, seq_pre, ack_pre), (0x12, 101000, 2001))
+        self.assertEqual((fl_post, seq_post, ack_post), (0x14, 1001, 2001))
+
+        pre_bs, post_bs = gd.build_geneva_probes(synack, variant="rst-badseq", public_sport=443)
+        self.assertEqual(pre_bs, [])
+        self.assertEqual(len(post_bs), 1)
+        self.assertTrue(gd.verify_ipv4_tcp_checksum(post_bs[0])[0])
+        _, _, seq_bs, ack_bs, _, fl_bs, _ = struct.unpack_from("!HHIIBBH", post_bs[0], 20)
+        self.assertEqual((fl_bs, seq_bs, ack_bs), (0x04, (1001 + 0x10000000) & 0xFFFFFFFF, 0))
+
+        pre_ttl, post_ttl = gd.build_geneva_probes(synack, variant="ttl4-rst", public_sport=443)
+        self.assertEqual(pre_ttl, [])
+        self.assertEqual(post_ttl[0][8], 4)
+        self.assertTrue(gd.verify_ipv4_tcp_checksum(post_ttl[0])[0])
+        _, _, seq_ttl, _, _, fl_ttl, _ = struct.unpack_from("!HHIIBBH", post_ttl[0], 20)
+        self.assertEqual((fl_ttl, seq_ttl), (0x04, 1001))
+
 
 class GenevaNetlinkCodecTests(unittest.TestCase):
     def test_parse_nfq_packet_and_build_verdict(self):
@@ -182,6 +211,15 @@ class GenevaEgressVerifierAndNftTests(unittest.TestCase):
         self.assertEqual(verifier.egress_synack, 1)
         self.assertEqual(verifier.egress_dupack_badsum, 1)
         self.assertEqual(verifier.egress_dupack_valid_sum, 1)
+
+        pre, post = gd.build_geneva_probes(synack, variant="synack-rst-badsum")
+        verifier.ethernet(wrap_eth(pre[0]))
+        verifier.ethernet(wrap_eth(post[0]))
+        _, rst_valid = gd.build_geneva_probes(synack, variant="rst-badseq")
+        verifier.ethernet(wrap_eth(rst_valid[0]))
+        self.assertEqual(verifier.egress_synack_badsum, 1)
+        self.assertEqual(verifier.egress_rst_badsum, 1)
+        self.assertEqual(verifier.egress_rst_valid_sum, 1)
 
     def test_nft_geneva_rules_isolate_notrack_queue_and_bypass(self):
         rules = gd.nft_geneva_rules(
@@ -252,6 +290,20 @@ class GenevaEvidenceAndWiringTests(unittest.TestCase):
         dropped_ch = self._base_report(syn=1, target_ch=0, sni_unsplit=0, synack=1, badsum=2)
         with self.assertRaisesRegex(RuntimeError, "GENEVA_SENT_CLIENTHELLO_DROPPED"):
             ev.validate_geneva_report(dropped_ch, now=1001.0)
+
+        combo_ok = self._base_report(syn=1, target_ch=1, synack=1, badsum=0)
+        combo_ok["geneva_variant"] = "synack-rst-badsum"
+        combo_ok["geneva_metrics"]["egress_synack_badsum"] = 2
+        combo_ok["geneva_metrics"]["egress_rst_badsum"] = 2
+        self.assertEqual(ev.validate_geneva_report(combo_ok, now=1001.0), "GENEVA_CLIENTHELLO_REACHED_RU")
+
+        rst_bs = self._base_report(syn=1, target_ch=1, synack=1, badsum=0)
+        rst_bs["geneva_variant"] = "rst-badseq"
+        rst_bs["geneva_metrics"]["egress_rst_valid_sum"] = 0
+        with self.assertRaisesRegex(RuntimeError, "GENEVA_RST_PROBE_NOT_OBSERVED"):
+            ev.validate_geneva_report(rst_bs, now=1001.0)
+        rst_bs["geneva_metrics"]["egress_rst_valid_sum"] = 2
+        self.assertEqual(ev.validate_geneva_report(rst_bs, now=1001.0), "GENEVA_CLIENTHELLO_REACHED_RU")
 
     def test_capture_command_bidirectional_flag(self):
         inbound = obs.capture_command(edge="188.120.254.223", peer=None, bidirectional=False)

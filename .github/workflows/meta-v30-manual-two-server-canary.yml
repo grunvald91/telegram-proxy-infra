@@ -58,9 +58,9 @@ on:
         required: false
         default: 'window'
       geneva_variant:
-        description: 'Geneva dup-ACK variant when experiment_mode=geneva'
+        description: 'Geneva probe variant when experiment_mode=geneva'
         type: choice
-        options: ['ack-exact', 'ack-desync']
+        options: ['ack-exact', 'ack-desync', 'synack-rst-badsum', 'rst-badseq', 'ttl4-rst']
         required: false
         default: 'ack-exact'
       geneva_repeats:

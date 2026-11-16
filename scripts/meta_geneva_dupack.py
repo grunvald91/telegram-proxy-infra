@@ -15,11 +15,18 @@ import select
 import socket
 import struct
 import threading
+import time
 
 BYPASS = 0x40000000
 GENEVA_QUEUE = 211
 SUPPORTED_EXPERIMENT_MODES = ("window", "geneva")
-SUPPORTED_GENEVA_VARIANTS = ("ack-exact", "ack-desync")
+SUPPORTED_GENEVA_VARIANTS = (
+    "ack-exact",
+    "ack-desync",
+    "synack-rst-badsum",
+    "rst-badseq",
+    "ttl4-rst",
+)
 SUPPORTED_GENEVA_REPEATS = (1, 2, 3)
 DEFAULT_GENEVA_VARIANT = "ack-exact"
 DEFAULT_GENEVA_REPEATS = 2
@@ -105,15 +112,11 @@ def verify_ipv4_tcp_checksum(ip_packet: bytes) -> tuple[bool, int, int]:
     return wire_sum == expected, wire_sum, expected
 
 
-def build_geneva_dupack(
+def _parse_synack(
     synack_ip_packet: bytes,
     *,
-    variant: str = DEFAULT_GENEVA_VARIANT,
     public_sport: int | None = None,
-) -> bytes:
-    """Craft a duplicate ACK with valid IPv4 header and corrupted TCP checksum."""
-    if variant not in SUPPORTED_GENEVA_VARIANTS:
-        raise ValueError(f"unsupported Geneva variant: {variant!r}")
+) -> tuple[bytes, bytes, int, int, int, int, int, int, int]:
     if public_sport is not None and not 1 <= public_sport <= 65535:
         raise ValueError("invalid public_sport")
     if len(synack_ip_packet) < 40 or (synack_ip_packet[0] >> 4) != 4:
@@ -141,32 +144,43 @@ def build_geneva_dupack(
         raise ValueError("invalid TCP header length")
     if (flags & 0x12) != 0x12:
         raise ValueError("expected TCP SYN+ACK flags")
+    return src_ip, dst_ip, ip_id, ttl, sport, dport, seq_s0, ack_c1, window
 
-    if variant == "ack-exact":
-        dup_seq = (seq_s0 + 1) & 0xFFFFFFFF
-        dup_ack = ack_c1 & 0xFFFFFFFF
-    else:  # ack-desync
-        dup_seq = (seq_s0 + 1 + 1000) & 0xFFFFFFFF
-        dup_ack = (ack_c1 + 1460) & 0xFFFFFFFF
 
+def _build_probe_packet(
+    synack_ip_packet: bytes,
+    *,
+    flags: int,
+    seq: int,
+    ack: int,
+    bad_tcp_sum: bool,
+    ttl_override: int | None = None,
+    ip_id_offset: int = 1,
+    public_sport: int | None = None,
+) -> bytes:
+    src_ip, dst_ip, ip_id, base_ttl, sport, dport, _seq_s0, _ack_c1, window = _parse_synack(
+        synack_ip_packet, public_sport=public_sport
+    )
+    ttl = base_ttl if ttl_override is None else ttl_override
     tcp_wo_sum = struct.pack(
         "!HHIIBBHHH",
         sport,
         dport,
-        dup_seq,
-        dup_ack,
+        seq & 0xFFFFFFFF,
+        ack & 0xFFFFFFFF,
         0x50,  # 20-byte TCP header
-        0x10,  # ACK only
+        flags,
         window,
         0,
         0,
     )
-    valid_tcp_sum = tcp_checksum(src_ip, dst_ip, tcp_wo_sum)
-    bad_tcp_sum = valid_tcp_sum ^ 0xFFFF
-    tcp_seg = tcp_wo_sum[:16] + struct.pack("!H", bad_tcp_sum) + tcp_wo_sum[18:]
+    sum_val = tcp_checksum(src_ip, dst_ip, tcp_wo_sum)
+    if bad_tcp_sum:
+        sum_val ^= 0xFFFF
+    tcp_seg = tcp_wo_sum[:16] + struct.pack("!H", sum_val) + tcp_wo_sum[18:]
 
     new_total_len = 20 + len(tcp_seg)
-    new_ip_id = (ip_id + 1) & 0xFFFF
+    new_ip_id = (ip_id + ip_id_offset) & 0xFFFF
     ip_wo_sum = struct.pack(
         "!BBHHHBBH4s4s",
         0x45,
@@ -183,6 +197,93 @@ def build_geneva_dupack(
     ip_sum = ipv4_checksum(ip_wo_sum)
     ip_hdr = ip_wo_sum[:10] + struct.pack("!H", ip_sum) + ip_wo_sum[12:]
     return ip_hdr + tcp_seg
+
+
+def build_geneva_dupack(
+    synack_ip_packet: bytes,
+    *,
+    variant: str = DEFAULT_GENEVA_VARIANT,
+    public_sport: int | None = None,
+) -> bytes:
+    """Craft a duplicate ACK with valid IPv4 header and corrupted TCP checksum."""
+    if variant not in ("ack-exact", "ack-desync"):
+        raise ValueError(f"unsupported Geneva dup-ACK variant: {variant!r}")
+    _src, _dst, _ip_id, _ttl, _sport, _dport, seq_s0, ack_c1, _win = _parse_synack(
+        synack_ip_packet, public_sport=public_sport
+    )
+    if variant == "ack-exact":
+        dup_seq = (seq_s0 + 1) & 0xFFFFFFFF
+        dup_ack = ack_c1 & 0xFFFFFFFF
+    else:  # ack-desync
+        dup_seq = (seq_s0 + 1 + 1000) & 0xFFFFFFFF
+        dup_ack = (ack_c1 + 1460) & 0xFFFFFFFF
+    return _build_probe_packet(
+        synack_ip_packet,
+        flags=0x10,
+        seq=dup_seq,
+        ack=dup_ack,
+        bad_tcp_sum=True,
+        public_sport=public_sport,
+    )
+
+
+def build_geneva_probes(
+    synack_ip_packet: bytes,
+    *,
+    variant: str = DEFAULT_GENEVA_VARIANT,
+    public_sport: int | None = None,
+) -> tuple[list[bytes], list[bytes]]:
+    """Build (pre_accept_packets, post_accept_packets) for the selected Geneva variant."""
+    if variant not in SUPPORTED_GENEVA_VARIANTS:
+        raise ValueError(f"unsupported Geneva variant: {variant!r}")
+    if variant in ("ack-exact", "ack-desync"):
+        return [], [build_geneva_dupack(synack_ip_packet, variant=variant, public_sport=public_sport)]
+
+    _src, _dst, _ip_id, _ttl, _sport, _dport, seq_s0, ack_c1, _win = _parse_synack(
+        synack_ip_packet, public_sport=public_sport
+    )
+    if variant == "synack-rst-badsum":
+        pre_synack = _build_probe_packet(
+            synack_ip_packet,
+            flags=0x12,  # SYN+ACK
+            seq=(seq_s0 + 100000) & 0xFFFFFFFF,
+            ack=ack_c1,
+            bad_tcp_sum=True,
+            ip_id_offset=1,
+            public_sport=public_sport,
+        )
+        post_rstack = _build_probe_packet(
+            synack_ip_packet,
+            flags=0x14,  # RST+ACK
+            seq=(seq_s0 + 1) & 0xFFFFFFFF,
+            ack=ack_c1,
+            bad_tcp_sum=True,
+            ip_id_offset=2,
+            public_sport=public_sport,
+        )
+        return [pre_synack], [post_rstack]
+    if variant == "rst-badseq":
+        # Out-of-window RST with valid TCP checksum (RFC 5961 client ignores/challenges; stateless DPI drops).
+        post_rst = _build_probe_packet(
+            synack_ip_packet,
+            flags=0x04,  # RST
+            seq=(seq_s0 + 1 + 0x10000000) & 0xFFFFFFFF,
+            ack=0,
+            bad_tcp_sum=False,
+            public_sport=public_sport,
+        )
+        return [], [post_rst]
+    # ttl4-rst: valid RST+seq intended to expire in transit after DPI, before client (7 hops away).
+    post_ttl_rst = _build_probe_packet(
+        synack_ip_packet,
+        flags=0x04,  # RST
+        seq=(seq_s0 + 1) & 0xFFFFFFFF,
+        ack=0,
+        bad_tcp_sum=False,
+        ttl_override=4,
+        public_sport=public_sport,
+    )
+    return [], [post_ttl_rst]
 
 
 def _pad4(n: int) -> int:
@@ -304,15 +405,18 @@ def nft_geneva_rules(
 
 
 class GenevaEgressVerifier:
-    """In-memory verifier checking outbound SYN+ACK and bad-checksum ACK on wire."""
+    """In-memory verifier checking outbound SYN+ACK, badsum and RST probes on wire."""
 
     def __init__(self, *, edge: str = "188.120.254.223") -> None:
         self.edge = ipv4(edge)
         self.edge_bytes = socket.inet_aton(self.edge)
         self.lock = threading.Lock()
         self.egress_synack = 0
+        self.egress_synack_badsum = 0
         self.egress_dupack_badsum = 0
         self.egress_dupack_valid_sum = 0
+        self.egress_rst_badsum = 0
+        self.egress_rst_valid_sum = 0
 
     def ethernet(self, frame: bytes) -> None:
         if len(frame) < 54 or frame[12:14] != b"\x08\x00":
@@ -343,21 +447,34 @@ class GenevaEgressVerifier:
         except ValueError:
             return
         pseudo_sum = tcp_pseudo_sum(ip_pkt[12:16], ip_pkt[16:20], total_len - ihl)
+        is_valid = csum_ok or wire_sum == pseudo_sum
+        is_inverted = wire_sum == (expected_sum ^ 0xFFFF)
         with self.lock:
             if (flags & 0x12) == 0x12:
-                self.egress_synack += 1
+                if is_inverted:
+                    self.egress_synack_badsum += 1
+                else:
+                    self.egress_synack += 1
+            elif flags & 0x04:
+                if is_valid:
+                    self.egress_rst_valid_sum += 1
+                elif is_inverted:
+                    self.egress_rst_badsum += 1
             elif (flags & 0x17) == 0x10 and payload_len == 0:
-                if csum_ok or wire_sum == pseudo_sum:
+                if is_valid:
                     self.egress_dupack_valid_sum += 1
-                elif wire_sum == (expected_sum ^ 0xFFFF):
+                elif is_inverted:
                     self.egress_dupack_badsum += 1
 
     def snapshot(self) -> dict[str, int]:
         with self.lock:
             return {
                 "egress_synack": self.egress_synack,
+                "egress_synack_badsum": self.egress_synack_badsum,
                 "egress_dupack_badsum": self.egress_dupack_badsum,
                 "egress_dupack_valid_sum": self.egress_dupack_valid_sum,
+                "egress_rst_badsum": self.egress_rst_badsum,
+                "egress_rst_valid_sum": self.egress_rst_valid_sum,
             }
 
 
@@ -438,34 +555,49 @@ class NetfilterQueueWorker:
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
 
+    def _send_packets(self, packets: list[bytes]) -> None:
+        assert self.raw_sock is not None
+        for pkt in packets:
+            dst_ip = socket.inet_ntoa(pkt[16:20])
+            for _ in range(self.repeats):
+                try:
+                    self.raw_sock.sendto(pkt, (dst_ip, 0))
+                    with self.lock:
+                        self.stats["dupack_sent"] += 1
+                except OSError:
+                    with self.lock:
+                        self.stats["send_errors"] += 1
+
     def _handle_message(self, msg: bytes) -> None:
         parsed = parse_nfq_packet(msg)
         if parsed is None:
             return
         pkt_id, payload = parsed
         assert self.nl_sock is not None and self.raw_sock is not None
-        self._seq += 1
-        self.nl_sock.sendall(
-            build_verdict_msg(queue_num=self.queue_num, packet_id=pkt_id, verdict=NF_ACCEPT, seq=self._seq)
-        )
         try:
-            dup = build_geneva_dupack(payload, variant=self.variant, public_sport=self.public_sport)
+            pre_packets, post_packets = build_geneva_probes(
+                payload, variant=self.variant, public_sport=self.public_sport
+            )
         except ValueError:
+            self._seq += 1
+            self.nl_sock.sendall(
+                build_verdict_msg(queue_num=self.queue_num, packet_id=pkt_id, verdict=NF_ACCEPT, seq=self._seq)
+            )
             with self.lock:
                 self.stats["other_packets"] += 1
             return
 
         with self.lock:
             self.stats["synack_seen"] += 1
-        dst_ip = socket.inet_ntoa(dup[16:20])
-        for _ in range(self.repeats):
-            try:
-                self.raw_sock.sendto(dup, (dst_ip, 0))
-                with self.lock:
-                    self.stats["dupack_sent"] += 1
-            except OSError:
-                with self.lock:
-                    self.stats["send_errors"] += 1
+        if pre_packets:
+            self._send_packets(pre_packets)
+            time.sleep(0.002)
+        self._seq += 1
+        self.nl_sock.sendall(
+            build_verdict_msg(queue_num=self.queue_num, packet_id=pkt_id, verdict=NF_ACCEPT, seq=self._seq)
+        )
+        if post_packets:
+            self._send_packets(post_packets)
 
     def _run(self) -> None:
         assert self.nl_sock is not None
