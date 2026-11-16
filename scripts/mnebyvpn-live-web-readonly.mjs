@@ -31,10 +31,18 @@ try{
     }))
   })).catch(e=>({error:String(e.message).slice(0,160)}));
   console.log('READONLY_LIVE_INITIAL='+JSON.stringify(out));
-  const headerVisible=await page.locator('.journey-header-account').isVisible();
-  out.headerVisible=headerVisible;
-  if(headerVisible)await page.locator('.journey-header-account').click({timeout:6000});
-  else await page.evaluate(()=>{location.hash='#account';});
+  // Select a real VPN offer twice: it must remain available.
+  await iframe.locator('.plans-vpn .plan[data-d="30"]').click({timeout:6000});
+  await iframe.locator('.plans-vpn .plan[data-d="30"]').click({timeout:6000});
+  out.selected30=await iframe.locator('.plans-vpn .plan[data-d="30"]').evaluate(el=>({
+    pressed:el.getAttribute('aria-pressed'),disabled:el.disabled,
+    price:el.querySelector('strong')?.textContent
+  }));
+  out.buyAfterRetap=await iframe.locator('.cta').evaluate(el=>({
+    disabled:el.disabled,text:el.textContent?.slice(0,100)
+  }));
+  // Use the visible My VPN link within the full-screen iframe.
+  await iframe.locator('.top-links a[href="/#account"]').click({timeout:8000});
   await page.waitForTimeout(800);
   out.account=await page.evaluate(()=>{
     const el=document.getElementById('email-auth-panel');
@@ -54,5 +62,17 @@ try{
     formHidden:document.getElementById('email-auth-panel')?.classList.contains('hidden'),
     inputVisible:document.getElementById('email-input')?.getBoundingClientRect().width>0,
   }));
+  out.authOptions=await page.evaluate(async()=>{
+    const r=await fetch('/api/auth/options');
+    return {http:r.status,body:r.ok?await r.json():null};
+  });
   console.log('READONLY_LIVE_WEB_AUDIT='+JSON.stringify(out));
+  if(out.document_http!==200||!out.site_catalog_api_status.includes('200')||
+     out.site_browser_errors.length||out.selected30?.pressed!=='true'||
+     out.selected30?.disabled||out.buyAfterRetap?.disabled||
+     out.account?.view!=='account'||out.account?.formHidden||
+     !out.account?.inputVisible||out.directAccount?.formHidden||
+     !out.directAccount?.inputVisible||out.authOptions?.http!==200||
+     out.authOptions?.body?.emailLoginEnabled!==true)
+     throw Error('Production mobile VPN or email cabinet regression');
 }finally{await browser.close();}
