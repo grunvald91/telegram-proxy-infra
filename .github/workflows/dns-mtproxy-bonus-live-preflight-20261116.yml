@@ -27,6 +27,13 @@ jobs:
               return subprocess.run(cmd,input=input,text=True,capture_output=True,timeout=timeout)
           print('RU_PYTHON='+run(['python3','--version']).stdout.strip())
           print('RU_SSH_CLIENT='+str(run(['which','ssh']).returncode==0))
+          import socket
+          ss=socket.socket();ss.settimeout(5)
+          try:ss.connect(('89.125.90.101',22));print('RU_TO_DE_SSH_TCP=True')
+          except Exception as e:print('RU_TO_DE_SSH_TCP='+type(e).__name__)
+          finally:ss.close()
+          print('RU_POSTGRES_NETWORK='+run(['docker','inspect','--format','{{.HostConfig.NetworkMode}}','mnebyvpn-stage-postgres']).stdout.strip())
+          print('RU_NETWORK_CREATE_SUPPORTED='+str(run(['docker','network','ls','--format','{{.Name}}']).returncode==0))
           print('RU_OPENSSL='+str(run(['which','openssl']).returncode==0))
           print('RU_DISK_AVAILABLE_GB='+str(round(os.statvfs('/opt').f_bavail*os.statvfs('/opt').f_frsize/(1024**3),1)))
           print('RU_NODE_ON_HOST='+str(run(['which','node']).returncode==0))
