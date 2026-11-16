@@ -44,6 +44,7 @@ PORT={"dns":853,"shared":443,"pilot":15449}
 NAME=re.compile(r"^[a-z0-9][a-z0-9-]{5,32}$")
 SHA=re.compile(r"^[0-9a-f]{64}$")
 UNITPREFIX="mnebydns-safe-recover-"
+OWNERROOT=Path("/opt/mnebydns-owner-domain")
 
 def cmd(*argv,timeout=25):
     p=subprocess.run(argv,text=True,capture_output=True,timeout=timeout)
@@ -255,6 +256,9 @@ def recover_locked(tx):
     if changed:
         revert_services(changed)
     require_services_healthy(set(files)|{"dns","pilot","shared"})
+    if "dns" in changed:
+        ensure_dns_reader_access()
+        smoke_check()
     write_durable(tx/"ROLLED_BACK",b"rollback complete\n")
     return {"committed":False,"rolled_back":True,"files":sorted(actions)}
 
@@ -346,7 +350,7 @@ def owner_publish(phase: str, base: Path, kind: str):
     verify_system()
     if phase not in ("stage","rollback") or kind not in ("dns","nginx"):
         raise ValueError("Unapproved owner-domain transition")
-    parent=Path("/opt/mnebydns-owner-domain")
+    parent=OWNERROOT
     if (base.parent!=parent or not re.fullmatch(r"[0-9]{9,13}",base.name)
             or base.is_symlink() or not base.is_dir()):
         raise ValueError("Owner-domain checkpoint path untrusted")
