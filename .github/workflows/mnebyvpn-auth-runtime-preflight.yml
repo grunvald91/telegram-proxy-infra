@@ -61,6 +61,35 @@ jobs:
               print('site_telegram_enabled='+str(obj.get('telegramLoginEnabled') is True).lower())
               print('site_checkout_enabled='+str(obj.get('checkoutEnabled') is True).lower())
               print('site_login_enabled='+str(obj.get('loginEnabled') is True).lower())
+              p=obj.get('plans')
+              print('site_plans_array='+str(isinstance(p,list)).lower())
+              if isinstance(p,list):
+                  print('site_plans_count='+str(len(p)))
+                  for product in ('vpn','smart_dns','bundle'):
+                      durations=sorted([x.get('durationDays') for x in p if x.get('product')==product and isinstance(x.get('durationDays'),(int,float))])
+                      print('site_catalog_'+product+'_days='+','.join(str(v) for v in durations))
+                  print('site_catalog_ids='+','.join(str(x.get('id')) for x in p if x.get('product')=='vpn')[:350])
+              print('site_trial_offer_count='+str(len(obj.get('trialOffers',[]))))
+          except Exception as err:
+              print('site_catalog_probe_error='+type(err).__name__)
+          try:
+              for tag,path in (('cabinet','/\u0023account'),('js','/app.js'),('journey','/journey.js'),('html','/')):
+                  cp=subprocess.run(['curl','-fsS','--max-time','7','-o','/dev/null','-w','%{http_code}','http://127.0.0.1:8792'+path],
+                    capture_output=True,text=True,timeout=9)
+                  print('site_'+tag+'_asset_http='+cp.stdout.strip()[:3])
+              ext=subprocess.run(['curl','-sS','--max-time','8','-o','/dev/null','-w','%{http_code}','https://mnebyvpn.site/api/plans'],capture_output=True,text=True,timeout=10)
+              print('external_plans_http='+ext.stdout.strip()[:3])
+          except Exception as err:
+              print('site_http_probe_error='+type(err).__name__)
+          try:
+              cp=subprocess.run(['docker','exec','mnebyvpn-stage-postgres','psql','-XAt','-U','mnebyvpn_stage','-d','mnebyvpn_stage','-c',
+                "SELECT product||':'||COALESCE(enabled::text,'null')||':'||count(*) FROM billing_plans GROUP BY product,enabled ORDER BY 1"],
+                capture_output=True,text=True,timeout=9)
+              print('catalog_sql_query_ok='+str(cp.returncode==0).lower())
+              if cp.returncode==0:
+                  for line in cp.stdout.splitlines()[:15]:print('canonical_catalog_'+line)
+          except Exception as err:
+              print('catalog_db_probe_error='+type(err).__name__)
           except Exception: print('site_auth_status=unverified')
           try:
               html=subprocess.run(['curl','-fsS','--max-time','5','http://127.0.0.1:8792/'],
