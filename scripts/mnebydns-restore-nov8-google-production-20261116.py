@@ -253,6 +253,7 @@ def main():
                 OUT["rollback_timer_left_armed"]=timer_active
         raise
 if __name__=="__main__":
+    raise SystemExit("One-time Nov8 production restore archived: unsafe legacy deploy disabled; see mnebydns_nov8_restore_safety.py")
     try:main()
     except Exception as exc:
         OUT.update(done=False,error=type(exc).__name__,reason=str(exc)[:240])
