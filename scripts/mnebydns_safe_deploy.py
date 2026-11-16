@@ -345,17 +345,20 @@ def apply(name):
                     pass
             raise
 
+def validate_owner_checkpoint(base: Path):
+    if (base.parent!=OWNERROOT or not re.fullmatch(r"[0-9]{9,13}",base.name)
+            or base.is_symlink() or not base.is_dir()):
+        raise ValueError("Owner-domain checkpoint path untrusted")
+    if base.stat().st_uid!=0 or stat.S_IMODE(base.stat().st_mode)!=0o700:
+        raise ValueError("Owner-domain checkpoint must be private and root-owned")
+
+
 def owner_publish(phase: str, base: Path, kind: str):
     """Publish owner-domain canary while caller holds shared route lock."""
     verify_system()
     if phase not in ("stage","rollback") or kind not in ("dns","nginx"):
         raise ValueError("Unapproved owner-domain transition")
-    parent=OWNERROOT
-    if (base.parent!=parent or not re.fullmatch(r"[0-9]{9,13}",base.name)
-            or base.is_symlink() or not base.is_dir()):
-        raise ValueError("Owner-domain checkpoint path untrusted")
-    if base.stat().st_uid!=0 or stat.S_IMODE(base.stat().st_mode)!=0o700:
-        raise ValueError("Owner-domain checkpoint must be private and root-owned")
+    validate_owner_checkpoint(base)
     name="dns" if kind=="dns" else "shared"
     live=LIVE[name]
     before=base/(kind+".before")
