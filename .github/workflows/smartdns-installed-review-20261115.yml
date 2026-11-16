@@ -1,4 +1,4 @@
-name: SmartDNS owner TCP89 reassembly read-only 20261116
+name: SmartDNS UDP443 REJECT temporary experiment 20261116
 on:
   push:
     branches: [audit/smartdns-installed-review-20261115]
@@ -18,12 +18,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Observe owner TCP89 handshakes read-only
+      - name: Apply temporary public UDP443 REJECT and verify external ICMP
         shell: bash
         run: |
           set -Eeuo pipefail
           test -n "$DE_PASS"
-          python3 -m py_compile scripts/smartdns-tcp89-owner-observer-20261116.py
+          python3 -m py_compile scripts/smartdns-udp443-reject-experiment-20261116.py
           if ! command -v sshpass >/dev/null; then
             sudo apt-get update -qq
             sudo apt-get install -y -qq sshpass >/dev/null
@@ -33,12 +33,27 @@ jobs:
             -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
             -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
           mkdir output
-          SSHPASS="$DE_PASS" sshpass -e ssh -T "${opts[@]}" root@89.125.90.101 'python3 -B -' < scripts/smartdns-tcp89-owner-observer-20261116.py > output/tcp89-owner.json
-          python3 -c 'import json; j=json.load(open("output/tcp89-owner.json")); assert j["production_changed"] is False; print("TCP89_OWNER_READONLY_COMPLETE=true")'
+          SSHPASS="$DE_PASS" sshpass -e ssh -T "${opts[@]}" root@89.125.90.101 'python3 -B - apply' < scripts/smartdns-udp443-reject-experiment-20261116.py > output/applied.json
+          python3 - <<'PYTEST'
+          import json,socket,pathlib
+          rows=[]
+          for n in range(3):
+              s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.settimeout(4);s.connect(('89.125.90.101',443));s.send(b'smartdns-owner-reject-probe')
+              try:s.recv(1024);result='unexpected_reply'
+              except ConnectionRefusedError:result='ICMP_PORT_UNREACHABLE'
+              except Exception as e:result=type(e).__name__
+              finally:s.close()
+              rows.append(result)
+          pathlib.Path('output/external-icmp.json').write_text(json.dumps(rows))
+          assert rows==['ICMP_PORT_UNREACHABLE']*3,rows
+          print('EXTERNAL_UDP443_REJECT_CONFIRMED=true')
+          PYTEST
+          SSHPASS="$DE_PASS" sshpass -e ssh -T "${opts[@]}" root@89.125.90.101 'python3 -B - verify' < scripts/smartdns-udp443-reject-experiment-20261116.py > output/verified.json
+          python3 -c 'import json; j=json.load(open("output/verified.json")); assert j["verified"] and j["listener_processes_unchanged"]; print("REJECT_IN_EARLY_INPUT_WITH_COUNTER_VERIFIED=true")'
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: smartdns-tcp89-owner-detail-20261116
+          name: smartdns-udp443-reject-experiment-20261116
           path: output/*
           retention-days: 2
           if-no-files-found: error
