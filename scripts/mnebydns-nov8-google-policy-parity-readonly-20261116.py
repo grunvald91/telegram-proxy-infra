@@ -112,6 +112,26 @@ def matched(pattern,item):
 regex_all=all(not matched(old_reg,n) or matched(new_reg,n) for n in samples)
 pilot_regex_all=all(not matched(pilot_old_reg,n) or matched(pilot_now_reg,n) for n in samples)
 core_report=original_template_parity(core_old,core_now)
+def family_a_candidates(source):
+    pattern=re.compile(r"(?ms)^[ \t]*template IN A (\S+) \{(.*?)^[ \t]*\}")
+    checks=("r1---sn-test.googlevideo.com.","cdn.ytimg.com.","cdn.gstatic.com.",
+            "www.googleusercontent.com.","www.youtube.com.")
+    results=[]
+    for index,m in enumerate(pattern.finditer(source)):
+        body=m.group(2)
+        matches=re.findall(r"(?m)^\s*match\s+(.+)$",body)
+        answers=re.findall(r'(?m)^\s*answer\s+"([^"]+)"',body)
+        if len(matches)!=1:continue
+        try: rx=re.compile(matches[0])
+        except re.error:continue
+        covered=[s for s in checks if rx.fullmatch(s)]
+        if not covered:continue
+        results.append({"ordinal":index,"zone":m.group(1),"covered":covered,
+          "regex_preview":matches[0][:225],
+          "answer":answers[0][:100] if answers else None,
+          "fallthrough":"fallthrough" in body})
+    return results
+
 # 6-host late override was restored to foreign DE ingress.
 zone="# Verified Google RU ingress 20261116"
 later=core_now.split(zone,1)[1] if core_now.count(zone)==1 else ""
@@ -124,6 +144,8 @@ post={"utc":datetime.datetime.now(datetime.timezone.utc).isoformat(),
       "original_google_media_regex_covered":regex_all,
       "original_pilot_media_regex_covered":pilot_regex_all,
       "google_dns_rr_template_parity":core_report,
+      "historical_a_family_candidates":family_a_candidates(core_old),
+      "current_a_family_candidates":family_a_candidates(core_now),
       "later_six_host_zone_present":bool(later),
       "later_six_host_zone_targets_de":'answer "{{ .Name }} 20 IN A 89.125.90.101"' in later,
       "later_six_host_zone_targets_ru":'answer "{{ .Name }} 20 IN A 188.120.254.223"' in later,
