@@ -1,4 +1,4 @@
-name: Reconcile MNEBYDNS restored Google stable checkpoint pointer (guarded)
+name: Verify MNEBYDNS reconciled stable snapshot is consistent (read-only)
 on:
   push:
     branches: [fix/mnebydns-safe-deploy-review-20261116]
@@ -16,7 +16,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: {persist-credentials: false}
-      - name: Promote stable checkpoint pointer only after SHA, ACL, services, and no-canary checks
+      - name: Verify new stable pointer and active services without writes
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -31,12 +31,12 @@ jobs:
             -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
           mkdir -p output
           SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
-            'MNEBYDNS_APPROVE_STABLE_RECONCILE=1 python3 -B - promote' < scripts/mnebydns_stable_checkpoint_reconcile_20261116.py > output/stable.json
+            'python3 -B - inspect' < scripts/mnebydns_stable_checkpoint_reconcile_20261116.py > output/stable.json
           python3 - <<'PY'
           import json
           x=json.load(open("output/stable.json"))
-          assert x["promoted"] and not x["live_dns_configs_changed"]
-          print("MNEBYDNS_STABLE_CHECKPOINT_PROMOTED="+json.dumps(x,sort_keys=True,separators=(",",":")))
+          assert x["read_only"] and x["live_matches_expected"] and x["already_reconciled"]
+          print("MNEBYDNS_STABLE_CHECKPOINT_RECONCILED="+json.dumps(x,sort_keys=True,separators=(",",":")))
           PY
       - uses: actions/upload-artifact@v4
         if: always()
