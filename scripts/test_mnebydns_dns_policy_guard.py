@@ -43,7 +43,7 @@ class GuardTests(unittest.TestCase):
         new=(HEAD.replace("    reload 5s 1s\n","")+self.personal+self.google+self.nongoogle+TAIL).encode()
         with self.assertRaises(ValueError):preserved(self.base,new)
     def test_unmatched_personal_template_cannot_be_ignored(self):
-        broken=self.base.decode().replace("    }\\n", "", 1).encode()
+        broken=self.base.decode().replace("    }", "", 1).encode()
         with self.assertRaises(ValueError):
             preserved(self.base,broken)
 
