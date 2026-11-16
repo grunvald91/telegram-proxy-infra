@@ -228,13 +228,54 @@ def tunnel_direction(sender,receiver):
         return result
     except Exception as exc:
         return {"direction":sender+"_to_"+receiver,
-                "status":"not_measured","error_class":type(exc).__name__}
+                "status":"not_measured","error_class":type(exc).__name__,
+                "reason":str(exc)[-180:]}
     finally:
         if srv.poll() is None:srv.kill()
         try:srv.wait(timeout=3)
         except Exception:pass
         for f in (srv.stdout,srv.stderr):
             if f:f.close()
+
+def quick_protocol(role):
+    peer=WG_DE if role=="ru" else WG_RU
+    rc,which=run_cmd(["command","-v","awg"])
+    # 'command' is a shell builtin, so check with the executable itself.
+    rc,awg=run_cmd(["awg","show","interfaces"])
+    rc_wg,wg=run_cmd(["wg","show","interfaces"])
+    rc_link,link=run_cmd(["ip","-d","-o","link","show","tg-relay"])
+    return {"role":role,"awg_interfaces":awg.split() if rc==0 else [],
+            "wg_interfaces":wg.split() if rc_wg==0 else [],
+            "link_type":("wireguard" if "wireguard" in link else
+                         "amneziawg" if "amneziawg" in link else "other_or_unknown"),
+            "awg_quick_service":status("awg-quick@tg-relay.service"),
+            "wg_quick_service":status("wg-quick@tg-relay.service"),
+            "wg_ping_1200_25":ping(peer,1200,n=25)}
+
+
+def targeted():
+    result={"utc":dt.datetime.now(dt.timezone.utc).isoformat(),
+            "scope":"One reverse WG 8MiB attempt plus 25 private pings each way; no server changes"}
+    for role in ("ru","de"):
+        try:result[role]=invoke(role,"quick",timeout=35)
+        except Exception as exc:result[role]={"status":"unavailable","error_class":type(exc).__name__}
+    result["reverse"]=tunnel_direction("ru","de")
+    # Public DNS ingress and foreign DNS resolver are not interchangeable.
+    # Compare them separately, preserving connection-setup components.
+    try:
+        import importlib.util
+        script=ROOT/"scripts/mnebydns-speed-readonly-20261113.py"
+        spec=importlib.util.spec_from_file_location("mnebydns_speed_probe",script)
+        mod=importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        result["dot_runner_ru188"]=mod.dot_bench(RU,"dns.mnebyvpn.site",cold=4,warm=10,timeout=3.5)
+        result["dot_runner_de89"]=mod.dot_bench(DE,"dns.mnebyvpn.site",cold=4,warm=10,timeout=3.5)
+    except Exception as exc:
+        result["dot_runner_error_class"]=type(exc).__name__
+    OUT.mkdir(mode=0o700,exist_ok=True)
+    (OUT/"targeted.json").write_text(json.dumps(result,indent=2,ensure_ascii=False)+"\n")
+    print("MNEBYVPN_TARGETED_DIAGNOSTIC="+json.dumps(result,ensure_ascii=False,separators=(",",":")),flush=True)
+
 
 def coordinate():
     OUT.mkdir(mode=0o700,exist_ok=True)
@@ -260,8 +301,11 @@ if __name__=="__main__":
         if action=="snapshot":print(json.dumps(snapshot(role),separators=(",",":")))
         elif action=="server":private_server(role)
         elif action=="client":private_client(role)
+        elif action=="quick":print(json.dumps(quick_protocol(role),separators=(",",":")))
+
         else:raise SystemExit("bad remote action")
     elif sys.argv[1:]==["--run"]:coordinate()
+    elif sys.argv[1:]==["--targeted"]:targeted()
     elif sys.argv[1:]==["--self-test"]:
         assert SIZE==8*1024*1024 and WG_RU!=WG_DE and PORT>1024
         print("LIVE_LINK_OFFLINE_SELF_TEST=PASS")
