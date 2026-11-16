@@ -15,6 +15,8 @@ import base64
 import hashlib
 import grp
 import json
+import collections
+import time
 import os
 import re
 import shutil
@@ -126,6 +128,73 @@ def ensure_dns_reader_access():
         raise RuntimeError("CoreDNS service lost restricted reader group")
 
 
+def protected_dns_lines(content):
+    """Fail closed on existing personal/customer/tls-related policy modifications.
+
+    This protects existing personal and subscription-related records in any
+    future general DNS release; it is intentionally stricter than needed for
+    a dedicated audited personal-domain controller.
+    """
+    keywords=("mnebydns-personal", "mnebydns_personal", "personal-dns",
+              "dns.mnebyvpn", "customer", "subscriber", "subscriber_id",
+              "private-dns", "tls /", "tls://", "cert ", "key ")
+    return collections.Counter(
+        line.strip() for line in content.decode("utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+        and any(word in line.lower() for word in keywords)
+    )
+
+
+def preserve_protected_dns_rules(before, after):
+    """Never delete or rewrite an existing customer/personal-DNS policy line."""
+    old=protected_dns_lines(before)
+    new=protected_dns_lines(after)
+    if old-new:
+        raise RuntimeError("Protected personal DNS, certificate or listener rule changed")
+    # Existing dedicated personal hostname templates must remain intact,
+    # including match, answer and rcode (not just the name).
+    pattern=re.compile(
+        r"(?ms)^[ \t]*template IN (?:A|AAAA|HTTPS|SVCB|CNAME) ([^\s{]+) \{"
+        r"(.*?)^[ \t]*\}"
+    )
+    def protected_templates(raw):
+        return collections.Counter(
+            (m.group(1),m.group(2)) for m in pattern.finditer(raw)
+            if "dns.mnebyvpn" in (m.group(1)+m.group(2)).lower()
+            or "personal" in (m.group(1)+m.group(2)).lower()
+        )
+    if protected_templates(before.decode("utf-8"))-protected_templates(after.decode("utf-8")):
+        raise RuntimeError("Protected personal DNS template disappeared")
+
+
+def coredns_hot_reload_supported():
+    text=LIVE["dns"].read_text()
+    if "    reload 5s 1s" not in text:
+        raise RuntimeError("CoreDNS reload 5s 1s must be active; refuse disruptive restart")
+    proc=subprocess.run(
+        ["/opt/mnebydns-dot/coredns","-plugins"],
+        capture_output=True,text=True,timeout=10
+    )
+    if proc.returncode or not re.search(r"(?m)(?:^|\s)reload(?:\s|$)",proc.stdout+proc.stderr):
+        raise RuntimeError("CoreDNS reload plugin not present")
+
+
+def coredns_main_pid():
+    value=cmd("systemctl","show","--value","-p","MainPID",SERVICE["dns"])
+    if not value.isdecimal() or int(value)<=1:
+        raise RuntimeError("CoreDNS MainPID missing")
+    return int(value)
+
+
+def verify_hot_reload(pid):
+    # CoreDNS reload plugin watches the Corefile and can reload without
+    # disconnecting established private DNS sessions.
+    time.sleep(7)
+    if coredns_main_pid()!=pid:
+        raise RuntimeError("CoreDNS process restarted during hot reload")
+    require_services_healthy({"dns"})
+
+
 def manifest_for(name):
     if not NAME.fullmatch(name):raise ValueError("Invalid deployment identifier")
     directory=STAGE/name
@@ -188,7 +257,8 @@ def revert_services(files):
             cmd("/usr/sbin/nginx","-t","-c",str(LIVE[key]),timeout=15)
             cmd("/usr/sbin/nginx","-s","reload","-c",str(LIVE[key]),timeout=20)
         else:
-            cmd("systemctl","restart",SERVICE[key],timeout=35)
+            # CoreDNS reload plugin handles atomic Corefile replacements.
+            verify_hot_reload(coredns_main_pid())
 
 def tx_read(tx):
     if tx.parent!=TXROOT or not re.fullmatch("[0-9a-f]{16}",tx.name):
@@ -235,6 +305,7 @@ def apply(name):
         require_services_healthy(set(SERVICE))
         ensure_dns_reader_access()
         prepared={}
+        dns_pid=None
         for key,pins in manifest.items():
             state,old=regular_read(LIVE[key])
             if state.sha256!=pins["expected_sha256"]:
@@ -246,6 +317,10 @@ def apply(name):
             if digest(payload)!=pins["candidate_sha256"]:
                 raise RuntimeError("Proposed configuration hash mismatch")
             if payload!=old:
+                if key=="dns":
+                    preserve_protected_dns_rules(old,payload)
+                    coredns_hot_reload_supported()
+                    dns_pid=coredns_main_pid()
                 prepared[key]=(state,old,payload)
         if not prepared:
             print(json.dumps({"done":True,"changed":False,
@@ -270,6 +345,8 @@ def apply(name):
             for n,(state,old,payload) in prepared.items():
                 atomic_replace(LIVE[n],state,payload)
             revert_services(prepared)
+            if dns_pid is not None and coredns_main_pid()!=dns_pid:
+                raise RuntimeError("CoreDNS PID changed during guarded update")
             healthy=require_services_healthy(set(SERVICE))
             ensure_dns_reader_access()
             for n,(_,_,payload) in prepared.items():
@@ -278,10 +355,18 @@ def apply(name):
             commit_marker(tx,{n:digest(v[2]) for n,v in prepared.items()})
             # If the timer still runs, it sees COMMITTED and cannot restore
             # a confirmed deployment.
-            cmd("systemctl","disable","--now",unit+".timer",timeout=16)
+            cleanup_pending=False
+            try:
+                cmd("systemctl","disable","--now",unit+".timer",timeout=16)
+            except RuntimeError:
+                # COMMITTED is durable. Recovery sees the marker and will not
+                # undo a finished deployment, even if cleanup is delayed.
+                cleanup_pending=True
             print(json.dumps({"done":True,"changed":True,
                   "files":sorted(prepared),"healthy":healthy,"committed":True,
-                  "watchdog_disarmed":True,"transaction_id":key},sort_keys=True))
+                  "watchdog_disarmed":not cleanup_pending,
+                  "watchdog_cleanup_pending":cleanup_pending,
+                  "transaction_id":key},sort_keys=True))
         except Exception:
             if unit:
                 try:
