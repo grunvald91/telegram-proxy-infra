@@ -1,4 +1,4 @@
-name: Compare isolated transports and DNS baseline with validated shell invocation
+name: Locate tunnel drops by encrypted payload hashes and compare bounded transports
 on:
   push:
     branches: [fix/dns-tunnel-performance-20261116]

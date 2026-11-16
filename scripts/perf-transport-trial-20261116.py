@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Bounded parallel WG/AWG trials. Never modifies the active tg-relay config."""
-import base64,concurrent.futures,datetime,fcntl,json,os,pathlib,re,signal,socket,subprocess,sys,time
+import base64,concurrent.futures,datetime,fcntl,hashlib,json,os,pathlib,re,signal,socket,struct,subprocess,sys,tempfile,time
 ROOT=pathlib.Path('/opt/mnebyvpn/perf-trial-20261116')
 BIN=pathlib.Path('/opt/mnebydns-awg-prod-20261116/bin')
 N=4*1024*1024
@@ -17,8 +17,12 @@ def run(args,timeout=20,check=True):
     if check and p.returncode:raise RuntimeError(args[0]+' rc='+str(p.returncode))
     return p
 def save(path,data):
-    p=pathlib.Path(path);fd=os.open(p,os.O_WRONLY|os.O_CREAT|os.O_TRUNC,0o600)
-    with os.fdopen(fd,'w') as f:json.dump(data,f);f.flush();os.fsync(f.fileno())
+    p=pathlib.Path(path);fd,name=tempfile.mkstemp(prefix='.'+p.name,dir=p.parent)
+    try:
+        with os.fdopen(fd,'w') as f:json.dump(data,f);f.flush();os.fsync(f.fileno())
+        os.replace(name,p)
+    finally:
+        if os.path.exists(name):os.unlink(name)
 def config(path):
     result={'Interface':{},'Peer':{}};section=None;counts={}
     for line in pathlib.Path(path).read_text().splitlines():
@@ -56,7 +60,9 @@ def stage():
         if run(['ip','link','show',name],check=False).returncode==0:raise RuntimeError('Trial interface already exists')
     if STATE.exists():
         for name in ['mn-perf-wg.conf','mn-perf-awg.conf']:(ROOT/name).unlink(missing_ok=True)
-    state={'role':ROLE,'started_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),'interfaces':[],'rules':[],'available':{'current':'10.66.77.'+LOCAL},'before':inspect_runtime()};save(STATE,state)
+        for pattern in ['capture-*'+ROLE+'.json','ping-'+ROLE+'.json','tcp-server-*-'+ROLE+'.json']:
+            for p in ROOT.glob(pattern):p.unlink()
+    state={'role':ROLE,'started_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),'interfaces':[],'rules':[],'available':{'current':'10.66.77.'+LOCAL},'ports':{'current':int(config('/etc/amnezia/amneziawg/tg-relay.conf')['Interface']['ListenPort'])},'before':inspect_runtime()};save(STATE,state)
     deadline=(datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(minutes=4)).strftime('%Y-%m-%d %H:%M:%S UTC')
     pathlib.Path('/etc/systemd/system/'+TIMER+'.service').write_text('[Service]\nType=oneshot\nExecStart=/usr/bin/python3 '+str(ROOT/'perf.py')+' cleanup '+ROLE+'\n')
     pathlib.Path('/etc/systemd/system/'+TIMER+'.timer').write_text('[Timer]\nOnCalendar='+deadline+'\nPersistent=true\nUnit='+TIMER+'.service\n[Install]\nWantedBy=timers.target\n')
@@ -82,6 +88,7 @@ def stage():
             p=subprocess.run([quick,'up',str(cfg)],capture_output=True,text=True,timeout=30,env=env)
             if p.returncode:raise RuntimeError('Trial quick up failed')
             state['available'][mode]='10.66.'+subnet+'.'+LOCAL
+            state['ports'][mode]=port
         except Exception as e:state.setdefault('stage_errors',{})[mode]=str(e)
         save(STATE,state)
     for mode,local in state['available'].items():
@@ -90,19 +97,32 @@ def stage():
     with open(ROOT/('serve-'+ROLE+'.log'),'w') as out:
         p=subprocess.Popen([sys.executable,str(ROOT/'perf.py'),'serve',ROLE],stdout=out,stderr=out,start_new_session=True)
     state['server_pid']=p.pid;save(STATE,state)
+    with open(ROOT/('capture-'+ROLE+'.log'),'w') as out:
+        p=subprocess.Popen([sys.executable,str(ROOT/'perf.py'),'capture',ROLE],stdout=out,stderr=out,start_new_session=True)
+    state['capture_pid']=p.pid;save(STATE,state)
+    for _ in range(30):
+        if (ROOT/('capture-ready-'+ROLE+'.json')).exists():break
+        time.sleep(.1)
     print(json.dumps({'role':ROLE,'available':state['available'],'stage_errors':state.get('stage_errors',{}),'runtime':state['before']}))
 def ping(item):
     mode,address=item
     target=address.rsplit('.',1)[0]+'.'+PEER
-    cmd=['ping','-n','-q','-M','do','-s','1200','-c','200','-i','0.05','-W','1',target]
-    p=run(cmd,22,False);text=p.stdout
+    cmd=['ping','-n','-q','-M','do','-s','1200','-c','200','-i','0.05','-W','1','-w','15',target]
+    try:p=run(cmd,18,False);text=p.stdout;rc=p.returncode;error=None
+    except subprocess.TimeoutExpired as e:text=e.stdout or '';text=text.decode(errors='replace') if isinstance(text,bytes) else text;rc=124;error='Probe deadline exceeded'
     counts=re.search(r'(\d+) packets transmitted, (\d+) received, ([\d.]+)% packet loss',text)
     rtt=re.search(r'= ([\d.]+)/([\d.]+)/([\d.]+)/',text)
-    return mode,{'sent':int(counts[1]) if counts else None,'received':int(counts[2]) if counts else None,'loss_pct':float(counts[3]) if counts else None,'rtt_avg_ms':float(rtt[2]) if rtt else None,'rc':p.returncode}
+    return mode,{'sent':int(counts[1]) if counts else None,'received':int(counts[2]) if counts else None,'loss_pct':float(counts[3]) if counts else None,'rtt_avg_ms':float(rtt[2]) if rtt else None,'rc':rc,'error':error}
 def measure():
     state=json.loads(STATE.read_text())
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:result=dict(pool.map(ping,state['available'].items()))
-    save(ROOT/('ping-'+ROLE+'.json'),result);print(json.dumps({'role':ROLE,'ping':result,'runtime_after':inspect_runtime()}))
+    health={}
+    for mode in state['available']:
+        name='tg-relay' if mode=='current' else 'mn-perf-'+mode;binary='wg' if mode=='wg' else str(BIN/'awg')
+        rows=run([binary,'show',name,'latest-handshakes'],check=False).stdout.splitlines()
+        stamps=[int(x.split()[-1]) for x in rows if x.split() and x.split()[-1].isdigit() and int(x.split()[-1])>0]
+        health[mode]={'handshake_age_s':int(time.time())-max(stamps) if stamps else None}
+    save(ROOT/('ping-'+ROLE+'.json'),result);print(json.dumps({'role':ROLE,'ping':result,'health':health,'runtime_after':inspect_runtime()}))
 def serve_one(item):
     mode,local=item;result={'mode':mode}
     try:
@@ -147,8 +167,69 @@ def collect():
     for p in ROOT.glob('*-'+ROLE+'.json'):
         if not p.name.startswith('state'):out[p.stem]=json.loads(p.read_text())
     print(json.dumps(out))
+def decode_udp(frame,vnet,ptype,ports):
+    gso_size=0;gso_type=0
+    if vnet:
+        if len(frame)<10:return [],'short'
+        _,gso_type,_,gso_size,_,_=struct.unpack('<BBHHHH',frame[:10]);frame=frame[10:]
+    if len(frame)<34:return [],'short'
+    eth=struct.unpack('!H',frame[12:14])[0];off=14
+    while eth in [0x8100,0x88a8] and len(frame)>=off+4:eth=struct.unpack('!H',frame[off+2:off+4])[0];off+=4
+    if eth!=0x800 or len(frame)<off+20:return [],None
+    ip=frame[off:];ihl=(ip[0]&15)*4
+    if len(ip)<ihl+8 or ip[9]!=17:return [],None
+    src=socket.inet_ntoa(ip[12:16]);dst=socket.inet_ntoa(ip[16:20])
+    if {src,dst}!={PUBLIC,OTHER}:return [],None
+    if struct.unpack('!H',ip[6:8])[0]&0x3fff:return [],'fragment'
+    sport,dport,length,_=struct.unpack('!HHHH',ip[ihl:ihl+8]);port=sport if ptype==4 else dport
+    if port not in ports:return [],None
+    payload=ip[ihl+8:]
+    if gso_size and gso_type&127==5:parts=[payload[i:i+gso_size] for i in range(0,len(payload),gso_size)];kind='gso'
+    elif gso_type&127:return [],'unsupported_offload'
+    else:
+        if length<8 or len(payload)<length-8:return [],'short'
+        payload=payload[:length-8]
+        if len(payload)>1472:return [],'oversize'
+        parts=[payload];kind='normal'
+    return [{'mode':ports[port],'direction':'tx' if ptype==4 else 'rx','n':len(part),'h':hashlib.sha256(part).hexdigest()} for part in parts],kind
+def capture():
+    out={'role':ROLE,'start':time.time(),'entries':[],'kinds':{},'capture_drops':None}
+    try:
+        state=json.loads(STATE.read_text());ports={v:k for k,v in state['ports'].items()}
+        route=run(['ip','-j','route','get',OTHER]).stdout;iface=json.loads(route)[0]['dev']
+        sock=socket.socket(socket.AF_PACKET,socket.SOCK_RAW,socket.htons(3));vnet=False
+        try:sock.setsockopt(263,15,1);vnet=True
+        except OSError:pass
+        try:sock.setsockopt(socket.SOL_SOCKET,33,8*1024*1024)
+        except OSError:sock.setsockopt(socket.SOL_SOCKET,socket.SO_RCVBUF,1024*1024)
+        sock.bind((iface,0));sock.settimeout(.25);stop=[False]
+        signal.signal(signal.SIGTERM,lambda *args:stop.__setitem__(0,True))
+        save(ROOT/('capture-ready-'+ROLE+'.json'),{'ready':True,'vnet':vnet})
+        while not stop[0] and time.time()-out['start']<150 and len(out['entries'])<50000:
+            try:frame,address=sock.recvfrom(131072)
+            except socket.timeout:continue
+            records,kind=decode_udp(frame,vnet,address[2],ports)
+            if kind:out['kinds'][kind]=out['kinds'].get(kind,0)+1
+            for record in records:record['t']=time.time();out['entries'].append(record)
+        try:out['capture_drops']=struct.unpack('II',sock.getsockopt(263,6,8))[1]
+        except OSError:pass
+        sock.close();out['vnet']=vnet
+    except Exception as e:out['error']=type(e).__name__;save(ROOT/('capture-ready-'+ROLE+'.json'),{'ready':False,'error':type(e).__name__})
+    out['end']=time.time();save(ROOT/('capture-'+ROLE+'.json'),out)
+def finish_capture():
+    if not STATE.exists():return
+    state=json.loads(STATE.read_text());pid=state.get('capture_pid')
+    if pid:
+        path=pathlib.Path('/proc')/str(pid)/'cmdline'
+        if path.exists() and str(ROOT/'perf.py').encode() in path.read_bytes():
+            try:os.kill(pid,signal.SIGTERM)
+            except ProcessLookupError:pass
+        for _ in range(30):
+            if (ROOT/('capture-'+ROLE+'.json')).exists():break
+            time.sleep(.1)
 def cleanup():
     if not STATE.exists():return
+    finish_capture()
     state=json.loads(STATE.read_text());pid=state.get('server_pid')
     if pid:
         p=pathlib.Path('/proc')/str(pid)/'cmdline'
@@ -169,4 +250,4 @@ def cleanup():
 
 if __name__=='__main__':
     assert os.geteuid()==0
-    {'stage':stage,'measure':measure,'serve':serve,'bench':bench,'collect':collect,'cleanup':cleanup}[sys.argv[1]]()
+    {'stage':stage,'measure':measure,'serve':serve,'bench':bench,'collect':collect,'capture':capture,'finish':finish_capture,'cleanup':cleanup}[sys.argv[1]]()
