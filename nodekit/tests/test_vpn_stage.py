@@ -27,7 +27,7 @@ class VpnStageContract(unittest.TestCase):
         node = root / node_id
         node.mkdir(mode=0o700)
         (node / "identity").mkdir(mode=0o700)
-        (node / "identity" / "node-public.spki").write_bytes(b"A" * 44)
+        (node / "identity" / "node-public.spki").write_bytes(m.PREFIX_ED25519_SPKI + b"\x01" * 32)
         (node / "manifest.json").write_text(json.dumps({
             "node_id": node_id,
             "advertise_host": "de-node-02.nodes.example.net",
