@@ -1,6 +1,23 @@
 #!/usr/bin/env bash
 # Guarded single exact owner-domain route canary. No wildcard, no direct DNS editing from bot.
 set -Eeuo pipefail
+owner_atomic_swap() {
+  python3 - "$1" "$2" "$3" <<'PYCODE'
+import os,sys
+from pathlib import Path
+sys.path.insert(0,"/opt/mnebydns-maintenance")
+from mnebydns_nov8_restore_safety import capture, atomic_replace, digest
+live,expected,candidate=map(Path,sys.argv[1:])
+if live not in (Path("/opt/mnebydns-dot/Corefile"),Path("/etc/nginx/nginx.conf")):
+    raise SystemExit("unsafe owner route target")
+for p in (expected,candidate):
+    if p.is_symlink() or not p.is_file():raise SystemExit("invalid owner checkpoint")
+state=capture(live)
+if state.sha256!=digest(expected.read_bytes()):
+    raise SystemExit("concurrent owner-domain config change")
+atomic_replace(live,state,candidate.read_bytes())
+PYCODE
+}
 (( EUID == 0 )) || exit 2
 [[ $# == 5 ]] || { echo 'usage: stage work id domain origin-ip deadline'; exit 2; }
 work="$1";id="$2";domain="$3";origin="$4";deadline="$5"
@@ -118,12 +135,12 @@ abort(){
   exit "$code"
 }
 trap abort EXIT
-python3 /opt/mnebydns-maintenance/mnebydns_safe_owner_swap.py shared "$base" nginx.before nginx.pilot
+owner_atomic_swap "$nginx" "$base/nginx.before" "$base/nginx.pilot"
 nginx -t >/dev/null 2>&1
 systemctl reload nginx
 systemctl is-active --quiet nginx
 cmp -s "$base/nginx.pilot" "$nginx"
-python3 /opt/mnebydns-maintenance/mnebydns_safe_owner_swap.py dns "$base" dns.before dns.pilot
+owner_atomic_swap "$dns" "$base/dns.before" "$base/dns.pilot"
 bash "$base/reload.sh" "$dns"
 for attempt in $(seq 1 45); do
   if systemctl is-active --quiet mnebydns-dot.service &&
