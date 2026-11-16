@@ -28,6 +28,22 @@ jobs:
               print('SYSTEMD_'+p.stdout.strip()[:240])
           unit=run(['systemctl','show',svc,'-p','FragmentPath']).stdout.strip().split('=',1)[-1]
           print('SYSTEMD_UNIT_EXISTS='+str(pathlib.Path(unit).is_file()))
+          if pathlib.Path(unit).is_file():
+              for line in pathlib.Path(unit).read_text().splitlines():
+                  if line.lstrip().startswith('ExecStart='):
+                      print('TELEMT_EXECLINE='+re.sub(r'(?i)(token|secret|password)\\S*','[SECRET_ARG]',line)[:350])
+          cfg=pathlib.Path('/etc/telemt/direct-ozon.toml')
+          if cfg.is_file():
+              for line in cfg.read_text().splitlines():
+                  k=line.split('=',1)[0].strip() if '=' in line else ''
+                  if any(x in k.lower() for x in ('path','file','directory','include','source')):
+                      v=line.split('=',1)[-1].strip() if '=' in line else ''
+                      print('CONFIG_PATH_KEY_'+k+'='+v[:200] if not any(x in k.lower() for x in ('token','secret')) else 'CONFIG_PATH_SENSITIVE_KEY')
+          try:
+              with urllib.request.urlopen('http://127.0.0.1:9096/v1/users',timeout=6) as ur:
+                  payload=json.load(ur)
+              print('TELEMT_EXISTING_USER_COUNT='+str(len(payload.get('data',[])) if isinstance(payload.get('data'),list) else 'UNKNOWN'))
+          except Exception as ex:print('TELEMT_USER_COUNT_ERROR='+type(ex).__name__)
           for p in ('/etc/telemt','/etc/telemt/direct-ozon.toml','/etc/telemt/direct-ozon.toml.lock'):
               f=pathlib.Path(p)
               if f.exists():
