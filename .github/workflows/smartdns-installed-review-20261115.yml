@@ -1,4 +1,4 @@
-name: MNEBYDNS exact Nov8 Google map preparation (correct source)
+name: RESTORE MNEBYDNS original Nov8 Google services production routes
 on:
   push:
     branches: [audit/smartdns-installed-review-20261115]
@@ -8,37 +8,41 @@ concurrency:
   group: mnebydns-google-public-443-change
   cancel-in-progress: false
 jobs:
-  snapshot:
+  restore:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 6
     env:
       DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
         with: {persist-credentials: false}
-      - name: Locate original 8 November 2026 production Nginx and CoreDNS snapshot
+      - name: Apply guarded original Nov 8 Google DNS routing and GooglePilot settings on 89
         shell: bash
         run: |
           set -Eeuo pipefail
           test -n "$DE_PASS"
-          python3 -m py_compile scripts/mnebydns-nov8-google-restore-map-20261116.py
+          python3 -m py_compile scripts/mnebydns-restore-nov8-google-production-20261116.py
           sudo apt-get update -qq
           sudo apt-get install -y -qq sshpass >/dev/null
           opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519
             -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
             -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
           mkdir -p output
-          SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -B -' < scripts/mnebydns-nov8-google-restore-map-20261116.py > output/original-checkpoint.json
+          SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -B -' < scripts/mnebydns-restore-nov8-google-production-20261116.py | tee output/restored.json
           python3 - <<'PY'
           import json
-          with open("output/original-checkpoint.json") as f: j=json.load(f)
-          print("NOV8_GOOGLE_ROUTE_MAP="+json.dumps(j,sort_keys=True,separators=(",",":")))
-          print("NOV8_GOOGLE_ROUTE_MAP_READY=true")
+          with open("output/restored.json") as f: j=json.load(f)
+          assert j.get("done") is True, "Original Google restore did not commit"
+          assert j.get("production_services_healthy") is True or j.get("changed") is False
+          print("NOV8_ALL_GOOGLE_PRODUCTION_SETTINGS_RESTORED=true")
+          print("RESTORED_FILES="+",".join(j["updated_files"]))
+          print("NOV8_GOOGLE_ROUTES="+str(j["nov8_google_exact_sni_retained"]))
+          print("ADDED_GOOGLE_DOMAINS_PRESERVED="+str(j["current_google_extra_domains_preserved"]))
           PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: mnebydns-original-8nov-googlepilot-checkpoint
-          path: output/original-checkpoint.json
-          retention-days: 2
+          name: mnebydns-8nov-google-production-restore-manifest
+          path: output/restored.json
+          retention-days: 14
           if-no-files-found: warn
