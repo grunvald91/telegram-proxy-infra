@@ -44,6 +44,7 @@ class DeployTests(TestCase):
             patch.object(deploy,"LIVE",{"dns":self.live}),
             patch.object(deploy,"verify_system",return_value=None),
             patch.object(deploy,"ensure_dns_reader_access",return_value=None),
+            patch.object(deploy,"validate_owner_checkpoint",return_value=None),
             patch.object(deploy,"preserved",return_value={"preserved":True}),
             patch.object(deploy,"ensure_hot_reload_config",return_value=None),
             patch.object(deploy,"smoke_check",return_value={"all_pinned":True}),
