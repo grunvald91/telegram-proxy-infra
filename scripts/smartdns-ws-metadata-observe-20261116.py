@@ -1,8 +1,8 @@
 """Bounded loopback WebSocket/VLESS metadata observer; no payload or UUID logging.
 No ptrace, process restarts, firewall or production configuration changes.
 """
-import base64,collections,datetime,importlib.util,json,os,pathlib,re,socket,struct,subprocess,sys,time,uuid
-BASE=pathlib.Path('/run/mnebydns-ws-metadata-20261116');DURATION=150
+import base64,collections,datetime,hashlib,importlib.util,json,os,pathlib,re,socket,struct,subprocess,sys,time,uuid
+BASE=pathlib.Path('/run/mnebydns-ws-metadata-20261116');DURATION=600
 PATTERN=re.compile(rb'(?:[a-z0-9-]+\.)*(?:googlevideo\.com|youtube\.com|googleapis\.com|googleusercontent\.com|google\.com)(?![a-z0-9.-])',re.I)
 RELAY=None
 class NeedMore(Exception):pass
@@ -171,17 +171,18 @@ def main():
   emit({'ready':True,'folder':str(folder),'pid':p.pid,'utc':stamp(),'duration_seconds':DURATION});return
  if mode=='collect':
   state=json.load(sys.stdin);folder=pathlib.Path(state['folder']);assert folder.parent==BASE
-  for _ in range(DURATION+30):
+  (folder/'stop').touch()
+  for _ in range(15):
    if (folder/'done').exists():break
    time.sleep(1)
   else:raise RuntimeError('Completion missing')
   sys.stdout.write((folder/'trace.jsonl').read_text());return
  assert mode=='capture';folder=pathlib.Path(sys.argv[2]);cfg=json.loads(pathlib.Path('/etc/mnebyvpn/xray-canary.json').read_text());known={uuid.UUID(c['id']).bytes for i in cfg['inbounds'] for c in i['settings'].get('clients',[])};groups={};sessions={}
  spec=importlib.util.spec_from_file_location('quic_ws_observe','/opt/mnebydns-youtube-quic-43612369808/relay.py');RELAY=importlib.util.module_from_spec(spec);sys.modules[spec.name]=RELAY;spec.loader.exec_module(RELAY)
- emit({'event':'snapshot','utc':stamp(),'configured_client_count':len(known),'production_mutations':False,'observer':'loopback AF_PACKET only; no ptrace'})
+ emit({'event':'snapshot','utc':stamp(),'configured_client_count':len(known),'production_mutations':False,'observer':'loopback AF_PACKET only; no ptrace','config_sha256':hashlib.sha256(pathlib.Path('/etc/mnebyvpn/xray-canary.json').read_bytes()).hexdigest(),'inbounds':[{k:v for k,v in x.items() if k in ['tag','listen','port','sniffing']} for x in cfg['inbounds']],'fake_pools':cfg.get('fakedns'),'outbounds':[{'tag':x.get('tag'),'protocol':x['protocol'],'domainStrategy':x.get('settings',{}).get('domainStrategy')} for x in cfg.get('outbounds',[])]})
  start=time.monotonic();s=socket.socket(socket.AF_PACKET,socket.SOCK_RAW,socket.htons(3));s.bind(('lo',0));s.settimeout(.2);(folder/'ready').touch();emit({'event':'ready','utc':stamp(),'duration_seconds':DURATION})
  try:
-  while time.monotonic()-start<DURATION:
+  while time.monotonic()-start<DURATION and not (folder/'stop').exists():
    try:b,address=s.recvfrom(262144)
    except socket.timeout:continue
    if address[2]==socket.PACKET_OUTGOING or len(b)<54 or b[12:14]!=b'\x08\x00' or b[23]!=6:continue
@@ -204,7 +205,7 @@ def main():
  finally:
   s.close();google=0
   for index,session in enumerate(sessions.values(),1):
-   v=session['v'];ws=session['ws'];summary={'event':'session','session':index,'client_group':v.group,'authorized':v.valid,'vless_command':v.cmd,'http_status':ws.http_status,'start_s':session['start_s'],'rst_up':session['rst_up'],'rst_down':session['rst_down'],'parse_errors':ws.parse_errors,'close_frames':ws.close_frames,'flow_count':len(v.flows),'families':dict(collections.Counter(f.family for f in v.flows.values())),'response_header_received':v.response};emit(summary)
+   v=session['v'];ws=session['ws'];summary={'event':'session','session':index,'client_group':v.group,'authorized':v.valid,'vless_command':v.cmd,'http_status':ws.http_status,'start_s':session['start_s'],'rst_up':session['rst_up'],'rst_down':session['rst_down'],'parse_errors':ws.parse_errors,'close_frames':ws.close_frames,'flow_count':len(v.flows),'families':dict(collections.Counter(f.family for f in v.flows.values())),'response_header_received':v.response,'zero_reply_flows':sum(f.down==0 for f in v.flows.values()),'total_up_bytes':sum(f.up for f in v.flows.values()),'total_down_bytes':sum(f.down for f in v.flows.values())};emit(summary)
    for f in v.flows.values():
     if f.host:emit({'event':'flow','session':index,'client_group':v.group,**f.report()});google+=1
   emit({'event':'done','utc':stamp(),'sessions':len(sessions),'client_groups':len(groups),'google_flows':google,'production_mutations':False});(folder/'done').touch()
