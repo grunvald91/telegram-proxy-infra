@@ -1,0 +1,144 @@
+name: One-shot DE89 TLS ingress trace (headers only)
+on:
+  push:
+    branches: [diag/de89-tls-trace-20261117]
+    paths: [.github/workflows/diag-de89-tls-trace-20261117.yml]
+permissions:
+  contents: read
+jobs:
+  inspect-and-trace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      DE_PASS: \${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Strict known-host read-only SSH and bounded packet metadata trace
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass >/dev/null
+          SSHPASS="$DE_PASS" sshpass -e ssh -T \
+            -o ConnectTimeout=12 \
+            -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null \
+            -o UpdateHostKeys=no -o LogLevel=ERROR \
+            root@89.125.90.101 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          echo "DE89_CHECK_UTC=$(date -u +%FT%TZ)"
+          for unit in nginx.service mnebydns-dot.service mnebydns-googlepilot.service; do
+            if systemctl is-active --quiet "$unit"; then
+              echo "SERVICE_$unit=active"
+            else
+              echo "SERVICE_$unit=inactive"
+            fi
+          done
+          ss -Hlnpt '( sport = :443 or sport = :15449 or sport = :853 )' |
+            awk '{print "LISTENER=" $4}' | sort -u
+          python3 - <<'PY'
+          import subprocess,shlex,re,socket
+          def command(args,timeout=10):
+              try:
+                  x=subprocess.run(args,text=True,capture_output=True,timeout=timeout)
+                  return x.stdout if x.returncode==0 else ""
+              except Exception:return ""
+          config=command(['systemctl','cat','mnebydns-googlepilot.service'])
+          match=re.search(r'-c\s+([^\s;]+)',config)
+          if not match:
+              print('PILOT_CONFIG=NOT_IDENTIFIED',flush=True)
+          else:
+              path=match.group(1)
+              try:
+                  with open(path,'r',encoding='utf-8') as f:data=f.read()
+                  resolvers=re.findall(r'(?m)^\s*resolver\s+([^;]+);',data)
+                  print('PILOT_CONFIG=READ',flush=True)
+                  print('PILOT_RESOLVER_9_9_9_9='+str(any('9.9.9.9' in x for x in resolvers)),flush=True)
+                  print('PILOT_RESOLVER_LOOP_TO_89_OR_188='+str(any('89.125.90.101' in x or '188.120.254.223' in x for x in resolvers)),flush=True)
+                  print('PILOT_RESOLVER_DIRECTIVE_COUNT='+str(len(resolvers)),flush=True)
+                  print('PILOT_FALLBACK_LOCAL_PORT1='+str(bool(re.search(r'default\s+127[.]0[.]0[.]1:1\s*;',data))),flush=True)
+                  print('PILOT_YOUTUBEI_RULE_PRESENT='+str('youtubei.googleapis.com' in data),flush=True)
+                  print('PILOT_GOOGLEVIDEO_RULE_PRESENT='+str('googlevideo' in data),flush=True)
+              except Exception as e:
+                  print('PILOT_CONFIG_READ_FAILED='+type(e).__name__,flush=True)
+          try:
+              values=socket.getaddrinfo('youtubei.googleapis.com',443,family=socket.AF_INET)
+              ips={x[4][0] for x in values}
+              print('SYSTEM_RESOLVER_RETURNED_PROXY_IP='+str(bool(ips.intersection({'89.125.90.101','188.120.254.223'}))),flush=True)
+              print('SYSTEM_RESOLVER_IP_COUNT='+str(len(ips)),flush=True)
+          except Exception as e:
+              print('SYSTEM_RESOLVER_FAILED='+type(e).__name__,flush=True)
+          dump=command(['nginx','-T'],timeout=12)
+          print('MAIN_NGINX_CONFIG_READ='+str(bool(dump)),flush=True)
+          if dump:
+              print('MAIN_GOOGLEPILOT_PORT_REFERENCE='+str('15449' in dump),flush=True)
+              print('MAIN_YOUTUBEI_REFERENCE='+str('youtubei.googleapis.com' in dump),flush=True)
+          x=command(['ss','-Htn','state','syn-sent','( dport = :443 )'])
+          print('OUTBOUND_SYN_SENT_443_COUNT='+str(len([l for l in x.splitlines() if l.strip()])),flush=True)
+          PY
+          if ! command -v tcpdump >/dev/null; then
+            echo CAPTURE_UNAVAILABLE=TCPDUMP_NOT_INSTALLED
+            exit 0
+          fi
+          echo CAPTURE_METHOD=PUBLIC_INTERFACE_TCP_HEADERS_ONLY_NO_PCAP_NO_IPS_LOGGED
+          python3 - <<'PY'
+          import subprocess,re,time,hashlib,secrets,collections,sys
+          public='89.125.90.101'
+          out=subprocess.run(['ip','-o','-4','addr','show'],capture_output=True,text=True)
+          interface=None
+          for l in out.stdout.splitlines():
+              parts=l.split()
+              if len(parts)>3 and parts[3].split('/')[0]==public:
+                  interface=parts[1].split('@')[0]
+                  break
+          if not interface:
+              print('CAPTURE_UNAVAILABLE=PUBLIC_INTERFACE_NOT_FOUND',flush=True)
+              sys.exit(0)
+          filt='tcp and host 89.125.90.101 and port 443 and (tcp[tcpflags] & (tcp-syn|tcp-push|tcp-rst) != 0)'
+          cmd=['timeout','300','tcpdump','-i',interface,'-n','-l','-tt','-s','64','-c','60000',filt]
+          flows={}
+          secret=secrets.token_bytes(24)
+          regex=re.compile(r'^\s*([\d.]+)\s+IP\s+([\d.]+)[.](\d+)\s+>\s+([\d.]+)[.](\d+):.*?Flags\s+\[([^\]]+)\].*?length\s+(\d+)')
+          print('CAPTURE_ARMED_UTC='+time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),flush=True)
+          print('CAPTURE_MAX_SECONDS=300',flush=True)
+          p=subprocess.Popen(cmd,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,bufsize=1)
+          start=time.time()
+          total=0
+          try:
+              for line in p.stdout:
+                  m=regex.search(line)
+                  if not m:continue
+                  ts,src,sport,dst,dport,flags,sz=m.groups()
+                  incoming=(dst==public and dport=='443')
+                  outgoing=(src==public and sport=='443')
+                  if not (incoming or outgoing):continue
+                  peer=(src,sport) if incoming else (dst,dport)
+                  if peer not in flows:
+                      flows[peer]=dict(first=int(float(ts)-start),syn=0,client_data=0,server_data=0,client_bytes=0,server_bytes=0,reset=0)
+                  f=flows[peer]
+                  size=int(sz)
+                  if incoming:
+                      if 'S' in flags:f['syn']+=1
+                      if size>=100:f['client_data']+=1;f['client_bytes']+=size
+                  if outgoing and size>=100:
+                      f['server_data']+=1;f['server_bytes']+=size
+                  if 'R' in flags:f['reset']+=1
+                  total+=1
+          finally:
+              p.wait(timeout=12)
+          print('CAPTURE_FINISHED_UTC='+time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),flush=True)
+          print('CAPTURE_MATCHED_PACKETS='+str(total),flush=True)
+          print('CAPTURE_UNIQUE_FLOWS='+str(len(flows)),flush=True)
+          suspects=[(peer,f) for peer,f in flows.items() if f['client_data'] and not f['server_data']]
+          print('CAPTURE_FLOWS_CLIENT_DATA_WITH_NO_SERVER_DATA='+str(len(suspects)),flush=True)
+          for peer,f in sorted(suspects,key=lambda x:x[1]['first'])[:25]:
+              anon=hashlib.sha256(secret+repr(peer).encode()).hexdigest()[:10]
+              print('UNANSWERED_FLOW_ID='+anon+' SEC='+str(f['first'])+' CLIENT_BYTES='+str(f['client_bytes'])+' SYN='+str(f['syn'])+' RST='+str(f['reset']),flush=True)
+          print('CAPTURE_NO_CONFIG_CHANGES=true',flush=True)
+          PY
+          REMOTE
