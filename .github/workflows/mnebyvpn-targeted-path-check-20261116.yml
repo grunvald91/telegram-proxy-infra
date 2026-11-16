@@ -1,0 +1,42 @@
+name: MNEBYVPN pinpoint reverse-tunnel and public DoT latency (read only)
+on:
+  push:
+    branches: [audit/mnebyvpn-live-throughput-20261116]
+    paths: ['.github/workflows/mnebyvpn-targeted-path-check-20261116.yml']
+permissions: {contents: read}
+concurrency:
+  group: mnebyvpn-targeted-20261116
+  cancel-in-progress: false
+jobs:
+  pinpoint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Read only preflight
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          python3 -m py_compile scripts/mnebyvpn-live-links-readonly-20261116.py
+          python3 scripts/mnebyvpn-live-links-readonly-20261116.py --self-test
+      - name: Install pinned SSH transport on runner
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -qq -y sshpass >/dev/null
+      - name: Observe protocol, reverse 8MiB channel and 2 public DNS ingress setups
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/mnebyvpn-live-links-readonly-20261116.py --targeted
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mnebyvpn-targeted-rootcause-20261116
+          path: live-link-results/targeted.json
+          retention-days: 14
+          if-no-files-found: warn
