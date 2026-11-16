@@ -1,4 +1,4 @@
-name: Install MNEBYDNS safe deploy manager on DE89 (no config updates)
+name: Finalize MNEBYDNS protected deploy on DE89 with verified DNS reader permissions
 on:
   push:
     branches: [audit/smartdns-installed-review-20261115]
@@ -46,13 +46,15 @@ jobs:
           import json
           j=json.load(open('status.json'))
           assert j['read_only'] is True
-          assert j['installer_version']=='2026-11-16-safe-deploy-v1'
+          assert j['installer_version']=='2026-11-16-safe-deploy-v2'
+          assert j['dns_reader_group_verified'] is True
           for role in ('dns','pilot','shared'):
               assert j['services'][role]['service_active'], role+' service failed'
               assert j['services'][role]['tcp_listener'], role+' listener missing'
               assert len(j['files'][role]['sha256'])==64
           print('SAFE_DEPLOY_MANAGER_INSTALLED_ON_DE89=true')
           print('CURRENT_DNS_AND_HTTPS_SERVICE_ACTIVE=true')
+          print('CORE_DOT_READER_GROUP_GUARD_ENABLED=true')
           print('ORIGINAL_CUSTOMER_CONFIG_FILES_UNMODIFIED_BY_INSTALL=true')
           PY
       - uses: actions/upload-artifact@v4
