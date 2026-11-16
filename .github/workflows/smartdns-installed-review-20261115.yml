@@ -1,4 +1,4 @@
-name: SmartDNS collect confirmed phone WS observation 20261116
+name: SmartDNS installed public WS HTTP health audit 20261116
 on:
   push:
     branches: [audit/smartdns-installed-review-20261115]
@@ -18,12 +18,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Stop observer and collect metadata
+      - name: Read current public WS limits and aggregate errors
         shell: bash
         run: |
           set -Eeuo pipefail
           test -n "$DE_PASS"
-          python3 -m py_compile scripts/smartdns-ws-metadata-observe-20261116.py
+          python3 -m py_compile scripts/smartdns-ws-http-health-20261116.py
           if ! command -v sshpass >/dev/null; then
             sudo apt-get update -qq
             sudo apt-get install -y -qq sshpass >/dev/null
@@ -33,15 +33,12 @@ jobs:
             -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
             -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
           mkdir output
-          cat > output/state.json <<'JSON'
-          {"ready": true, "folder": "/run/mnebydns-ws-metadata-20261116/1794830012", "pid": 4080168, "utc": "2026-11-16T11:53:32.657768+00:00", "duration_seconds": 600}
-          JSON
-          SSHPASS="$DE_PASS" sshpass -e ssh -T "${opts[@]}" root@89.125.90.101 'python3 /tmp/mnebydns-ws-metadata-observe-20261116.py collect' < output/state.json > output/trace.jsonl
-          python3 -c 'import json; rows=[json.loads(s) for s in open("output/trace.jsonl")]; assert rows[-1]["event"]=="done"; print("OBSERVATION_COMPLETE",rows[-1]["sessions"],rows[-1]["google_flows"])'
+          SSHPASS="$DE_PASS" sshpass -e ssh -T "${opts[@]}" root@89.125.90.101 'python3 -B -' < scripts/smartdns-ws-http-health-20261116.py > output/health.json
+          python3 -c 'import json; j=json.load(open("output/health.json")); assert j["done"]; print("WS_HTTP_HEALTH_COLLECTED",j["utc"])'
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: smartdns-ws-phone-confirmed-20261116
+          name: smartdns-ws-http-health-20261116
           path: output/*
           retention-days: 2
           if-no-files-found: error
