@@ -6,6 +6,7 @@ No software installation, firewall changes, service activation, or node publicat
 from __future__ import annotations
 
 import argparse
+import ctypes
 import hashlib
 import ipaddress
 import json
@@ -27,6 +28,25 @@ SERVICE_LISTENERS = {
 REQUIRED_KEYS = {"schema_version", "node_id", "role", "services",
                  "advertise_host", "listeners"}
 OPTIONAL_KEYS = {"region", "provider", "bootstrap_notes"}
+
+
+def _promote_stage_noreplace(source: Path, destination: Path) -> None:
+    """Linux atomic rename that never replaces a concurrently created node."""
+    if sys.platform != "linux":
+        raise OSError("Atomic no-replace staging requires Linux")
+    libc = ctypes.CDLL(None, use_errno=True)
+    try:
+        renameat2 = libc.renameat2
+    except AttributeError as exc:
+        raise OSError("renameat2 unavailable; refusing unsafe staging") from exc
+    renameat2.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int,
+                          ctypes.c_char_p, ctypes.c_uint)
+    renameat2.restype = ctypes.c_int
+    result = renameat2(-100, os.fsencode(source), -100,
+                       os.fsencode(destination), 1)
+    if result != 0:
+        error_number = ctypes.get_errno()
+        raise OSError(error_number, os.strerror(error_number), str(destination))
 
 
 class SpecError(ValueError):
@@ -203,7 +223,7 @@ def stage(spec: dict[str, Any], report: dict[str, Any], root: Path) -> Path:
             json.dumps(report, indent=2, ensure_ascii=False) + "\n")
         for f in stage_tmp.iterdir():
             f.chmod(0o600)
-        stage_tmp.rename(node)
+        _promote_stage_noreplace(stage_tmp, node)
     except Exception:
         shutil.rmtree(stage_tmp)
         raise
