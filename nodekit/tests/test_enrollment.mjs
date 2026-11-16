@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {generateKeyPairSync,sign,verify} from 'node:crypto';
+import {generateKeyPairSync,createPublicKey,sign,verify} from 'node:crypto';
 import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -50,9 +50,9 @@ test('controller-signed challenge produces per-VPS possession proof only',()=>{
     const nodePub=ctl.publicKey; // independent control identity
     assert.equal(nodePub.asymmetricKeyType,'ed25519');
     const actualNodePub=readFileSync(join(nodeDir,'identity','node-public.spki'));
-    const publicKey=await import('node:crypto').then(c=>c.createPublicKey({
+    const publicKey=createPublicKey({
       key:actualNodePub,format:'der',type:'spki',
-    }));
+    });
     assert.equal(verify(null,enrollmentResponseBytes(proof),publicKey,
       Buffer.from(proof.signature,'base64url')),true);
     assert.throws(()=>signEnrollmentFile({
