@@ -58,6 +58,20 @@ class TestNodekit(unittest.TestCase):
             with self.assertRaises(nodekit.SpecError):
                 nodekit.stage(BASE, report, root)
 
+    def test_atomic_promotion_never_replaces_existing_stage(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            staged = root / "temporary"
+            target = root / "live"
+            staged.mkdir()
+            target.mkdir()
+            (target / "keep.txt").write_text("not-owned-by-nodekit")
+            with self.assertRaises(FileExistsError):
+                nodekit._promote_stage_noreplace(staged, target)
+            self.assertEqual((target / "keep.txt").read_text(),
+                             "not-owned-by-nodekit")
+            self.assertTrue(staged.exists())
+
     def test_refuse_symlink_spec(self):
         with tempfile.TemporaryDirectory() as t:
             file = Path(t) / "spec.json"

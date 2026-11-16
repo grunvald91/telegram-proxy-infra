@@ -97,6 +97,23 @@ class VpnStageContract(unittest.TestCase):
                             require_root=False, runner=self.runner)
             self.assertFalse((root / node_id / "vpn").exists())
 
+    def test_atomic_promotion_never_replaces_preexisting_vpn_state(self):
+        with tempfile.TemporaryDirectory() as t:
+            root, node_id, binary, digest = self.prepare(t)
+            existing = root / node_id / "vpn"
+            existing.mkdir(mode=0o700)
+            (existing / "keep.txt").write_text("do-not-overwrite")
+            with self.assertRaises(m.VpnStageError):
+                m.stage_vpn(root, node_id, binary, digest,
+                            require_root=False, runner=self.runner)
+            self.assertEqual((existing / "keep.txt").read_text(),
+                             "do-not-overwrite")
+            tmp = existing.parent / ".vpn-stage-standin"
+            tmp.mkdir()
+            with self.assertRaises(FileExistsError):
+                m._promote_stage_noreplace(tmp, existing)
+            self.assertTrue(tmp.is_dir())
+
     def test_bad_xray_validation_rolls_back_staging(self):
         with tempfile.TemporaryDirectory() as t:
             root, node_id, binary, digest = self.prepare(t)
