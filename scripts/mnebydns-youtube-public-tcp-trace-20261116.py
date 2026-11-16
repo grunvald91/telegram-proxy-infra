@@ -17,7 +17,7 @@ RU = "188.120.254.223"
 PRIVATE_DE = "10.66.77.1"
 HOSTS = ("www.youtube.com", "rr1---sn-gxuo03g-ig3s.googlevideo.com")
 MODE = sys.argv[1] if len(sys.argv) > 1 else None
-assert MODE in ("capture-de", "client-ru", "client-runner", "read-ru", "read-de")
+assert MODE in ("capture-de", "capture-ru", "client-ru", "client-runner", "read-ru", "read-de")
 
 def command(args, timeout=8):
     try:
@@ -129,6 +129,6 @@ def inspect():
             result["network_rules_total"]=len(arr)
         except Exception as e:result["nft_error"]=type(e).__name__
     print(json.dumps(result),flush=True)
-if MODE=="capture-de":capture()
+if MODE in ("capture-de","capture-ru"):capture()
 elif MODE in ("client-ru","client-runner"):probe_client()
 else:inspect()
