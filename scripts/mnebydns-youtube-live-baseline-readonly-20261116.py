@@ -114,11 +114,24 @@ def coredns_info(path):
     })
     return obj
 def listeners():
-    rc,t=cmd(["ss","-H","-lntu"],timeout=8)
     result={}
     for proto,port in (("tcp",443),("udp",443),("tcp",853),("tcp",15449),("udp",19444)):
-        result[f"{proto}_{port}"]=bool(rc==0 and any(line.startswith(proto) and re.search(r"(?<!\d):"+str(port)+r"\b",line) for line in t.splitlines()))
+        flags="-lnt" if proto=="tcp" else "-lnu"
+        rc,t=cmd(["ss","-H",flags,"sport", "=", ":"+str(port)],timeout=8)
+        result[f"{proto}_{port}"]={"listening":bool(rc==0 and t.strip()),"query_ok":rc==0}
     return result
+def residual_ru_routes(path):
+    p=pathlib.Path(path)
+    if not p.is_file():return []
+    s=p.read_text(errors="replace")
+    blocks=re.findall(r"(?ms)^\s*template\s+IN\s+A\s+(\S+)\s*\{(.*?)^\s*\}",s)
+    out=[]
+    for scope,b in blocks:
+        if re.search(r'\bIN\s+A\s+188[.]120[.]254[.]223\b',b):
+            matches=re.findall(r'(?m)^\s*match\s+([^\n]+)',b)
+            rule=matches[0].strip() if matches else scope
+            out.append({"scope":scope,"match":rule[:220],"youtube_or_googlevideo":bool(re.search(r"youtube|googlevideo",scope+" "+rule,re.I))})
+    return out
 def nft_status():
     rc,t=cmd(["nft","-j","list","table","inet","mnebydns_udp443_owner_exp_20261116"],timeout=7)
     if rc!=0:return {"experiment_table_present":False}
@@ -146,6 +159,7 @@ out={"role":ROLE,"utc":datetime.datetime.now(datetime.timezone.utc).isoformat(),
      "tunnel":link_status()}
 if ROLE=="DE":
     out["coredns"]=coredns_info("/opt/mnebydns-dot/Corefile")
+    out["residual_ru_routes"]=residual_ru_routes("/opt/mnebydns-dot/Corefile")
     out["nginx_shared"]=nginx_info("/etc/nginx/nginx.conf")
     out["nginx_googlepilot"]=nginx_info("/etc/mnebydns-googlepilot/nginx.conf")
     out["udp_reject"]=nft_status()
