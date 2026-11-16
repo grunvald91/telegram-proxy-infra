@@ -55,7 +55,9 @@ const hostname=value=>typeof value==='string'&&FQDN.test(value)&&
   value.includes('.')&&!value.includes('..')&&
   !isIP(value)&&value!=='cdn.servgo.ru'&&
   !value.endsWith('.local')&&!value.endsWith('.internal')&&
-  !value.includes('localhost');
+  !value.includes('localhost')&&
+  value.split('.').every(label=>label.length>0&&label.length<=63&&
+    !label.startsWith('-')&&!label.endsWith('-'));
 
 function validateVlessUri(profile,expectedHost,expectedPort) {
   if(typeof profile!=='string'||profile.length>2048||/[\x00-\x20]/.test(profile))
