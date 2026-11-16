@@ -43,6 +43,8 @@ jobs:
               with urllib.request.urlopen('http://127.0.0.1:9096/v1/users',timeout=6) as ur:
                   payload=json.load(ur)
               print('TELEMT_EXISTING_USER_COUNT='+str(len(payload.get('data',[])) if isinstance(payload.get('data'),list) else 'UNKNOWN'))
+              print('TELEMT_MANAGED_CONFIG_EXISTS='+str(pathlib.Path('/opt/telemt-direct-ozon/mnebyvpn-api-managed/config.toml').exists()))
+              print('TELEMT_ACTIVE_OVERRIDE_EXISTS='+str(pathlib.Path('/etc/systemd/system/telemt-direct-ozon.service.d/90-mnebyvpn-managed.conf').exists()))
           except Exception as ex:print('TELEMT_USER_COUNT_ERROR='+type(ex).__name__)
           for p in ('/etc/telemt','/etc/telemt/direct-ozon.toml','/etc/telemt/direct-ozon.toml.lock'):
               f=pathlib.Path(p)
@@ -55,7 +57,7 @@ jobs:
               else: print('PATH='+p+' NOT_FOUND')
           p=run(['systemctl','is-active',svc])
           print('SERVICE_ACTIVE='+p.stdout.strip())
-          for path in ('/v1/security/posture','/v1/config/state','/v1/capabilities'):
+          for path in ('/v1/security/posture','/v1/config/state','/v1/capabilities','/v1/system/info','/v1/system/reload'):
               try:
                   with urllib.request.urlopen('http://127.0.0.1:9096'+path,timeout=5) as r:
                       obj=json.load(r)
