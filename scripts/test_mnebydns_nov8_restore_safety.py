@@ -116,6 +116,10 @@ class SafetyTests(unittest.TestCase):
         self.assertFalse(report["all_historical_rules_retained"])
         self.assertEqual(report["missing_or_changed_historical"],1)
 
+    def test_empty_original_google_policy_must_fail(self):
+        with self.assertRaises(ValueError):
+            original_template_parity("not a CoreDNS config", "still not CoreDNS")
+
     def test_route_lock_excludes_concurrent_open(self):
         lock=self.root/"route.lock"
         with route_lock(lock):
