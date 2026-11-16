@@ -1,0 +1,38 @@
+name: MNEBYDNS safe configuration release CI (offline)
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scripts/mnebydns_safe_deploy.py'
+      - 'scripts/mnebydns_nov8_restore_safety.py'
+      - 'scripts/test_mnebydns_safe_deploy.py'
+      - 'scripts/test_mnebydns_nov8_restore_safety.py'
+      - '.github/workflows/mnebydns-safe-config-release-ci.yml'
+  push:
+    branches: [main, feat/mnebydns-safe-config-release-20261116]
+    paths:
+      - 'scripts/mnebydns_safe_deploy.py'
+      - 'scripts/mnebydns_nov8_restore_safety.py'
+      - 'scripts/test_mnebydns_safe_deploy.py'
+      - 'scripts/test_mnebydns_nov8_restore_safety.py'
+      - '.github/workflows/mnebydns-safe-config-release-ci.yml'
+permissions:
+  contents: read
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate safety source and run all offline rollback regression cases
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile \
+            scripts/mnebydns_safe_deploy.py scripts/mnebydns_nov8_restore_safety.py \
+            scripts/test_mnebydns_safe_deploy.py scripts/test_mnebydns_nov8_restore_safety.py
+          python3 -m unittest discover -s scripts -p 'test_mnebydns_safe_deploy.py' -v
+          python3 -m unittest discover -s scripts -p 'test_mnebydns_nov8_restore_safety.py' -v
+          echo 'MNEBYDNS_SAFE_RELEASE_OFFLINE_CI=PASS'
