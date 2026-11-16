@@ -114,23 +114,48 @@ def send_agent(payload: dict, url: str, hostname: str,
 
 def register_incident(db_path: Path, incident_id: str, decision: dict,
                       at: datetime) -> bool:
-    """Durable dedup; one error event triggers one advisory API invocation."""
+    """Acquire 30-second delivery lease with SQLite transaction/deduplication.
+
+    A failed agent API call is retryable after the lease; no silent event loss.
+    Repeated events never gain extra repair privileges.
+    """
     if db_path.is_symlink():
         raise ContractError("Refusing symlink SQLite DB")
     if not db_path.parent.is_dir() or db_path.parent.stat().st_mode & 0o022:
         raise ContractError("State directory must exist and not be writable by others")
-    with sqlite3.connect(db_path, timeout=8) as db:
+    with sqlite3.connect(db_path, timeout=8, isolation_level=None) as db:
         db.execute("PRAGMA busy_timeout=5000")
+        db.execute("BEGIN IMMEDIATE")
         db.execute("CREATE TABLE IF NOT EXISTS incidents "
                    "(incident_id TEXT PRIMARY KEY, decision_json TEXT NOT NULL, "
-                   "observed_at TEXT NOT NULL)")
-        cursor = db.execute(
-            "INSERT OR IGNORE INTO incidents(incident_id, decision_json, observed_at) VALUES(?,?,?)",
-            (incident_id, json.dumps(decision, sort_keys=True), at.isoformat()))
-        db.commit()
-        created = cursor.rowcount == 1
+                   "observed_at TEXT NOT NULL, status TEXT NOT NULL, "
+                   "lease_until TEXT NOT NULL)")
+        row = db.execute(
+            "SELECT status, lease_until FROM incidents WHERE incident_id=?",
+            (incident_id,)).fetchone()
+        if row and (row[0] == "sent" or utc_time(row[1]) > at):
+            db.execute("COMMIT")
+            return False
+        until = (at + timedelta(seconds=30)).isoformat()
+        if row:
+            db.execute(
+                "UPDATE incidents SET status='pending', lease_until=? "
+                "WHERE incident_id=?", (until, incident_id))
+        else:
+            db.execute(
+                "INSERT INTO incidents(incident_id,decision_json,observed_at,status,lease_until) "
+                "VALUES(?,?,?,'pending',?)",
+                (incident_id, json.dumps(decision, sort_keys=True), at.isoformat(), until))
+        db.execute("COMMIT")
     db_path.chmod(0o600)
-    return created
+    return True
+
+
+def mark_delivered(db_path: Path, incident_id: str) -> None:
+    with sqlite3.connect(db_path, timeout=8) as db:
+        db.execute("UPDATE incidents SET status='sent' WHERE incident_id=?",
+                   (incident_id,))
+        db.commit()
 
 
 def dispatch(envelope: dict, secret: bytes, owned_nodes: set[str],
@@ -147,6 +172,7 @@ def dispatch(envelope: dict, secret: bytes, owned_nodes: set[str],
         advice = send(payload)
         result["advice"] = parse_agent_advice(advice, decision)
         result["agent_invoked"] = True
+        mark_delivered(db_path, event.incident_id)
     # Integration must deliver an owner notification; this return is not delivery proof.
     return result
 
