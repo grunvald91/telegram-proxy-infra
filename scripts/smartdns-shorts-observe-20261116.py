@@ -79,6 +79,9 @@ try:
   try:b,_=s.recvfrom(65535)
   except socket.timeout:continue
   if len(b)<42 or b[12:14]!=b'\x08\x00' or b[23] not in [6,17]:continue
+  ip_size=struct.unpack('!H',b[16:18])[0]
+  if ip_size<20:continue
+  b=b[:14+ip_size]
   proto=b[23];off=14+(b[14]&15)*4
   if len(b)<off+(20 if proto==6 else 8):continue
   src,dst=socket.inet_ntoa(b[26:30]),socket.inet_ntoa(b[30:34]);sp,dp=struct.unpack('!HH',b[off:off+4]);up=dp==443
@@ -88,6 +91,8 @@ try:
    if not up or len(flows)>=2500:continue
    index+=1;flows[key]={'flow':index,'protocol':'TCP' if proto==6 else 'QUIC','host':None,'origin':dst,'vpn_owned':(src,sp,dst,dp) in owned or (proto==17 and sp in udp_ports),'start_s':round(now,2),'up_bytes':0,'down_bytes':0,'up_packets':0,'down_packets':0,'rst_up':0,'rst_down':0,'fin':0,'duplicate_payload_bytes':0,'first_reply_s':None,'last_s':round(now,2),'bins':{},'_seen':set(),'_hello':{},'_base':None,'_crypto':{}}
   f=flows[key];f['last_s']=round(now,2)
+  if up and not f['vpn_owned'] and (now-f['start_s']<2):
+   fresh=sockrows(uid);f['vpn_owned']=any(r['sp']==sp and ((r['dst']==dst and r['dp']==dp) or (proto==17 and r['proto'].startswith('udp'))) for r in fresh)
   if proto==6:
    n=(b[off+12]>>4)*4;payload=b[off+n:];flags=b[off+13];seq=struct.unpack('!I',b[off+4:off+8])[0]
    f['rst_up' if up else 'rst_down']+=bool(flags&4);f['fin']+=bool(flags&1)
@@ -125,7 +130,7 @@ finally:
   tracer.send_signal(signal.SIGINT)
   try:tracer.wait(timeout=3)
   except subprocess.TimeoutExpired:tracer.kill();tracer.wait(timeout=2)
-  rawtrace.close();text=(folder/'connect.syscalls').read_text(errors='replace');families=collections.Counter(re.findall(r'sa_family=(AF_[A-Z0-9]+)',text));errors=collections.Counter(re.findall(r'= -1 ([A-Z][A-Z0-9_]+)',text));emit({'event':'xray_connect_syscalls','families':dict(families),'statuses':dict(errors),'note':'EINPROGRESS is normal for nonblocking connect'});(folder/'connect.syscalls').unlink()
+  rawtrace.close();text=(folder/'connect.syscalls').read_text(errors='replace');families=collections.Counter(re.findall(r'sa_family=(AF_[A-Z0-9]+)',text));errors=collections.Counter(re.findall(r'= -1 ([A-Z][A-Z0-9_]+)',text));emit({'event':'xray_connect_syscalls','families':dict(families),'statuses':dict(errors),'ports':dict(collections.Counter(re.findall(r'(?:sin6?_port)=htons\((\d+)\)',text))),'unreachable_ports':dict(collections.Counter(re.findall(r'htons\((\d+)\).*?ENETUNREACH',text))),'attach_failed':'Operation not permitted' in text,'note':'EINPROGRESS is normal; UDP port 53 ENETUNREACH can be Go address-selection probing'});(folder/'connect.syscalls').unlink()
  after=counters();emit({'event':'kernel_counter_delta','values':{k:after[k]-before.get(k,0) for k in after if after[k]!=before.get(k,0)}})
  for f in flows.values():
   if not f['host']:continue
