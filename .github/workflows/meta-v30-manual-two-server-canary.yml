@@ -69,6 +69,11 @@ on:
         options: ['1', '2', '3']
         required: false
         default: '2'
+      sync_de_google_checkpoint:
+        description: 'Promote DE stable checkpoint first only if Corefile differs solely by Verified Google RU ingress 20261116'
+        type: boolean
+        required: false
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -110,10 +115,11 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          python3 -m py_compile scripts/meta_v30_actions_adapter.py scripts/meta_v29_two_server_sequence.py scripts/meta_geneva_dupack.py
+          python3 -m py_compile scripts/meta_v30_actions_adapter.py scripts/meta_v29_two_server_sequence.py scripts/meta_geneva_dupack.py scripts/meta_de_sync_google_checkpoint.py
           python3 scripts/meta_v30_actions_adapter.py --mode validate
           python3 -m unittest discover -s scripts/tests -p 'test_meta_v30_actions_adapter.py' -v
           python3 -m unittest discover -s scripts/tests -p 'test_meta_geneva_dupack.py' -v
+          python3 -m unittest discover -s scripts/tests -p 'test_meta_de_sync_google_checkpoint.py' -v
           test -n "$RELAY89_SSH_PASSWORD" && test -n "$SERVER188_SSH_PASSWORD"
           if ! command -v sshpass >/dev/null; then
             timeout 35s sudo apt-get -o Acquire::Retries=0 -o Acquire::http::Timeout=7 update -qq || true
@@ -132,11 +138,22 @@ jobs:
           SELECTED_EXPERIMENT_MODE: ${{ github.event_name == 'push' && 'window' || inputs.experiment_mode }}
           SELECTED_GENEVA_VARIANT: ${{ github.event_name == 'push' && 'ack-exact' || inputs.geneva_variant }}
           SELECTED_GENEVA_REPEATS: ${{ github.event_name == 'push' && '2' || inputs.geneva_repeats }}
+          SYNC_DE_GOOGLE_CHECKPOINT: ${{ github.event_name == 'workflow_dispatch' && inputs.sync_de_google_checkpoint || false }}
         run: |
           set -Eeuo pipefail
           if [[ "$SELECTED_MODE" == "preflight" ]]; then
             python3 -u scripts/meta_v30_actions_adapter.py --mode preflight | tee -a "$GITHUB_STEP_SUMMARY"
           else
+            if [[ "${SYNC_DE_GOOGLE_CHECKPOINT:-false}" == "true" ]]; then
+              ssh_opts=(
+                -T -o BatchMode=no -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+                -o HostKeyAlgorithms=ssh-ed25519
+                -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+                -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR
+              )
+              SSHPASS="$RELAY89_SSH_PASSWORD" sshpass -e ssh "${ssh_opts[@]}" root@89.125.90.101 'python3 -u -' \
+                < scripts/meta_de_sync_google_checkpoint.py | tee -a "$GITHUB_STEP_SUMMARY"
+            fi
             extra_args=()
             if [[ "${SELECTED_CLAMP_MODE:-on}" != "on" ]]; then
               extra_args+=(--clamp-mode "$SELECTED_CLAMP_MODE")
