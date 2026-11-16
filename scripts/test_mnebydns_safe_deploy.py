@@ -13,6 +13,8 @@ import tempfile
 import mnebydns_safe_deploy as deploy
 import mnebydns_nov8_restore_safety as safety
 
+REAL_MANIFEST_FOR=deploy.manifest_for
+
 
 class DeployTests(TestCase):
     def setUp(self):
@@ -117,9 +119,8 @@ class DeployTests(TestCase):
         self.assertEqual(self.live.read_bytes(),b"new policy\n")
 
     def test_invalid_manifest_path_does_not_escape_stage(self):
-        with patch.object(deploy,"manifest_for",wraps=deploy.manifest_for):
-            with self.assertRaises(ValueError):
-                deploy.manifest_for("../outside")
+        with self.assertRaises(ValueError):
+            REAL_MANIFEST_FOR("../outside")
 
     def test_candidate_symlink_is_rejected(self):
         self.candidate.unlink()
