@@ -105,3 +105,45 @@ No user needs to run commands manually.
 The coordinator installs safe **future changes**, not a second DNS rollback.
 Release automation still needs a specifically reviewed candidate and its pinned
 manifest; successful installation alone does not justify changing DNS rules.
+
+
+---
+
+## Review remediation: version 3 (16 Nov 2026)
+
+The v3 coordinator replaces the unsafe default CoreDNS \`systemctl restart\`
+on normal configuration changes with a verified, PID-preserving CoreDNS reload.
+It refuses a DNS config release without \`reload 5s 1s\` and the compiled reload
+plugin. Starting a stopped CoreDNS instance is only permitted as an emergency
+rollback recovery, never as the normal config-update path.
+
+Before applying a Corefile change, the coordinator parses the complete old and
+candidate sets of DNS templates. In the default \`additive\` scope it refuses
+deletion or modification of any existing template, including personalized DNS
+access. A proposed Google-specific change requires an explicit
+\`"scope": "google"\` in the DNS manifest and still protects non-Google templates
+and TLS/bind/import/forward/reload directives. Hash pinning alone does not waive
+these checks.
+
+The coordinator also verifies protected Google, YouTube and other existing
+AI/social service A-record routes via CA-validated DNS-over-TLS before and after
+a DNS release and after a DNS rollback. A service active flag is not proof of
+DNS answer correctness. These checks occur **only when actually changing DNS**,
+not on a regular status request.
+
+Legacy owner-domain canary additions, removals and their independent rollback
+continue using the established owner timer/DB confirmation flow, but their
+actual Nginx and CoreDNS file swaps now invoke the shared v3
+\`owner-publish\` path. That path uses the same compare-and-swap,
+owner/group/mode/xattrs preserving atomic writer and refuses other intervening
+edits. Its calling shell holds the existing global route lock.
+
+A durable COMMITTED marker is written **before** disabling the recovery timer.
+If disabling the timer fails, the already committed release is still successful:
+any subsequently triggered recovery checks COMMITTED and performs no rollback.
+The warning must be retained as \`watchdog_disarmed: false\`.
+
+**Verification limitations:** offline CI exercises simulated interrupted releases
+and rollback behavior, not a live VPS reboot or end-user media playback.
+The production v3 installation only updates the maintenance scripts, never the
+current CoreDNS configuration, Nginx routes, certificates or subscriber records.
