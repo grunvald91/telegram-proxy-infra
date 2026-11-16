@@ -1,0 +1,105 @@
+name: MNEBYVPN AmneziaWG UDP receive buffers and packet drop attribution read-only
+on:
+  push:
+    branches: [audit/mnebyvpn-853-wg-rootcause-20261116]
+    paths: ['.github/workflows/mnebyvpn-awg-udp-counters-readonly-20261116.yml']
+permissions: {contents: read}
+concurrency:
+  group: mnebyvpn-awg-readonly-counters-20261116
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Read-only inspect service state and kernel UDP errors at both nodes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -qq -y sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          for role in DE RU; do
+            if [ "$role" = DE ]; then host=89.125.90.101; export SSHPASS="$DE_PASS"; else host=188.120.254.223; export SSHPASS="$RU_PASS"; fi
+            sshpass -e ssh "${opts[@]}" "root@$host" "python3 - $role" <<'PY'
+          import sys,os,re,json,subprocess,time,glob
+          role=sys.argv[1]
+          def cmd(args,timeout=7):
+              try:
+                  p=subprocess.run(args,text=True,capture_output=True,timeout=timeout)
+                  return p.returncode,p.stdout.strip()
+              except Exception as ex:return -1,type(ex).__name__
+          def snmp():
+              ret={}
+              for file in ('/proc/net/snmp','/proc/net/netstat'):
+                  lines=open(file).read().splitlines()
+                  for k in range(len(lines)-1):
+                      a,b=lines[k:k+2]
+                      if not a.split(':',1)[0] == b.split(':',1)[0]:continue
+                      prefix=a.split(':',1)[0]
+                      if prefix not in ('Udp','UdpLite','IpExt','TcpExt'):continue
+                      h=a.split(':',1)[1].split()
+                      v=b.split(':',1)[1].split()
+                      for key,val in zip(h,v):
+                          if key in ('InDatagrams','NoPorts','InErrors','OutDatagrams','RcvbufErrors','SndbufErrors','InCsumErrors','IgnoredMulti','InDiscards','InMcastPkts','InOctets','OutOctets','TCPTimeouts','TCPBacklogDrop','TCPRcvQDrop'):
+                              ret[prefix+'.'+key]=int(val)
+              return ret
+          def service(svc):
+              rc,act=cmd(['systemctl','is-active',svc])
+              rc2,props=cmd(['systemctl','show',svc,'--no-pager','-p','MainPID,NRestarts,ExecMainStatus,ActiveEnterTimestamp,FragmentPath,CPUUsageNSec,MemoryCurrent'])
+              d={'active':act if rc==0 else 'not_active_or_absent'}
+              if rc2==0:
+                  for line in props.splitlines():
+                      if '=' in line:
+                          k,v=line.split('=',1)
+                          if k=='FragmentPath':v=os.path.basename(v)
+                          d[k]=v
+              return d
+          def sysctl():
+              ret={}
+              for path in ('/proc/sys/net/core/rmem_max','/proc/sys/net/core/rmem_default','/proc/sys/net/core/wmem_max','/proc/sys/net/core/wmem_default','/proc/sys/net/ipv4/udp_rmem_min','/proc/sys/net/ipv4/udp_wmem_min'):
+                  try:ret[path.split('/')[-1]]=int(open(path).read())
+                  except Exception:pass
+              return ret
+          def iface(name):
+              root='/sys/class/net/'+name
+              if not os.path.exists(root):return {'exists':False}
+              d={'exists':True}
+              for k in ('rx_dropped','tx_dropped','rx_errors','tx_errors','rx_packets','tx_packets'):
+                  try:d[k]=int(open(root+'/statistics/'+k).read())
+                  except Exception:pass
+              return d
+          def sockstats():
+              rc,out=cmd(['ss','-u','-a','-n','-m','-p'],timeout=8)
+              parsed=[]
+              # Only socket queue lengths and buffer sizes; no peer addresses.
+              for line in out.splitlines():
+                  if 'amneziawg-go' not in line:continue
+                  names=re.search(r'users:\(\("([^"]+)"',line)
+                  mem=re.search(r'sk?mem:\(([^)]{0,250})\)',line)
+                  fields=line.split()
+                  parsed.append({'process':names.group(1) if names else 'unknown','state':fields[0] if fields else None,'recv_q':fields[1] if len(fields)>1 else None,'send_q':fields[2] if len(fields)>2 else None,'skmem':mem.group(1) if mem else None})
+              return parsed[:12]
+          def journal():
+              rc,out=cmd(['journalctl','--no-pager','-q','-u','mneby-awg-tg-relay.service','--since','-45min','-n','180','-o','cat'])
+              if rc!=0:return {'available':False}
+              low=out.lower()
+              return {'available':True,'lines':len(out.splitlines()),
+                      'timeouts':low.count('timeout'),'errors':low.count('error'),
+                      'restarts':low.count('restarting'),'dropped':low.count('drop'),
+                      'handshakes':low.count('handshake')}
+          info={'role':role,'utc':int(time.time()),
+                'services':{s:service(s) for s in ('mneby-awg-tg-relay.service','mneby-awg-fallback-'+role+'.service','wg-quick@tg-relay.service')},
+                'sysctl':sysctl(),'udp_counters':snmp(),
+                'ifaces':{s:iface(s) for s in ('tg-relay','eth0','ens3')},
+                'udp_sockets':sockstats(),'awg_log_totals':journal()}
+          print('AWG_UDP_NODE='+json.dumps(info,separators=(',',':')),flush=True)
+          PY
+          done
+          echo AWG_UDP_READONLY_COMPLETED=true
