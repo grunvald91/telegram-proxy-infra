@@ -1,0 +1,57 @@
+name: Preserve real YouTube CDN DNS for owner links used with VPN
+on:
+  push:
+    branches: [audit/recovery-personal-only-20261116]
+    paths: [.github/workflows/owner-dns-video-release-20261116.yml]
+permissions:
+  contents: read
+concurrency:
+  group: mnebyvpn-owner-dns-release
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      SSHPASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      SOURCE_SHA: 6b1cd56c89400745d32cfc926cf9ce8e9f780d01
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Require exact green source and verify scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          gh api "repos/grunvald91/Mnebyvpn/actions/workflows/offline-contracts.yml/runs?branch=main&per_page=6" > "$RUNNER_TEMP/ci.json"
+          python3 - <<'PY'
+          import json,os
+          assert any(r['head_sha']==os.environ['SOURCE_SHA'] and r['conclusion']=='success' and r['event']=='push' for r in json.load(open(os.environ['RUNNER_TEMP']+'/ci.json'))['workflow_runs'])
+          PY
+          gh api "repos/grunvald91/Mnebyvpn/contents/packages/dns-policy/src/owner-dns-access.ts?ref=$SOURCE_SHA" --jq .content | base64 --decode > "$RUNNER_TEMP/helper.ts"
+          python3 -m py_compile scripts/owner-dns-video-release-20261116.py
+          node --check scripts/owner-dns-probe-20261116.mjs
+      - name: Canary only the verified DNS helper, then validate public owner access
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if ! command -v sshpass >/dev/null; then sudo apt-get update -qq; sudo apt-get install -y -qq sshpass >/dev/null; fi
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          remote=root@188.120.254.223
+          root=/opt/mnebyvpn/owner-dns-video-20261116
+          sha="$(sha256sum "$RUNNER_TEMP/helper.ts" | cut -d' ' -f1)"
+          sshpass -e ssh "${opts[@]}" "$remote" "install -d -m 755 '$root'"
+          sshpass -e scp "${opts[@]}" "$RUNNER_TEMP/helper.ts" "$remote:$root/helper.ts"
+          sshpass -e scp "${opts[@]}" scripts/owner-dns-video-release-20261116.py "$remote:$root/release.py"
+          sshpass -e scp "${opts[@]}" scripts/owner-dns-probe-20261116.mjs "$remote:$root/probe-source.mjs"
+          sshpass -e ssh "${opts[@]}" "$remote" "chmod 644 '$root/helper.ts'; python3 '$root/release.py' '$SOURCE_SHA' '$sha'"
+          mkdir output
+          sshpass -e ssh "${opts[@]}" "$remote" "cat '$root/result.json'" > output/owner-link-encrypted.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: owner-video-origin-encrypted-result
+          path: output/owner-link-encrypted.json
+          retention-days: 2
+          if-no-files-found: error
