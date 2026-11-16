@@ -1,4 +1,4 @@
-name: SmartDNS Google proxy live FD limit repair 20261116
+name: SmartDNS owner TCP89 handshake read-only 20261116
 on:
   push:
     branches: [audit/smartdns-installed-review-20261115]
@@ -18,12 +18,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Raise dedicated Google proxy FD limit without restart
+      - name: Observe owner TCP89 handshakes read-only
         shell: bash
         run: |
           set -Eeuo pipefail
           test -n "$DE_PASS"
-          python3 -m py_compile scripts/smartdns-google-fd-limit-20261116.py
+          python3 -m py_compile scripts/smartdns-tcp89-owner-observer-20261116.py
           if ! command -v sshpass >/dev/null; then
             sudo apt-get update -qq
             sudo apt-get install -y -qq sshpass >/dev/null
@@ -33,12 +33,12 @@ jobs:
             -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
             -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
           mkdir output
-          SSHPASS="$DE_PASS" sshpass -e ssh -T "${opts[@]}" root@89.125.90.101 'python3 -B -' < scripts/smartdns-google-fd-limit-20261116.py > output/fd-limit.json
-          python3 -c 'import json; j=json.load(open("output/fd-limit.json")); assert j["done"] and not j["process_restarted"]; print("GOOGLE_PROXY_LIVE_FD_LIMIT_VERIFIED=true")'
+          SSHPASS="$DE_PASS" sshpass -e ssh -T "${opts[@]}" root@89.125.90.101 'python3 -B -' < scripts/smartdns-tcp89-owner-observer-20261116.py > output/tcp89-owner.json
+          python3 -c 'import json; j=json.load(open("output/tcp89-owner.json")); assert j["production_changed"] is False; print("TCP89_OWNER_READONLY_COMPLETE=true")'
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: smartdns-google-fd-limit-20261116
+          name: smartdns-tcp89-owner-readonly-20261116
           path: output/*
           retention-days: 2
           if-no-files-found: error
