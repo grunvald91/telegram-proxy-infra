@@ -1,0 +1,81 @@
+name: Isolated Telemt per-user create-disable-delete E2E
+on:
+  push:
+    branches: [feat/mtproxy-bonus-activation-20261116]
+    paths: ['.github/workflows/dns-mtproxy-telemt-canary-20261116.yml']
+  workflow_dispatch:
+permissions: {contents: read}
+jobs:
+  telemt-canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      DE_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - run: sudo apt-get update -qq >/dev/null && sudo apt-get install -qq -y sshpass >/dev/null
+      - name: Canary independent Telemt identity; cleanup via disable and delete
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASSWORD"
+          export SSHPASS="$DE_PASSWORD"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@89.125.90.101 'python3 -' <<'PY'
+          import urllib.request,urllib.error,json,datetime,secrets,pathlib,re,time,subprocess
+          url='http://127.0.0.1:9096'
+          config=pathlib.Path('/etc/telemt/direct-ozon.toml').read_text()
+          token=re.search(r'(?m)^\s*auth_header\s*=\s*("(?:[^"\\]|\\.)*")',config)
+          auth=json.loads(token.group(1)) if token else ''
+          headers={'Authorization':auth} if auth else {}
+          def call(method,path,payload=None):
+              h=dict(headers)
+              if payload is not None:h['Content-Type']='application/json'
+              req=urllib.request.Request(url+path,method=method,headers=h,
+                  data=json.dumps(payload).encode() if payload is not None else None)
+              try:
+                  with urllib.request.urlopen(req,timeout=8) as r:
+                      body=r.read(65536).decode()
+                      return r.status,json.loads(body)
+              except urllib.error.HTTPError as e:
+                  data=e.read(2000).decode(errors='replace')
+                  return e.code,{'error_type':'HTTP_'+str(e.code),'body_present':bool(data)}
+          code,health=call('GET','/v1/health')
+          assert code==200 and health.get('ok') is True and health.get('data',{}).get('read_only') is False
+          assert subprocess.run(['systemctl','is-active','--quiet','telemt-direct-ozon']).returncode==0
+          print('TELEMT_READY_FOR_USER_CANARY=True')
+          name='dns_'+secrets.token_hex(12)
+          secret=secrets.token_hex(16)
+          expiration=(datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(minutes=6)).isoformat().replace('+00:00','Z')
+          created=False
+          try:
+              s,x=call('GET','/v1/users/'+name)
+              assert s==404, 'Nonunique generated canary identity'
+              s,x=call('POST','/v1/users',{'username':name,'secret':secret,'enabled':True,'expiration_rfc3339':expiration})
+              print('CREATE_HTTP='+str(s))
+              print('CREATE_WRAPPER_OK='+str(x.get('ok') is True))
+              print('CREATE_HAS_SECRET='+str(isinstance(x.get('data'),dict) and x['data'].get('secret')==secret))
+              print('CREATE_HAS_USER='+str(isinstance(x.get('data'),dict) and isinstance(x['data'].get('user'),dict)))
+              if s not in (201,202) or x.get('ok') is not True:raise ValueError('Telemt user creation was rejected')
+              created=True
+              for attempt in range(12):
+                  s,u=call('GET','/v1/users/'+name)
+                  info=u.get('data',{}) if isinstance(u.get('data'),dict) else {}
+                  if s==200 and info.get('in_runtime') is True:break
+                  time.sleep(1)
+              print('GET_USER_HTTP='+str(s))
+              print('GET_USER_ENABLED='+str(info.get('enabled')))
+              print('GET_USER_IN_RUNTIME='+str(info.get('in_runtime')))
+              print('GET_USER_EXPIRY_PRESENT='+str(bool(info.get('expiration_rfc3339'))))
+              assert s==200 and info.get('in_runtime') is True and info.get('enabled') is True
+          finally:
+              if created:
+                  s,x=call('POST','/v1/users/'+name+'/disable')
+                  print('DISABLE_HTTP='+str(s))
+                  s2,u=call('GET','/v1/users/'+name)
+                  info=u.get('data',{}) if isinstance(u.get('data'),dict) else {}
+                  print('DISABLE_CONFIRMED='+str(s2==200 and info.get('enabled') is False))
+                  sd,xd=call('DELETE','/v1/users/'+name)
+                  print('DELETE_HTTP='+str(sd))
+                  sf,xf=call('GET','/v1/users/'+name)
+                  print('CANARY_CLEANED='+str(sf==404))
+                  assert s in (200,202) and s2==200 and info.get('enabled') is False and sd in (200,202) and sf==404
+          PY
