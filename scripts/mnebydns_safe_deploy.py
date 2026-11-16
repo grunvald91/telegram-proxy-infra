@@ -13,6 +13,7 @@ from pathlib import Path
 import argparse
 import base64
 import hashlib
+import grp
 import json
 import os
 import re
@@ -109,8 +110,21 @@ def verify_system():
     if os.geteuid()!=0:raise PermissionError("Root privileges required")
     if not INSTALL.is_dir() or not TXROOT.is_dir():
         raise RuntimeError("Installer directories not initialized")
-    if INSTALL.is_symlink() or TXROOT.is_symlink():
+    if INSTALL.is_symlink() or TXROOT.is_symlink() or STAGE.is_symlink():
         raise RuntimeError("Untrusted installer location")
+
+def ensure_dns_reader_access():
+    """CoreDNS DynamicUser must retain read-only access to the config."""
+    s=capture(LIVE["dns"])
+    if s.uid!=0 or s.gid!=grp.getgrnam("mnebydns-corefile-readers").gr_gid or s.mode!=0o640:
+        raise RuntimeError("CoreDNS Corefile must be root:reader mode 0640")
+    raw=cmd("systemctl","show",SERVICE["dns"],"-p","User,DynamicUser,SupplementaryGroups")
+    props=dict(line.split("=",1) for line in raw.splitlines() if "=" in line)
+    if (props.get("User")!="mnebydns-dot" or
+        props.get("DynamicUser")!="yes" or
+        "mnebydns-corefile-readers" not in props.get("SupplementaryGroups","").split()):
+        raise RuntimeError("CoreDNS service lost restricted reader group")
+
 
 def manifest_for(name):
     if not NAME.fullmatch(name):raise ValueError("Invalid deployment identifier")
@@ -201,7 +215,9 @@ def recover_locked(tx):
         files[key]=(LIVE[key],state_from(info["before"]),
                     state_from(info["staged"]),bs)
     actions=conditional_rollback(files)
-    revert_services(files)
+    changed=[k for k,action in actions.items() if action=="restore"]
+    if changed:
+        revert_services(changed)
     require_services_healthy(set(files)|{"dns","pilot","shared"})
     write_durable(tx/"ROLLED_BACK",b"rollback complete\n")
     return {"committed":False,"rolled_back":True,"files":sorted(actions)}
@@ -217,6 +233,7 @@ def apply(name):
     manifest=manifest_for(name)
     with route_lock():
         require_services_healthy(set(SERVICE))
+        ensure_dns_reader_access()
         prepared={}
         for key,pins in manifest.items():
             state,old=regular_read(LIVE[key])
@@ -254,6 +271,7 @@ def apply(name):
                 atomic_replace(LIVE[n],state,payload)
             revert_services(prepared)
             healthy=require_services_healthy(set(SERVICE))
+            ensure_dns_reader_access()
             for n,(_,_,payload) in prepared.items():
                 if digest(payload)!=capture(LIVE[n]).sha256:
                     raise RuntimeError("Published config changed during activation")
@@ -281,9 +299,11 @@ def status():
         s=capture(path)
         live[name]={"exists":True,"sha256":s.sha256,"mode":oct(s.mode),
                     "owner_uid":s.uid,"owner_gid":s.gid}
+    ensure_dns_reader_access()
     print(json.dumps({"read_only":True,"files":live,
         "services":services_ok(set(SERVICE)),
-        "installer_version":"2026-11-16-safe-deploy-v1"},sort_keys=True))
+        "dns_reader_group_verified":True,
+        "installer_version":"2026-11-16-safe-deploy-v2"},sort_keys=True))
 
 def main():
     parser=argparse.ArgumentParser()
