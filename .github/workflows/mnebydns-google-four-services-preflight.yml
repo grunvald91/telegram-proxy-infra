@@ -1,0 +1,93 @@
+name: MNEBYDNS four Google services real-path read-only preflight
+on:
+  push:
+    branches: ['feature/mnebydns-google-four-services-preflight-20261108']
+    paths:
+      - '.github/workflows/mnebydns-google-four-services-preflight.yml'
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-four-google-services-readonly
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      FOREIGN_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Compare real foreign and Russian TLS and detect safe existing SNI routes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$FOREIGN_PASS" && test -n "$RU_PASS"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass
+          cat > /tmp/mnebydns-four-service-preflight.py <<'PY'
+          import concurrent.futures, pathlib, re, socket, ssl, subprocess, time
+          HOSTS = {
+            "gemini": ["gemini.google.com", "jnn-pa.googleapis.com",
+                "waa-pa.clients6.google.com", "www.googleapis.com",
+                "optimizationguide-pa.googleapis.com"],
+            "youtube": ["www.youtube.com","youtubei.googleapis.com",
+                "i.ytimg.com","s.ytimg.com","yt3.ggpht.com"],
+            "stitch": ["stitch.withgoogle.com","accounts.google.com",
+                "www.gstatic.com","fonts.gstatic.com"],
+            "aistudio": ["aistudio.google.com",
+                "generativelanguage.googleapis.com","oauth2.googleapis.com"],
+          }
+          def check(item):
+              service,host=item
+              start=time.monotonic()
+              try:
+                  with socket.create_connection((host,443),timeout=6) as sock:
+                      sock.settimeout(6)
+                      with ssl.create_default_context().wrap_socket(sock,server_hostname=host) as tls:
+                          tls_version=tls.version()
+                  return (service,host,"ok",round((time.monotonic()-start)*1000),tls_version)
+              except Exception as e:
+                  return (service,host,type(e).__name__,round((time.monotonic()-start)*1000),"-")
+          # Avoid printing actual client IP or private subscriber information.
+          work=[(label,host) for label,hosts in HOSTS.items() for host in hosts]
+          with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
+              for label,host,status,ms,tls in pool.map(check,work):
+                  print(f"candidate={label} host={host} tls={status} latency_ms={ms} protocol={tls}",flush=True)
+          # Emit only boolean per-host status for old routes, never config payload.
+          root=pathlib.Path("/etc/nginx/nginx.conf")
+          dns=pathlib.Path("/opt/mnebydns-dot/Corefile")
+          if root.is_file() and dns.is_file():
+              nginx=root.read_text()
+              core=dns.read_text()
+              for label,host in work:
+                  present=bool(re.search(r"(?m)^\s*"+re.escape(host)+r"\s+127[.]0[.]0[.]1:[0-9]+;",nginx))
+                  synthetic="template IN A "+host+" {" in core
+                  print(f"current_exact={label} host={host} nginx={str(present).lower()} dns={str(synthetic).lower()}",flush=True)
+              for service in ("nginx", "mnebydns-dot.service",
+                  "mnebydns-gemini.service","mnebydns-gemini-aux.service",
+                  "xray.service"):
+                  p=subprocess.run(["systemctl","is-active",service],capture_output=True,timeout=5)
+                  print("current_service="+service+" active="+str(p.returncode==0).lower(),flush=True)
+              conf=subprocess.run(["nginx","-t"],capture_output=True,timeout=6)
+              print("current_nginx_config_valid="+str(conf.returncode==0).lower(),flush=True)
+              print("existing_Gemini_isolated_backend_present="+str(pathlib.Path("/etc/mnebydns-gemini/nginx.conf").is_file()).lower(),flush=True)
+              maps=re.findall(r"(?s)map\s+\$ssl_preread_server_name\s+\$direct_mtproxy_backend\s*\{([^{}]*)\}",nginx)
+              print("shared_stream_SNI_maps="+str(len(maps)),flush=True)
+              if len(maps)==1:
+                  entries=[x.strip() for x in maps[0].splitlines() if x.strip() and not x.strip().startswith("#")]
+                  print("shared_sni_entry_count="+str(len(entries)),flush=True)
+                  print("original_Gemini_exact_sni_live="+str("gemini.google.com 127.0.0.1:15443;" in entries).lower(),flush=True)
+                  print("shared_sni_default_exists="+str(any(x.startswith("default ") for x in entries)).lower(),flush=True)
+                  print("existing_legacy_sni_routes_present="+str(all(any(x.startswith(h+" ") for x in entries) for h in ("cdn.servgo.ru","tg.servgo.ru"))).lower(),flush=True)
+              sockets=subprocess.run(["ss","-H","-lnt"],capture_output=True,text=True,timeout=5).stdout
+              for port in (15443,15444,15449,853,443):
+                  print("port_"+str(port)+"_listener="+str(bool(re.search(r"(?m):"+str(port)+r"\s",sockets))).lower(),flush=True)
+              print("available_MiB="+str(next(int(x.split()[1])//1024 for x in pathlib.Path("/proc/meminfo").read_text().splitlines() if x.startswith("MemAvailable:"))),flush=True)
+          print("read_only_no_live_service_changes=true",flush=True)
+          PY
+          export SSHPASS="$FOREIGN_PASS"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR \
+            root@89.125.90.101 'python3 -' < /tmp/mnebydns-four-service-preflight.py | sed 's/^/foreign_/'
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR \
+            root@188.120.254.223 'python3 -' < /tmp/mnebydns-four-service-preflight.py | sed 's/^/ru_/'

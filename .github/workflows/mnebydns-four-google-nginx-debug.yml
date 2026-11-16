@@ -1,0 +1,36 @@
+name: Inspect failed isolated Google canary nginx config read-only
+on:
+  push:
+    branches: ['feature/mnebydns-google-four-services-preflight-20261108']
+    paths: ['.github/workflows/mnebydns-four-google-nginx-debug.yml']
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Explain Nginx syntax failure without modifying server
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$PASSWORD"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          SSHPASS="$PASSWORD" sshpass -e ssh -o ConnectTimeout=12 -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new root@89.125.90.101 'bash -se' <<'REMOTE'
+          set -Eeuo pipefail
+          file=/opt/mnebydns-googlepilot-backups/42517183510/proxy.pilot
+          test -s "$file"
+          echo "isolated_proxy_config_present=true"
+          nginx -t -c "$file" 2>&1 || echo "isolated_proxy_conf_test=FAIL"
+          test ! -e /etc/mnebydns-googlepilot
+          test ! -e /etc/systemd/system/mnebydns-googlepilot.service
+          test -z "$(ss -H -lnt 'sport = :15449')"
+          echo "failed_canary_cleaned_up=true"
+          systemctl is-active --quiet nginx
+          systemctl is-active --quiet mnebydns-dot.service
+          systemctl is-active --quiet xray.service
+          echo "original_services_healthy=true"
+          REMOTE
