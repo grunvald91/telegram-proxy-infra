@@ -1,4 +1,4 @@
-name: MNEBYDNS Google A wildcard ingress address review Nov8 (read-only)
+name: MNEBYDNS Nov8 Google split A family equivalence audit (read-only)
 on:
   push:
     branches: [audit/smartdns-installed-review-20261115]
