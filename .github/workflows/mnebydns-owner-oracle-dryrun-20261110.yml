@@ -93,6 +93,13 @@ jobs:
           fi
           echo 'owner_dns_stable_baseline_exact=true'
           for domain in oracle.com www.oracle.com cloud.oracle.com; do
+            label="MNEBYDNS_OWNER_EXACT_${domain//./_}"
+            if grep -Fq "# BEGIN $label" /opt/mnebydns-dot/Corefile; then
+              grep -Fq "# BEGIN $label" /etc/nginx/nginx.conf
+              nginx -t >/dev/null 2>&1
+              echo "owner_dns_oracle_existing_verified=$domain"
+              continue
+            fi
             out="$tmp/$domain"
             mkdir -m 700 "$out"
             ip="$(python3 "$tmp/renderer.py" probe --domain "$domain")"
