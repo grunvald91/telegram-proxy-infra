@@ -1,4 +1,4 @@
-import {chromium} from 'playwright';
+const {chromium}=await import(process.env.VISUAL_PLAYWRIGHT_PACKAGE||'playwright');
 const browser=await chromium.launch({headless:true,args:['--no-sandbox'],...(
 process.env.VISUAL_CHROME_PATH?{executablePath:process.env.VISUAL_CHROME_PATH}:{})});
 const page=await browser.newPage({viewport:{width:390,height:844},deviceScaleFactor:1});
