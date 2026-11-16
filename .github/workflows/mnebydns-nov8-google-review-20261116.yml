@@ -1,4 +1,4 @@
-name: MNEBYDNS CoreDNS permission and ACL root cause (read-only)
+name: MNEBYDNS CoreDNS permission state after group repair (read-only)
 on:
   push:
     branches: [audit/smartdns-installed-review-20261115]
