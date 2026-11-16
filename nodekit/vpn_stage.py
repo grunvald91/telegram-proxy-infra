@@ -24,6 +24,7 @@ from typing import Any, Callable
 
 PREFIX_X25519_PKCS8 = bytes.fromhex("302e020100300506032b656e04220420")
 PREFIX_X25519_SPKI = bytes.fromhex("302a300506032b656e032100")
+PREFIX_ED25519_SPKI = bytes.fromhex("302a300506032b6570032100")
 HEX = re.compile(r"[a-f0-9]{64}")
 KEY = re.compile(r"[A-Za-z0-9_-]{43}")
 NODE = re.compile(r"[a-z0-9][a-z0-9-]{2,39}")
@@ -112,8 +113,8 @@ def stage_vpn(stage_root: Path, node_id: str, xray: Path,
     _private_dir(node_dir / "identity", require_root)
     identity_pub = _safe_file(node_dir / "identity" / "node-public.spki",
                               require_root, 44)
-    if len(identity_pub) != 44:
-        raise VpnStageError("Unique node identity is not present")
+    if len(identity_pub) != 44 or not identity_pub.startswith(PREFIX_ED25519_SPKI):
+        raise VpnStageError("Valid unique Ed25519 node identity is required")
     current_hash = _hash_binary(xray, require_root)
     if current_hash != expected_sha256:
         raise VpnStageError("Locally installed Xray hash does not match expected version")
@@ -186,6 +187,8 @@ def stage_vpn(stage_root: Path, node_id: str, xray: Path,
         pub = stage / "vpn-stage-manifest.json"
         pub.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
         pub.chmod(0o600)
+        if vpn_dir.exists() or vpn_dir.is_symlink():
+            raise VpnStageError('VPN state appeared during staging: refuse overwrite')
         stage.rename(vpn_dir)
         return report
     except Exception:
