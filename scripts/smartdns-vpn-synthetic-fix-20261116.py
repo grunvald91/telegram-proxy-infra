@@ -85,7 +85,15 @@ with tempfile.TemporaryDirectory(prefix='smartdns-vpn-preflight-') as temp:
 
 scoped=[r for r in result['tests'] if r['mode']=='scoped_fakedns']
 assert len(scoped)==10 and all(r.get('tls')=='PASS' and r.get('http','').startswith('HTTP/1.1 204') for r in scoped),'Scoped preflight failed'
-assert CONF.read_bytes()==original,'Concurrent VPN configuration change'
+def topology(cfg):
+ c=copy.deepcopy(cfg)
+ for inbound in c.get('inbounds',[]):inbound.get('settings',{}).pop('clients',None)
+ return c
+fresh=CONF.read_bytes()
+if topology(json.loads(fresh))!=topology(production):
+ result['error']='Concurrent VPN topology change';print(json.dumps(result));raise RuntimeError(result['error'])
+result['concurrent_client_config_update']=fresh!=original
+original=fresh;production=json.loads(fresh)
 candidate=copy.deepcopy(production);candidate['fakedns']=POOLS
 next(i for i in candidate['inbounds'] if i['tag']=='mnebyvpn-inbound')['sniffing']=SNIFF
 folder=pathlib.Path('/opt/mnebyvpn/backups/smartdns-vpn-20261116-'+str(int(time.time())))
@@ -102,7 +110,13 @@ def service(*args):
 applied=False
 try:
  service('stop')
- assert CONF.read_bytes()==original,'Concurrent configuration changed before stop'
+ stopped=CONF.read_bytes()
+ assert topology(json.loads(stopped))==topology(production),'Concurrent topology changed before stop'
+ if stopped!=original:
+  original=stopped;backup.write_bytes(original)
+  candidate=json.loads(stopped);candidate['fakedns']=POOLS
+  next(i for i in candidate['inbounds'] if i['tag']=='mnebyvpn-inbound')['sniffing']=SNIFF
+  new.write_text(json.dumps(candidate,indent=2)+'\n')
  replace_conf(new.read_bytes());applied=True;service('start')
  assert subprocess.run(['systemctl','is-active',unit],capture_output=True,text=True,check=True).stdout.strip()=='active'
  with socket.create_connection(('127.0.0.1',18943),3):pass
