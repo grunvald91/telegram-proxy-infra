@@ -1,0 +1,107 @@
+name: Personal Smart DNS guarded watchdog v2
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebydns-personal-watchdog-v2.yml'
+      - 'scripts/mnebydns_personal_guard_20261117.py'
+      - 'scripts/tests/test_mnebydns_personal_guard_20261117.py'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebydns-personal-watchdog-v2.yml'
+      - 'scripts/mnebydns_personal_guard_20261117.py'
+      - 'scripts/tests/test_mnebydns_personal_guard_20261117.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mnebydns-personal-sni-repair
+  cancel-in-progress: false
+
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile and unit-test fail-closed DNS health logic
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns_personal_guard_20261117.py
+          python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_personal_guard_20261117.py' -v
+          ! grep -E 'iptables.*-D|systemctl stop|nginx -s reload' scripts/mnebydns_personal_guard_20261117.py
+
+  deploy:
+    needs: offline
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Set up pinned SSH host identity
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass >/dev/null
+      - name: Upload only bounded watchdog source
+        id: stage
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-o ConnectTimeout=12 -o BatchMode=no -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e scp -q "${opts[@]}" scripts/mnebydns_personal_guard_20261117.py \
+            root@89.125.90.101:/tmp/mnebydns-personal-watchdog-v2.py
+          sshpass -e ssh -T "${opts[@]}" root@89.125.90.101 \
+            'python3 -B /tmp/mnebydns-personal-watchdog-v2.py preflight'
+      - name: Replace only watchdog with backup and automatic restore on failure
+        id: install
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-o ConnectTimeout=12 -o BatchMode=no -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh -T "${opts[@]}" root@89.125.90.101 \
+            'python3 -B /tmp/mnebydns-personal-watchdog-v2.py install'
+      - name: Verify timer and personal route survived
+        id: verify
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-o ConnectTimeout=12 -o BatchMode=no -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh -T "${opts[@]}" root@89.125.90.101 \
+            'systemctl is-active --quiet mnebydns-personal-sni-watch.timer &&
+             systemctl is-active --quiet mnebydns-personal-sni-stream.service &&
+             /usr/local/sbin/mnebydns-personal-sni-watch &&
+             echo WATCHDOG_V2_POSTCHECK=PASS'
+      - name: Restore original watchdog on failed postcheck
+        if: failure() && steps.install.outcome == 'success'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR \
+            root@89.125.90.101 \
+            'python3 -B /tmp/mnebydns-personal-watchdog-v2.py rollback'
