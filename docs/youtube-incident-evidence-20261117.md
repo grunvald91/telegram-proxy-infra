@@ -469,3 +469,68 @@ belongs to the earlier run. PHONE_H3_WINDOW_READY=true was recorded at
 Exactly one additional Actions run was started for this request. Its timing
 API reports run_duration_ms=33000 (33seconds), one Ubuntu job and
 billable.UBUNTU.total_ms=0. No account charge is inferred from elapsed time.
+
+## Phone HTTP3 timeout, receipt and bounded CRYPTO reassembly fix
+
+The owner reported curl --http3-only timeout28 after7003ms for the fixed
+Googlevideo hostname, with thumbnails loading and playback failing.
+[Receipt collection44097646614](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/44097646614)
+at13:56Z verified the canary and original guard active, and the previously
+authenticated phone source present in the application peer set.
+The source-specific ACCEPT rule counted743 packets/449916bytes, versus
+19 packets/6333bytes for the external control. Relay totals were762 input
+datagrams, six admitted flows (two in the initial control baseline),
+1346 upstream replies forwarded,30 pending Initial expirations,45 partial
+Initial events, five unreadable Initial events and two pending overflows.
+These aggregate events are not uniquely bound to the owner's curl attempt.
+
+[Passive observer44098203829](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/44098203829)
+was replaced by
+[corrected observer44098567495](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/44098567495)
+to avoid interpreting server Initial destination CIDs as client Initial CIDs.
+The earlier observer's return counters can undercount server packets and
+must not be used as evidence of missing return delivery. Seven offline
+checks cover client/server direction keys and SNI extraction from complete
+and incomplete ClientHello prefixes. Replacement capture was ready at
+14:01:28Z, bounded at600seconds, with no forwarding or firewall change.
+The first observer finished with12 flows and zero kernel capture drops.
+
+Its metadata showed a complete1807-byte proactivebackend-pa.googleapis.com
+ClientHello reconstructed from authenticated Initial fragments with two
+consistent same-offset fragment-length changes and no overlap conflict.
+This confirms such repacketization occurs in the phone's traffic; it is
+not yet a Googlevideo-specific causal observation.
+
+The active pinned relay had a concrete bug: any unequal byte-string at an
+already seen CRYPTO offset discarded the entire pending Initial assembly,
+including shorter/longer retransmissions whose overlapping bytes agree.
+RFC9000 sections13.3 and19.6 describe retransmission of CRYPTO data and its
+ordered byte offsets:
+https://www.rfc-editor.org/rfc/rfc9000.html#section-13.3
+
+Commit5ae05e395aa461cec1e8ede2829a5761b536b5e5 adds a shared bounded
+merge helper that retains the longest consistent prefix at the same offset,
+rejects conflicting overlap and leaves cross-offset conflict checking in
+contiguous_hello. It is used by both initial_sni and the live pending router.
+Regression checks cover longer/shorter repeats, consistent overlap and
+conflicting bytes; the existing two-hop UDP reply, fragmented Initial v1/v2
+ten-domain tests and disallowed-host checks also pass.
+
+[Scoped deployment44099186761](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/44099186761)
+applied this candidate only to the already temporary owner canary, preserving
+a backup and the original independent14:16:46Z expiry timer.
+The external control's new address was added to the same temporary peer
+restrictions and uniquely commented rules. Failed control verification would
+restore the backup and remove its added peer rule. After restart, verified
+public HTTP3 returned CDN404 and API405. These are transport checks, not
+new signed-media206 or phone playback evidence. No persistent production
+DNS, TCP443, tunnel or subscriber change was deployed.
+
+The owner must repeat the fixed-host HTTP3 attempt during the corrected
+capture and report playback. Until then this is a verified code repair in a
+temporary canary, not a demonstrated solution to the YouTube video failure.
+
+Exactly four Actions runs were started for this phone-result turn:
+44097646614,44098203829,44098567495,44099186761. Timing API durations:
+17000+20000+23000+25000=85000ms (85seconds). Each reported one Ubuntu job
+and billable.UBUNTU.total_ms=0; no separate account charge is inferred.
