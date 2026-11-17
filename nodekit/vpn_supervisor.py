@@ -203,6 +203,37 @@ def validate_state(table: object) -> dict:
     return table
 
 
+def child_can_execute(path: Path, uid: int, gid: int) -> bool:
+    """Ensure the future nonroot child can traverse and execute Xray.
+
+    Checking only a root-owned binary's hash is insufficient: an owner-only
+    0700 Xray binary could pass stage then fail for the isolated service user.
+    """
+    if not path.is_absolute():
+        return False
+    for target in (Path("/"), *list(reversed(path.parents[:-1])), path):
+        try:
+            st = target.lstat()
+        except OSError:
+            return False
+        if stat.S_ISLNK(st.st_mode):
+            return False
+        if target == path:
+            if not stat.S_ISREG(st.st_mode):
+                return False
+        elif not stat.S_ISDIR(st.st_mode):
+            return False
+        if st.st_uid == uid:
+            permission = stat.S_IXUSR
+        elif st.st_gid == gid:
+            permission = stat.S_IXGRP
+        else:
+            permission = stat.S_IXOTH
+        if not st.st_mode & permission:
+            return False
+    return True
+
+
 def render_config(template: dict, state: dict, now: float) -> dict:
     config = copy.deepcopy(template)
     clients = [{
@@ -251,6 +282,8 @@ class NodeAccessSupervisor:
         if (_hash_binary(xray, require_root) != stage.get("xray_sha256") or
                 manifest.get("listeners", {}).get("vpn_tcp") != stage.get("vpn_port")):
             raise AccessError("Unexpected Xray binary or service port")
+        if require_root and not child_can_execute(xray, child_uid, child_gid):
+            raise AccessError("Nonroot Xray user cannot execute the pinned binary")
         inbounds = template.get("inbounds")
         if (not isinstance(inbounds, list) or len(inbounds) != 1 or
                 inbounds[0].get("protocol") != "vless" or
@@ -538,6 +571,9 @@ def main() -> int:
     agent = None
     try:
         xray_user = pwd.getpwnam(SERVICE_USER)
+        if xray_user.pw_shell not in (
+                "/usr/sbin/nologin", "/sbin/nologin", "/bin/false"):
+            raise AccessError("Dedicated Xray user must not have a login shell")
         agent = NodeAccessSupervisor(
             args.node_id, args.stage_root, args.run_root, args.xray,
             args.controller_pub, xray_user.pw_uid, xray_user.pw_gid)

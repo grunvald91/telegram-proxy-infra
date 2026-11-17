@@ -315,6 +315,15 @@ class AccessSupervisorTest(unittest.TestCase):
         with self.assertRaises(m.AccessError):
             self.new_agent()
 
+    def test_nonroot_xray_must_be_able_to_execute_pinned_binary(self):
+        fake_uid, fake_gid = os.getuid() + 4000, os.getgid() + 4000
+        self.assertFalse(m.child_can_execute(self.xray, fake_uid, fake_gid))
+        self.xray.chmod(0o755)
+        Path(self.t.name).chmod(0o755)
+        self.assertTrue(m.child_can_execute(self.xray, fake_uid, fake_gid))
+        self.xray.chmod(0o700)
+        self.assertFalse(m.child_can_execute(self.xray, fake_uid, fake_gid))
+
     def test_unpublished_stage_and_exact_xray_binary_required(self):
         self.xray.write_bytes(b"tampered" + b"0" * 20000)
         with self.assertRaises(m.AccessError):
