@@ -25,6 +25,7 @@ on:
           - stage
           - identity
           - components_check
+          - dns_proxy_stage
           - components_install
           - prepare_all
           - vpn_stage_auto
@@ -80,7 +81,7 @@ jobs:
           test "$INPUT_HOST" != '89.125.90.101'
           test "$INPUT_HOST" != '188.120.254.223'
           [[ "$NODE_ID" =~ ^[a-z0-9][a-z0-9-]{2,39}$ ]]
-          [[ "$MODE" == 'preflight' || "$MODE" == 'stage' || "$MODE" == 'identity' || "$MODE" == 'components_check' || "$MODE" == 'components_install' || "$MODE" == 'prepare_all' || "$MODE" == 'vpn_stage_auto' || "$MODE" == 'vpn_stage' || "$MODE" == 'supervisor_install' || "$MODE" == 'supervisor_canary' ]]
+          [[ "$MODE" == 'preflight' || "$MODE" == 'stage' || "$MODE" == 'identity' || "$MODE" == 'components_check' || "$MODE" == 'dns_proxy_stage' || "$MODE" == 'components_install' || "$MODE" == 'prepare_all' || "$MODE" == 'vpn_stage_auto' || "$MODE" == 'vpn_stage' || "$MODE" == 'supervisor_install' || "$MODE" == 'supervisor_canary' ]]
           if [[ "$MODE" == 'vpn_stage' || "$MODE" == 'supervisor_install' || "$MODE" == 'supervisor_canary' ]]; then
             [[ "$XRAY_SHA256" =~ ^[a-f0-9]{64}$ ]] || {
               echo '::error::Supervisor/Xray staging requires a preverified SHA256'; exit 2;
@@ -163,7 +164,7 @@ jobs:
           }
           trap cleanup EXIT
 
-          remote_scp nodekit/nodekit.py nodekit/identity.py nodekit/install_components.py nodekit/provision_node.py nodekit/vpn_stage.py \
+          remote_scp nodekit/nodekit.py nodekit/identity.py nodekit/install_components.py nodekit/dns_proxy_stage.py nodekit/provision_node.py nodekit/vpn_stage.py \
             nodekit/vpn_supervisor.py nodekit/install_supervisor.py nodekit/forward_command.py \
             nodekit/systemd/mnebyvpn-nodekit-vpn@.service.example \
             "$RUNNER_TEMP/nodekit-credentials/spec.json" "$target:$remote_dir/"
@@ -173,6 +174,8 @@ jobs:
           fi
           if [[ "$MODE" == 'identity' ]]; then
             remote_ssh "python3 '$remote_dir/identity.py' --node-id '$NODE_ID'"
+          elif [[ "$MODE" == 'dns_proxy_stage' ]]; then
+            remote_ssh "python3 '$remote_dir/dns_proxy_stage.py' --node-id '$NODE_ID' --external-ipv4 '$TARGET_IP' --dns-host '$ADVERTISE_HOST'"
           elif [[ "$MODE" == 'components_check' || "$MODE" == 'components_install' ]]; then
             component_mode=check
             if [[ "$MODE" == 'components_install' ]]; then component_mode=install; fi

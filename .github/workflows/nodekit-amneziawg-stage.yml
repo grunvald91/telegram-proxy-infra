@@ -1,0 +1,105 @@
+name: MNEBYVPN AmneziaWG 3.1 build and isolated node stage
+on:
+  workflow_dispatch:
+    inputs:
+      host:
+        description: Isolated new VPS, never a production server
+        required: true
+        default: '217.11.167.91'
+      node_id:
+        required: true
+        default: fi-test-01
+permissions:
+  contents: read
+concurrency:
+  group: nodekit-amneziawg-${{ inputs.node_id }}
+  cancel-in-progress: false
+jobs:
+  build-and-stage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      INPUT_HOST: ${{ inputs.host }}
+      NODE_ID: ${{ inputs.node_id }}
+      NEW_NODE_SSH_USER: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_USER }}
+      SSHPASS: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.25.4'
+          check-latest: false
+      - name: Build exact upstream AmneziaWG 3.1 source commits
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          [[ "$INPUT_HOST" == '217.11.167.91' ]] || exit 2
+          [[ "$NEW_NODE_SSH_USER" == 'root' && -n "$SSHPASS" ]] || exit 2
+          [[ "$NODE_ID" =~ ^[a-z0-9][a-z0-9-]{2,39}$ ]] || exit 2
+          target_ip="$(python3 nodekit/resolve_new_vps.py "$INPUT_HOST")"
+          echo "TARGET_IP=$target_ip" >> "$GITHUB_ENV"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends make gcc sshpass
+          mkdir -p "$RUNNER_TEMP/awg-src" "$RUNNER_TEMP/awg-bundle"
+          cd "$RUNNER_TEMP/awg-src"
+          git clone -q --no-checkout https://github.com/amnezia-vpn/amneziawg-go.git userspace
+          cd userspace
+          git checkout -q --detach 08fe3d33bbb116be09a6183d02609311b8b0c9e8
+          test "$(git rev-parse HEAD)" = 08fe3d33bbb116be09a6183d02609311b8b0c9e8
+          GOTOOLCHAIN=local go build -trimpath -o "$RUNNER_TEMP/awg-bundle/amneziawg-go" .
+          cd "$RUNNER_TEMP/awg-src"
+          git clone -q --no-checkout https://github.com/amnezia-vpn/amneziawg-tools.git tools
+          cd tools
+          git checkout -q --detach ee0f0a9aa34ff0a0da4b3433b9512781cfe02843
+          test "$(git rev-parse HEAD)" = ee0f0a9aa34ff0a0da4b3433b9512781cfe02843
+          make -C src
+          install -m 0755 src/wg "$RUNNER_TEMP/awg-bundle/awg"
+          install -m 0755 src/wg-quick/linux.bash "$RUNNER_TEMP/awg-bundle/awg-quick"
+          chmod 0755 "$RUNNER_TEMP/awg-bundle/amneziawg-go"
+          for tool in awg awg-quick amneziawg-go; do
+            hash="$(sha256sum "$RUNNER_TEMP/awg-bundle/$tool" | cut -d' ' -f1)"
+            [[ "$hash" =~ ^[a-f0-9]{64}$ ]] || exit 2
+            case "$tool" in
+              awg) echo "AWG_SHA=$hash" >> "$GITHUB_ENV" ;;
+              awg-quick) echo "AWG_QUICK_SHA=$hash" >> "$GITHUB_ENV" ;;
+              amneziawg-go) echo "AWG_GO_SHA=$hash" >> "$GITHUB_ENV" ;;
+            esac
+          done
+          echo 'Pinned official AmneziaWG userland build completed.'
+      - name: Stage binaries and empty peerless configuration on isolated VPS
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          known="$RUNNER_TEMP/awg-known-hosts"
+          : > "$known"
+          chmod 0600 "$known"
+          target="$NEW_NODE_SSH_USER@$INPUT_HOST"
+          ssh_opts=(
+            -o PubkeyAuthentication=no
+            -o PreferredAuthentications=password,keyboard-interactive
+            -o NumberOfPasswordPrompts=1
+            -o StrictHostKeyChecking=accept-new
+            -o UserKnownHostsFile="$known"
+            -o HostName="$TARGET_IP"
+            -o HostKeyAlias="$INPUT_HOST"
+            -o ConnectTimeout=12
+            -o ServerAliveInterval=20
+            -o ServerAliveCountMax=15
+          )
+          remote_ssh() { sshpass -e ssh "${ssh_opts[@]}" "$target" "$@"; }
+          remote_scp() { sshpass -e scp "${ssh_opts[@]}" "$@"; }
+          remote_dir="$(remote_ssh 'umask 077; mktemp -d /tmp/mnebyvpn-awg.XXXXXXXX')"
+          [[ "$remote_dir" =~ ^/tmp/mnebyvpn-awg\.[A-Za-z0-9]{8}$ ]] || exit 2
+          cleanup() { remote_ssh "rm -rf -- '$remote_dir'" >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          remote_scp nodekit/amneziawg_artifacts.py nodekit/amneziawg_stage.py \
+            nodekit/install_components.py nodekit/nodekit.py \
+            "$RUNNER_TEMP/awg-bundle/awg" "$RUNNER_TEMP/awg-bundle/awg-quick" \
+            "$RUNNER_TEMP/awg-bundle/amneziawg-go" "$target:$remote_dir/"
+          remote_ssh "python3 '$remote_dir/amneziawg_artifacts.py' --node-id '$NODE_ID' --bundle '$remote_dir' --awg-sha256 '$AWG_SHA' --awg-quick-sha256 '$AWG_QUICK_SHA' --amneziawg-go-sha256 '$AWG_GO_SHA'"
+          remote_ssh "python3 '$remote_dir/amneziawg_stage.py' --node-id '$NODE_ID' --awg-sha256 '$AWG_SHA' --awg-quick-sha256 '$AWG_QUICK_SHA' --amneziawg-go-sha256 '$AWG_GO_SHA'"
+          echo 'AmneziaWG is staged, with ZERO peers. No UDP listener has started.'
