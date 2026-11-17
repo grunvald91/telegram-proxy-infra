@@ -95,3 +95,35 @@ No persistent fix was applied. One Actions run was started for this agreed
 window. The timing API reports run_duration_ms=199000 (199 seconds),
 UBUNTU.total_ms=0 and one job; no billing charge is inferred from elapsed time.
 
+
+## Retrieved successful Termux check from the original chat
+
+A targeted conversation lookup for «Разбор Google Smart DNS» returned the
+owner's message at 2026-11-17 03:07:05 UTC (06:07:05 Moscow), followed by the
+assistant's response at 03:07:12 UTC. This is a retrieved conversation fragment,
+not a complete raw chat export; no canonical conversation URL was returned.
+
+The command was:
+
+```sh
+curl -v --noproxy '*' -4 --http1.1 --connect-timeout 7 --max-time 12 --resolve youtubei.googleapis.com:443:89.125.90.101 -o /dev/null https://youtubei.googleapis.com/
+```
+
+The retrieved user output includes ClientHello (1573 bytes), ServerHello,
+successful Google certificate verification, TLS 1.3 and
+HTTP/1.1 405 Method Not Allowed. This is a successful phone-to-YouTube-API TLS
+and HTTP transaction and must be retained as positive evidence.
+
+Keep this distinct from the three automated API control flows in
+[44007351425](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/44007351425):
+those logged 1580-byte records and completed their capture at 03:05:06 UTC,
+before the successful phone message at 03:07:05 UTC. They must not be attributed
+to that later phone test.
+
+Targeted searches did not return a successful phone/Termux Googlevideo CDN
+transaction from that original chat. This retrieval limit is not proof that
+such a message never existed. The successful API transaction and the later
+incomplete Googlevideo records concern different hostnames and connections;
+they do not contradict each other.
+
+The owner confirmed after run 44020006136 that images loaded but video did not.
