@@ -242,6 +242,7 @@ def run_mode(root: Path, node_id: str, host: str, ip: str, mode: str,
             raise TLSStageError("Nginx is active, cannot use standalone ACME")
         try:
             result = sync_tls(node, host, runner=runner)
+            install_renewal(node, host, ip)
             return dict(result, already_issued=True)
         except (OSError, ValueError, subprocess.SubprocessError):
             # Only proceed to issue when the cert isn't present, NOT when an
