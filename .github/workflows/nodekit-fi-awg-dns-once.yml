@@ -13,14 +13,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
-      - name: Build and stage official AmneziaWG on isolated new VPS
+      - name: Stage closed Smart DNS and SNI proxy candidates on isolated new VPS
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -Eeuo pipefail
           gh api --method POST \
-            repos/grunvald91/telegram-proxy-infra/actions/workflows/nodekit-amneziawg-stage.yml/dispatches \
+            repos/grunvald91/telegram-proxy-infra/actions/workflows/nodekit-prepare-new-vps.yml/dispatches \
             -f ref=main \
             -f "inputs[host]=217.11.167.91" \
-            -f "inputs[node_id]=fi-test-01"
+            -f "inputs[node_id]=fi-test-01" \
+            -f "inputs[advertise_host]=fi-test.mnebyvpn.site" \
+            -f "inputs[mode]=dns_proxy_stage"
