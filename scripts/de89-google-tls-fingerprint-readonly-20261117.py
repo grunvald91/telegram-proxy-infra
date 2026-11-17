@@ -154,6 +154,19 @@ def run():
               +" PILOT_CLIENT_HELLO="+str(where["PILOT_CLIENT"])
               +" UPSTREAM_CLIENT_HELLO="+str(where["UPSTREAM_CLIENT"])
               +" PUBLIC_SERVER_BYTES="+str(response_bytes),flush=True)
+    # Same ServerHello TLS prefix before public egress is direct evidence
+    # for a corresponding raw TLS response. Missing matches are inconclusive
+    # for packet splitting, injected fakes, or partial capture.
+    pilot_server = [(digest,where) for (kind,digest),where in prefixes.items()
+                    if kind=="SERVER_HELLO" and where["PILOT_SERVER"]]
+    public_server = [(digest,where) for (kind,digest),where in prefixes.items()
+                     if kind=="SERVER_HELLO" and where["PUBLIC_SERVER"]]
+    both_server = [(digest,where) for digest,where in pilot_server
+                   if where["PUBLIC_SERVER"]]
+    print("SERVER_HELLO_PILOT_DISTINCT="+str(len(pilot_server)),flush=True)
+    print("SERVER_HELLO_PUBLIC_DISTINCT="+str(len(public_server)),flush=True)
+    print("SERVER_HELLO_PILOT_MATCHED_PUBLIC="+str(len(both_server)),flush=True)
+    print("SERVER_HELLO_MATCH_IS_PREFIX_ONLY=true",flush=True)
     print("CLIENT_HELLO_PUBLIC_DISTINCT="+str(pub_candidates),flush=True)
     print("CLIENT_HELLO_PILOT_MATCHED="+str(pilot_matched),flush=True)
     print("CLIENT_HELLO_NO_PILOT_MATCH="+str(orphans),flush=True)
