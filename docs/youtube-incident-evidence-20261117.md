@@ -3,6 +3,43 @@
 YouTube playback on the owner's phone is **not restored or verified**. A green
 diagnostic job means its commands finished, not that playback works.
 
+## Capture-quality correction, 17 November
+
+**This correction supersedes earlier causal conclusions drawn from absent
+packets or incomplete records in the older observer.** Positive packet and
+full-record matches remain observations; negative matches do not establish
+where a stream stopped.
+
+[Return timing run 44041229081](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/44041229081)
+reported 41 kernel capture drops and two truncated frames. Older observers
+did not report these quality counters. Their reassembly also assigned
+`chunks[seq] = body`: a shorter retransmission at the same sequence number
+could overwrite a longer previously captured coalesced segment. That is a
+confirmed observer defect, not a confirmed explanation of each prior failure.
+
+[Correction 4aa8185](https://github.com/grunvald91/telegram-proxy-infra/commit/4aa8185912c7090c75ace69bde9e42d835028268)
+increases the tcpdump buffer to 32 MiB, removes snaplen truncation, preserves
+the longest same-sequence payload, and rejects absence-based analysis when
+kernel drops or truncated frames are reported. Six offline parser tests and a
+specific longer-segment/shorter-retransmission check passed locally.
+
+[Corrected DE89-only run 44041951909](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/44041951909)
+observed 24,293 frames from 10:51:53 to 10:53:23 Moscow with zero reported
+kernel drops and zero truncated frames. It identified 87 target-family
+connections: 86 googleapis.com and one ytimg.com. All 87 initial TLS records
+were complete, matched Pilot and origin, and had public response payload.
+No googlevideo.com connection was identified in this window. This does not
+reproduce or resolve the phone's video failure.
+
+The owner's explicit Googlevideo curl timeouts remain valid client-side
+observations. The older capture cannot by itself prove missing bytes before
+Nginx or exclude a processing defect. A quality-checked capture of the same
+failed Googlevideo attempt is still needed.
+
+The owner instructed us to exclude RU188 from further work. No DNS entry was
+moved to RU188; the proposed route renderer was local and never applied.
+Further diagnostics and fixes are scoped to DE89 only.
+
 ## Evidence ledger
 
 | Test | Observed result | What it establishes |
@@ -86,8 +123,8 @@ The source with all eleven media failures is consistent with the agreed phone
 attempt, but no subscriber credential-to-source-IP binding was collected; do
 not represent source ownership as independently authenticated.
 
-This localizes the observed media failure before complete record receipt and
-Pilot forwarding. It does not establish whether the missing bytes were never
+The older observer reported incomplete record receipt and no Pilot match;
+the capture-quality correction above prevents using this as reliable localization. It does not establish whether the missing bytes were never
 transmitted by the client, dropped in transit, or affected by ACK return loss,
 and does not identify a particular network filter.
 
@@ -189,3 +226,12 @@ The short TLS 1.2 test also timed out. Therefore the large-record split
 observed in the earlier test is not, on its own, a complete explanation.
 Neither a specific ISP/DPI mechanism nor absence of server-side defects has
 been established. Persistent routes/configuration were unchanged.
+
+## Latest bounded diagnostics budget
+
+Four additional Actions runs were started for path audit (44038097216),
+scoped SYNACK comparison (44038815116), return timing (44041229081), and
+corrected return timing (44041951909). The SYNACK rule was removed; the last
+two runs changed no production service configuration. The first two preceded
+the owner's instruction to stop using RU188. Actual billed minutes for these
+four runs have not been retrieved and are not asserted.
