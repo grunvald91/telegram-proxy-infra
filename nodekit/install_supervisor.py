@@ -15,8 +15,8 @@ import os
 from pathlib import Path
 import pwd
 import re
-import socket
 import stat
+import tempfile
 import subprocess
 import sys
 import time
@@ -31,7 +31,6 @@ DEFAULT_ROOT = Path("/var/lib/mnebyvpn-nodekit")
 DEFAULT_INSTALL = Path("/opt/mnebyvpn-nodekit")
 DEFAULT_UNIT = Path("/etc/systemd/system/mnebyvpn-nodekit-vpn@.service")
 SOURCE_UNIT = "mnebyvpn-nodekit-vpn@.service.example"
-PROTECTED_IPS = ("89.125.90.101", "188.120.254.223")
 
 
 class InstallError(ValueError):
@@ -66,17 +65,27 @@ def exclusive_file(path: Path, content: bytes, mode: int, *, owner_uid: int = 0)
                 st.st_mode & 0o777 != mode or path.read_bytes() != content):
             raise InstallError("Existing installation differs; explicit upgrade required")
         return False
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
+    # First make a *complete*, fsync'd inode, then atomically link it into
+    # place. A process crash can never expose a truncated controller key or unit.
+    fd, staged = tempfile.mkstemp(prefix=".nodekit-install-", dir=path.parent)
     try:
         os.fchmod(fd, mode)
         with os.fdopen(fd, "wb") as stream:
             stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())
-    except BaseException:
-        path.unlink(missing_ok=True)
-        raise
-    return True
+        try:
+            os.link(staged, path, follow_symlinks=False)  # EEXIST => no replace
+        except FileExistsError as exc:
+            raise InstallError("Concurrent Nodekit install; refusing overwrite") from exc
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+        return True
+    finally:
+        Path(staged).unlink(missing_ok=True)
 
 
 def root_user(*, root: bool, runner) -> tuple[int, int]:
@@ -229,8 +238,14 @@ def install(node_id: str, source_dir: Path, controller_source: Path,
                 "published": False, "subscriber_access_enabled": False}
     except BaseException:
         if started:
-            runner(["systemctl", "stop", service], check=False,
-                   timeout=12, capture_output=True)
+            stopped = runner(["systemctl", "stop", service], check=False,
+                             timeout=12, capture_output=True)
+            active = runner(["systemctl", "is-active", "--quiet", service],
+                            check=False, timeout=6, capture_output=True)
+            if stopped.returncode != 0 or active.returncode == 0:
+                # Do NOT delete the executable/unit while an uncontrolled
+                # Xray child might still be running. Requires human incident.
+                raise InstallError("Canary rollback could not stop its own service")
         for path in reversed(created_files):
             path.unlink(missing_ok=True)
         if created_dir:
