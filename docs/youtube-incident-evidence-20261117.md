@@ -534,3 +534,47 @@ Exactly four Actions runs were started for this phone-result turn:
 44097646614,44098203829,44098567495,44099186761. Timing API durations:
 17000+20000+23000+25000=85000ms (85seconds). Each reported one Ubuntu job
 and billable.UBUNTU.total_ms=0; no separate account charge is inferred.
+
+## Phone retry still fails after CRYPTO merge repair
+
+The owner repeated ordinary HTTP3 against the fixed CDN host and again
+reported curl28 after7002ms, with thumbnails present and video absent.
+The merge repair did not demonstrate restored phone playback.
+
+[Final capture44100128518](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/44100128518)
+stopped the corrected passive observer gracefully at14:10Z. It reported
+41 flows and zero kernel capture drops. Recognized complete handshakes
+included ten googleapis.com flows and two ytimg.com flows; YouTube API
+records included1781,2283,1752 and2257 bytes, with public server responses.
+No Googlevideo SNI was recognized. This is not proof of no media packets:
+unknown partial CRYPTO assemblies were also present.
+
+[Ingress audit44101306230](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/44101306230)
+retrieved the unknown records. Some were ACK/connection-ID continuations
+with no extractable ClientHello and positive server traffic. Others were
+authenticated Initials with noncontiguous CRYPTO data, zero server response,
+and unknown SNI: e.g. at14:07:39Z expected1554 bytes but only150 contiguous,
+with an8-byte gap before later ranges, and other assemblies whose contiguous
+prefixes were55–85 bytes with later CRYPTO ranges around offsets950–1000.
+Do not classify every unknown record as a failed fresh handshake or label
+an unknown-SNI record as the exact curl Googlevideo request.
+
+The same owner-scoped relay remains restricted to the prior authenticated
+source and known controls. A new independent1800-second cleanup timer was
+armed and verified before the old timer was stopped and the relay restarted.
+The extended cleanup expiry is14:46:41Z /17:46:41 Moscow. CPU, memory and
+RuntimeMaxSec bounds remain; no global UDP proxy permission was added.
+
+A separate passive public UDP443 observer was ready at14:16:46Z, for600seconds,
+before INPUT peer filtering. Its metadata adds a boolean indicating whether
+the source matches the previously bound phone source; actual addresses stay
+in RAM. This removes the earlier capture's source-filter blind spot when
+checking whether an unmatched source is rejected by the temporary peer rule.
+It does not yet establish that any such source mismatch occurred.
+
+The next requested probe compares API and the fixed media hostname using
+HTTP3 with --curves X25519 to test a smaller key-exchange ClientHello. This
+is a deliberately different diagnostic, not a playback success criterion.
+Two new Actions runs were started for this result turn:44100128518 and
+44101306230; their timing fields are retrieved separately and not used to
+infer account charges.
