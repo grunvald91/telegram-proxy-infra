@@ -578,3 +578,25 @@ is a deliberately different diagnostic, not a playback success criterion.
 Two new Actions runs were started for this result turn:44100128518 and
 44101306230; their timing fields are retrieved separately and not used to
 infer account charges.
+
+## Available desktop versus the owner's physical computer
+
+The owner asked for autonomous measurements from their computer, which they
+report already uses Smart DNS. The accessible native desktop terminal and
+the command executor showed the same cloud-container hostname. The available
+desktop is the chat's managed cloud computer; no connection to the owner's
+physical computer was present in the current tool inventory.
+
+On this accessible computer, /etc/os-release reports Debian13. Its system
+resolver is168.63.129.16; resolvectl,nmcli andwg are absent. Both API and fixed
+CDN system lookups returned EAI_AGAIN. Explicit IPv4 TCP443 requests forced
+to89.125.90.101 returned curl7 immediately for both domains, before TLS.
+A raw TCP socket to89:443 returned errno101, Network is unreachable.
+These checks do not establish the network state of the owner's physical PC
+or prove anything about phone-to-DE89 filtering. Its browser-level DNS
+configuration was not inspected; do not turn the system resolver observation
+into a claim that Smart DNS is absent from every application.
+
+No new Actions run or production change was made for this desktop inspection.
+A usable connection to the owner's actual computer is the missing prerequisite
+for autonomous measurements from that network.
