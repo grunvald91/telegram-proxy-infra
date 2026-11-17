@@ -318,3 +318,67 @@ in commit 7db57000419966c7edf8a638b5c674502f3b58eb. The new observer is passive,
 expires automatically, records public metadata only in Actions, and keeps
 any exact source/port binding solely in a root-private runtime file. No
 production DNS, Nginx or TCP transformation change was applied.
+
+## Ordinary phone TLS and authenticated NFQUEUE bypass, 17 November
+
+[Normal phone correlation 44084793467](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/44084793467)
+matched the unmodified libcurl ClientHello Random hashes. API probes
+70fd267cea0b7d0d (TLS1.3) and 6d06aec16581692d (TLS1.2) returned
+curl_result=0. Googlevideo probes 22d1a1e6fded94a8 and 89d2b9651ed91dee
+returned curl_result=28, with zero acknowledged payload and zero received
+bytes on the phone. The exact TLS1.3 media socket on DE89 had received
+1448 of the expected 1592 record bytes, sent no payload, and emitted one
+qualifying cumulative ACK covering 1448 bytes. The missing record tail was
+1592 - 1448 = 144 bytes.
+
+[Scoped trial 44087349813](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/44087349813)
+temporarily accepted outbound DE89 TCP443 packets for the source privately
+bound to those exact normal probes, ahead of queue210. An independent
+five-minute cleanup timer was armed before insertion.
+[Collector and restoration 44089287209](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/44089287209)
+verified all three observed new probes matched the original phone source
+and occurred within that five-minute window. The bypass counted 14175 packets
+and 18185746 bytes; this is total matched traffic, not just the four probes.
+
+During that authenticated window:
+- API TLS1.3 c03b85752da74621: curl0, 1742 payload bytes acknowledged,
+  6728 received, no retransmissions.
+- API TLS1.2 4e2c3866eb62d91e: curl0, 418 acknowledged, 5004 received,
+  one 234-byte retransmission.
+- Media TLS1.3 da67f0a412cd9bb8: curl28, zero acknowledged/received payload.
+  Its exact receiving kernel socket again had only 1448 of 1592 record bytes,
+  zero sent payload, and one emitted ACK covering 1448 bytes.
+- Media TLS1.2 7e062b1483a4efa3: phone curl28, zero acknowledged/received
+  payload; no paired kernel observation was logged for this small hello.
+
+This particular outbound NFQUEUE bypass did not repair the phone's media
+connection. It was removed, protected configuration hashes were unchanged,
+and the collector printed TRIAL_RESTORED=true. Do not repeat this same bypass
+as an untested explanation. The evidence localizes these TLS1.3 failures
+before complete record receipt; it does not identify which intermediate
+network device, if any, caused them.
+
+## Existing UDP implementation audit
+
+[Read-only DE89 audit 44092087476](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/44092087476)
+found the TCP-only guard active/enabled, both historical QUIC units
+inactive/disabled, no UDP443/19444 listener, and the UDP443 ICMP-unreachable
+rule present. System DNS returned real origins for the API, homepage and
+fixed media host; that media host resolved to the same public IPv4 through
+system DNS and independent Quad9. A synthetic-DNS loop was not observed.
+
+The installed historical relay SHA256 was
+dd78155789ddcceb440131e6b3371df68216c29b952be3704032e66e607c1447,
+whereas the old public wrapper requires
+bde13ba42945a6489c7fdc235996ff9858961bde27e2881759dc24112122d46f.
+The inactive old wrapper therefore cannot simply be reactivated with that
+file. This is a deployment mismatch, not proof of the current TCP cause.
+The old HTTP3 probe accepts any HTTP status 100–599; a CDN root404 was not
+mistaken for failure by that probe.
+
+The first new isolated HTTP3 job 44092534459 stopped at temporary dependency
+installation because the cross-version wheel bundle omitted the Python3.10
+conditional typing-extensions dependency. It did not run a network/media
+test and removed its temporary server files. A corrected bundle explicitly
+includes that dependency. No public UDP service or firewall change has
+been made by these two audits.
