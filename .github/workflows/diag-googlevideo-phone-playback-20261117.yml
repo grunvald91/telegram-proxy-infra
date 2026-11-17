@@ -1,0 +1,55 @@
+name: Passive Googlevideo phone playback flow through DE89 read-only
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/diag-googlevideo-phone-playback-20261117.yml
+      - scripts/de89-googlevideo-phone-playback-readonly-20261117.py
+      - scripts/tests/test_de89_googlevideo_playback_20261117.py
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify Googlevideo TLS header parser and bounded in-memory capture
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/de89-googlevideo-phone-playback-readonly-20261117.py
+          python3 -m unittest discover -s scripts/tests -p test_de89_googlevideo_playback_20261117.py -v
+          grep -q 'CAPTURE_SECONDS = 120' scripts/de89-googlevideo-phone-playback-readonly-20261117.py
+          grep -q 'TARGET_CAPTURE_NO_PERSISTENT_PACKETS=true' scripts/de89-googlevideo-phone-playback-readonly-20261117.py
+  capture:
+    needs: offline
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install pinned SSH client
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS" && test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass >/dev/null
+      - name: Capture only Googlevideo media TLS metadata for 120 seconds on DE89
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          echo "GOOGLEVIDEO_PHONE_CAPTURE_STARTING=true"
+          timeout 165s sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
+            'python3 -B -' < scripts/de89-googlevideo-phone-playback-readonly-20261117.py
+          echo "GOOGLEVIDEO_PHONE_CAPTURE_FINISHED=true"
