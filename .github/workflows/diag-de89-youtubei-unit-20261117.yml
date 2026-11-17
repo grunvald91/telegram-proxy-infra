@@ -1,0 +1,26 @@
+name: Validate targeted YouTubei TLS flow tracer (offline)
+on:
+  pull_request:
+    types: [opened, synchronize]
+    branches: [main]
+    paths:
+      - .github/workflows/diag-de89-youtubei-unit-20261117.yml
+      - scripts/de89-youtubei-handshake-readonly-20261117.py
+      - scripts/tests/test_de89_youtubei_handshake_20261117.py
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test-youtubei:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate targeted TLS ClientHello parser with synthetic data
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/de89-youtubei-handshake-readonly-20261117.py
+          python3 -m unittest discover -s scripts/tests -p test_de89_youtubei_handshake_20261117.py -v
