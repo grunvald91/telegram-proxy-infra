@@ -1,0 +1,46 @@
+name: Observe owner QUIC Initial receipt without changing forwarding
+on:
+  push:
+    branches: [diag/youtube-de89-quic-watch-20261117]
+    paths:
+      - .github/workflows/youtube-de89-quic-watch-20261117.yml
+      - scripts/youtube-de89-owner-return-bypass-20261117.py
+permissions: {contents: read}
+concurrency:
+  group: mnebydns-youtube-quic-watch
+  cancel-in-progress: false
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Validate existing parser and prepare pinned SSH
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/youtube-de89-owner-return-bypass-20261117.py scripts/termux-youtube-libcurl-20261117.py
+          test -n "$DE_PASS" && test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass >/dev/null
+          cat > "$RUNNER_TEMP/de-phone" <<'SHELL'
+          #!/bin/bash
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          exec sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes \
+            -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -o HostKeyAlgorithms=ssh-ed25519 \
+            -o "UserKnownHostsFile=$GITHUB_WORKSPACE/ops/mnebydns-owner-ssh-known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR \
+            root@89.125.90.101 "$@"
+          SHELL
+          chmod 700 "$RUNNER_TEMP/de-phone"
+      - name: Arm bounded passive owner Initial observer
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/youtube-de89-quic-receipt-watch-20261117.py
+          root="/run/mnebydns-quic-watch-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          "$RUNNER_TEMP/de-phone" "umask 077; mkdir '$root'; cat > '$root/watch.py'" < scripts/youtube-de89-quic-receipt-watch-20261117.py
+          "$RUNNER_TEMP/de-phone" "systemd-run --quiet --unit=mnebydns-quic-watch-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT} --property=RuntimeMaxSec=640 --property=MemoryMax=128M --property=CPUQuota=20% --property=StandardOutput=append:$root/result.log --property=StandardError=append:$root/result.log /usr/bin/env PYTHONPATH=/opt/mnebydns-h3-origin-diag-44096073096-1/deps /usr/bin/python3 -B '$root/watch.py'"
+          "$RUNNER_TEMP/de-phone" "for attempt in \$(seq 1 15); do if test -s '$root/READY'; then echo OWNER_QUIC_CAPTURE_READY=true; date -u +%FT%TZ; exit 0; fi; sleep 1; done; cat '$root/result.log'; exit 1"
