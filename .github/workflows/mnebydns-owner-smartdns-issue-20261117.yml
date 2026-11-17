@@ -105,17 +105,6 @@ jobs:
             root@188.120.254.223:/tmp/mnebyvpn-main-bot-promote-owner-video-20261117.sh
           sshpass -e scp "${opts[@]}" scripts/mnebydns-owner-smartdns-issuance-enable-20261117.sh \
             root@188.120.254.223:/tmp/mnebydns-owner-smartdns-issuance-enable-20261117.sh
-      - name: Enable new owner Smart DNS links with canary bot and automatic rollback
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          export SSHPASS="$RU_PASS"
-          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
-            -o HostKeyAlgorithms=ssh-ed25519
-            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
-            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
-          sshpass -e ssh "${opts[@]}" root@188.120.254.223 \
-            'bash /tmp/mnebydns-owner-smartdns-issuance-enable-20261117.sh enable'
       - name: Verify public DNS still accepts verified wildcard and free DNS
         shell: bash
         run: |
@@ -146,3 +135,14 @@ jobs:
                       print("PUBLIC_FREE_DOT_QUERY=PASS")
           PY
           echo OWNER_SMARTDNS_LINK_ISSUANCE_RELEASE=PASS
+      - name: Enable new owner Smart DNS links with canary bot and automatic rollback
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 \
+            'bash /tmp/mnebydns-owner-smartdns-issuance-enable-20261117.sh enable'
