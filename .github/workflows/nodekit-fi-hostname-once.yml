@@ -1,0 +1,35 @@
+name: Nodekit test hostname readiness (read-only)
+on:
+  push:
+    branches: [nodekit-fi-awg-dns-canary-20261117]
+    paths:
+      - .github/workflows/nodekit-fi-hostname-once.yml
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Check DNS A record and public 80/853/443 reachability
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import socket,ipaddress
+          domain='fi-test.mnebyvpn.site'
+          try:
+              answers=sorted(set(item[4][0] for item in socket.getaddrinfo(domain,None,family=socket.AF_INET)))
+          except OSError:
+              answers=[]
+          print('resolved_ipv4='+str(answers))
+          print('expected_ipv4_matches='+str('217.11.167.91' in answers).lower())
+          for port in (80,443,853,51821):
+              if port==51821:
+                  continue # UDP is not a TCP probe
+              try:
+                  with socket.create_connection(('217.11.167.91',port),timeout=3):
+                      print('tcp_'+str(port)+'=connected')
+              except OSError:
+                  print('tcp_'+str(port)+'=unreachable_or_closed')
+          PY
