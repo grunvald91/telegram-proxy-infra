@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import grp
 import json
 import os
 from pathlib import Path
@@ -89,8 +90,9 @@ def root_user(*, root: bool, runner) -> tuple[int, int]:
                 SERVICE_USER], check=True, timeout=10, capture_output=True)
         user = pwd.getpwnam(SERVICE_USER)
     if (user.pw_uid == 0 or user.pw_gid == 0 or
-            user.pw_shell not in ("/usr/sbin/nologin", "/sbin/nologin", "/bin/false")):
-        raise InstallError("Xray service identity must be nonroot and no-login")
+            user.pw_shell not in ("/usr/sbin/nologin", "/sbin/nologin", "/bin/false") or
+            grp.getgrgid(user.pw_gid).gr_name != SERVICE_USER):
+        raise InstallError("Xray service identity needs a dedicated no-login UID/GID")
     return user.pw_uid, user.pw_gid
 
 
