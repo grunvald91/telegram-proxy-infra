@@ -84,11 +84,47 @@ jobs:
                       "MNEBYDNS_OWNER_LINKS_ENABLED"):
               print("PRIVATE_ENV_KEY_"+key+"_PRESENT="+str(key in envkeys).lower())
           print("PRIVATE_RESTART_POLICY="+obj["HostConfig"]["RestartPolicy"]["Name"])
+          conf={}
+          for entry in obj["Config"]["Env"]:
+              k,_,v=entry.partition("=")
+              if k.startswith("MNEBYDNS_PERSONAL_") or k=="MNEBYDNS_OWNER_LINKS_ENABLED":
+                  conf[k]=v
+          for k in ("MNEBYDNS_PERSONAL_DOT_BIND_IP","MNEBYDNS_PERSONAL_DOT_PORT",
+                    "MNEBYDNS_PERSONAL_DOT_HEALTH_PORT","MNEBYDNS_PERSONAL_MAPPED_DOT_IP",
+                    "MNEBYDNS_PERSONAL_MAPPED_DOT_PORT","MNEBYDNS_PERSONAL_DIRECT_DOT_IP",
+                    "MNEBYDNS_OWNER_LINKS_ENABLED"):
+              val=conf.get(k,"MISSING")
+              if k=="MNEBYDNS_OWNER_LINKS_ENABLED":val=("yes" if val=="yes" else "no")
+              print("PRIVATE_CONFIG_"+k+"="+val)
+
           PY
           printf 'PRIVATE_DOT_HOST_PORTS='
           ss -H -lnt | awk '{print $4}' | grep -E ':(8853|8855|8856|8857|8858|8859)$' | sort | paste -sd, || true
           echo PRIVATE_UFW_8856_RULE_EXISTS="$(ufw status | grep -Fc 8856 || true)"
           echo PRIVATE_UFW_8858_RULE_EXISTS="$(ufw status | grep -Fc 8858 || true)"
           echo PRIVATE_RUNTIME_PATH_AUDIT_END=true
+      - name: Inspect active personal SNI destination on DE89
+        shell: bash
+        env:
+          DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS"
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          conf=/etc/mnebydns/personal-sni/nginx.conf
+          test -s "$conf"
+          if grep -Fq '10.66.77.2:8856;' "$conf"; then echo PERSONAL_SNI_ACTIVE_PORT=8856;
+          elif grep -Fq '10.66.77.2:8858;' "$conf"; then echo PERSONAL_SNI_ACTIVE_PORT=8858;
+          else echo PERSONAL_SNI_ACTIVE_PORT=UNKNOWN;exit 2;fi
+          grep -Fq 'default 89.125.90.101:853;' "$conf"
+          nginx -t -c "$conf" 2>&1 | tail -n 2
+          echo PERSONAL_SNI_LEGACY_DEFAULT_VERIFIED=true
+          REMOTE
+
           echo NO_SERVICES_OR_FIREWALL_MODIFIED=true
           REMOTE
