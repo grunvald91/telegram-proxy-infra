@@ -41,14 +41,17 @@ import os,pathlib,sys
 p,b=map(pathlib.Path,sys.argv[1:])
 current=p.read_bytes()
 orig=b.read_bytes()
-assert current.count(b"10.66.77.2:8858;")==1
 assert current.count(b"default 89.125.90.101:853;")==1
 assert orig.count(b"10.66.77.2:8856;")==1
 assert orig.count(b"default 89.125.90.101:853;")==1
-tmp=p.with_suffix(".owner-video-rollback")
-tmp.write_bytes(orig)
-os.chmod(tmp,0o600)
-os.replace(tmp,p)
+if current.count(b"10.66.77.2:8856;")==1:
+    assert current==orig,"Rollback pre-switch config mismatch"
+else:
+    assert current.count(b"10.66.77.2:8858;")==1
+    tmp=p.with_suffix(".owner-video-rollback")
+    tmp.write_bytes(orig)
+    os.chmod(tmp,0o600)
+    os.replace(tmp,p)
 PY
   nginx -t -c "$conf" >/dev/null
   nginx -s reload -c "$conf" >/dev/null
