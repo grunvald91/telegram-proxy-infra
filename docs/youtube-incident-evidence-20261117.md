@@ -382,3 +382,65 @@ conditional typing-extensions dependency. It did not run a network/media
 test and removed its temporary server files. A corrected bundle explicitly
 includes that dependency. No public UDP service or firewall change has
 been made by these two audits.
+
+## Verified QUIC media and bounded public phone canary, 17 November
+
+The corrected dependency bundle in
+[44092749250](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/44092749250)
+installed successfully, but its binary cryptography extension could not map
+from the temporary /run directory. Media extraction succeeded; no HTTP3
+network test ran in that attempt. Temporary files were removed. The next
+attempt placed isolated dependencies under a unique /opt diagnostic directory
+and checked import before opening a socket.
+
+[Isolated comparison 44092948207](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/44092948207)
+then verified HTTP3 TLS certificates and responses directly from DE89 and
+through a separate loopback UDP19445 relay:
+homepage200, API405, fixed phone CDN404, and actual signed media206 with
+65536 bytes of video/mp4 on both paths. Its relay counters showed four
+admitted flows, no rejection, resolution error, socket error or EMSGSIZE.
+That loopback endpoint and temporary files were removed. This establishes
+working QUIC origin/relay transport on DE89, not a working phone path.
+
+[Public canary 44093598240](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/44093598240)
+repeated isolated real-media verification, then opened a separate UDP443
+listener only for the phone source privately bound to three exact ordinary
+TLS probes and the external runner's SSH source. Both iptables and the
+application restrict source peers. The application permits only the bounded
+YouTube/Google family subset of the pinned relay allowlist, uses an
+unprivileged nobody service with bind capability, MemoryMax128M and CPUQuota30%.
+Existing TCP, personal DNS, tunnel and subscriber configuration are unchanged;
+the TCP-only guard remains active for other peers.
+
+An independent systemd cleanup timer was armed before the service and source
+ACCEPT rules. It expires at 2026-11-17T13:42:37Z
+(16:42:37 Europe/Moscow), deletes only uniquely commented canary rules,
+stops its own service and verifies protected config hashes. RuntimeMaxSec610
+also bounds the listener. The cleanup script is retained locally for the
+timer. This is a temporary diagnostic, not a persistent production fix.
+Automatic expiry was armed and active at setup; completion has not yet been
+observed at the time of this note.
+
+The external runner then obtained verified HTTP3 responses through public
+89:443, including an actual 65536-byte video/mp4 fragment, HTTP206.
+The phone window became ready at13:32:41Z. The owner was instructed to reopen
+YouTube and run curl --http3-only against the fixed media host. A CDN-root404
+is a successful TLS/HTTP3 transport check only; phone playback remains
+unconfirmed until the owner's test.
+
+The new probe's use of the generic aioquic byte-stream adapter produced
+nonfatal control-stream teardown callback exceptions in this run, after
+streams were handed to HTTP3. These do not invalidate the recorded verified
+media bytes, but they are a diagnostic defect. Commit
+307b9f584705b1ebfbaefbff5348450e63cf7722 stops dispatching StreamDataReceived to
+that byte-stream adapter; HTTP3 continues to own these events. This change
+was not redeployed to the server or used to claim an additional live result.
+
+This QUIC phase started exactly five new Actions runs: the read-only audit,
+two failed dependency/environment preparation attempts, the successful
+isolated comparison, and the successful public canary. Their timing API
+run_duration_ms values were17000+36000+45000+76000+67000=241000ms, i.e.
+241 seconds (4min1sec). Each API result reported one Ubuntu job and
+billable.UBUNTU.total_ms=0. These are returned telemetry fields, not an
+independent statement of account charges. No additional live workflow was
+started for the subsequent HTTP3 diagnostic source correction.
