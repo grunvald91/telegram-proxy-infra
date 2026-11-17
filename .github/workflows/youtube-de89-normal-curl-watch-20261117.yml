@@ -1,14 +1,14 @@
 name: Arm normal libcurl TLS and ACK observer
 on:
   push:
-    branches: [diag/youtube-de89-normal-curl-watch-20261117]
+    branches: [diag/youtube-de89-normal-curl-rearm-20261117]
     paths:
       - .github/workflows/youtube-de89-normal-curl-watch-20261117.yml
       - scripts/youtube-de89-normal-curl-watch-20261117.py
 permissions: {contents: read}
 concurrency:
   group: mnebydns-youtube-normal-curl-watch
-  cancel-in-progress: false
+  cancel-in-progress: true
 jobs:
   capture:
     runs-on: ubuntu-latest
