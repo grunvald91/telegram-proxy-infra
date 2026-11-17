@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import hmac
 import ipaddress
 import json
 import os
@@ -122,7 +123,7 @@ def verify_cert(host: str, *, runner=run) -> tuple[bytes, bytes, str]:
         ["openssl", "pkey", "-pubin", "-outform", "DER"],
         input=public_from_cert, capture_output=True, check=True, timeout=20).stdout
     if (not public_from_key or not public_from_cert_der or
-            not hashlib.compare_digest(public_from_key, public_from_cert_der)):
+            not hmac.compare_digest(public_from_key, public_from_cert_der)):
         raise TLSStageError("TLS certificate and private key do not match")
     # The certificate chain must be signed by a trusted CA; openssl hostname
     # and key-match alone do NOT validate issuer trust. Certbot obtained this
@@ -187,8 +188,9 @@ def run_mode(root: Path, node_id: str, host: str, ip: str, mode: str,
              *, runner=run, resolver=socket.getaddrinfo) -> dict:
     node = guarded_node(root, node_id, host, ip, resolver=resolver)
     if mode == "issue":
-        if runner(["systemctl", "is-active", "--quiet", "nginx.service"],
-                  timeout=10).returncode == 0:
+        if subprocess.run(
+                ["systemctl", "is-active", "--quiet", "nginx.service"],
+                timeout=10, capture_output=True, check=False).returncode == 0:
             raise TLSStageError("Nginx is active, cannot use standalone ACME")
         try:
             result = sync_tls(node, host, runner=runner)
