@@ -444,3 +444,28 @@ run_duration_ms values were17000+36000+45000+76000+67000=241000ms, i.e.
 billable.UBUNTU.total_ms=0. These are returned telemetry fields, not an
 independent statement of account charges. No additional live workflow was
 started for the subsequent HTTP3 diagnostic source correction.
+
+## Owner-requested thirty-minute retry, 17 November
+
+The owner missed the ten-minute window and explicitly requested another.
+[Reopening 44096073096](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/44096073096)
+first confirmed the previous canary rule was absent, its service inactive,
+and its independent cleanup journal contained H3_CANARY_REMOVED=true.
+The previous automatic rollback is therefore now observed, not merely armed.
+
+The job reused the already verified pinned relay and isolated dependencies,
+bound the source to the same three private ordinary-TLS probe records, and
+armed a new independent 1800-second cleanup timer before reopening the
+peer-scoped UDP443 listener. Its RuntimeMaxSec is1810.
+The new timer expires at2026-11-17T14:16:46Z (17:16:46 Europe/Moscow).
+The original TCP-only guard remains in place for other sources.
+
+A fresh external control verified certificates and HTTP3 responses through
+public89:443: API405 and the fixed media hostname404. This retry did not
+re-extract or re-download media; the preceding actual-media206 evidence
+belongs to the earlier run. PHONE_H3_WINDOW_READY=true was recorded at
+13:46:49Z. Playback on the owner's phone is still unconfirmed.
+
+Exactly one additional Actions run was started for this request. Its timing
+API reports run_duration_ms=33000 (33seconds), one Ubuntu job and
+billable.UBUNTU.total_ms=0. No account charge is inferred from elapsed time.
