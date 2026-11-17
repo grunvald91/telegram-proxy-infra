@@ -32,7 +32,8 @@ def deliver(node_id: str, payload: bytes, *, run_root: Path = Path(
         raise TransportError("Root-only control channel")
     if not isinstance(node_id, str) or not NODE.fullmatch(node_id) or node_id.endswith("-"):
         raise TransportError("Invalid node identifier")
-    if not isinstance(payload, bytes) or len(payload) > MAX_REQUEST or not payload.endswith(b"\n"):
+    if (not isinstance(payload, bytes) or len(payload) > MAX_REQUEST or
+            not payload.endswith(b"\n") or payload.count(b"\n") != 1):
         raise TransportError("Controller command size/newline invalid")
     try:
         request = json.loads(payload)
@@ -41,8 +42,13 @@ def deliver(node_id: str, payload: bytes, *, run_root: Path = Path(
     if not isinstance(request, dict) or request.get("nodeId") != node_id:
         raise TransportError("Command targets a different node")
     location = run_root / node_id / "control.sock"
-    if run_root.is_symlink() or (location.parent.is_symlink()):
+    if run_root.is_symlink() or location.parent.is_symlink():
         raise TransportError("Control runtime symlink forbidden")
+    for folder in (run_root, location.parent):
+        st = folder.stat()
+        if not stat.S_ISDIR(st.st_mode) or st.st_mode & 0o022 or (
+                require_root and st.st_uid != 0):
+            raise TransportError("Untrusted control socket directory")
     status = location.lstat()
     if not stat.S_ISSOCK(status.st_mode) or status.st_mode & 0o777 != 0o600:
         raise TransportError("Unsafe control socket")
@@ -73,6 +79,11 @@ def main() -> int:
     ap.add_argument("--node-id", required=True)
     args = ap.parse_args()
     try:
+        # OpenSSH authorized_keys must force this exact command while the
+        # client intentionally requests "false". Unrestricted SSH root keys
+        # are not an acceptable controller provisioning transport.
+        if os.environ.get("SSH_ORIGINAL_COMMAND") != "false":
+            raise TransportError("Restricted forced-command SSH key required")
         request = sys.stdin.buffer.read(MAX_REQUEST + 2)
         result = deliver(args.node_id, request)
         sys.stdout.buffer.write(result)
