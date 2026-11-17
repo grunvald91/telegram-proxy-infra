@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
-      - name: Stage approved new VPS inventory
+      - name: Generate new VPS Ed25519 identity
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -29,4 +29,4 @@ jobs:
             -f "inputs[host]=217.11.167.91" \
             -f "inputs[node_id]=fi-test-01" \
             -f "inputs[advertise_host]=fi-test.mnebyvpn.site" \
-            -f "inputs[mode]=stage"
+            -f "inputs[mode]=identity"
