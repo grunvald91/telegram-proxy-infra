@@ -110,6 +110,11 @@ try{
     ['example.org',1,'ORDINARY_A'],
     ['connectivitycheck.gstatic.com',1,'ANDROID_CONNECTIVITY_A'],
     ['youtubei.googleapis.com',1,'YOUTUBE_API_A'],
+    ['i.ytimg.com',1,'YOUTUBE_THUMB_A'],
+    ['s.ytimg.com',1,'YOUTUBE_ASSETS_A'],
+    ['yt3.ggpht.com',1,'YOUTUBE_AVATAR_A'],
+    ['m.youtube.com',1,'YOUTUBE_MOBILE_A'],
+    ['www.youtube.com',1,'YOUTUBE_WEB_A'],
     ['rr1---sn-gxuo03g-ig3s.googlevideo.com',1,'GOOGLEVIDEO_A'],
     ['rr1---sn-gxuo03g-ig3s.googlevideo.com',28,'GOOGLEVIDEO_AAAA'],
   ];
