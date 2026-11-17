@@ -1,0 +1,125 @@
+name: Enable owner Smart DNS links after verified private DoT release
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/mnebydns-owner-video-bot-enable-20261117.yml
+      - scripts/mnebydns-owner-video-bot-enable-20261117.sh
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/mnebydns-owner-video-bot-enable-20261117.yml
+      - scripts/mnebydns-owner-video-bot-enable-20261117.sh
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebyvpn-auto-public-deploy
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check release-script scope and syntax
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          bash -n scripts/mnebydns-owner-video-bot-enable-20261117.sh
+          bash -n scripts/mnebyvpn-main-bot-promote.sh
+          grep -Fq 'mnebydns-personal-dot-private-previous-20261117' scripts/mnebydns-owner-video-bot-enable-20261117.sh
+          grep -Fq 'MNEBYDNS_OWNER_SMART_DNS_LINKS_ENABLED=yes' scripts/mnebydns-owner-video-bot-enable-20261117.sh || \
+            grep -Fq 'set_flag yes' scripts/mnebydns-owner-video-bot-enable-20261117.sh
+          grep -Fq 'bash "$promoter" "$source_sha"' scripts/mnebydns-owner-video-bot-enable-20261117.sh
+          echo 'OWNER_FLAG_RELEASE_OFFLINE_GUARDS=PASS'
+  enable:
+    needs: verify
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Preflight: active DE89 personal route and preserved free DNS
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass > /dev/null
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'bash -se' <<'REMOTE'
+          conf=/etc/mnebydns/personal-sni/nginx.conf
+          test -s "$conf"
+          test "$(grep -Fo '10.66.77.2:8858;' "$conf" | wc -l)" -eq 1
+          test "$(grep -Fo 'default 89.125.90.101:853;' "$conf" | wc -l)" -eq 1
+          nginx -t -c "$conf" >/dev/null
+          echo 'PERSONAL_VIDEO_SNI_CONFIRMED=8858'
+          REMOTE
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 'bash -se' <<'REMOTE'
+          test "$(docker inspect -f '{{.State.Running}}' mnebydns-personal-dot-private)" = true
+          test "$(docker inspect -f '{{.State.Running}}' mnebydns-personal-dot-private-previous-20261117)" = true
+          docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' mnebydns-personal-dot-private |
+            grep -Fxq MNEBYDNS_PERSONAL_DOT_PORT=8858
+          test "$(cat /opt/mnebyvpn/staging/active_sha)" = f811efe2a429f1f113719489cbb588fea371c7a3
+          echo 'OWNER_DOT_ACTIVE_AND_ROLLBACK_READY=true'
+          REMOTE
+      - name: Send only reviewed owner flag and existing bot canary script
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e scp "${opts[@]}" scripts/mnebyvpn-main-bot-promote.sh \
+            root@188.120.254.223:/tmp/mnebyvpn-main-bot-promote-owner-video-20261117.sh
+          sshpass -e scp "${opts[@]}" scripts/mnebydns-owner-video-bot-enable-20261117.sh \
+            root@188.120.254.223:/tmp/mnebydns-owner-video-bot-enable-20261117.sh
+      - name: Enable only owner Smart DNS link issuance via isolated Telegram canary
+        id: activate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 \
+            'bash /tmp/mnebydns-owner-video-bot-enable-20261117.sh enable'
+      - name: Verify owner bot gate live and legacy paths unchanged
+        id: postcheck
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 \
+            'bash /tmp/mnebydns-owner-video-bot-enable-20261117.sh status'
+          echo 'OWNER_SMART_DNS_NEW_LINK_UI_ACTIVATED=PASS'
+      - name: Restore prior bot flag and canary container after postcheck failure
+        if: steps.activate.outcome == 'success' && failure()
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 \
+            'bash /tmp/mnebydns-owner-video-bot-enable-20261117.sh disable'
+          echo 'OWNER_BOT_FLAG_ROLLBACK=PASS'
