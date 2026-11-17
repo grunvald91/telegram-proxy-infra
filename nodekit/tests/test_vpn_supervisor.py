@@ -335,8 +335,9 @@ class AccessSupervisorTest(unittest.TestCase):
             self.assertEqual(revoked["revision"], 2)
             self.assertTrue(old_child.killed)
             self.assertFalse(agent.state[self.entitlement]["enabled"])
-            with self.assertRaises(nodekit_forward.TransportError):
-                send(self.signed(revision=1, enabled=True))
+            stale = send(self.signed(revision=1, enabled=True))
+            self.assertEqual(stale["status"], "stale")
+            self.assertFalse(agent.state[self.entitlement]["enabled"])
             send(self.signed(revision=3, enabled=True))
             self.wall[0] += 70
             self.mono[0] += 70
