@@ -38,6 +38,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq sshpass > /dev/null
       - name: Correlate external Google TLS probes with public and Pilot TCP headers
+        if: ${{ false }}
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -108,7 +109,7 @@ jobs:
             -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no
             -o LogLevel=ERROR)
           logfile="$RUNNER_TEMP/de89-hello-fingerprint.log"
-          timeout 80s sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
+          timeout 200s sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
             'python3 -B -' < scripts/de89-google-tls-fingerprint-readonly-20261117.py \
             > "$logfile" 2>&1 &
           tracer=$!
