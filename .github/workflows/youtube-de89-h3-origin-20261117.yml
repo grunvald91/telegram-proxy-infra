@@ -45,13 +45,14 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/yt-venv"
           timeout 90s "$RUNNER_TEMP/yt-venv/bin/pip" -q install 'yt-dlp[default]'
           python3 -m py_compile scripts/youtube-de89-h3-origin-20261117.py scripts/youtube-quic-pinned-20261114.py
-          root="/run/mnebydns-h3-origin-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          root="/opt/mnebydns-h3-origin-diag-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           "$RUNNER_TEMP/de-phone" "umask 077; mkdir '$root' '$root/wheels'"
           tar -czf - -C "$RUNNER_TEMP/h3-wheels" . | "$RUNNER_TEMP/de-phone" "tar -xzf - -C '$root/wheels'"
           "$RUNNER_TEMP/de-phone" "cat > '$root/pip.whl'" < "$RUNNER_TEMP/pip-24.3.1-py3-none-any.whl"
           "$RUNNER_TEMP/de-phone" "cat > '$root/probe.py'" < scripts/youtube-de89-h3-origin-20261117.py
           "$RUNNER_TEMP/de-phone" "cat > '$root/relay.py'" < scripts/youtube-quic-pinned-20261114.py
           "$RUNNER_TEMP/de-phone" "PYTHONPATH='$root/pip.whl' timeout 45s python3 -m pip install --disable-pip-version-check --no-index --find-links '$root/wheels' --target '$root/deps' --no-cache-dir --no-input -q aioquic==1.2.0"
+          "$RUNNER_TEMP/de-phone" "PYTHONPATH='$root/deps' python3 -c 'import aioquic.asyncio.client; print(\"H3_TEMP_IMPORT=PASS\")'"
       - name: Obtain DE-bound media and compare direct origin with isolated UDP relay
         run: |
           set -Eeuo pipefail
@@ -76,12 +77,12 @@ jobs:
           p=pathlib.Path(os.environ['RUNNER_TEMP'])/'h3-targets.private.json';p.write_text(json.dumps(targets));p.chmod(0o600)
           print('DE89_MEDIA_URL_PREPARED_WITHOUT_LOGGING=true')
           PYTHON
-          root="/run/mnebydns-h3-origin-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          root="/opt/mnebydns-h3-origin-diag-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           "$RUNNER_TEMP/de-phone" "PYTHONPATH='$root/deps' timeout 50s python3 -B '$root/probe.py'" < "$RUNNER_TEMP/h3-targets.private.json"
           rm -f "$RUNNER_TEMP/h3-targets.private.json"
       - name: Remove isolated diagnostic files
         if: always()
         run: |
           set -Eeuo pipefail
-          root="/run/mnebydns-h3-origin-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          root="/opt/mnebydns-h3-origin-diag-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           "$RUNNER_TEMP/de-phone" "test ! -e '$root' || rm -rf -- '$root'; echo ISOLATED_H3_FILES_REMOVED=true"
