@@ -1,0 +1,88 @@
+name: Read-only Googlevideo TCP ACK delivery observer on DE89
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/diag-googlevideo-ack-window-20261117.yml
+      - scripts/de89-googlevideo-ack-window-20261117.py
+      - scripts/tests/test_de89_googlevideo_ack_20261117.py
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate TCP ACK parser and no modification commands
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/de89-googlevideo-ack-window-20261117.py
+          python3 -m unittest discover -s scripts/tests -p test_de89_googlevideo_ack_20261117.py -v
+          grep -q 'CAPTURE_SECONDS = 105' scripts/de89-googlevideo-ack-window-20261117.py
+          grep -q 'GOOGLEVIDEO_ACK_AT_ETH0_NOT_PROOF_OF_PHONE_DELIVERY' scripts/de89-googlevideo-ack-window-20261117.py
+          ! grep -Eq 'systemctl (stop|restart)|nft (add|delete)|iptables (-A|-I|-D)' scripts/de89-googlevideo-ack-window-20261117.py
+  observe:
+    needs: offline
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install SSH pinned to existing DE89 host key
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS" && test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass >/dev/null
+      - name: Inventory actual outbound 443 NFQUEUE rules without mutation
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -B -' <<'PY'
+          import subprocess,json
+          cmd=['nft','-j','list','chain','inet','telegram_nfqws','post']
+          r=subprocess.run(cmd,capture_output=True,text=True,timeout=10)
+          if r.returncode:raise RuntimeError('NFQUEUE_CHAIN_UNAVAILABLE')
+          j=json.loads(r.stdout)
+          for o in j.get('nftables',[]):
+              rule=o.get('rule')
+              if not rule:continue
+              expr=rule.get('expr',[])
+              print('DE_NFT_POST_RULE_'+str(rule.get('handle','na'))+
+                '_HAS_QUEUE='+str(any('queue' in x for x in expr)).lower()+
+                '_HAS_ACCEPT='+str(any('accept' in x for x in expr)).lower()+
+                '_HAS_TCP443='+str(any('payload' in str(x) and '443' in str(x) for x in expr)).lower()+
+                '_COMMENT='+str(rule.get('comment',''))[:50],flush=True)
+          r=subprocess.run(['cat','/proc/net/netfilter/nfnetlink_queue'],capture_output=True,text=True)
+          for line in r.stdout.splitlines():
+              parts=line.split()
+              if len(parts)>=8 and parts[0]=='210':
+                  print('DE_Q210_PENDING='+parts[2]+' KERNEL_DROP='+parts[5]+
+                        ' USER_DROP='+parts[6],flush=True)
+          print('NFQUEUE_INVENTORY_NO_CONFIG_CHANGES=true',flush=True)
+          PY
+      - name: Capture 105 seconds of anonymized Googlevideo TCP sequence and outgoing ACKs
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          echo "GOOGLEVIDEO_ACK_CAPTURE_JOB_STARTED=true"
+          timeout 145s sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
+            'python3 -B -' < scripts/de89-googlevideo-ack-window-20261117.py
+          echo "GOOGLEVIDEO_ACK_CAPTURE_COMPLETE=true"
