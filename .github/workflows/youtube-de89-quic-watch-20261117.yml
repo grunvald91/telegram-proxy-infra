@@ -1,7 +1,7 @@
 name: Observe owner QUIC Initial receipt without changing forwarding
 on:
   push:
-    branches: [diag/youtube-de89-quic-watch-20261117]
+    branches: [diag/youtube-de89-quic-watch-corrected-20261117]
     paths:
       - .github/workflows/youtube-de89-quic-watch-20261117.yml
       - scripts/youtube-de89-owner-return-bypass-20261117.py
@@ -36,6 +36,10 @@ jobs:
             root@89.125.90.101 "$@"
           SHELL
           chmod 700 "$RUNNER_TEMP/de-phone"
+      - name: Stop replaced passive observer and retain its client metadata
+        run: |
+          set -Eeuo pipefail
+          "$RUNNER_TEMP/de-phone" "systemctl stop mnebydns-quic-watch-44098203829-1.service; tail -n 8 /run/mnebydns-quic-watch-44098203829-1/result.log"
       - name: Arm bounded passive owner Initial observer
         run: |
           set -Eeuo pipefail

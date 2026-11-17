@@ -24,6 +24,11 @@ def prefix_sni(hello):
    i+=n
  except (IndexError,ValueError,UnicodeDecodeError):return None
 
+def flow_key(src,port,data,latest):
+ initial=src==PHONE and len(data)>6 and ((data[1:5]==bytes.fromhex('00000001') and data[0]&0xf0==0xc0) or (data[1:5]==bytes.fromhex('6b3343cf') and data[0]&0xf0==0xd0))
+ key=(port,data[6:6+data[5]].hex()) if initial and 1<=data[5]<=20 else latest.get(port)
+ return key,initial
+
 def snapshot(e,kind):
  hello,done=q.contiguous_hello(e['parts']);name=prefix_sni(hello)
  if name and not (name.endswith(('.googlevideo.com','.googleapis.com','.youtube.com','.ytimg.com','.ggpht.com')) or name=='youtube.com'):name='<other>'
@@ -65,8 +70,7 @@ try:
   if b[23]!=17 or ihl<20 or len(b)<14+ihl+8:continue
   src=socket.inet_ntoa(b[26:30]);dst=socket.inet_ntoa(b[30:34]);sp,dp,n,_=struct.unpack('!HHHH',b[14+ihl:14+ihl+8]);data=b[14+ihl+8:min(14+ihl+n,ipend)]
   port=sp if src==PHONE else dp
-  initial=len(data)>6 and ((data[1:5]==bytes.fromhex('00000001') and data[0]&0xf0==0xc0) or (data[1:5]==bytes.fromhex('6b3343cf') and data[0]&0xf0==0xd0))
-  key=(port,data[6:6+data[5]].hex()) if initial and 1<=data[5]<=20 else latest.get(port)
+  key,initial=flow_key(src,port,data,latest)
   if key is None:continue
   with lock:
    if src!='89.125.90.101':
