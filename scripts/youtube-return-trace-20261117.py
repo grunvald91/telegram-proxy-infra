@@ -125,12 +125,18 @@ def join_segments(segments):
             if len(result)>=4096:break
     return bytes(result[:4096])
 
+def remember(chunks,seq,body):
+    # A shorter retransmission must never erase bytes captured in a GRO packet.
+    previous=chunks.get(seq,b"")
+    if seq not in chunks and len(chunks)>=MAX_SEGMENTS:return
+    if len(body)>len(previous):chunks[seq]=bytes(body[:16384])
+
 def run():
     if os.geteuid()!=0:raise RuntimeError("ROOT_REQUIRED")
     salt=os.urandom(32)
     filt="tcp and ((host "+PUBLIC+" and port 443) or (host "+LOOP+" and port 15449))"
     cmd=["timeout",str(CAPTURE_SECONDS),"tcpdump","-i","any","-n","-U",
-         "-s","65535","-w","-",filt]
+         "-B","32768","-s","0","-w","-",filt]
     print("TARGET_CAPTURE_TYPE=YOUTUBE_TLS_ONLY",flush=True)
     print("TARGET_CAPTURE_NO_PERSISTENT_PACKETS=true",flush=True)
     print("TARGET_CAPTURE_SECONDS="+str(CAPTURE_SECONDS),flush=True)
@@ -161,7 +167,7 @@ def run():
             h=read_exact(proc.stdout,16)
             if h is None:break
             sec,usec,cap,orig=struct.unpack(endian+"IIII",h)
-            if cap>65535:raise RuntimeError("PCAP_OVERSIZED_RECORD")
+            if cap>1048576:raise RuntimeError("PCAP_OVERSIZED_RECORD")
             data=read_exact(proc.stdout,cap)
             if data is None:raise RuntimeError("PCAP_PARTIAL_RECORD")
             frames+=1
@@ -177,8 +183,7 @@ def run():
                     entry["client_packets"]+=1
                     if entry["first"] is None:entry["first"]=sec+usec/1000000
                     if seq in entry["chunks"]:entry["client_retransmissions"]+=1
-                    if len(entry["chunks"])<MAX_SEGMENTS:
-                        entry["chunks"][seq]=bytes(body)
+                    remember(entry["chunks"],seq,body)
             elif src==PUBLIC and sp==443:
                 entry=public[(dst,dp)]
                 if (flags&16) and not (flags&2) and plen==0 and ifidx==wan_ifindex and pkttype==4:
@@ -195,12 +200,12 @@ def run():
                     entry["server_pkts"]+=1
             elif src==PUBLIC and dp==443 and dst!=PUBLIC:
                 key=(dst,dp,sp)
-                if plen and len(origin_chunks[key])<MAX_SEGMENTS:origin_chunks[key][seq]=bytes(body)
+                if plen:remember(origin_chunks[key],seq,body)
             elif dst==PUBLIC and sp==443 and dp!=443:
                 origin_bytes[(src,sp,dp)]+=plen
                 if plen:origin_first.setdefault((src,sp,dp),sec+usec/1000000)
             elif src==LOOP and dst==LOOP and dp==15449:
-                if plen and len(pilot_chunks[sp])<MAX_SEGMENTS:pilot_chunks[sp][seq]=bytes(body)
+                if plen:remember(pilot_chunks[sp],seq,body)
                 if len(body)>=HASH_BYTES and body[:1]==b"\x16" and body[5:6]==b"\x01":
                     pilot_hash.add(hmac.new(salt,body[:HASH_BYTES],hashlib.sha256).digest())
             elif src==LOOP and dst==LOOP and sp==15449:
@@ -353,8 +358,11 @@ def run():
     print("TLS_SNI_INCOMPLETE_OR_UNRECOGNIZED_FLOWS="+str(unknown_count),flush=True)
     print("PUBLIC_TLS_CLIENT_NO_RESPONSE_FLOWS="+str(all_no_reply),flush=True)
     print("TARGET_CAPTURE_NO_SERVER_CHANGES=true",flush=True)
+    if dropped is None or int(dropped[1])!=0 or truncated:
+        raise RuntimeError("CAPTURE_LOSS_OR_TRUNCATION_INVALIDATES_ABSENCE_CLAIMS")
     if not frames or rc not in (0,124):
         raise RuntimeError("TARGET_CAPTURE_NOT_VALID")
 
 if __name__=="__main__":
     run()
+
