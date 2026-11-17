@@ -1,4 +1,4 @@
-# Disposable dispatcher. Only invokes approved isolated fi-test-01 workflow.
+# Disposable dispatcher. Re-run for idempotence check only; do not overwrite existing node.
 name: Nodekit FI prepare dispatcher (one-off)
 on:
   push:
