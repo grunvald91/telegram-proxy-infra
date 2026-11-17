@@ -235,3 +235,31 @@ corrected return timing (44041951909). The SYNACK rule was removed; the last
 two runs changed no production service configuration. The first two preceded
 the owner's instruction to stop using RU188. Actual billed minutes for these
 four runs have not been retrieved and are not asserted.
+
+## DE89-only continuation and current service state
+
+Playback on the phone remains unverified and the owner continues to report
+failure, including intermittent loss of thumbnails. No persistent production
+DNS, Nginx, GooglePilot, WireGuard or subscriber change was deployed.
+
+- [Processing audit 44043199404](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/44043199404): the external runner obtained verified TLS/HTTP404 for 1594-byte TLS1.3 records, including a split at byte 1448, and a 252-byte TLS1.2 record. All four full records matched Pilot/origin and had public replies. Inspected Nginx error logs contained no matching failures; this is not exhaustive proof of absence of all defects.
+- [Media attempt 44043950713](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/44043950713): the sample BaW_jenozKc was unavailable; media transfer was not tested. Capture had 491 kernel drops and is invalid for absence claims.
+- [Corrected capture 44044840455](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/44044840455): 11:13:25–11:16:25 Moscow. Zero kernel drops; an 8192-byte intentional packet prefix retained the 4096-byte initial-record budget, with no unsafe short prefixes. One source had two complete API records (1832/1821 bytes), Pilot/origin matches and public replies. Its Googlevideo record expected 1851 bytes but had one retained 1448-byte segment, no Pilot prefix match, no origin match or public response; outbound pure ACKs did not cover the full record. The owner reported an unsuccessful playback attempt during this window. Source ownership remains temporally correlated, not independently authenticated.
+- [Window4/scale0 trial 44046041037](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/44046041037): only the runner was affected. Three TLS1.3 controls timed out; TLS1.2 eventually succeeded. Phone stage skipped; temporary rule removed and protected configuration hashes unchanged.
+- [Preserved-scale trial 44046901134](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/44046901134): all four external controls passed with initial advertised window four. No phone media candidate appeared in its 45-second selector, so no phone rule was applied. Cleanup passed.
+- [Phone-scoped window trial and actual media range 44047955995](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/44047955995): one temporally selected media source was tested from 11:36:12 to 11:37:12 Moscow; the scoped rule matched 37 SYNACK packets and was removed. Video was not restored. The source had 22 ordinary-window Googlevideo records retained at 1448 bytes with no Pilot/origin match or public response, and nine experimental-window media records without a Pilot prefix match or public response. Do not treat the experimental records' retained lengths as complete receipt counters: the old 24-segment retention cap was reached. Three thumbnail records hit that cap yet had public responses and full-record cumulative ACKs, proving this observer limitation. The retention budget was subsequently corrected to cover tiny segments within the first 4096 bytes.
+- In that same run, extraction of public test video jNQXAC9IVRw through DE89 succeeded. Its media URL was bound to DE89. Both direct-origin-over-DE89-SOCKS and public DE89 SmartDNS passthrough returned HTTP206, verified certificates and exactly 65536 bytes of video/mp4. Elapsed curl transfers were 0.862356 and 0.807085 seconds respectively. This establishes an actual bounded media transfer from the external runner, not phone playback.
+- [Split-handshake trial 44049065156](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/44049065156): all external controls timed out, the phone stage was skipped, and the temporary rule was removed with protected configuration unchanged.
+- [Kernel receipt observer 44050013495](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/44050013495): ordinary TCP rules were confirmed restored, capture reported zero kernel drops and no unsafe prefixes, but no media candidate was observed. No kernel receipt measurement was obtained; do not report kernel-level confirmation.
+- [Current personal DNS path 44052431538](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/44052431538): nginx, GooglePilot, CoreDNS, personal SNI stream/redirect and original NFQUEUE service active. No experimental TCP rule remains. Personal DoT uses public853 redirected to local8854, with its existing private DNS backend 10.66.77.2:8858; verified TLS1.3 to that backend succeeded from DE89. There was no active DoT socket matching the earlier media source, so no connection was reset and the current personal hostname/actual DNS answers could not be validated. The earlier local8858/inactive-systemd-unit observation was the wrong layer: the private DNS gateway is a remote container, not a DE89 systemd unit.
+
+A targeted search of the original chat did not return the current personal DNS
+hostname; earlier assistant messages intentionally omitted it. The credential
+attachment does not contain a personal DNS hostname. The missing current
+hostname is needed to test the actual configured personal link. Neither a
+specific ISP/DPI device nor a universal server-only remedy has been established.
+
+Ten Actions runs were started in this continuation: 44043199404, 44043950713,
+44044840455, 44046041037, 44046901134, 44047955995, 44049065156,
+44050013495, 44051829232 and 44052431538. Billed minutes for these ten runs
+were not retrieved and are not asserted. No further TCP mutation is running.
