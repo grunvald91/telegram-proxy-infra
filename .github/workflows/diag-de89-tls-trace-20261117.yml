@@ -1,0 +1,156 @@
+name: DE89 Google TLS cross-leg diagnosis (read-only)
+on:
+  pull_request:
+    types: [opened, synchronize]
+    branches: [main]
+    paths:
+      - .github/workflows/diag-de89-tls-trace-20261117.yml
+      - scripts/de89-google-tls-crossleg-readonly-20261117.py
+      - scripts/tests/test_de89_google_tls_crossleg_20261117.py
+      - scripts/de89-google-tls-fingerprint-readonly-20261117.py
+      - scripts/tests/test_de89_google_tls_fingerprint_20261117.py
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  controlled-crossleg-trace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate offline parser and response classification
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/de89-google-tls-crossleg-readonly-20261117.py scripts/de89-google-tls-fingerprint-readonly-20261117.py
+          python3 -m unittest discover -s scripts/tests -p test_de89_google_tls_crossleg_20261117.py -v
+          python3 -m unittest discover -s scripts/tests -p test_de89_google_tls_fingerprint_20261117.py -v
+      - name: Install pinned SSH client
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass > /dev/null
+      - name: Correlate external Google TLS probes with public and Pilot TCP headers
+        if: ${{ false }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no
+            -o LogLevel=ERROR)
+          logfile="$RUNNER_TEMP/de89-crossleg.log"
+          timeout 115s sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
+            'python3 -B -' < scripts/de89-google-tls-crossleg-readonly-20261117.py \
+            > "$logfile" 2>&1 &
+          observer=$!
+          trap 'kill "$observer" 2>/dev/null || true; wait "$observer" 2>/dev/null || true' EXIT
+          armed=0
+          for n in $(seq 1 100); do
+            if grep -q '^TRACE_ARMED_UTC=' "$logfile" 2>/dev/null; then
+              armed=1
+              break
+            fi
+            kill -0 "$observer" 2>/dev/null || break
+            sleep 0.2
+          done
+          if [[ "$armed" != 1 ]]; then
+            cat "$logfile"
+            echo 'TRACE_START=FAILED'
+            exit 1
+          fi
+          echo 'TRACE_START=ARMED'
+          sleep 2
+          python3 - <<'PROBE'
+          import socket,ssl,time
+          hosts=('youtubei.googleapis.com',
+                 'www.youtube.com',
+                 'rr1---sn-gxuo03g-ig3s.googlevideo.com')
+          for host in hosts:
+              for i in (1,2):
+                  start=time.monotonic()
+                  try:
+                      with socket.create_connection(('89.125.90.101',443),timeout=7) as tcp:
+                          tcp.settimeout(7)
+                          with ssl.create_default_context().wrap_socket(tcp,server_hostname=host) as tls:
+                              result='PASS_'+str(tls.version())
+                  except Exception as exc:
+                      result='FAIL_'+type(exc).__name__
+                  print('CONTROL_TLS='+host+' ROUND='+str(i)+' RESULT='+result+
+                        ' TIME_MS='+str(round((time.monotonic()-start)*1000)),flush=True)
+          PROBE
+          set +e
+          wait "$observer"
+          result=$?
+          set -e
+          trap - EXIT
+          cat "$logfile"
+          test "$result" -eq 0
+          grep -q '^TRACE_PUBLIC_BOTH_DIRECTIONS_CONFIRMED=true$' "$logfile"
+          grep -q '^TRACE_FIREWALL_UNCHANGED=true$' "$logfile"
+          echo 'READ_ONLY_CROSSLEG_CHECK=PASS'
+      - name: Confirm Google ClientHello fingerprints across public 443 and Pilot 15449
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no
+            -o LogLevel=ERROR)
+          logfile="$RUNNER_TEMP/de89-hello-fingerprint.log"
+          timeout 200s sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
+            'python3 -B -' < scripts/de89-google-tls-fingerprint-readonly-20261117.py \
+            > "$logfile" 2>&1 &
+          tracer=$!
+          trap 'kill "$tracer" 2>/dev/null || true; wait "$tracer" 2>/dev/null || true' EXIT
+          armed=0
+          for n in $(seq 1 120); do
+            if grep -q '^FINGERPRINT_LINKTYPE=' "$logfile" 2>/dev/null; then
+              armed=1
+              break
+            fi
+            kill -0 "$tracer" 2>/dev/null || break
+            sleep 0.2
+          done
+          if [[ "$armed" != 1 ]]; then
+            cat "$logfile"
+            echo 'FINGERPRINT_START=FAILED'
+            exit 1
+          fi
+          sleep 2
+          python3 - <<'PROBE'
+          import socket,ssl,time
+          for host in ("youtubei.googleapis.com","www.youtube.com",
+                       "rr1---sn-gxuo03g-ig3s.googlevideo.com"):
+              started=time.monotonic()
+              try:
+                  with socket.create_connection(("89.125.90.101",443),timeout=7) as sock:
+                      sock.settimeout(7)
+                      with ssl.create_default_context().wrap_socket(sock,server_hostname=host) as c:
+                          status="PASS_"+c.version()
+              except Exception as err:
+                  status="FAIL_"+type(err).__name__
+              print("FINGERPRINT_CONTROL="+host+" RESULT="+status+
+                    " TIME_MS="+str(round((time.monotonic()-started)*1000)),flush=True)
+          PROBE
+          set +e
+          wait "$tracer"
+          result=$?
+          set -e
+          trap - EXIT
+          cat "$logfile"
+          test "$result" -eq 0
+          grep -Eq '^CLIENT_HELLO_PILOT_MATCHED=[1-9][0-9]*$' "$logfile"
+          grep -q '^FINGERPRINT_FIREWALL_UNCHANGED=true$' "$logfile"
+          echo 'FINGERPRINT_CROSSLEG_CHECK=PASS'
