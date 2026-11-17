@@ -64,5 +64,31 @@ jobs:
             code="$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 3 "http://127.0.0.1:$port/readyz" || true)"
             echo "GATEWAY_READY_PORT_$port=$code"
           done
+          echo PRIVATE_RUNTIME_PATH_AUDIT_BEGIN=true
+          python3 - <<'PY'
+          import json,subprocess,hashlib,pathlib,os
+          name="mnebydns-personal-dot-private"
+          obj=json.loads(subprocess.check_output(["docker","inspect",name]))[0]
+          print("PRIVATE_GATEWAY_IMAGE_ID="+obj["Image"][:25])
+          print("PRIVATE_GATEWAY_RUNNING="+str(obj["State"]["Running"]).lower())
+          for m in obj["Mounts"]:
+              if m["Destination"].endswith(".ts"):
+                  p=pathlib.Path(m["Source"])
+                  print("PRIVATE_OVERLAY_FILE="+p.name+
+                        " PRESENT="+str(p.is_file()).lower()+
+                        " SHA256="+hashlib.sha256(p.read_bytes()).hexdigest()[:24] if p.is_file() else
+                        "PRIVATE_OVERLAY_FILE="+p.name+" PRESENT=false")
+          envkeys=sorted(v.split("=",1)[0] for v in obj["Config"]["Env"])
+          for key in ("MNEBYDNS_PERSONAL_DOT_ENABLED","MNEBYDNS_PERSONAL_DOT_BIND_IP",
+                      "MNEBYDNS_PERSONAL_DOT_PORT","MNEBYDNS_PERSONAL_DOT_HEALTH_PORT",
+                      "MNEBYDNS_OWNER_LINKS_ENABLED"):
+              print("PRIVATE_ENV_KEY_"+key+"_PRESENT="+str(key in envkeys).lower())
+          print("PRIVATE_RESTART_POLICY="+obj["HostConfig"]["RestartPolicy"]["Name"])
+          PY
+          printf 'PRIVATE_DOT_HOST_PORTS='
+          ss -H -lnt | awk '{print $4}' | grep -E ':(8853|8855|8856|8857|8858|8859)$' | sort | paste -sd, || true
+          echo PRIVATE_UFW_8856_RULE_EXISTS="$(ufw status | grep -Fc 8856 || true)"
+          echo PRIVATE_UFW_8858_RULE_EXISTS="$(ufw status | grep -Fc 8858 || true)"
+          echo PRIVATE_RUNTIME_PATH_AUDIT_END=true
           echo NO_SERVICES_OR_FIREWALL_MODIFIED=true
           REMOTE
