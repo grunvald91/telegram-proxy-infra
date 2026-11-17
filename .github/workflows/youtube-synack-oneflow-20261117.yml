@@ -1,0 +1,52 @@
+name: YouTube original SYNACK one-flow differential
+on:
+  push:
+    branches: [diag/youtube-synack-oneflow-20261117]
+    paths: ['.github/workflows/youtube-synack-oneflow-20261117.yml','scripts/youtube-synack-oneflow-20261117.py']
+permissions: {contents: read}
+concurrency:
+  group: mnebydns-one-flow-synack-test
+  cancel-in-progress: false
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Compare default and old SYNACK for one controlled flow with independent cleanup
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/youtube-synack-oneflow-20261117.py
+          test -n "$DE_PASS" && test -n "$RU_PASS"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3
+            -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          de() { SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 "$@"; }
+          ru() { SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 "$@"; }
+          probe() {
+            echo "PHASE=$1"
+            ru "curl -sS --noproxy '*' -4 --http1.1 --local-port '$2' --connect-timeout 5 --max-time 7 --resolve rr1---sn-gxuo03g-ig3s.googlevideo.com:443:89.125.90.101 -o /dev/null -w 'HTTP=%{http_code} TLS_VERIFY=%{ssl_verify_result} BYTES=%{size_download} TIME=%{time_total}\n' https://rr1---sn-gxuo03g-ig3s.googlevideo.com/" || true
+          }
+          root="/run/youtube-synack-test-$GITHUB_RUN_ID"
+          de "umask 077; mkdir '$root'; cat > '$root/test.py'" < scripts/youtube-synack-oneflow-20261117.py
+          de "sha256sum /etc/nginx/nginx.conf /etc/mnebydns-googlepilot/nginx.conf /etc/zapret2/telegram-nfqws.conf /usr/local/sbin/telegram-foreign-nfqws-rules > '$root/hashes'"
+          probe standard 49187
+          cleanup() {
+            status=$?
+            trap - EXIT
+            de "python3 -B '$root/test.py' clean" || echo INDEPENDENT_TIMER_WILL_CLEAN=true
+            exit "$status"
+          }
+          trap cleanup EXIT
+          de "python3 -B '$root/test.py' arm '$GITHUB_RUN_ID'"
+          probe original_synack 49188
+          de "python3 -B '$root/test.py' clean; sha256sum --status -c '$root/hashes'"
+          echo PERSISTENT_CONFIGURATIONS_UNCHANGED=true
