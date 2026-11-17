@@ -40,7 +40,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           mkdir "$RUNNER_TEMP/h3-wheels"
-          timeout 90s python3 -m pip download --disable-pip-version-check -q --only-binary=:all: --platform manylinux2014_x86_64 --implementation cp --python-version 3.10 --dest "$RUNNER_TEMP/h3-wheels" aioquic==1.2.0
+          timeout 90s python3 -m pip download --disable-pip-version-check -q --only-binary=:all: --platform manylinux2014_x86_64 --implementation cp --python-version 3.10 --dest "$RUNNER_TEMP/h3-wheels" aioquic==1.2.0 typing-extensions==4.15.0
           python3 -m pip download --disable-pip-version-check -q --no-deps --dest "$RUNNER_TEMP" pip==24.3.1
           python3 -m venv "$RUNNER_TEMP/yt-venv"
           timeout 90s "$RUNNER_TEMP/yt-venv/bin/pip" -q install 'yt-dlp[default]'
