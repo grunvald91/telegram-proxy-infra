@@ -22,13 +22,21 @@ class RunCommands:
     def __init__(self):
         self.calls = []
         self.fail_start = False
+        self.active = False
 
     def __call__(self, args, **kwargs):
         self.calls.append(args)
-        if args[:2] == ["systemctl", "is-active"] and len(self.calls) < 100:
-            return subprocess.CompletedProcess(args, 3)
-        if args[:2] == ["systemctl", "start"] and self.fail_start:
-            raise subprocess.CalledProcessError(1, args)
+        if args[:2] == ["systemctl", "is-active"]:
+            code = 0 if self.active else 3
+            if code and kwargs.get("check"):
+                raise subprocess.CalledProcessError(code, args)
+            return subprocess.CompletedProcess(args, code)
+        if args[:2] == ["systemctl", "start"]:
+            if self.fail_start:
+                raise subprocess.CalledProcessError(1, args)
+            self.active = True
+        if args[:2] == ["systemctl", "stop"]:
+            self.active = False
         return subprocess.CompletedProcess(args, 0)
 
 
