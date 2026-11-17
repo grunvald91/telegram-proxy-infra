@@ -40,7 +40,12 @@ assert s['source_sha']=='f811efe2a429f1f113719489cbb588fea371c7a3'
 assert s['stage_completed'] and s['promoted']
 print('PRIVATE_GATEWAY_PROMOTION_VERIFIED=true')
 PY
-test "$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$newdns" | sed -n 's/^MNEBYDNS_PERSONAL_DOT_PORT=//p')" = 8858
+new_ports="$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$newdns" | sed -n 's/^MNEBYDNS_PERSONAL_DOT_PORT=//p')"
+# The new blue-green container carries the old env value followed by the
+# command-line port override. Permit precisely this known transition.
+[[ "$new_ports" == "8858" || "$new_ports" == $'8856\n8858' ]] ||
+  { echo OWNER_NEW_DOT_PORT_CONFIG_UNEXPECTED=true;exit 2; }
+echo OWNER_NEW_DOT_EFFECTIVE_PORT_8858=VERIFIED
 test "$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$oldbackup" | sed -n 's/^MNEBYDNS_PERSONAL_DOT_PORT=//p')" = 8856
 test "$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --max-time 4 http://127.0.0.1:8859/readyz)" = 200
 test "$(docker exec mnebyvpn-stage-postgres psql -X -U mnebyvpn_stage -d mnebyvpn_stage -At -c \
