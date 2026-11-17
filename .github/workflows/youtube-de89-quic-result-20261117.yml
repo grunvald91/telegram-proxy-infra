@@ -1,0 +1,65 @@
+name: Collect exact owner QUIC Initial receipt after repacket fix
+on:
+  push:
+    branches: [diag/youtube-de89-quic-result-20261117]
+    paths:
+      - .github/workflows/youtube-de89-quic-result-20261117.yml
+      - scripts/youtube-de89-owner-return-bypass-20261117.py
+permissions: {contents: read}
+concurrency:
+  group: mnebydns-youtube-quic-result
+  cancel-in-progress: false
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Validate existing parser and prepare pinned SSH
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/youtube-de89-owner-return-bypass-20261117.py scripts/termux-youtube-libcurl-20261117.py
+          test -n "$DE_PASS" && test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass >/dev/null
+          cat > "$RUNNER_TEMP/de-phone" <<'SHELL'
+          #!/bin/bash
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          exec sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes \
+            -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -o HostKeyAlgorithms=ssh-ed25519 \
+            -o "UserKnownHostsFile=$GITHUB_WORKSPACE/ops/mnebydns-owner-ssh-known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR \
+            root@89.125.90.101 "$@"
+          SHELL
+          chmod 700 "$RUNNER_TEMP/de-phone"
+      - name: Finalize passive capture and collect target handshake metadata
+        run: |
+          set -Eeuo pipefail
+          "$RUNNER_TEMP/de-phone" 'systemctl stop mnebydns-quic-watch-44098567495-1.service'
+          "$RUNNER_TEMP/de-phone" 'python3 -B -' <<'PYTHON'
+          import collections,json,pathlib,subprocess,time
+          def emit(k,v):print(k+'='+json.dumps(v,sort_keys=True),flush=True)
+          root=pathlib.Path('/run/mnebydns-quic-watch-44098567495-1')
+          rows=[]
+          for line in (root/'result.log').read_text().splitlines():
+              if line.startswith('OWNER_QUIC_INITIAL_RECEIPT='):
+                  row=json.loads(line.split('=',1)[1])
+                  if row['phase']=='final':rows.append(row)
+              elif line.startswith('OWNER_QUIC_WATCH_FINISHED='):emit('CAPTURE_QUALITY',json.loads(line.split('=',1)[1]))
+          counts=collections.Counter()
+          for row in rows:
+              name=row.get('domain') or '<unknown>'
+              family=next((suffix for suffix in ('googlevideo.com','googleapis.com','youtube.com','ytimg.com','ggpht.com') if name==suffix or name.endswith('.'+suffix)),'other')
+              counts[(family,row['hello_complete'])]+=1
+              if family=='googlevideo.com' or name in ('youtubei.googleapis.com','www.youtube.com'):emit('OWNER_TARGET_QUIC_RECEIPT',row)
+          emit('OWNER_QUIC_FAMILY_COMPLETENESS',[{'family':k[0],'complete':k[1],'flows':v} for k,v in sorted(counts.items())])
+          base=pathlib.Path('/opt/mnebydns-h3-origin-diag-44096073096-1')
+          log=[x for x in (base/'canary.log').read_text().splitlines() if x.startswith('youtube_quic_')]
+          emit('RECENT_CANARY_COUNTERS',log[-3:])
+          emit('CANARY_SERVICE',subprocess.run(['systemctl','is-active','mnebydns-h3-canary-44096073096-1.service'],capture_output=True,text=True).stdout.strip())
+          emit('COLLECTION_UTC',time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()))
+          PYTHON
