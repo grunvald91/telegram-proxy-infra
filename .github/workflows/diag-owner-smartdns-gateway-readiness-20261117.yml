@@ -41,7 +41,7 @@ jobs:
           echo OWNER_GATEWAY_READ_ONLY=true
           printf 'ACTIVE_GATEWAYS='
           docker ps --format '{{.Names}}' | grep -E '^(mnebydns-personal-dot|mnebyvpn-bot-info)' | paste -sd, || true
-          for name in mnebydns-personal-dot mnebyvpn-bot-info; do
+          for name in mnebydns-personal-dot-private mnebydns-personal-dot mnebyvpn-bot-info; do
             if docker inspect "$name" >/dev/null 2>&1; then
               echo "CONTAINER=$name"
               docker inspect -f 'STATE={{.State.Status}} IMAGE={{.Config.Image}} NETWORK={{.HostConfig.NetworkMode}}' "$name"
