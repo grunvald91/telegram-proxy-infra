@@ -1,0 +1,129 @@
+name: Diagnose Smart DNS YouTube media 443 after new private DoT rollout (read-only)
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/diag-googlevideo-media-20261117.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  trace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check dynamic Googlevideo TLS and HTTP via mapped DE89 public 443
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import socket, ssl, time
+          domains=(
+            'rr1---sn-gxuo03g-ig3s.googlevideo.com',
+            'rr2---sn-gxuo03g-ig3s.googlevideo.com',
+            'rr1---sn-4g5edns6.googlevideo.com',
+            'youtubei.googleapis.com',
+            'www.youtube.com',
+          )
+          for host in domains:
+              t=time.monotonic()
+              try:
+                  s=socket.create_connection(('89.125.90.101',443),timeout=7)
+                  s.settimeout(7)
+                  with s,ssl.create_default_context().wrap_socket(s,server_hostname=host) as tls:
+                      result='PASS_'+tls.version()
+                      request=("GET /videoplayback?range=0-65535 HTTP/1.1\r\n"
+                               "Host: "+host+"\r\nConnection: close\r\n"
+                               "Range: bytes=0-65535\r\n\r\n").encode()
+                      tls.sendall(request)
+                      response=tls.recv(2048)
+                      if response.startswith(b'HTTP/'):
+                          code=response.split(b' ',2)[1].decode('ascii','replace')
+                          result+=' HTTP_'+code+' BODY_PREFIX_BYTES_'+str(len(response))
+                      else:result+=' NOT_HTTP'
+              except Exception as exc:
+                  result='FAIL_'+type(exc).__name__
+              print('MAPPED_MEDIA_TRANSPORT HOST='+host+' RESULT='+result+
+                    ' MS='+str(round((time.monotonic()-t)*1000)),flush=True)
+          PY
+      - name: Inspect live Nginx, GooglePilot, NFQUEUE and CDN origins on DE89
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          test -n "$DE_PASS" && test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -B -' <<'PY'
+          import collections,os,re,socket,ssl,subprocess,time
+          def output(args,timeout=12):
+              try:
+                  p=subprocess.run(args,capture_output=True,text=True,timeout=timeout)
+                  return (p.returncode,p.stdout,p.stderr)
+              except Exception:return (127,'','')
+          print('GOOGLEVIDEO_READ_ONLY=true',flush=True)
+          for u in ['nginx','mnebydns-googlepilot','telegram-foreign-nfqws','mnebydns-dot']:
+              code,stdout,_=output(['systemctl','is-active',u])
+              print('DE_UNIT_'+u+'='+stdout.strip(),flush=True)
+          _,ng,er=output(['nginx','-T'],20)
+          print('NGINX_DUMP_AVAILABLE='+str(bool(ng)).lower(),flush=True)
+          for token in ['googlevideo','googleapis','youtube','15449','ssl_preread',
+                        'proxy_pass','map $ssl_preread_server_name']:
+              print('NGINX_RULE_OCCURRENCES_'+token.replace(' ','_')+'='+str(ng.lower().count(token.lower())),flush=True)
+          candidate=[line.strip() for line in ng.splitlines() if
+            ('googlevideo' in line.lower() or 'googleapis' in line.lower() or '15449' in line or
+             'youtube' in line.lower())]
+          for line in candidate[:18]:
+              # Match action only, never print arbitrary configuration values.
+              match=re.search(r'(?:~\*?|default|[a-z0-9*.?-]+)\s+([^;\s]+);',line)
+              print('NGINX_MEDIA_ROUTE_LINE_PRESENT=true VALUE_MATCHES_PILOT='+
+                str('15449' in line).lower()+' HAS_GOOGLEVIDEO='+
+                str('googlevideo' in line.lower()).lower(),flush=True)
+          _,ss,_=output(['ss','-H','-lntp'])
+          for port in ('443','15449'):
+              print('DE_TCP_LISTEN_'+port+'='+str(any(re.search(r':'+port+r'\s',line) for line in ss.splitlines())).lower(),flush=True)
+          d='rr1---sn-gxuo03g-ig3s.googlevideo.com'
+          try:
+              origins=sorted(set(x[4][0] for x in socket.getaddrinfo(d,443,socket.AF_INET,socket.SOCK_STREAM)))
+          except Exception:origins=[]
+          print('DE_CDN_PUBLIC_ORIGIN_A_COUNT='+str(len(origins)),flush=True)
+          for i,ip in enumerate(origins[:2]):
+              try:
+                  start=time.monotonic()
+                  with socket.create_connection((ip,443),timeout=6) as sock:
+                      sock.settimeout(6)
+                      with ssl.create_default_context().wrap_socket(sock,server_hostname=d) as tls:
+                          tls.sendall(("GET /videoplayback?range=0-65535 HTTP/1.1\r\n"
+                                       "Host: "+d+"\r\nConnection: close\r\n\r\n").encode())
+                          data=tls.recv(1500)
+                          code=data.split(b' ',2)[1].decode('ascii','replace') if data.startswith(b'HTTP/') else 'NO_HTTP'
+                          print('DE_CDN_ORIGIN_'+str(i)+'=TLS_OK HTTP_'+code+
+                            ' RTT_MS_'+str(round((time.monotonic()-start)*1000)),flush=True)
+              except Exception as exc:
+                  print('DE_CDN_ORIGIN_'+str(i)+'=ERROR_'+type(exc).__name__,flush=True)
+          _,q,_=output(['cat','/proc/net/netfilter/nfnetlink_queue'])
+          q210=[row for row in q.splitlines() if row.split() and row.split()[0]=='210']
+          if q210:
+              values=q210[0].split()
+              print('DE_NFQUEUE210_ACTIVE=true PENDING='+values[2]+
+                    ' KERNEL_DROPS='+values[5]+' USER_DROPS='+values[6],flush=True)
+          else:print('DE_NFQUEUE210_ACTIVE=false',flush=True)
+          _,journal,_=output(['journalctl','--no-pager','-q','-u','mnebydns-googlepilot',
+                               '--since','-20 min','-o','cat','-n','500'])
+          categories=collections.Counter()
+          for line in journal.splitlines():
+              for term in ('error','timeout','failed','dns','upstream','closed','unreachable'):
+                  if term in line.lower():categories[term]+=1
+          for term in ('error','timeout','failed','dns','upstream','closed','unreachable'):
+              print('GOOGLEPILOT_LOG20MIN_'+term.upper()+'='+str(categories[term]),flush=True)
+          print('GOOGLEVIDEO_PRIVATE_DOT_UNCHANGED=true',flush=True)
+          PY
+          echo GOOGLEVIDEO_MEDIA_DIAG_COMPLETE=true
