@@ -127,3 +127,36 @@ incomplete Googlevideo records concern different hostnames and connections;
 they do not contradict each other.
 
 The owner confirmed after run 44020006136 that images loaded but video did not.
+
+## Explicit Termux Googlevideo test, 17 November, 08:07:21–08:10:21 Moscow
+
+[Run 44021809780](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/44021809780)
+armed the same bounded observer before the owner was given this command:
+
+```sh
+curl -v --noproxy '*' -4 --http1.1 --connect-timeout 7 --max-time 15 --resolve rr1---sn-gxuo03g-ig3s.googlevideo.com:443:89.125.90.101 -o /dev/null https://rr1---sn-gxuo03g-ig3s.googlevideo.com/
+```
+
+The owner pasted the resulting output: a five-byte TLS record header, a
+1587-byte outgoing ClientHello, no ServerHello, and curl error 28 after
+7002 milliseconds.
+
+Exactly one identified Googlevideo flow appeared in the capture. Its expected
+TLS record size was 1592 bytes, matching 5 + 1587 from the supplied output.
+It had only 1448 contiguous captured client bytes, one captured data-segment
+sequence, no Pilot prefix/full-record match, no origin full-record match and
+zero public response bytes. Difference: 1592 - 1448 = 144 bytes.
+
+The same anonymous source had five other complete identified target records
+(four googleapis.com and one gstatic.com). All five matched complete records
+at Pilot and origin egress and had public response data.
+
+The unique target-family/record-size match in the agreed window strongly
+correlates this flow with the supplied Termux attempt. No independent
+credential-to-source-IP binding was collected. The capture establishes the
+bytes observed by this observer; it does not by itself establish where the
+uncaptured tail went or prove a specific ISP/DPI mechanism.
+
+No persistent production configuration change was applied. The agreed capture
+used one Actions run. The timing API reports run_duration_ms=199000 (199
+seconds), UBUNTU.total_ms=0 and one job; no charge is inferred from elapsed time.
