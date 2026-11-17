@@ -173,6 +173,54 @@ def sync_tls(node: Path, host: str, *, runner=run) -> dict:
     return record
 
 
+def install_renewal(node: Path, host: str, ip: str) -> None:
+    """Keep Nodekit's local TLS files in sync with certbot's regular renewals."""
+    code = Path(__file__)
+    if code.is_symlink() or not code.is_file() or code.stat().st_uid != 0:
+        raise TLSStageError("Only trusted root-owned Nodekit source may install a hook")
+    local_bin = Path("/opt/mnebyvpn-nodekit")
+    if local_bin.is_symlink():
+        raise TLSStageError("Persistent Nodekit code directory cannot be symlink")
+    local_bin.mkdir(mode=0o755, exist_ok=True)
+    if local_bin.stat().st_uid != 0 or local_bin.stat().st_mode & 0o022:
+        raise TLSStageError("Unsafe permanent Nodekit code directory")
+    persistent = local_bin / "tls_stage.py"
+    if persistent.exists() or persistent.is_symlink():
+        if (persistent.is_symlink() or not persistent.is_file()
+                or persistent.stat().st_uid != 0 or
+                persistent.read_bytes() != code.read_bytes()):
+            raise TLSStageError("Persistent renewal code differs; review before overwriting")
+    else:
+        write_private(persistent, code.read_bytes())
+
+    hooks = CERTBOT_ROOT / "renewal-hooks" / "deploy"
+    if hooks.is_symlink():
+        raise TLSStageError("Certbot deploy hook directory is symlinked")
+    hooks.mkdir(mode=0o755, parents=True, exist_ok=True)
+    if hooks.stat().st_uid != 0 or hooks.stat().st_mode & 0o022:
+        raise TLSStageError("Unsafe certbot hook directory")
+    hook_path = hooks / ("90-nodekit-" + node.name + ".sh")
+    unit = "mnebyvpn-nodekit-coredns@" + node.name + ".service"
+    commands = (
+        "#!/bin/sh\n"
+        "set -eu\n"
+        'if [ "x$RENEWED_LINEAGE" != "x/etc/letsencrypt/live/' + host + '" ]; then exit 0; fi\n'
+        "/usr/bin/python3 " + str(persistent) + " --node-id " + node.name
+        + " --host " + host + " --expected-ipv4 " + ip + " --mode sync\n"
+        "if systemctl is-active --quiet " + unit + "; then\n"
+        "  systemctl try-reload-or-restart " + unit + "\n"
+        "fi\n"
+    )
+    if hook_path.exists() or hook_path.is_symlink():
+        if (hook_path.is_symlink() or not hook_path.is_file() or
+                hook_path.stat().st_uid != 0 or
+                hook_path.read_text() != commands):
+            raise TLSStageError("Existing renewal hook differs")
+    else:
+        write_private(hook_path, commands.encode())
+        hook_path.chmod(0o700)
+
+
 def issue(host: str, *, runner=run) -> None:
     # Do NOT accept email or API credentials from untrusted CLI fields.
     # Standalone HTTP-01 uses a temporary port 80 listener only during ACME.
@@ -202,13 +250,17 @@ def run_mode(root: Path, node_id: str, host: str, ip: str, mode: str,
             if chain_path.exists() or key_path.exists() or chain_path.is_symlink():
                 raise
         issue(host, runner=runner)
-        return sync_tls(node, host, runner=runner)
+        result = sync_tls(node, host, runner=runner)
+        install_renewal(node, host, ip)
+        return result
     if mode in ("verify", "sync"):
         if mode == "verify":
             _, _, fingerprint = verify_cert(host, runner=runner)
             return {"node_id": node.name, "hostname": host,
                     "certificate_sha256": fingerprint, "certificate_valid": True}
-        return sync_tls(node, host, runner=runner)
+        result = sync_tls(node, host, runner=runner)
+        install_renewal(node, host, ip)
+        return result
     raise TLSStageError("Unknown TLS mode")
 
 
