@@ -263,3 +263,58 @@ Ten Actions runs were started in this continuation: 44043199404, 44043950713,
 44044840455, 44046041037, 44046901134, 44047955995, 44049065156,
 44050013495, 44051829232 and 44052431538. Billed minutes for these ten runs
 were not retrieved and are not asserted. No further TCP mutation is running.
+
+## Supplied personal hostname and paired tagged TCP_INFO probes
+
+The owner supplied their current private hostname in chat; it is deliberately
+not reproduced here or in public workflow source/logs. The probe input was
+encrypted for DE89's pinned SSH host key before publishing the diagnostic.
+
+[Actual-link audit 44054317201](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/44054317201)
+used a temporary loopback reverse SSH forward through the external runner so
+that the connection really traversed public DE89:853 (a local DE89:853
+connection would bypass the ingress redirect). Bootstrap A was DE89, with no
+AAAA address. TLS1.3 certificate verification passed. All tested Google-family
+A answers pointed to DE89, AAAA/HTTPS answers were NOERROR/NODATA, and four
+pipelined questions in one TLS connection completed with matching IDs and
+correct mapped answers. No DNS configuration change was made. This resolves
+the missing-hostname test gap, not phone playback.
+
+The owner's first TCP_INFO script produced four timeouts. Each connection
+completed TCP setup but acknowledged zero payload bytes, received zero bytes
+and recorded three retransmitted TCP segments. The TLS1.3 API record was
+1584 bytes (3032 retransmitted bytes); the media record was 1598 bytes (3046
+retransmitted bytes). The TLS1.2 records were 244 and 258 bytes respectively.
+
+[Collector 44058108391](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/44058108391)
+matched the owner's API probe 7238a0c59394f6a3 and media probe f2fd0679772ba331
+to server observations. At two seconds, both exact TCP sockets existed and
+kernel TCP_INFO reported 1448 received bytes, zero sent payload bytes. The
+first wire payloads were also 1448 bytes. Thus these tagged TLS1.3 records
+were incomplete in the receiving kernel, independently of pcap reassembly.
+No tagged observation was logged for the two TLS1.2 attempts; the sparse
+watcher's end-of-capture drop counters were not yet available, so do not
+upgrade that absence to kernel-level proof of non-arrival.
+
+**Diagnostic caveat:** this first client script put a probe identifier in an
+additional ALPN protocol. An external runner passed all four versions of the
+same script, but a path-specific response to this altered fingerprint remains
+possible. Do not attribute all ordinary API connections to this failure.
+
+[Ordinary libcurl validation 44059737000](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/44059737000)
+therefore uses the installed libcurl with ordinary HTTP1.1 TLS settings and
+reads its own TCP_INFO via socket callbacks, without adding an ALPN protocol.
+Connections are matched using a hash of the existing TLS ClientHello Random.
+All four external controls returned curl_result=0 with zero retransmits.
+[Observer check 44060238255](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/44060238255)
+matched all four client Random hashes and observed cumulative ACKs. Successful
+control sockets had closed before the two-second kernel query, so their
+kernel_received_bytes=null means socket unavailable, not zero receipt.
+A separate ordinary API connection was observed receiving 2237 bytes and
+sending 5731 bytes; it was not authenticated as the owner's phone.
+
+The ordinary client script was compacted without changing transport options
+in commit 7db57000419966c7edf8a638b5c674502f3b58eb. The new observer is passive,
+expires automatically, records public metadata only in Actions, and keeps
+any exact source/port binding solely in a root-private runtime file. No
+production DNS, Nginx or TCP transformation change was applied.
