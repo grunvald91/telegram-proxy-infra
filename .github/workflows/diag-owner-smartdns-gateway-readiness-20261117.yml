@@ -1,0 +1,68 @@
+name: Read-only owner Smart DNS gateway rollout inventory
+on:
+  pull_request:
+    types: [opened, synchronize]
+    branches: [main]
+    paths:
+      - .github/workflows/diag-owner-smartdns-gateway-readiness-20261117.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  gateway-readiness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify pinned SSH credentials
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass > /dev/null
+      - name: Inspect existing owner gateway and migration readiness without mutations
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no
+            -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          echo OWNER_GATEWAY_READ_ONLY=true
+          printf 'ACTIVE_GATEWAYS='
+          docker ps --format '{{.Names}}' | grep -E '^(mnebydns-personal-dot|mnebyvpn-bot-info)' | paste -sd, || true
+          for name in mnebydns-personal-dot mnebyvpn-bot-info; do
+            if docker inspect "$name" >/dev/null 2>&1; then
+              echo "CONTAINER=$name"
+              docker inspect -f 'STATE={{.State.Status}} IMAGE={{.Config.Image}} NETWORK={{.HostConfig.NetworkMode}}' "$name"
+              printf 'MOUNT_DESTINATIONS='
+              docker inspect -f '{{range .Mounts}}{{.Destination}} {{end}}' "$name" |
+                tr ' ' '\n' | grep -v '^$' | sort | paste -sd, || true
+            else echo "CONTAINER=$name NOT_FOUND"; fi
+          done
+          if docker ps -a --format '{{.Names}}' | grep -qx mnebyvpn-stage-postgres;then
+            docker exec mnebyvpn-stage-postgres psql -X -v ON_ERROR_STOP=1 \
+              -U mnebyvpn_stage -d mnebyvpn_stage -At -c \
+              "SELECT 'MIGRATION_0130_APPLIED='||EXISTS(SELECT 1 FROM deployment_schema_migrations WHERE file_name='0130_owner_dns_video_routes.sql');"
+            docker exec mnebyvpn-stage-postgres psql -X -v ON_ERROR_STOP=1 \
+              -U mnebyvpn_stage -d mnebyvpn_stage -At -c \
+              "SELECT 'OWNER_LINKS_TABLE_PRESENT='||(to_regclass('public.owner_dns_links') IS NOT NULL);"
+          else
+            echo STAGING_POSTGRES_ABSENT=true
+          fi
+          for port in 8855 8857;do
+            code="$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 3 "http://127.0.0.1:$port/readyz" || true)"
+            echo "GATEWAY_READY_PORT_$port=$code"
+          done
+          echo NO_SERVICES_OR_FIREWALL_MODIFIED=true
+          REMOTE
