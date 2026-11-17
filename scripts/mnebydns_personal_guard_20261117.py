@@ -21,7 +21,7 @@ BACKUP = STATE / 'original-watch'
 PROFILE = STATE / 'probe-sni'
 COUNT = pathlib.Path('/run/mnebydns-personal-sni-watch/failure-count')
 LOCK = pathlib.Path('/run/lock/mnebydns-personal-watch-v2.lock')
-SNI_RE = re.compile(r'(?<![a-z0-9])([a-z0-9]{12}\\.dns\\.mnebyvpn\\.site)(?![a-z0-9])')
+SNI_RE = re.compile(r'(?<![a-z0-9])([a-z0-9]{12}\.dns\.mnebyvpn\.site)(?![a-z0-9])')
 QUERY = ('youtube.com', 'youtubei.googleapis.com',
          'rr1---sn-4g5ednss.googlevideo.com')
 
@@ -37,7 +37,7 @@ def recv_exact(conn, n):
 def probe(ip, port, server_name, domain='youtube.com', timeout=4):
     """Full CA-verified DoT question with transaction and reply checks."""
     ident = secrets.randbelow(65535)+1
-    qname = b''.join(bytes([len(s)])+s.encode('ascii') for s in domain.split('.'))+b'\\x00'
+    qname = b''.join(bytes([len(s)])+s.encode('ascii') for s in domain.split('.'))+b'\x00'
     msg = struct.pack('!HHHHHH',ident,0x0100,1,0,0,0)+qname+struct.pack('!HH',1,1)
     with socket.create_connection((ip, port),timeout=timeout) as raw:
         raw.settimeout(timeout)
@@ -56,7 +56,7 @@ def route():
                if '^[a-z0-9]{12}[.]dns[.]mnebyvpn[.]site$' in line]
     if len(entries)!=1:
         raise RuntimeError('personal SNI map unexpected')
-    m = re.search(r'\\s([^\\s;]+):(8856|8858);',entries[0])
+    m = re.search(r'\s([^\s;]+):(8856|8858);',entries[0])
     if not m:
         raise RuntimeError('personal backend outside expected allowlist')
     return m.group(1),int(m.group(2))
@@ -94,7 +94,7 @@ def read_counter():
 def write_counter(count):
     COUNT.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
     temp=COUNT.with_suffix('.new')
-    temp.write_text(str(count)+'\\n')
+    temp.write_text(str(count)+'\n')
     os.replace(temp,COUNT)
 
 def check():
@@ -134,7 +134,7 @@ def install():
         shutil.copy2(WATCH,BACKUP)
         os.chmod(BACKUP,0o600)
     name=profile_name()
-    PROFILE.write_text(name+'\\n')
+    PROFILE.write_text(name+'\n')
     os.chmod(PROFILE,0o600)
     fd,temp=tempfile.mkstemp(prefix='.personal-watch-',dir=str(WATCH.parent))
     try:
