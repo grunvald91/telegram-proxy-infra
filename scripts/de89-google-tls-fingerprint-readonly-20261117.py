@@ -17,7 +17,7 @@ import time
 
 PUBLIC = "89.125.90.101"
 LOCAL = "127.0.0.1"
-MAX_SECONDS = 35
+MAX_SECONDS = 150
 HASH_BYTES = 64
 
 def read_exact(stream, n):
