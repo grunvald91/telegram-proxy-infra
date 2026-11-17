@@ -1,0 +1,148 @@
+name: Enable owner Smart DNS video link issuance after verified private gateway
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/mnebydns-owner-smartdns-issue-20261117.yml
+      - scripts/mnebydns-owner-smartdns-issuance-enable-20261117.sh
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/mnebydns-owner-smartdns-issue-20261117.yml
+      - scripts/mnebydns-owner-smartdns-issuance-enable-20261117.sh
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-owner-smartdns-issue-cutover-20261117
+  cancel-in-progress: false
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate scope and automatic rollback before release
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          bash -n scripts/mnebydns-owner-smartdns-issuance-enable-20261117.sh
+          bash -n scripts/mnebyvpn-main-bot-promote.sh
+          python3 - <<'PY'
+          from pathlib import Path
+          s=Path("scripts/mnebydns-owner-smartdns-issuance-enable-20261117.sh").read_text()
+          assert "MNEBYDNS_OWNER_SMART_DNS_LINKS_ENABLED=yes" in s
+          assert "f811efe2a429f1f113719489cbb588fea371c7a3" in s
+          assert "PRIVATE_GATEWAY_PROMOTION_VERIFIED=true" in s
+          assert "trap rollback ERR" in s
+          assert "bash \"$promoter\" \"$sha\"" in s
+          assert "test \"$(curl " in s
+          assert "mnebydns-personal-dot-private-previous-20261117" in s
+          assert "8858" in s and "8856" in s and "8859" in s
+          assert "ufw allow" not in s and "nginx -s reload" not in s
+          assert "docker rm -f" not in s and "docker stop" not in s
+          print("OWNER_ISSUANCE_REVIEW=PASS")
+          PY
+  enable:
+    needs: review
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 14
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify exact previously deployed CI-green source and pinned SSH
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass >/dev/null
+      - name: Independently verify active DE89 personal DNS target and unchanged public DNS
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'bash -se' <<'REMOTE'
+          set -Eeuo pipefail
+          conf=/etc/mnebydns/personal-sni/nginx.conf
+          test -s "$conf"
+          test "$(grep -Foc '10.66.77.2:8858;' "$conf")" = 1
+          test "$(grep -Foc 'default 89.125.90.101:853;' "$conf")" = 1
+          nginx -t -c "$conf" >/dev/null 2>&1
+          python3 - <<'PY'
+          import ssl,socket
+          host="aaaaaaaaaaaa.dns.mnebyvpn.site"
+          with socket.create_connection(("10.66.77.2",8858),timeout=8) as raw:
+              raw.settimeout(8)
+              with ssl.create_default_context().wrap_socket(raw,server_hostname=host) as s:
+                  assert s.getpeercert()
+          print("PRIVATE_OWNER_NEW_GATEWAY_STRICT_TLS=PASS")
+          PY
+          echo PRIVATE_OWNER_SNI_AND_LEGACY_DEFAULT=VERIFIED
+          REMOTE
+      - name: Upload reviewed Telegram issuance script and existing signed canary promoter to RU188
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e scp "${opts[@]}" scripts/mnebyvpn-main-bot-promote.sh \
+            root@188.120.254.223:/tmp/mnebyvpn-main-bot-promote-owner-video-20261117.sh
+          sshpass -e scp "${opts[@]}" scripts/mnebydns-owner-smartdns-issuance-enable-20261117.sh \
+            root@188.120.254.223:/tmp/mnebydns-owner-smartdns-issuance-enable-20261117.sh
+      - name: Enable new owner Smart DNS links with canary bot and automatic rollback
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 \
+            'bash /tmp/mnebydns-owner-smartdns-issuance-enable-20261117.sh enable'
+      - name: Verify public DNS still accepts verified wildcard and free DNS
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import ssl,socket,struct,secrets
+          for host in ("dns.mnebyvpn.site","aaaaaaaaaaaa.dns.mnebyvpn.site"):
+              with socket.create_connection(("89.125.90.101",853),timeout=10) as raw:
+                  raw.settimeout(10)
+                  with ssl.create_default_context().wrap_socket(raw,server_hostname=host) as tls:
+                      assert tls.getpeercert()
+                      if host.startswith("aaaaaaaaaaaa."):
+                          print("PERSONAL_DOT_WILDCARD_TLS=PASS")
+                          continue
+                      ident=secrets.randbelow(65535)
+                      q=struct.pack("!HHHHHH",ident,256,1,0,0,0)+b"\x07example\x03com\x00"+struct.pack("!HH",1,1)
+                      tls.sendall(struct.pack("!H",len(q))+q)
+                      head=tls.recv(2)
+                      assert len(head)==2
+                      n=struct.unpack("!H",head)[0]
+                      ans=b""
+                      while len(ans)<n:
+                          part=tls.recv(n-len(ans))
+                          assert part
+                          ans+=part
+                      assert int.from_bytes(ans[:2],"big")==ident
+                      assert ans[3]&15==0
+                      print("PUBLIC_FREE_DOT_QUERY=PASS")
+          PY
+          echo OWNER_SMARTDNS_LINK_ISSUANCE_RELEASE=PASS
