@@ -16,6 +16,7 @@ import uuid
 
 NODEKIT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(NODEKIT))
+import forward_command as nodekit_forward
 spec = importlib.util.spec_from_file_location(
     "nodekit_vpn_supervisor", NODEKIT / "vpn_supervisor.py")
 m = importlib.util.module_from_spec(spec)
@@ -303,6 +304,45 @@ class AccessSupervisorTest(unittest.TestCase):
             self.assertTrue(inspected["result"]["enabled"])
             self.assertEqual(inspected["result"]["credential"],
                              agent.state[self.entitlement]["credential"])
+
+    def test_real_ed25519_ssh_bridge_to_local_supervisor_expiry_and_revoke(self):
+        # Only the SSH hop is simulated; everything after its root-only
+        # command uses actual OpenSSL Ed25519 and UNIX socket transport.
+        agent = self.new_agent()
+        agent.start()
+        with m.LocalControl(agent) as server:
+            server.timeout = 2
+
+            def send(command):
+                listener = threading.Thread(target=server.handle_request,
+                                            daemon=True)
+                listener.start()
+                payload = json.dumps(command).encode() + b"\n"
+                response = nodekit_forward.deliver(
+                    self.node_id, payload, run_root=self.run_root,
+                    require_root=False)
+                listener.join(timeout=3)
+                return json.loads(response)["result"]
+
+            issued = send(self.signed(revision=1, enabled=True))
+            self.assertEqual(issued["status"], "applied")
+            inspected = send(self.signed(op="inspect"))
+            self.assertTrue(inspected["enabled"])
+            self.assertEqual(inspected["credential"],
+                             agent.state[self.entitlement]["credential"])
+            old_child = agent.child
+            revoked = send(self.signed(revision=2, enabled=False))
+            self.assertEqual(revoked["revision"], 2)
+            self.assertTrue(old_child.killed)
+            self.assertFalse(agent.state[self.entitlement]["enabled"])
+            stale = send(self.signed(revision=1, enabled=True))
+            self.assertEqual(stale["status"], "stale")
+            self.assertFalse(agent.state[self.entitlement]["enabled"])
+            send(self.signed(revision=3, enabled=True))
+            self.wall[0] += 70
+            self.mono[0] += 70
+            agent.sweep()
+            self.assertFalse(agent.state[self.entitlement]["enabled"])
 
     def test_stored_duplicate_credential_fails_closed_on_startup(self):
         entry = {"revision": 1, "enabled": False,

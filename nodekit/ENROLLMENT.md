@@ -30,8 +30,11 @@
 
 ## Новый VPS: подготовка REALITY без включения службы
 
-Workflow `MNEBYVPN prepare NEW VPS (no production changes)` теперь имеет четыре отдельных режима: `preflight`, `stage`, `identity`, `vpn_stage`. Запускать на одном проверенном НОВОМ VPS строго в таком порядке, и только после pinning SSH host key. При выборе `identity` на сервере генерируется уникальный Ed25519 identity локально посредством OpenSSL; приватный PKCS8 никогда не загружается в GitHub.
+Workflow `MNEBYVPN NEW VPS bootstrap (old production untouched)` имеет режимы `preflight`, `stage`, `identity`, `vpn_stage`, `supervisor_install`, `supervisor_canary`. Запускать на одном проверенном НОВОМ VPS строго в таком порядке, и только после pinning SSH host key. При выборе `identity` на сервере генерируется уникальный Ed25519 identity локально посредством OpenSSL; приватный PKCS8 никогда не загружается в GitHub.
 
 `vpn_stage` готовит **только VPN Xray REALITY**, не DNS/WireGuard/Nginx. Предусловие: на данном новом VPS уже существует root-owned исполняемый `/opt/xray/xray`, а пользователь указал **независимо проверенный SHA-256 этого бинарника** в поле `xray_sha256`. Проверка sha обязательна; отсутствие бинарника = отказ, не попытка скачать непроверенный пакет. Скрипт создаёт отдельные REALITY X25519 ключи/short ID под защищённым каталогом узла, `xray-config.json` (без клиентов), `vpn-stage-manifest.json`; проверяет `xray run -test -config`. Не пишет `/etc`, не включает systemd, не меняет фаервол, не копирует старые UUID или ключи. Вывод содержит только публичную информацию и статус `staged`, который **не означает E2E**.
 
 Выполнение `vpn_stage` **не устанавливает** Xray с нуля и **не создаёт** контуры подписок/сроков. Следующий обязательный слой — ограниченный supervisor для каждого nodekit-owned VPN с автономным hard expiry/revocation, защищённый канал управления controller→node, исключительный ролл-аут canary и независимые E2E из пользовательских сетей. Ни одна ссылка подписки не должна включать такой узел до выполнения этих условий.
+
+
+Дополнение 2026-11-17: `supervisor_install`/`supervisor_canary` и локальный SSH-bridge описаны в `nodekit/SUPERVISOR.md`; не путать пустой canary с проверкой реального пользовательского подключения.

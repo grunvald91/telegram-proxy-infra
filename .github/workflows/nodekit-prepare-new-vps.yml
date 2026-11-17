@@ -1,5 +1,5 @@
-# Manual-only preflight, staging, and unique identity on a NEW VPS; no services installed.
-name: MNEBYVPN prepare NEW VPS (no production changes)
+# Manual-only NEW VPS preflight, identity, install or isolated empty VPN canary.
+name: MNEBYVPN NEW VPS bootstrap (old production untouched)
 on:
   workflow_dispatch:
     inputs:
@@ -25,8 +25,14 @@ on:
           - stage
           - identity
           - vpn_stage
+          - supervisor_install
+          - supervisor_canary
       xray_sha256:
-        description: Preverified SHA256 of root-owned /opt/xray/xray (for vpn_stage only)
+        description: Preverified SHA256 of pinned Xray (vpn_stage and supervisor modes)
+        required: false
+        type: string
+      controller_public_sha256:
+        description: Independently pinned SHA256 of controller Ed25519 public SPKI (supervisor modes)
         required: false
         type: string
 permissions:
@@ -44,6 +50,8 @@ jobs:
       ADVERTISE_HOST: ${{ inputs.advertise_host }}
       MODE: ${{ inputs.mode }}
       XRAY_SHA256: ${{ inputs.xray_sha256 }}
+      CONTROLLER_PUBLIC_SHA256: ${{ inputs.controller_public_sha256 }}
+      CONTROLLER_PUBLIC_B64: ${{ secrets.MNEBYVPN_CONTROLLER_ACCESS_PUB_SPKI_B64 }}
       NEW_NODE_SSH_KEY: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_KEY }}
       NEW_NODE_KNOWN_HOSTS: ${{ secrets.MNEBYVPN_NEW_NODE_KNOWN_HOSTS }}
     steps:
@@ -60,10 +68,10 @@ jobs:
           test "$INPUT_HOST" != '89.125.90.101'
           test "$INPUT_HOST" != '188.120.254.223'
           [[ "$NODE_ID" =~ ^[a-z0-9][a-z0-9-]{2,39}$ ]]
-          [[ "$MODE" == 'preflight' || "$MODE" == 'stage' || "$MODE" == 'identity' || "$MODE" == 'vpn_stage' ]]
-          if [[ "$MODE" == 'vpn_stage' ]]; then
+          [[ "$MODE" == 'preflight' || "$MODE" == 'stage' || "$MODE" == 'identity' || "$MODE" == 'vpn_stage' || "$MODE" == 'supervisor_install' || "$MODE" == 'supervisor_canary' ]]
+          if [[ "$MODE" == 'vpn_stage' || "$MODE" == 'supervisor_install' || "$MODE" == 'supervisor_canary' ]]; then
             [[ "$XRAY_SHA256" =~ ^[a-f0-9]{64}$ ]] || {
-              echo '::error::vpn_stage requires an independently verified Xray SHA256'; exit 2;
+              echo '::error::Supervisor/Xray staging requires a preverified SHA256'; exit 2;
             }
           fi
           # Resolve exactly once and use the resulting IP in every SSH/SCP.
@@ -75,6 +83,24 @@ jobs:
           printf '%s\n' "$NEW_NODE_KNOWN_HOSTS" > "$RUNNER_TEMP/nodekit-credentials/known_hosts"
           chmod 600 "$RUNNER_TEMP/nodekit-credentials/"*
           ssh-keygen -F "$INPUT_HOST" -f "$RUNNER_TEMP/nodekit-credentials/known_hosts" >/dev/null
+          if [[ "$MODE" == 'supervisor_install' || "$MODE" == 'supervisor_canary' ]]; then
+            [[ "$CONTROLLER_PUBLIC_SHA256" =~ ^[a-f0-9]{64}$ ]]
+            test -n "$CONTROLLER_PUBLIC_B64"
+            python3 - <<'PY'
+          import base64,hashlib,os,pathlib,re
+          data=os.environ["CONTROLLER_PUBLIC_B64"].strip()
+          if not re.fullmatch(r"[A-Za-z0-9+/]+={0,2}",data):
+              raise SystemExit("Invalid controller public key encoding")
+          raw=base64.b64decode(data,validate=True)
+          if len(raw)!=44 or raw[:12]!=bytes.fromhex("302a300506032b6570032100"):
+              raise SystemExit("Not a controller Ed25519 SPKI DER public key")
+          if hashlib.sha256(raw).hexdigest()!=os.environ["CONTROLLER_PUBLIC_SHA256"]:
+              raise SystemExit("Controller public key does not match pinned SHA256")
+          path=pathlib.Path(os.environ["RUNNER_TEMP"])/"nodekit-credentials"/"controller-access.spki"
+          fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+          with os.fdopen(fd,"wb") as file:file.write(raw)
+          PY
+          fi
           python3 - <<'PY'
           import json, os, pathlib
           data = {
@@ -117,7 +143,16 @@ jobs:
             -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known" \
             -o HostName="$TARGET_IP" -o HostKeyAlias="$INPUT_HOST" \
             -o ConnectTimeout=12 nodekit/nodekit.py nodekit/identity.py nodekit/vpn_stage.py \
+            nodekit/vpn_supervisor.py nodekit/install_supervisor.py nodekit/forward_command.py \
+            nodekit/systemd/mnebyvpn-nodekit-vpn@.service.example \
             "$RUNNER_TEMP/nodekit-credentials/spec.json" "$target:$remote_dir/"
+          if [[ "$MODE" == 'supervisor_install' || "$MODE" == 'supervisor_canary' ]]; then
+            scp -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes \
+              -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known" \
+              -o HostName="$TARGET_IP" -o HostKeyAlias="$INPUT_HOST" \
+              -o ConnectTimeout=12 "$RUNNER_TEMP/nodekit-credentials/controller-access.spki" \
+              "$target:$remote_dir/"
+          fi
           if [[ "$MODE" == 'identity' ]]; then
             ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes \
               -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known" \
@@ -130,6 +165,14 @@ jobs:
             -o HostName="$TARGET_IP" -o HostKeyAlias="$INPUT_HOST" \
               -o ConnectTimeout=12 "$target" \
               "python3 '$remote_dir/vpn_stage.py' --node-id '$NODE_ID' --xray /opt/xray/xray --xray-sha256 '$XRAY_SHA256'"
+          elif [[ "$MODE" == 'supervisor_install' || "$MODE" == 'supervisor_canary' ]]; then
+            install_mode=install
+            if [[ "$MODE" == 'supervisor_canary' ]]; then install_mode=canary; fi
+            ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes \
+              -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known" \
+              -o HostName="$TARGET_IP" -o HostKeyAlias="$INPUT_HOST" \
+              -o ConnectTimeout=12 "$target" \
+              "python3 '$remote_dir/install_supervisor.py' --node-id '$NODE_ID' --source-dir '$remote_dir' --controller-public '$remote_dir/controller-access.spki' --controller-public-sha256 '$CONTROLLER_PUBLIC_SHA256' --xray /opt/xray/xray --xray-sha256 '$XRAY_SHA256' --mode '$install_mode'"
           else
             ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes \
               -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known" \
@@ -137,4 +180,4 @@ jobs:
               -o ConnectTimeout=12 "$target" \
               "python3 '$remote_dir/nodekit.py' '$MODE' --spec '$remote_dir/spec.json'"
           fi
-          echo "No packages/services changed; success does not imply public readiness."
+          echo "The new VPS is NOT published in subscriptions; success does not imply end-to-end readiness."
