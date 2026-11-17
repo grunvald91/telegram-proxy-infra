@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Obtain a test-video URL through DE89, then read a bounded media range via SmartDNS."""
-import json, os, pathlib, subprocess, sys, time, urllib.parse
+import json, os, pathlib, re, subprocess, sys, time, urllib.parse
 def emit(k,v):print(k+'='+json.dumps(v,sort_keys=True),flush=True)
 start=time.monotonic()
 cmd=[sys.executable,'-m','yt_dlp','--proxy','socks5://127.0.0.1:10889','--js-runtimes','node',
@@ -11,8 +11,10 @@ except subprocess.TimeoutExpired:
     emit('MEDIA_EXTRACTION',{'success':False,'reason':'timeout','media_transfer_tested':False});raise SystemExit(0)
 if p.returncode:
     err=p.stderr.lower()
+    details=re.sub(r'https?://[^\s]+','<url>',p.stderr)
+    details=re.sub(r'(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])','<ip>',details)[-1600:]
     reason='login_or_bot_challenge' if ('sign in' in err or 'bot' in err) else 'extractor_failed'
-    emit('MEDIA_EXTRACTION',{'success':False,'reason':reason,'media_transfer_tested':False,'elapsed_ms':round((time.monotonic()-start)*1000)})
+    emit('MEDIA_EXTRACTION',{'success':False,'reason':reason,'sanitized_error':details,'media_transfer_tested':False,'elapsed_ms':round((time.monotonic()-start)*1000)})
     raise SystemExit(0)
 info=json.loads(p.stdout)
 formats=[f for f in info.get('formats',[]) if '.googlevideo.com' in (urllib.parse.urlsplit(f.get('url','')).hostname or '') and f.get('protocol') in ('http','https')]

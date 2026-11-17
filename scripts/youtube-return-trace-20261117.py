@@ -18,6 +18,9 @@ TARGET_SUFFIX = (".googlevideo.com", ".youtube.com", ".ytimg.com", ".googleapis.
 PUBLIC = "89.125.90.101"
 LOOP = "127.0.0.1"
 CAPTURE_SECONDS = 90
+# Retain at least the entire 4 KiB reassembly budget, even for a GRO frame.
+CAPTURE_PREFIX_BYTES = 8192
+REASSEMBLY_BYTES = 4096
 HASH_BYTES = 64
 MAX_SEGMENTS = 24
 
@@ -136,7 +139,7 @@ def run():
     salt=os.urandom(32)
     filt="tcp and ((host "+PUBLIC+" and port 443) or (host "+LOOP+" and port 15449))"
     cmd=["timeout",str(CAPTURE_SECONDS),"tcpdump","-i","any","-n","-U",
-         "-B","32768","-s","0","-w","-",filt]
+         "-B","65536","-s","8192","-w","-",filt]
     print("TARGET_CAPTURE_TYPE=YOUTUBE_TLS_ONLY",flush=True)
     print("TARGET_CAPTURE_NO_PERSISTENT_PACKETS=true",flush=True)
     print("TARGET_CAPTURE_SECONDS="+str(CAPTURE_SECONDS),flush=True)
@@ -155,6 +158,7 @@ def run():
     pilot_reply=collections.Counter()
     pilot_first={}
     truncated=0
+    unsafe_prefixes=0
     frames=0
     print("TARGET_CAPTURE_ARMED_UTC="+time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime()),flush=True)
     try:
@@ -172,6 +176,7 @@ def run():
             if data is None:raise RuntimeError("PCAP_PARTIAL_RECORD")
             frames+=1
             truncated+=int(cap<orig)
+            if cap<orig and cap < REASSEMBLY_BYTES + 512:unsafe_prefixes+=1
             pkt=decode(data,link)
             if pkt is None:continue
             src,sp,dst,dp,seq,flags,window,plen,ack,ifidx,pkttype,body=pkt
@@ -224,6 +229,8 @@ def run():
     dropped=re.search(r"(\d+) packets dropped by kernel",capture_stats)
     print("CAPTURE_KERNEL_DROPS="+(dropped[1] if dropped else "UNKNOWN"),flush=True)
     print("CAPTURE_TRUNCATED_FRAMES="+str(truncated),flush=True)
+    print("CAPTURE_PREFIX_BYTES="+str(CAPTURE_PREFIX_BYTES),flush=True)
+    print("CAPTURE_UNSAFE_SHORT_PREFIXES="+str(unsafe_prefixes),flush=True)
     print("TARGET_CAPTURE_FINISHED_UTC="+time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime()),flush=True)
     print("TARGET_CAPTURE_FRAMES="+str(frames),flush=True)
     print("TARGET_CAPTURE_EXIT="+str(rc),flush=True)
@@ -317,6 +324,8 @@ def run():
               +" PUBLIC_RESPONSE_PKTS="+str(item["server_pkts"])
               +" SYNACK_COUNT="+str(item["synack"])
               +" SYNACK_ADVERTISED_WINDOW="+str(item["synack_win"])
+              +" SERVER_WAN_ACK_COVERS_FULL_TLS_RECORD="+str(any(expected <= ((ack-base_seq) & 0xffffffff) < (1<<31) for ack,when,win in item["pure_ack_events"] if when>=item["first"])).lower()
+              +" TLS_RECORD_WITHIN_REASSEMBLY_BUDGET="+str(expected<=REASSEMBLY_BYTES).lower()
               +" PURE_WAN_ACK_SEEN="+str(saw_ack).lower()
               +" PURE_WAN_ACK_EVENTS="+str(len(item["pure_ack_events"]))
               +" FIRST_ACK_DELAY_MS="+(str(round((qualifying[0][0]-item["first"])*1000))
@@ -358,11 +367,10 @@ def run():
     print("TLS_SNI_INCOMPLETE_OR_UNRECOGNIZED_FLOWS="+str(unknown_count),flush=True)
     print("PUBLIC_TLS_CLIENT_NO_RESPONSE_FLOWS="+str(all_no_reply),flush=True)
     print("TARGET_CAPTURE_NO_SERVER_CHANGES=true",flush=True)
-    if dropped is None or int(dropped[1])!=0 or truncated:
-        raise RuntimeError("CAPTURE_LOSS_OR_TRUNCATION_INVALIDATES_ABSENCE_CLAIMS")
+    if dropped is None or int(dropped[1])!=0 or unsafe_prefixes:
+        raise RuntimeError("CAPTURE_LOSS_OR_UNSAFE_PREFIX_INVALIDATES_ABSENCE_CLAIMS")
     if not frames or rc not in (0,124):
         raise RuntimeError("TARGET_CAPTURE_NOT_VALID")
 
 if __name__=="__main__":
     run()
-

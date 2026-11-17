@@ -1,7 +1,7 @@
 name: DE89 bounded media range and phone stream capture
 on:
   push:
-    branches: [diag/youtube-de89-media-20261117]
+    branches: [diag/youtube-de89-media-quality-20261117]
     paths: ['.github/workflows/youtube-de89-media-20261117.yml','scripts/youtube-de89-media-20261117.py']
 permissions: {contents: read}
 concurrency:
@@ -55,6 +55,7 @@ jobs:
             -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -o HostKeyAlgorithms=ssh-ed25519 \
             -o "UserKnownHostsFile=$GITHUB_WORKSPACE/ops/mnebydns-owner-ssh-known_hosts" \
             -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@89.125.90.101
+          "$RUNNER_TEMP/de-only" 'systemctl show mnebydns-googlepilot -p StandardOutput -p StandardError -p LogNamespace'
           "$RUNNER_TEMP/media-venv/bin/python" -B scripts/youtube-de89-media-20261117.py
       - name: Retrieve bounded stream summary
         if: always()
