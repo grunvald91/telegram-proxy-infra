@@ -40,6 +40,7 @@ test('signed command travels via pinned noninteractive SSH without logging key',
       nonce:'a'.repeat(64),signature:'B'.repeat(86),
     };
     let capturedArgs,capturedBody='';
+    let remoteResponse='{"ok":true,"result":{"revision":0,"enabled":false}}\n';
     function fakeSpawn(exe,args,options){
       assert.equal(exe,'ssh');
       assert.deepEqual(options.stdio,['pipe','pipe','pipe']);
@@ -52,7 +53,7 @@ test('signed command travels via pinned noninteractive SSH without logging key',
       proc.stdin.on('data',chunk=>{capturedBody+=chunk.toString();});
       proc.stdin.on('finish',()=>{
         queueMicrotask(()=>{
-          proc.stdout.write('{"ok":true,"result":{"revision":0,"enabled":false}}\n');
+          proc.stdout.write(remoteResponse);
           proc.emit('close',0);
         });
       });
@@ -68,9 +69,34 @@ test('signed command travels via pinned noninteractive SSH without logging key',
     assert.ok(capturedArgs.includes('HostKeyAlias=new-node.example.net'));
     assert.ok(capturedArgs.includes('StrictHostKeyChecking=yes'));
     assert.ok(capturedArgs.includes('BatchMode=yes'));
+    assert.ok(capturedArgs.includes('ClearAllForwardings=yes'));
+    assert.ok(capturedArgs.includes('ProxyCommand=none'));
+    assert.ok(capturedArgs.includes('/dev/null'));
+    assert.equal(capturedArgs.at(-1),'false');
+    assert.ok(!capturedArgs.join(' ').includes('forward_command.py'));
     assert.equal(JSON.parse(capturedBody).nonce,cmd.nonce);
     assert.ok(!capturedArgs.join(' ').includes(cmd.nonce));
     assert.ok(!capturedArgs.join(' ').includes(cmd.signature));
+    const apply={...cmd,op:'apply',revision:2,enabled:false,expiresAt:null};
+    remoteResponse='{"ok":true,"result":{"status":"stale","revision":3}}\n';
+    await assert.rejects(deliverSignedNodeAccess({
+      host:'new-node.example.net',ip:'1.1.1.1',nodeId,
+      identityFile:key,knownHostsFile:known,command:apply,
+      spawnProcess:fakeSpawn,
+    }),NodekitTransportError);
+    remoteResponse='{"ok":true,"result":{"status":"applied","revision":2}}\n';
+    const applied=await deliverSignedNodeAccess({
+      host:'new-node.example.net',ip:'1.1.1.1',nodeId,
+      identityFile:key,knownHostsFile:known,command:apply,
+      spawnProcess:fakeSpawn,
+    });
+    assert.equal(applied.status,'applied');
+    remoteResponse='{"ok":true,"result":{"revision":1,"enabled":true,"expiresAt":"2026-11-17T13:00:00.000Z","credential":"bad"}}\n';
+    await assert.rejects(deliverSignedNodeAccess({
+      host:'new-node.example.net',ip:'1.1.1.1',nodeId,
+      identityFile:key,knownHostsFile:known,command:cmd,
+      spawnProcess:fakeSpawn,
+    }),NodekitTransportError);
     chmodSync(key,0o644);
     await assert.rejects(deliverSignedNodeAccess({
       host:'new-node.example.net',ip:'1.1.1.1',nodeId,
