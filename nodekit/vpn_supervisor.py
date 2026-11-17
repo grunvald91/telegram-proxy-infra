@@ -372,12 +372,23 @@ class NodeAccessSupervisor:
             time.sleep(0.1)
         raise AccessError("Dedicated Xray child did not listen")
 
-    def _apply_state(self, candidate: dict) -> None:
-        """Validate before switching; on any later failure, stop (never fail open)."""
-        staged = self._render_candidate(candidate)
+    def _apply_state(self, candidate: dict, *, critical: bool = False) -> None:
+        """For revoke/expiry stop old service FIRST; no stale-user rollback."""
+        staged = None
+        if not critical:
+            # An enable/extension may be validated without disturbing old
+            # authorized users. No state or service changes on validation error.
+            staged = self._render_candidate(candidate)
         try:
-            atomic_json(self.state_path, candidate)
-            self._stop()
+            if critical:
+                # Durable revocation BEFORE any risky validation/restart:
+                # a crash/reboot may never resurrect revoked/expired users.
+                atomic_json(self.state_path, candidate)
+                self._stop()
+                staged = self._render_candidate(candidate)
+            else:
+                atomic_json(self.state_path, candidate)
+                self._stop()
             os.replace(staged, self.config_path)
             self._start()
             self.state = candidate
@@ -386,7 +397,8 @@ class NodeAccessSupervisor:
             self._stop()
             raise
         finally:
-            staged.unlink(missing_ok=True)
+            if staged is not None:
+                staged.unlink(missing_ok=True)
 
     def start(self) -> None:
         with self.lock:
@@ -414,7 +426,7 @@ class NodeAccessSupervisor:
                     changed = True
             if changed:
                 # Fail closed even if Xray fails to restart with fewer clients.
-                self._apply_state(fresh)
+                self._apply_state(fresh, critical=True)
             elif self.child is None or self.child.poll() is not None:
                 self.faulted = True
                 self._stop()
@@ -452,7 +464,11 @@ class NodeAccessSupervisor:
                 "expiresAt": req["expiresAt"] if enabled else None,
                 "credential": row["credential"] if row else str(uuid.uuid4()),
             }
-            self._apply_state(candidate)
+            shrinking_expiry = bool(row and row["enabled"] and enabled and
+                                    iso_to_time(req["expiresAt"]) <
+                                    iso_to_time(row["expiresAt"]))
+            self._apply_state(candidate,
+                              critical=(not enabled or shrinking_expiry))
             return {"status": "applied", "revision": rev}
 
     def shutdown(self) -> None:
