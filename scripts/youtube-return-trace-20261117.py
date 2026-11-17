@@ -22,7 +22,7 @@ CAPTURE_SECONDS = 90
 CAPTURE_PREFIX_BYTES = 8192
 REASSEMBLY_BYTES = 4096
 HASH_BYTES = 64
-MAX_SEGMENTS = 24
+MAX_SEGMENTS = 4096
 
 def read_exact(file, size):
     data=bytearray()
@@ -130,6 +130,7 @@ def join_segments(segments):
 
 def remember(chunks,seq,body):
     # A shorter retransmission must never erase bytes captured in a GRO packet.
+    if chunks and seq >= min(chunks) + REASSEMBLY_BYTES and len(join_segments(chunks)) >= REASSEMBLY_BYTES:return
     previous=chunks.get(seq,b"")
     if seq not in chunks and len(chunks)>=MAX_SEGMENTS:return
     if len(body)>len(previous):chunks[seq]=bytes(body[:16384])
@@ -318,6 +319,7 @@ def run():
               +" CLIENT_TLS_RECORD_BYTES="+str(expected)
               +" CLIENT_REASSEMBLED_BYTES="+str(len(whole))
               +" CLIENT_SEGMENT_COUNT="+str(len(item["chunks"]))
+              +" SEGMENT_RETENTION_LIMIT_REACHED="+str(len(item["chunks"])>=MAX_SEGMENTS).lower()
               +" CLIENT_HELLO_COMPLETE="+str(len(whole)>=expected).lower()
               +" PILOT_CLIENT_PREFIX_MATCH="+str(forwarded).lower()
               +" PUBLIC_RESPONSE_BYTES="+str(item["server_bytes"])
