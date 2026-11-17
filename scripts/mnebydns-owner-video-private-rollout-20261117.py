@@ -103,9 +103,14 @@ def one_record(label:str,route:str)->tuple[str,str]:
          f"{TEST_OWNER_ID},'{tokenhash}',repeat('x',54),"
          f"'{request_key}',false,clock_timestamp()+interval '10 minutes','{route}');")
     owner_database(sql)
-    status=owner_database("SELECT owner_dns_link_status('"+label+"');")
-    expected="ALLOWED_SMART_DNS" if route=="smart_dns" else "ALLOWED"
-    ensure(status==expected,"Owner DNS credential policy mismatch")
+    try:
+        status=owner_database("SELECT owner_dns_link_status('"+label+"');")
+        expected="ALLOWED_SMART_DNS" if route=="smart_dns" else "ALLOWED"
+        ensure(status==expected,"Owner DNS credential policy mismatch")
+    except Exception:
+        owner_database("DELETE FROM owner_dns_links WHERE id='"+row_id+
+                       "' AND owner_telegram_id="+str(TEST_OWNER_ID)+";")
+        raise
     return row_id,request_key
 
 def dns_query(ip:str,port:int,label:str,domain:str,typ:int=1)->tuple[int,list[str]]:
@@ -156,6 +161,8 @@ def dns_query(ip:str,port:int,label:str,domain:str,typ:int=1)->tuple[int,list[st
         if rrtype==1 and rrclass==1 and rdlen==4:
             addresses.append(socket.inet_ntoa(reply[offset:offset+4]))
         offset+=rdlen
+    if typ in (28,64,65):
+        ensure(an==0,"Unexpected video AAAA/HTTPS/SVCB answer")
     return rcode,addresses
 
 def policy_probe(endpoint_ip:str,endpoint_port:int)->None:
@@ -334,6 +341,10 @@ def rollback(stage_failure=False)->None:
         if inspect(NAME_OLD_BACKUP):
             call(["docker","rm","-f",NAME_OLD_BACKUP])
     else:
+        # Restore an interrupted name promotion too, even before state flush.
+        if inspect(PREVIOUS):
+            ensure(not inspect(ORIGINAL),"Ambiguous original/previous release names")
+            call(["docker","rename",PREVIOUS,ORIGINAL])
         if inspect(CANARY):
             call(["docker","rm","-f",CANARY])
     if st.get("firewall_created"):
