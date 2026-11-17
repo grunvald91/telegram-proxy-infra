@@ -32,11 +32,13 @@
 
 ## Подготовка через GitHub Actions (без ручного SSH)
 
-После слияния ветки доступен ручной workflow **MNEBYVPN prepare NEW VPS (no production changes)**. Он не запускается по push или pull_request. Для первого VPS требуется отдельно настроить в GitHub Actions secrets:
+После слияния ветки доступен ручной workflow **MNEBYVPN NEW VPS bootstrap (old production untouched)**. Он не запускается по push или pull_request. На начальном этапе парольная авторизация разрешена только на отдельный тестовый VPS `217.11.167.91`. Secrets должны находиться **в grunvald91/telegram-proxy-infra**, потому что GitHub Actions не читает секреты другого репозитория:
 
-- MNEBYVPN_NEW_NODE_SSH_KEY — специальный приватный SSH-ключ только для нового VPS (не ключи старых узлов).
-- MNEBYVPN_NEW_NODE_KNOWN_HOSTS — заранее проверенный pinned SSH host key для этого нового VPS; workflow не выполняет автоматическое доверие незнакомому ключу.
+- `MNEBYVPN_NEW_NODE_SSH_USER` — `root` (текущий bootstrap требует root).
+- `MNEBYVPN_NEW_NODE_SSH_PASSWORD` — пароль SSH исключительно этого тестового VPS.
+
+Workflow устанавливает `sshpass` во временном runner, подаёт пароль через переменную `SSHPASS` (не через аргумент команды) и использует `StrictHostKeyChecking=accept-new` со временным known_hosts. **Это TOFU, а не проверка подлинности сервера**: при каждом новом ephemeral runner доверие устанавливается заново. При подмене узла во время первого соединения пароль может раскрыться. Для production и нескольких VPS необходима предварительная фиксация SSH host key или отдельные scoped SSH-ключи.
 
 Запуск в Actions -> Run workflow: host, node_id, advertise_host, mode=preflight|stage. Текущий шаблон готовит только роль combined с портами DoT TCP/853, VPN TCP/2053, SNI TCP/443 и tunnel UDP/51820. Прочие роли и порты поддерживает JSON CLI, но не этот первый workflow. Для запуска требуется root SSH на новом VPS и Python 3; работающие серверы не переписываются. Вывод workflow не означает, что хотя бы одна служба установлена или клиенты переключены.
 
-Для следующего узла нельзя переиспользовать SSH ключи и идентичности VPN предыдущего узла. Позднее нужна регистрация одноразовым enrollment-токеном вместо общего GitHub secret.
+Для следующего узла нельзя переиспользовать пароль, SSH-ключи и идентичности VPN предыдущего узла. Расширение списка разрешённых хостов требует ревью и отдельного секрета каждого VPS. Позднее нужна регистрация одноразовым enrollment-токеном вместо общего GitHub secret.
