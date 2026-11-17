@@ -87,7 +87,7 @@ def make_corefile(policy: dict, node_dir: Path) -> str:
     key = node_dir / "tls" / "privkey.pem"
     lines = [
         "# MNEBYVPN isolated CoreDNS; TLS only on loopback, never public bind.",
-        "tls://127.0.0.1:8853 {",
+        "tls://.:8853 {",
         "  bind 127.0.0.1",
         f"  tls {crt} {key}",
         "  errors",
