@@ -1,5 +1,7 @@
 """Root-only command bridge: UNIX framing, permissions and node binding."""
 import importlib.util
+from contextlib import redirect_stderr
+import io
 import json
 import os
 from pathlib import Path
@@ -7,6 +9,7 @@ import socketserver
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 
 NODEKIT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("nodekit_forward",
@@ -53,14 +56,31 @@ class ForwardCommandTest(unittest.TestCase):
             (json.dumps({"nodeId": "another-node"}) + "\n").encode(),
             (good[:-1]).encode(),
             b"invalid json\n", b"x" * 4096 + b"\n",
+            (good + "\n").encode(),
         ]:
             with self.subTest(payload=payload[:35]), self.assertRaises(m.TransportError):
                 m.deliver(self.node, payload, run_root=self.root,
                           require_root=False)
+        self.root.chmod(0o777)
+        with self.assertRaises(m.TransportError):
+            m.deliver(self.node, good.encode(), run_root=self.root,
+                      require_root=False)
+        self.root.chmod(0o755)
         self.location.chmod(0o666)
         with self.assertRaises(m.TransportError):
             m.deliver(self.node, good.encode(), run_root=self.root,
                       require_root=False)
+
+
+    def test_cli_refuses_unrestricted_ssh_sessions(self):
+        for value in (None, "", "python3 forward_command.py", "true"):
+            variables = {} if value is None else {"SSH_ORIGINAL_COMMAND": value}
+            with self.subTest(original=value), patch.dict(
+                    os.environ, variables, clear=True), patch.object(
+                    __import__("sys"), "argv",
+                    ["forward_command.py", "--node-id", self.node]):
+                with redirect_stderr(io.StringIO()):
+                    self.assertEqual(m.main(), 2)
 
 
 if __name__ == "__main__":

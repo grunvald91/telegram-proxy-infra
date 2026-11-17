@@ -24,11 +24,17 @@ class RunCommands:
         self.fail_start = False
         self.fail_stop = False
         self.active = False
+        self.enabled = False
 
     def __call__(self, args, **kwargs):
         self.calls.append(args)
         if args[:2] == ["systemctl", "is-active"]:
             code = 0 if self.active else 3
+            if code and kwargs.get("check"):
+                raise subprocess.CalledProcessError(code, args)
+            return subprocess.CompletedProcess(args, code)
+        if args[:2] == ["systemctl", "is-enabled"]:
+            code = 0 if self.enabled else 1
             if code and kwargs.get("check"):
                 raise subprocess.CalledProcessError(code, args)
             return subprocess.CompletedProcess(args, code)
@@ -155,6 +161,27 @@ class BootstrapTest(unittest.TestCase):
         with self.assertRaises(m.InstallError):
             self.install()
 
+    def test_malformed_stage_shapes_refuse_without_partial_install(self):
+        node = self.stage / self.node
+        for path, invalid in [
+            (node / "manifest.json", []),
+            (node / "vpn" / "vpn-stage-manifest.json", []),
+            (node / "vpn" / "xray-config.json", []),
+            (node / "vpn" / "xray-config.json", {"inbounds": [None]}),
+            (node / "vpn" / "xray-config.json", {
+                "inbounds": [{"settings": None, "streamSettings": None}]}),
+        ]:
+            original = path.read_text()
+            with self.subTest(path=path.name, value=invalid):
+                path.write_text(json.dumps(invalid))
+                try:
+                    with self.assertRaises(m.InstallError):
+                        self.install(mode="canary", check_canary=lambda _: True)
+                    self.assertFalse(self.dest.exists())
+                    self.assertFalse(self.unit.exists())
+                finally:
+                    path.write_text(original)
+
     def test_rollback_when_systemd_start_fails_after_partial_launch(self):
         self.runner.fail_start = True
         with self.assertRaises(subprocess.CalledProcessError):
@@ -164,6 +191,19 @@ class BootstrapTest(unittest.TestCase):
         self.assertFalse((self.stage / self.node / "controller-access.spki").exists())
         self.assertTrue(any(cmd[:2] == ["systemctl", "stop"] for cmd in self.runner.calls))
         self.assertFalse(any(cmd[:2] == ["systemctl", "enable"] for cmd in self.runner.calls))
+
+    def test_existing_active_or_enabled_systemd_service_never_mutated(self):
+        for state in ("active", "enabled"):
+            with self.subTest(state=state):
+                setattr(self.runner, state, True)
+                before = len(self.runner.calls)
+                with self.assertRaisesRegex(m.InstallError, "active or enabled"):
+                    self.install(mode="canary", check_canary=lambda _: True)
+                self.assertFalse(self.dest.exists())
+                self.assertFalse(self.unit.exists())
+                self.assertFalse(any(cmd[:2] == ["systemctl", "daemon-reload"]
+                                     for cmd in self.runner.calls[before:]))
+                setattr(self.runner, state, False)
 
     def test_canary_only_after_install_and_never_enable(self):
         result = self.install(mode="canary", check_canary=lambda _: True)

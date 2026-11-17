@@ -57,18 +57,25 @@ export async function deliverSignedNodeAccess({
      Object.keys(command).sort().join(',')!==
       'enabled,expiresAt,id,issuedAt,nodeId,nonce,op,revision,signature'||
      command.nodeId!==nodeId||!NONCE.test(command.nonce??'')||
-     !SIG.test(command.signature??''))
+     !SIG.test(command.signature??'')||
+     !['apply','inspect'].includes(command.op))
     throw new NodekitTransportError('Invalid signed controller envelope');
   if(!Number.isInteger(timeoutMs)||timeoutMs<1000||timeoutMs>30000)
     throw new NodekitTransportError('Unsafe SSH timeout');
   const key=privateFile(identityFile),known=privateFile(knownHostsFile);
   const commandLine=[
-    '-T','-i',key,'-o','BatchMode=yes','-o','IdentitiesOnly=yes',
+    // Ignore ~/.ssh/config and make any unrestricted root key fail closed.
+    // Success is only possible if authorized_keys has a forced command
+    // pointing at forward_command.py for this exact node ID.
+    '-F','/dev/null','-T','-i',key,
+    '-o','BatchMode=yes','-o','IdentitiesOnly=yes',
     '-o','StrictHostKeyChecking=yes','-o','UserKnownHostsFile='+known,
+    '-o','GlobalKnownHostsFile=/dev/null','-o','UpdateHostKeys=no',
     '-o','HostName='+ip,'-o','HostKeyAlias='+host,
+    '-o','ForwardAgent=no','-o','ClearAllForwardings=yes',
+    '-o','PermitLocalCommand=no','-o','ProxyCommand=none',
     '-o','ConnectTimeout=8','-o','LogLevel=ERROR',
-    'root@'+host,'python3','/opt/mnebyvpn-nodekit/forward_command.py',
-    '--node-id',nodeId,
+    'root@'+host,'false',
   ];
   const payload=Buffer.from(JSON.stringify(command)+'\n');
   if(payload.length>4096)
@@ -105,9 +112,30 @@ export async function deliverSignedNodeAccess({
         if(!output.endsWith('\n')||output.trim().includes('\n'))
           throw new NodekitTransportError('Malformed supervisor reply');
         const parsed=JSON.parse(output);
-        if(parsed?.ok!==true||!parsed.result||typeof parsed.result!=='object')
+        if(parsed?.ok!==true||!parsed.result||
+           typeof parsed.result!=='object'||Array.isArray(parsed.result))
           throw new NodekitTransportError('Node rejected signed command');
-        finish(null,parsed.result);
+        const answer=parsed.result;
+        if(command.op==='apply'){
+          // A signed transport ACK is not proof an access change happened.
+          // In particular, status=stale MUST NOT be reported as applied.
+          if(answer.status!=='applied'||answer.revision!==command.revision)
+            throw new NodekitTransportError('Node did not apply requested revision');
+        }else if(
+          !Number.isSafeInteger(answer.revision)||answer.revision<0||
+          typeof answer.enabled!=='boolean'||(
+            answer.enabled&&(
+              typeof answer.credential!=='string'||
+              !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(
+                answer.credential)||
+              typeof answer.expiresAt!=='string'||
+              !Number.isFinite(Date.parse(answer.expiresAt))
+            )
+          )
+        ){
+          throw new NodekitTransportError('Malformed node inspection');
+        }
+        finish(null,answer);
       }catch{
         finish(new NodekitTransportError('Invalid supervisor acknowledgement'));
       }

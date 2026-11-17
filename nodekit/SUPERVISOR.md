@@ -113,3 +113,41 @@ pinned Xray has been supplied or verified; public controller key may not yet
 exist in GitHub Secrets, and the production DB-authorized controller is not
 wired to signing/SSH delivery. No real Xray client/expiry/revoke E2E and no
 country proof have been performed. The release flag stays off.
+
+## Security review: controller SSH MUST be a forced-command identity
+
+The controller MUST NOT use the broad bootstrap SSH root key. Provision a
+**separate** per-node Ed25519 SSH public key in the NEW VPS
+`/root/.ssh/authorized_keys` with its own restrictive options:
+
+```text
+restrict,command="/usr/bin/python3 /opt/mnebyvpn-nodekit/forward_command.py --node-id de-node-02" ssh-ed25519 <verified-public-key> nodekit-control-de-node-02
+```
+
+Replace `de-node-02` with that independently verified Nodekit node ID.
+Do not remove or overwrite unrelated SSH authorized_keys. The new
+`nodekit/controller-ssh.mjs` deliberately asks SSH to execute remote
+`false`. A correctly configured forced command ignores that request and
+receives `SSH_ORIGINAL_COMMAND=false`; `forward_command.py` checks that
+marker. A normal unrestricted root key instead runs `false`, produces no
+signed-transport response and **fails closed**. OpenSSH `restrict` denies
+port forwarding, agent forwarding, X11, PTY and user rc for this identity.
+The controller must keep its SSH private key on a trusted non-web host.
+
+The existing `MNEBYVPN_NEW_NODE_SSH_KEY` secret is ONLY for operator-owned
+NEW VPS bootstrap workflow; it is NOT the controller provisioning identity.
+The `MNEBYVPN_CONTROLLER_ACCESS_PUB_SPKI_B64` secret is a separate
+controller **Ed25519 signature verification PUBLIC key**, not the SSH key.
+The two identities must not be confused. Do not make the LLM/agent a signer
+or give it unrestricted SSH credentials.
+
+An apply operation is considered acknowledged only for exact
+`status=applied` and matching `revision`. A node response
+`status=stale` is a failure to apply, not a success. Inspect must
+return a valid revision and enabled state, and an active record must
+include a valid UUID and expiry. Arbitrary JSON `ok=true` is not sufficient.
+
+**Before any live use:** verify the forced-command authorized_keys entry
+on a fresh staging VPS with an independent operator; ensure unauthorised
+shell/port-forwarding requests fail and signed inspection still works.
+The current PR contains offline mocks, not evidence of a live SSHD test.

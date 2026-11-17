@@ -119,6 +119,19 @@ def validate_stage(stage_root: Path, node_id: str, xray: Path, digest: str,
     manifest = locked_json(node / "manifest.json", 4096)
     stage = locked_json(node / "vpn" / "vpn-stage-manifest.json", 4096)
     template = locked_json(node / "vpn" / "xray-config.json", 32768)
+    # An attacker-controlled or truncated JSON type must never escape as an
+    # AttributeError or permit a partial systemd installation.
+    if (not isinstance(manifest, dict) or not isinstance(stage, dict) or
+            not isinstance(template, dict)):
+        raise InstallError("Invalid staged node configuration types")
+    inbounds = template.get("inbounds")
+    if (not isinstance(inbounds, list) or len(inbounds) != 1 or
+            not isinstance(inbounds[0], dict) or
+            not isinstance(inbounds[0].get("settings"), dict) or
+            not isinstance(inbounds[0].get("streamSettings"), dict) or
+            not isinstance(manifest.get("roles"), list) or
+            not isinstance(manifest.get("listeners"), dict)):
+        raise InstallError("Malformed staged Xray configuration")
     if (manifest.get("node_id") != node_id or
             manifest.get("state") != "testing" or
             manifest.get("activation_enabled") is not False or
@@ -187,6 +200,13 @@ def install(node_id: str, source_dir: Path, controller_source: Path,
     created_dir = False
     owner_uid = 0 if require_root else os.geteuid()
     service = f"mnebyvpn-nodekit-vpn@{node_id}.service"
+    # Never turn an existing enabled or active systemd instance into a
+    # supposedly unpublished empty canary. Check BEFORE writing files.
+    for query in ("is-active", "is-enabled"):
+        state = runner(["systemctl", query, "--quiet", service],
+                       check=False, timeout=6, capture_output=True)
+        if state.returncode == 0:
+            raise InstallError("New-node service already active or enabled")
     started = False
     try:
         if install_dir.is_symlink():
@@ -209,10 +229,11 @@ def install(node_id: str, source_dir: Path, controller_source: Path,
                capture_output=True)
         if mode == "canary":
             # Refuse altering a pre-existing running service or subscriber pool.
-            existing = runner(["systemctl", "is-active", "--quiet", service],
-                              check=False, timeout=6, capture_output=True)
-            if existing.returncode == 0:
-                raise InstallError("Already active canary needs independent audit")
+            for query in ("is-active", "is-enabled"):
+                existing = runner(["systemctl", query, "--quiet", service],
+                                  check=False, timeout=6, capture_output=True)
+                if existing.returncode == 0:
+                    raise InstallError("Existing service state prevents empty canary")
             # Start can fail after partially launching a unit. Always stop
             # this just-attempted service before rolling back new files.
             started = True
