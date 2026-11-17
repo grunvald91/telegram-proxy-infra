@@ -105,20 +105,28 @@ jobs:
           if not interface:
               print('CAPTURE_UNAVAILABLE=PUBLIC_INTERFACE_NOT_FOUND',flush=True)
               sys.exit(0)
-          filt='tcp and host '+peer+' and host 89.125.90.101 and port 443'
+          filt='tcp and host 89.125.90.101 and port 443'
           cmd=['timeout','45','tcpdump','-i','any','-n','-l','-tt','-s','96','-c','60000',filt]
           flows={}
           secret=secrets.token_bytes(24)
-          regex=re.compile(r'^\s*([\d.]+)\s+IP\s+([\d.]+)[.](\d+)\s+>\s+([\d.]+)[.](\d+):.*?Flags\s+\[([^\]]+)\].*?length\s+(\d+)')
+          regex=re.compile(r'^\s*([\d.]+)\s+(?:\S+\s+)?(?:(?:In|Out)\s+)?IP\s+([\d.]+)[.](\d+)\s+>\s+([\d.]+)[.](\d+):.*?Flags\s+\[([^\]]+)\].*?length\s+(\d+)')
           print('CAPTURE_ARMED_UTC='+time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),flush=True)
           print('CAPTURE_MAX_SECONDS=45',flush=True)
           p=subprocess.Popen(cmd,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,bufsize=1)
           start=time.time()
           total=0
+          raw_lines=0
+          unmatched_lines=0
+          sample_prefix=None
           try:
               for line in p.stdout:
+                  raw_lines+=1
                   m=regex.search(line)
-                  if not m:continue
+                  if not m:
+                      unmatched_lines+=1
+                      if sample_prefix is None:
+                          sample_prefix='interface_direction_present='+str(bool(re.search(r'\s(?:In|Out)\s+IP\s+',line)))
+                      continue
                   ts,src,sport,dst,dport,flags,sz=m.groups()
                   incoming=(dst==public and dport=='443')
                   outgoing=(src==public and sport=='443')
@@ -138,7 +146,12 @@ jobs:
           finally:
               p.wait(timeout=12)
           print('CAPTURE_FINISHED_UTC='+time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),flush=True)
+          print('CAPTURE_RAW_LINES='+str(raw_lines),flush=True)
+          print('CAPTURE_UNMATCHED_LINES='+str(unmatched_lines),flush=True)
+          print('CAPTURE_SAMPLE_FORMAT='+str(sample_prefix),flush=True)
           print('CAPTURE_MATCHED_PACKETS='+str(total),flush=True)
+          if raw_lines == 0:
+              raise RuntimeError('CAPTURE_INVALID_NO_RAW_PACKETS_DURING_CONTROL_PROBES')
           print('CAPTURE_UNIQUE_FLOWS='+str(len(flows)),flush=True)
           suspects=[(peer,f) for peer,f in flows.items() if f['client_data'] and not f['server_data']]
           print('CAPTURE_FLOWS_CLIENT_DATA_WITH_NO_SERVER_DATA='+str(len(suspects)),flush=True)
