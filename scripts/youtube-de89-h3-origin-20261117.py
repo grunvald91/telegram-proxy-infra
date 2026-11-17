@@ -5,12 +5,15 @@ from aioquic.asyncio.client import connect
 from aioquic.asyncio.protocol import QuicConnectionProtocol
 from aioquic.h3.connection import H3_ALPN, H3Connection
 from aioquic.h3.events import DataReceived, HeadersReceived
+from aioquic.quic.events import StreamDataReceived
 
 class Probe(QuicConnectionProtocol):
     def __init__(self,*a,**kw):
         super().__init__(*a,**kw); self.h3=H3Connection(self._quic); self.pending={}
     def quic_event_received(self,event):
-        super().quic_event_received(event)
+        # HTTP/3 owns QUIC streams; the base byte-stream adapter creates invalid
+        # writers for peer-initiated H3 control streams and emits teardown errors.
+        if not isinstance(event,StreamDataReceived):super().quic_event_received(event)
         for item in self.h3.handle_event(event):
             if not isinstance(item,(HeadersReceived,DataReceived)):continue
             p=self.pending.get(item.stream_id)
