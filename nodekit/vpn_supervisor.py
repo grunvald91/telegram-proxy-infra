@@ -14,6 +14,7 @@ import copy
 import datetime as dt
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import pwd
@@ -76,9 +77,12 @@ def validate_request(req: object, node_id: str, now: float) -> dict:
         raise AccessError("Malformed signed access request")
     if req["nodeId"] != node_id or req["op"] not in ("apply", "inspect"):
         raise AccessError("Unknown node or operation")
-    if (not isinstance(req["id"], str) or
-            str(uuid.UUID(req["id"])) != req["id"]):
-        raise AccessError("Invalid entitlement UUID")
+    try:
+        if (not isinstance(req["id"], str) or
+                str(uuid.UUID(req["id"])) != req["id"]):
+            raise AccessError("Invalid entitlement UUID")
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise AccessError("Invalid entitlement UUID") from exc
     if not isinstance(req["nonce"], str) or not NONCE.fullmatch(req["nonce"]):
         raise AccessError("Invalid control nonce")
     if not isinstance(req["signature"], str) or not SIG.fullmatch(req["signature"]):
@@ -270,7 +274,23 @@ class NodeAccessSupervisor:
         self.readiness = readiness or self._port_ready
         self.clock = clock
         self.monotonic = monotonic
-        self.baseline = clock()
+        self.highwater_path = self.vpn_dir / "clock-highwater.json"
+        wall_now = clock()
+        if not math.isfinite(wall_now):
+            raise AccessError("Invalid clock")
+        last_seen = wall_now
+        if self.highwater_path.exists() or self.highwater_path.is_symlink():
+            clock_record = locked_json(self.highwater_path, 512)
+            if (not isinstance(clock_record, dict) or
+                    set(clock_record) != {"last_seen_ms"} or
+                    type(clock_record["last_seen_ms"]) is not int or
+                    clock_record["last_seen_ms"] < 0):
+                raise AccessError("Invalid persisted clock high-watermark")
+            last_seen = clock_record["last_seen_ms"] / 1000
+            if wall_now + 5 < last_seen:
+                raise AccessError("System clock regressed: refusing expired access")
+        self.baseline = max(wall_now, last_seen)
+        self.last_persisted_clock = last_seen
         self.baseline_mono = monotonic()
         self.lock = threading.RLock()
         self.child = None
@@ -284,8 +304,9 @@ class NodeAccessSupervisor:
         if run_root.is_symlink():
             raise AccessError("Runtime parent may not be a symlink")
         run_root.mkdir(parents=True, exist_ok=True, mode=0o755)
-        if run_root.stat().st_mode & 0o022:
-            raise AccessError("Runtime root writable by others")
+        if (run_root.stat().st_mode & 0o022 or
+                (require_root and run_root.stat().st_uid != 0)):
+            raise AccessError("Runtime root is not a trusted root-owned directory")
         self.runtime = run_root / node_id
         if self.runtime.exists() or self.runtime.is_symlink():
             raise AccessError("Existing runtime directory requires an exclusive service instance")
@@ -379,6 +400,12 @@ class NodeAccessSupervisor:
         with self.lock:
             if self.faulted:
                 raise AccessError("Supervisor is fail-closed")
+            current = self.now()
+            if current - self.last_persisted_clock >= 15:
+                # Persist an anti-rollback watermark even if no access changes.
+                atomic_json(self.highwater_path,
+                            {"last_seen_ms": int(current * 1000)})
+                self.last_persisted_clock = current
             fresh = copy.deepcopy(self.state)
             changed = False
             for row in fresh.values():
@@ -486,11 +513,12 @@ def main() -> int:
             args.controller_pub, xray_user.pw_uid, xray_user.pw_gid)
         agent.start()
         with LocalControl(agent) as server:
-            signal.signal(signal.SIGTERM, lambda *_: server.shutdown())
-            signal.signal(signal.SIGINT, lambda *_: server.shutdown())
-            # Single-second wake-up independent of controller availability.
+            stop = threading.Event()
+            signal.signal(signal.SIGTERM, lambda *_: stop.set())
+            signal.signal(signal.SIGINT, lambda *_: stop.set())
+            # BaseServer.shutdown() would deadlock without serve_forever().
             server.timeout = 1
-            while not agent.faulted:
+            while not agent.faulted and not stop.is_set():
                 agent.sweep()
                 server.handle_request()
         return 0 if not agent.faulted else 2
