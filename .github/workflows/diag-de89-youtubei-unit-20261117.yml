@@ -1,4 +1,4 @@
-name: Validate targeted YouTubei TLS flow tracer (offline)
+name: DE89 YouTube API targeted TLS analysis (read-only)
 on:
   pull_request:
     types: [opened, synchronize]
@@ -24,3 +24,74 @@ jobs:
           set -Eeuo pipefail
           python3 -m py_compile scripts/de89-youtubei-handshake-readonly-20261117.py
           python3 -m unittest discover -s scripts/tests -p test_de89_youtubei_handshake_20261117.py -v
+  trace-youtubei:
+    needs: test-youtubei
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install SSH client and host-key pinning
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass > /dev/null
+      - name: Trace YouTube API ClientHello completeness and GooglePilot forwarding
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no
+            -o LogLevel=ERROR)
+          logfile="$RUNNER_TEMP/de89-youtubei-focused.log"
+          timeout 160s sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
+            'python3 -B -' < scripts/de89-youtubei-handshake-readonly-20261117.py \
+            > "$logfile" 2>&1 &
+          observer=$!
+          trap 'kill "$observer" 2>/dev/null || true; wait "$observer" 2>/dev/null || true' EXIT
+          armed=0
+          for n in $(seq 1 150); do
+            if grep -q '^TARGET_CAPTURE_LINKTYPE=' "$logfile" 2>/dev/null;then
+              armed=1
+              break
+            fi
+            kill -0 "$observer" 2>/dev/null || break
+            sleep 0.2
+          done
+          if [[ "$armed" != 1 ]];then
+            cat "$logfile"
+            echo 'TARGET_CAPTURE_START=FAILED'
+            exit 1
+          fi
+          echo 'TARGET_CAPTURE_START=ARMED'
+          sleep 2
+          for round in 1 2 3; do
+            set +e
+            curl -sS --noproxy '*' -4 --http1.1 --connect-timeout 7 --max-time 12 \
+              --resolve youtubei.googleapis.com:443:89.125.90.101 \
+              -o /dev/null -w "TARGET_CONTROL_ROUND=$round HTTP=%{http_code} TLS_VERIFY=%{ssl_verify_result} TIME=%{time_total}\n" \
+              https://youtubei.googleapis.com/
+            result=$?
+            set -e
+            echo "TARGET_CONTROL_CURL_EXIT_ROUND_$round=$result"
+            sleep 1
+          done
+          set +e
+          wait "$observer"
+          result=$?
+          set -e
+          trap - EXIT
+          cat "$logfile"
+          test "$result" -eq 0
+          grep -q '^TARGET_CAPTURE_NO_SERVER_CHANGES=true$' "$logfile"
+          grep -Eq '^YOUTUBEI_IDENTIFIED_FLOWS=[1-9][0-9]*$' "$logfile"
+          echo 'TARGET_CAPTURE_COMPLETE=PASS'
