@@ -17,7 +17,7 @@ import time
 TARGET = "youtubei.googleapis.com"
 PUBLIC = "89.125.90.101"
 LOOP = "127.0.0.1"
-CAPTURE_SECONDS = 110
+CAPTURE_SECONDS = 180
 HASH_BYTES = 64
 MAX_SEGMENTS = 24
 
@@ -206,6 +206,26 @@ def run():
               +" PUBLIC_RESPONSE_PKTS="+str(item["server_pkts"])
               +" SYNACK_COUNT="+str(item["synack"])
               +" SYNACK_ADVERTISED_WINDOW="+str(item["synack_win"]),flush=True)
+    other_sni_no_reply=0
+    incomplete_no_reply=0
+    complete_no_reply=0
+    unreadable_no_reply=0
+    first_segment_1448_no_reply=0
+    for key,item in public.items():
+        whole=join_segments(item["chunks"])
+        if len(whole)<9 or whole[0]!=22 or whole[5]!=1:continue
+        if item["server_bytes"]:continue
+        needed=5+int.from_bytes(whole[3:5],"big")
+        if len(whole)<needed:incomplete_no_reply+=1
+        else:complete_no_reply+=1
+        if len(whole)==1448:first_segment_1448_no_reply+=1
+        if tls_sni(whole) is None:unreadable_no_reply+=1
+        elif tls_sni(whole)!=TARGET:other_sni_no_reply+=1
+    print("NO_RESPONSE_TLS_RECORD_INCOMPLETE="+str(incomplete_no_reply),flush=True)
+    print("NO_RESPONSE_TLS_RECORD_COMPLETE="+str(complete_no_reply),flush=True)
+    print("NO_RESPONSE_TLS_RECEIVED_EXACTLY_1448="+str(first_segment_1448_no_reply),flush=True)
+    print("NO_RESPONSE_TLS_SNI_UNREADABLE="+str(unreadable_no_reply),flush=True)
+    print("NO_RESPONSE_TLS_OTHER_SNI="+str(other_sni_no_reply),flush=True)
     print("YOUTUBEI_IDENTIFIED_FLOWS="+str(target_count),flush=True)
     print("TLS_SNI_INCOMPLETE_OR_UNRECOGNIZED_FLOWS="+str(unknown_count),flush=True)
     print("PUBLIC_TLS_CLIENT_NO_RESPONSE_FLOWS="+str(all_no_reply),flush=True)
