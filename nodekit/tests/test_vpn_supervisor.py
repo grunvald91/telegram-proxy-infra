@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import threading
 import subprocess
 import sys
 import tempfile
@@ -207,6 +208,7 @@ class AccessSupervisorTest(unittest.TestCase):
             agent.request(self.signed(revision=2, enabled=False))
         self.assertTrue(agent.faulted)
         self.assertFalse(agent.child or any(p.alive for p in self.children))
+        self.assertTrue(self.children[-1].killed or self.children[-2].killed)
         persisted = json.loads(agent.state_path.read_text())
         self.assertFalse(persisted[self.entitlement]["enabled"])
         self.assertIsNone(persisted[self.entitlement]["expiresAt"])
@@ -269,6 +271,49 @@ class AccessSupervisorTest(unittest.TestCase):
         recovered = self.new_agent()
         recovered.start()
         self.assertTrue(recovered.state[self.entitlement]["enabled"])
+
+    def test_root_only_unix_control_roundtrip_and_failed_signature(self):
+        agent = self.new_agent()
+        agent.start()
+        with m.LocalControl(agent) as server:
+            self.assertEqual(agent.socket_path.stat().st_mode & 0o777, 0o600)
+            server.timeout = 2
+            def ask(body):
+                accept = threading.Thread(target=server.handle_request, daemon=True)
+                accept.start()
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+                    connection.settimeout(3)
+                    connection.connect(str(agent.socket_path))
+                    connection.sendall(json.dumps(body).encode() + b"\n")
+                    raw = bytearray()
+                    while not raw.endswith(b"\n"):
+                        raw.extend(connection.recv(4096))
+                accept.join(timeout=2)
+                return json.loads(raw)
+            valid = self.signed()
+            good = ask(valid)
+            self.assertTrue(good["ok"])
+            self.assertEqual(good["result"]["revision"], 1)
+            bad = ask({**valid, "enabled": False})
+            self.assertFalse(bad["ok"])
+            self.assertEqual(
+                bad["error"], "NODEKIT_PROVISIONING_RETRY_REQUIRED")
+            inspected = ask(self.signed(op="inspect"))
+            self.assertTrue(inspected["ok"])
+            self.assertTrue(inspected["result"]["enabled"])
+            self.assertEqual(inspected["result"]["credential"],
+                             agent.state[self.entitlement]["credential"])
+
+    def test_stored_duplicate_credential_fails_closed_on_startup(self):
+        entry = {"revision": 1, "enabled": False,
+                 "expiresAt": None, "credential": str(uuid.uuid4())}
+        other = str(uuid.uuid4())
+        (self.vpn / "access-state.json").write_text(json.dumps({
+            self.entitlement: entry, other: dict(entry),
+        }))
+        (self.vpn / "access-state.json").chmod(0o600)
+        with self.assertRaises(m.AccessError):
+            self.new_agent()
 
     def test_unpublished_stage_and_exact_xray_binary_required(self):
         self.xray.write_bytes(b"tampered" + b"0" * 20000)

@@ -174,6 +174,7 @@ def atomic_json(path: Path, value: dict) -> None:
 def validate_state(table: object) -> dict:
     if not isinstance(table, dict) or len(table) > MAX_USERS:
         raise AccessError("Invalid state table size")
+    credentials = set()
     for user_id, row in table.items():
         try:
             if str(uuid.UUID(user_id)) != user_id:
@@ -192,6 +193,9 @@ def validate_state(table: object) -> dict:
                 raise AccessError("Invalid stored credential")
         except ValueError as exc:
             raise AccessError("Invalid stored credential") from exc
+        if row["credential"] in credentials:
+            raise AccessError("Duplicate subscriber credential is unsafe")
+        credentials.add(row["credential"])
         if row["enabled"]:
             iso_to_time(row["expiresAt"])
         elif row["expiresAt"] is not None:
@@ -221,6 +225,10 @@ class NodeAccessSupervisor:
             raise AccessError("Invalid Nodekit ID")
         if require_root and os.geteuid() != 0:
             raise AccessError("Nodekit supervisor requires root")
+        if (not isinstance(child_uid, int) or not isinstance(child_gid, int) or
+                child_uid < 0 or child_gid < 0 or
+                (require_root and (child_uid == 0 or child_gid == 0))):
+            raise AccessError("Xray child must have a nonroot dedicated UID and GID")
         _private_dir(stage_root, require_root)
         self.node_dir = stage_root / node_id
         _private_dir(self.node_dir, require_root)
@@ -345,14 +353,20 @@ class NodeAccessSupervisor:
             path.unlink(missing_ok=True)
             raise
 
-    def _stop(self) -> None:
+    def _stop(self, *, hard: bool = False) -> None:
         if self.child is not None and self.child.poll() is None:
-            self.child.terminate()
-            try:
-                self.child.wait(timeout=3)
-            except subprocess.TimeoutExpired:
+            if hard:
+                # Revoke/expiry must terminate existing TLS/data sessions,
+                # not wait for Xray to drain its graceful shutdown window.
                 self.child.kill()
                 self.child.wait(timeout=2)
+            else:
+                self.child.terminate()
+                try:
+                    self.child.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    self.child.kill()
+                    self.child.wait(timeout=2)
         self.child = None
 
     def _start(self) -> None:
@@ -384,7 +398,7 @@ class NodeAccessSupervisor:
                 # Durable revocation BEFORE any risky validation/restart:
                 # a crash/reboot may never resurrect revoked/expired users.
                 atomic_json(self.state_path, candidate)
-                self._stop()
+                self._stop(hard=True)
                 staged = self._render_candidate(candidate)
             else:
                 atomic_json(self.state_path, candidate)
@@ -394,7 +408,7 @@ class NodeAccessSupervisor:
             self.state = candidate
         except Exception:
             self.faulted = True
-            self._stop()
+            self._stop(hard=True)
             raise
         finally:
             if staged is not None:
@@ -474,7 +488,7 @@ class NodeAccessSupervisor:
     def shutdown(self) -> None:
         with self.lock:
             self.faulted = True
-            self._stop()
+            self._stop(hard=True)
             try:
                 self.socket_path.unlink(missing_ok=True)
             finally:
