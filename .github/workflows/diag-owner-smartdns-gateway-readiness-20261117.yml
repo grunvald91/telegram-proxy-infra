@@ -1,0 +1,175 @@
+name: Read-only owner Smart DNS gateway rollout inventory
+on:
+  pull_request:
+    types: [opened, synchronize]
+    branches: [main]
+    paths:
+      - .github/workflows/diag-owner-smartdns-gateway-readiness-20261117.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  gateway-readiness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify pinned SSH credentials
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass > /dev/null
+      - name: Inspect existing owner gateway and migration readiness without mutations
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no
+            -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          echo OWNER_GATEWAY_READ_ONLY=true
+          printf 'ACTIVE_GATEWAYS='
+          docker ps --format '{{.Names}}' | grep -E '^(mnebydns-personal-dot|mnebyvpn-bot-info)' | paste -sd, || true
+          for name in mnebydns-personal-dot-private mnebydns-personal-dot mnebyvpn-bot-info; do
+            if docker inspect "$name" >/dev/null 2>&1; then
+              echo "CONTAINER=$name"
+              docker inspect -f 'STATE={{.State.Status}} IMAGE={{.Config.Image}} NETWORK={{.HostConfig.NetworkMode}}' "$name"
+              printf 'MOUNT_DESTINATIONS='
+              docker inspect -f '{{range .Mounts}}{{.Destination}} {{end}}' "$name" |
+                tr ' ' '\n' | grep -v '^$' | sort | paste -sd, || true
+            else echo "CONTAINER=$name NOT_FOUND"; fi
+          done
+          if docker ps -a --format '{{.Names}}' | grep -qx mnebyvpn-stage-postgres;then
+            docker exec mnebyvpn-stage-postgres psql -X -v ON_ERROR_STOP=1 \
+              -U mnebyvpn_stage -d mnebyvpn_stage -At -c \
+              "SELECT 'MIGRATION_0130_APPLIED='||EXISTS(SELECT 1 FROM deployment_schema_migrations WHERE file_name='0130_owner_dns_video_routes.sql');"
+            docker exec mnebyvpn-stage-postgres psql -X -v ON_ERROR_STOP=1 \
+              -U mnebyvpn_stage -d mnebyvpn_stage -At -c \
+              "SELECT 'OWNER_LINKS_TABLE_PRESENT='||(to_regclass('public.owner_dns_links') IS NOT NULL);"
+          else
+            echo STAGING_POSTGRES_ABSENT=true
+          fi
+          for port in 8855 8857;do
+            code="$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 3 "http://127.0.0.1:$port/readyz" || true)"
+            echo "GATEWAY_READY_PORT_$port=$code"
+          done
+          echo PRIVATE_RUNTIME_PATH_AUDIT_BEGIN=true
+          python3 - <<'PY'
+          import json,subprocess,hashlib,pathlib,os
+          name="mnebydns-personal-dot-private"
+          obj=json.loads(subprocess.check_output(["docker","inspect",name]))[0]
+          print("PRIVATE_GATEWAY_IMAGE_ID="+obj["Image"][:25])
+          print("PRIVATE_GATEWAY_RUNNING="+str(obj["State"]["Running"]).lower())
+          for m in obj["Mounts"]:
+              if m["Destination"].endswith(".ts"):
+                  p=pathlib.Path(m["Source"])
+                  print("PRIVATE_OVERLAY_FILE="+p.name+
+                        " PRESENT="+str(p.is_file()).lower()+
+                        " SHA256="+hashlib.sha256(p.read_bytes()).hexdigest()[:24] if p.is_file() else
+                        "PRIVATE_OVERLAY_FILE="+p.name+" PRESENT=false")
+          envkeys=sorted(v.split("=",1)[0] for v in obj["Config"]["Env"])
+          for key in ("MNEBYDNS_PERSONAL_DOT_ENABLED","MNEBYDNS_PERSONAL_DOT_BIND_IP",
+                      "MNEBYDNS_PERSONAL_DOT_PORT","MNEBYDNS_PERSONAL_DOT_HEALTH_PORT",
+                      "MNEBYDNS_OWNER_LINKS_ENABLED"):
+              print("PRIVATE_ENV_KEY_"+key+"_PRESENT="+str(key in envkeys).lower())
+          print("PRIVATE_RESTART_POLICY="+obj["HostConfig"]["RestartPolicy"]["Name"])
+          conf={}
+          for entry in obj["Config"]["Env"]:
+              k,_,v=entry.partition("=")
+              if k.startswith("MNEBYDNS_PERSONAL_") or k=="MNEBYDNS_OWNER_LINKS_ENABLED":
+                  conf[k]=v
+          for k in ("MNEBYDNS_PERSONAL_DOT_BIND_IP","MNEBYDNS_PERSONAL_DOT_PORT",
+                    "MNEBYDNS_PERSONAL_DOT_HEALTH_PORT","MNEBYDNS_PERSONAL_MAPPED_DOT_IP",
+                    "MNEBYDNS_PERSONAL_MAPPED_DOT_PORT","MNEBYDNS_PERSONAL_DIRECT_DOT_IP",
+                    "MNEBYDNS_OWNER_LINKS_ENABLED"):
+              val=conf.get(k,"MISSING")
+              if k=="MNEBYDNS_OWNER_LINKS_ENABLED":val=("yes" if val=="yes" else "no")
+              print("PRIVATE_CONFIG_"+k+"="+val)
+
+          PY
+          printf 'PRIVATE_DOT_HOST_PORTS='
+          ss -H -lnt | awk '{print $4}' | grep -E ':(8853|8855|8856|8857|8858|8859)$' | sort | paste -sd, || true
+          echo PRIVATE_UFW_8856_RULE_EXISTS="$(ufw status | grep -Fc 8856 || true)"
+          echo PRIVATE_UFW_8858_RULE_EXISTS="$(ufw status | grep -Fc 8858 || true)"
+          echo PRIVATE_RUNTIME_PATH_AUDIT_END=true
+          python3 - <<'PY'
+          import json,subprocess,pathlib,stat,urllib.request
+          base=pathlib.Path("/opt/mnebyvpn")
+          sha="f811efe2a429f1f113719489cbb588fea371c7a3"
+          for name,target in [
+              ("mnebydns-personal-dot-private","8858"),
+              ("mnebydns-personal-dot-private-previous-20261117","8856")]:
+              try:
+                  raw=subprocess.check_output(["docker","inspect",name],
+                                              stderr=subprocess.DEVNULL)
+                  obj=json.loads(raw)[0]
+                  ports=[x.split("=",1)[1] for x in obj["Config"]["Env"]
+                         if x.startswith("MNEBYDNS_PERSONAL_DOT_PORT=")]
+                  print("ISSUE_PREFLIGHT_"+target+"_PORT_MATCH="+str(ports==[target]).lower())
+                  print("ISSUE_PREFLIGHT_"+target+"_RUNNING="+
+                        str(obj["State"]["Running"]).lower())
+              except Exception:
+                  print("ISSUE_PREFLIGHT_"+target+"_INSPECT_ERROR=true")
+          try:
+              bot=json.loads(subprocess.check_output(["docker","inspect","mnebyvpn-bot-info"]))[0]
+              print("ISSUE_PREFLIGHT_BOT_SHA_MATCH="+
+                    str(bot["Config"]["Image"]=="mnebyvpn-stage-web:"+sha).lower())
+              print("ISSUE_PREFLIGHT_BOT_RUNNING="+str(bot["State"]["Running"]).lower())
+          except Exception:print("ISSUE_PREFLIGHT_BOT_INSPECT_ERROR=true")
+          release=pathlib.Path("/etc/mnebydns/personal-dot/owner-video-release-20261117.json")
+          if release.is_file():
+              state=json.loads(release.read_text())
+              print("ISSUE_PREFLIGHT_RELEASE_PROMOTED="+str(bool(state.get("promoted"))).lower())
+          env=base/"bot/web.env"
+          print("ISSUE_PREFLIGHT_ENV_EXISTS="+str(env.is_file()).lower())
+          if env.is_file():
+              print("ISSUE_PREFLIGHT_ENV_MODE_600="+str(
+                  stat.S_IMODE(env.stat().st_mode)==0o600).lower())
+              lines=env.read_text().splitlines()
+              print("ISSUE_PREFLIGHT_ENV_FLAG_EXISTS="+str(
+                  any(x.startswith("MNEBYDNS_OWNER_SMART_DNS_LINKS_ENABLED=") for x in lines)).lower())
+          print("ISSUE_PREFLIGHT_BACKUP_EXISTS="+str(
+              (base/"bot/web.env.before-owner-smartdns-video-20261117").exists()).lower())
+          print("ISSUE_PREFLIGHT_STAGE_SHA_MATCH="+str(
+              (base/"staging/active_sha").read_text().strip()==sha).lower())
+          for port in (8859,8793):
+              try:
+                  with urllib.request.urlopen("http://127.0.0.1:"+str(port)+"/readyz",
+                                              timeout=4) as response:
+                      code=response.status
+              except Exception:code="ERROR"
+              print("ISSUE_PREFLIGHT_READY_"+str(port)+"="+str(code))
+          PY
+      - name: Inspect active personal SNI destination on DE89
+        shell: bash
+        env:
+          DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS"
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          conf=/etc/mnebydns/personal-sni/nginx.conf
+          test -s "$conf"
+          if grep -Fq '10.66.77.2:8856;' "$conf"; then echo PERSONAL_SNI_ACTIVE_PORT=8856;
+          elif grep -Fq '10.66.77.2:8858;' "$conf"; then echo PERSONAL_SNI_ACTIVE_PORT=8858;
+          else echo PERSONAL_SNI_ACTIVE_PORT=UNKNOWN;exit 2;fi
+          grep -Fq 'default 89.125.90.101:853;' "$conf"
+          nginx -t -c "$conf" 2>&1 | tail -n 2
+          echo PERSONAL_SNI_LEGACY_DEFAULT_VERIFIED=true
+          REMOTE
