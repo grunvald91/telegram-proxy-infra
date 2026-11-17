@@ -40,12 +40,12 @@ class TargetTlsTests(unittest.TestCase):
     def test_media_size_1573_hello_and_sni(self):
         message=hello()
         self.assertEqual(len(message),1573)
-        self.assertEqual(target.tls_sni(message),"youtubei.googleapis.com")
+        self.assertEqual(target.tls_sni(message),"rr1---sn-gxuo03g-ig3s.googlevideo.com")
         self.assertEqual(5+int.from_bytes(message[3:5],"big"),1573)
 
     def test_incomplete_record_can_still_classify_sni(self):
         data=hello()
-        self.assertEqual(target.tls_sni(data[:1448]),"youtubei.googleapis.com")
+        self.assertEqual(target.tls_sni(data[:1448]),"rr1---sn-gxuo03g-ig3s.googlevideo.com")
         self.assertIsNone(target.tls_sni(data[:45]))
 
     def test_other_hostname_is_not_target(self):
