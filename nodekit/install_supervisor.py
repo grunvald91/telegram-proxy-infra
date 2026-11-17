@@ -55,13 +55,13 @@ def safe_source(path: Path, *, root: bool, max_size: int = 150_000) -> bytes:
     return path.read_bytes()
 
 
-def exclusive_file(path: Path, content: bytes, mode: int) -> bool:
+def exclusive_file(path: Path, content: bytes, mode: int, *, owner_uid: int = 0) -> bool:
     """Write only on first install. Refuse modification even during races."""
     if path.is_symlink():
         raise InstallError("Destination symlink refused")
     if path.exists():
         st = path.stat()
-        if (not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or
+        if (not stat.S_ISREG(st.st_mode) or st.st_uid != owner_uid or
                 st.st_mode & 0o777 != mode or path.read_bytes() != content):
             raise InstallError("Existing installation differs; explicit upgrade required")
         return False
@@ -120,7 +120,14 @@ def validate_stage(stage_root: Path, node_id: str, xray: Path, digest: str,
             stage.get("controller_enrolled") is not False or
             stage.get("independent_e2e_verified") is not False or
             stage.get("vpn_port") != manifest.get("listeners", {}).get("vpn_tcp") or
-            template.get("inbounds", [{}])[0].get("settings", {}).get("clients") != []):
+            not isinstance(template, dict) or
+            not isinstance(template.get("inbounds"), list) or
+            len(template["inbounds"]) != 1 or
+            not isinstance(template["inbounds"][0], dict) or
+            template["inbounds"][0].get("port") != stage.get("vpn_port") or
+            template["inbounds"][0].get("protocol") != "vless" or
+            template["inbounds"][0].get("settings", {}).get("clients") != [] or
+            template["inbounds"][0].get("streamSettings", {}).get("security") != "reality"):
         raise InstallError("Only untouched, unpublished Xray stage may be installed")
     if _hash_binary(xray, root) != digest or stage.get("xray_sha256") != digest:
         raise InstallError("Xray binary differs from the staged, pinned hash")
@@ -167,6 +174,7 @@ def install(node_id: str, source_dir: Path, controller_source: Path,
     # Existing install path is immutable; upgrades use a separately audited PR.
     created_files: list[Path] = []
     created_dir = False
+    owner_uid = 0 if require_root else os.geteuid()
     service = f"mnebyvpn-nodekit-vpn@{node_id}.service"
     started = False
     try:
@@ -178,21 +186,27 @@ def install(node_id: str, source_dir: Path, controller_source: Path,
         secure_dir(install_dir, root=require_root)
         for filename, payload in sources.items():
             path = install_dir / filename
-            if exclusive_file(path, payload, 0o644):
+            if exclusive_file(path, payload, 0o644, owner_uid=owner_uid):
                 created_files.append(path)
         pub_path = stage_root / node_id / "controller-access.spki"
-        if exclusive_file(pub_path, pub, 0o600):
+        if exclusive_file(pub_path, pub, 0o600, owner_uid=owner_uid):
             created_files.append(pub_path)
         secure_dir(unit_file.parent, root=require_root)
-        if exclusive_file(unit_file, unit, 0o644):
+        if exclusive_file(unit_file, unit, 0o644, owner_uid=owner_uid):
             created_files.append(unit_file)
         runner(["systemctl", "daemon-reload"], check=True, timeout=12,
                capture_output=True)
         if mode == "canary":
-            # Canary never enables on boot and starts without subscribers.
+            # Refuse altering a pre-existing running service or subscriber pool.
+            existing = runner(["systemctl", "is-active", "--quiet", service],
+                              check=False, timeout=6, capture_output=True)
+            if existing.returncode == 0:
+                raise InstallError("Already active canary needs independent audit")
+            # Start can fail after partially launching a unit. Always stop
+            # this just-attempted service before rolling back new files.
+            started = True
             runner(["systemctl", "start", service], check=True, timeout=20,
                    capture_output=True)
-            started = True
             runner(["systemctl", "is-active", "--quiet", service], check=True,
                    timeout=6, capture_output=True)
             socket_path = Path("/run/mnebyvpn-nodekit") / node_id / "control.sock"
