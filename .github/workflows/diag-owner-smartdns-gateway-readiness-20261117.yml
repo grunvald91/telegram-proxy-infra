@@ -103,6 +103,54 @@ jobs:
           echo PRIVATE_UFW_8856_RULE_EXISTS="$(ufw status | grep -Fc 8856 || true)"
           echo PRIVATE_UFW_8858_RULE_EXISTS="$(ufw status | grep -Fc 8858 || true)"
           echo PRIVATE_RUNTIME_PATH_AUDIT_END=true
+          python3 - <<'PY'
+          import json,subprocess,pathlib,stat,urllib.request
+          base=pathlib.Path("/opt/mnebyvpn")
+          sha="f811efe2a429f1f113719489cbb588fea371c7a3"
+          for name,target in [
+              ("mnebydns-personal-dot-private","8858"),
+              ("mnebydns-personal-dot-private-previous-20261117","8856")]:
+              try:
+                  raw=subprocess.check_output(["docker","inspect",name],
+                                              stderr=subprocess.DEVNULL)
+                  obj=json.loads(raw)[0]
+                  ports=[x.split("=",1)[1] for x in obj["Config"]["Env"]
+                         if x.startswith("MNEBYDNS_PERSONAL_DOT_PORT=")]
+                  print("ISSUE_PREFLIGHT_"+target+"_PORT_MATCH="+str(ports==[target]).lower())
+                  print("ISSUE_PREFLIGHT_"+target+"_RUNNING="+
+                        str(obj["State"]["Running"]).lower())
+              except Exception:
+                  print("ISSUE_PREFLIGHT_"+target+"_INSPECT_ERROR=true")
+          try:
+              bot=json.loads(subprocess.check_output(["docker","inspect","mnebyvpn-bot-info"]))[0]
+              print("ISSUE_PREFLIGHT_BOT_SHA_MATCH="+
+                    str(bot["Config"]["Image"]=="mnebyvpn-stage-web:"+sha).lower())
+              print("ISSUE_PREFLIGHT_BOT_RUNNING="+str(bot["State"]["Running"]).lower())
+          except Exception:print("ISSUE_PREFLIGHT_BOT_INSPECT_ERROR=true")
+          release=pathlib.Path("/etc/mnebydns/personal-dot/owner-video-release-20261117.json")
+          if release.is_file():
+              state=json.loads(release.read_text())
+              print("ISSUE_PREFLIGHT_RELEASE_PROMOTED="+str(bool(state.get("promoted"))).lower())
+          env=base/"bot/web.env"
+          print("ISSUE_PREFLIGHT_ENV_EXISTS="+str(env.is_file()).lower())
+          if env.is_file():
+              print("ISSUE_PREFLIGHT_ENV_MODE_600="+str(
+                  stat.S_IMODE(env.stat().st_mode)==0o600).lower())
+              lines=env.read_text().splitlines()
+              print("ISSUE_PREFLIGHT_ENV_FLAG_EXISTS="+str(
+                  any(x.startswith("MNEBYDNS_OWNER_SMART_DNS_LINKS_ENABLED=") for x in lines)).lower())
+          print("ISSUE_PREFLIGHT_BACKUP_EXISTS="+str(
+              (base/"bot/web.env.before-owner-smartdns-video-20261117").exists()).lower())
+          print("ISSUE_PREFLIGHT_STAGE_SHA_MATCH="+str(
+              (base/"staging/active_sha").read_text().strip()==sha).lower())
+          for port in (8859,8793):
+              try:
+                  with urllib.request.urlopen("http://127.0.0.1:"+str(port)+"/readyz",
+                                              timeout=4) as response:
+                      code=response.status
+              except Exception:code="ERROR"
+              print("ISSUE_PREFLIGHT_READY_"+str(port)+"="+str(code))
+          PY
       - name: Inspect active personal SNI destination on DE89
         shell: bash
         env:
@@ -124,7 +172,4 @@ jobs:
           grep -Fq 'default 89.125.90.101:853;' "$conf"
           nginx -t -c "$conf" 2>&1 | tail -n 2
           echo PERSONAL_SNI_LEGACY_DEFAULT_VERIFIED=true
-          REMOTE
-
-          echo NO_SERVICES_OR_FIREWALL_MODIFIED=true
           REMOTE
