@@ -1,14 +1,14 @@
 name: Owner-scoped temporary normal TCP return path
 on:
   push:
-    branches: [diag/youtube-de89-owner-return-20261117]
+    branches: [diag/youtube-de89-owner-return-repeat-20261117]
     paths:
       - .github/workflows/youtube-de89-owner-return-20261117.yml
       - scripts/youtube-de89-owner-return-bypass-20261117.py
 permissions: {contents: read}
 concurrency:
   group: mnebydns-youtube-owner-return
-  cancel-in-progress: false
+  cancel-in-progress: true
 jobs:
   capture:
     runs-on: ubuntu-latest
@@ -36,6 +36,16 @@ jobs:
             root@89.125.90.101 "$@"
           SHELL
           chmod 700 "$RUNNER_TEMP/de-phone"
+      - name: Refresh passive capture before opening the new test window
+        run: |
+          set -Eeuo pipefail
+          root="/run/mnebydns-normalcurl-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          "$RUNNER_TEMP/de-phone" "umask 077; mkdir '$root'; cat > '$root/observer.py'" < scripts/youtube-return-trace-20261117.py
+          "$RUNNER_TEMP/de-phone" "cat > '$root/watch.py'" < scripts/youtube-de89-normal-curl-watch-20261117.py
+          "$RUNNER_TEMP/de-phone" "systemd-run --quiet --unit=mnebydns-normalcurl-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT} --property=RuntimeMaxSec=1840 --property=MemoryMax=128M --property=CPUQuota=20% --property=StandardOutput=append:$root/result.log --property=StandardError=append:$root/result.log /usr/bin/python3 -B $root/watch.py"
+          "$RUNNER_TEMP/de-phone" "for attempt in \$(seq 1 15); do if test -s '$root/READY'; then echo CURRENT_CAPTURE_READY=true; exit 0; fi; sleep 1; done; exit 1"
+          "$RUNNER_TEMP/de-phone" "if systemctl is-active --quiet mnebydns-normalcurl-44083307553-1; then systemctl stop mnebydns-normalcurl-44083307553-1; fi"
+          "$RUNNER_TEMP/de-phone" "python3 -B /run/mnebydns-owner-return-44085764185-1/probe.py clean /run/mnebydns-owner-return-44085764185-1"
       - name: Arm independent cleanup and temporarily bypass NFQUEUE for the bound phone peer
         run: |
           set -Eeuo pipefail
