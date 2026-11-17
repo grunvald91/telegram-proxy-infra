@@ -22,6 +22,7 @@ class RunCommands:
     def __init__(self):
         self.calls = []
         self.fail_start = False
+        self.fail_stop = False
         self.active = False
 
     def __call__(self, args, **kwargs):
@@ -36,6 +37,8 @@ class RunCommands:
                 raise subprocess.CalledProcessError(1, args)
             self.active = True
         if args[:2] == ["systemctl", "stop"]:
+            if self.fail_stop:
+                return subprocess.CompletedProcess(args, 1)
             self.active = False
         return subprocess.CompletedProcess(args, 0)
 
@@ -168,6 +171,15 @@ class BootstrapTest(unittest.TestCase):
         self.assertFalse(result["subscriber_access_enabled"])
         self.assertTrue(any(cmd[:2] == ["systemctl", "start"] for cmd in self.runner.calls))
         self.assertFalse(any(cmd[:2] == ["systemctl", "enable"] for cmd in self.runner.calls))
+
+    def test_failed_canary_stop_preserves_unit_and_installer_for_incident(self):
+        self.runner.fail_stop = True
+        with self.assertRaisesRegex(m.InstallError, "could not stop"):
+            self.install(mode="canary", check_canary=lambda _: False)
+        # An uncontrolled process must not lose its owning service unit.
+        self.assertTrue(self.dest.exists())
+        self.assertTrue(self.unit.exists())
+        self.assertTrue(self.runner.active)
 
     def test_canary_socket_check_failure_rolls_back(self):
         with self.assertRaises(m.InstallError):
