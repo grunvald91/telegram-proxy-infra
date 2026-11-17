@@ -1,4 +1,4 @@
-name: YouTube agreed phone capture with verified readiness
+name: YouTube agreed Termux capture with verified readiness
 on:
   push:
     branches: [diag/youtube-agreed-phone-20261117]
@@ -40,12 +40,12 @@ jobs:
       - name: Arm capture and verify actual packet reader readiness
         run: |
           set -Eeuo pipefail
-          root="/run/mnebydns-phone-$GITHUB_RUN_ID"
+          root="/run/mnebydns-phone-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           "$RUNNER_TEMP/de-phone" "umask 077; mkdir '$root'; cat > '$root/observer.py'" < scripts/youtube-phone-correlated-20261117.py
-          "$RUNNER_TEMP/de-phone" "systemd-run --quiet --unit=mnebydns-phone-$GITHUB_RUN_ID --property=RuntimeMaxSec=220 --property=StandardOutput=append:$root/result.log --property=StandardError=append:$root/result.log /usr/bin/env MNEBY_CAPTURE_READY=$root/READY /usr/bin/python3 -B $root/observer.py"
+          "$RUNNER_TEMP/de-phone" "systemd-run --quiet --unit=mnebydns-phone-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT} --property=RuntimeMaxSec=220 --property=StandardOutput=append:$root/result.log --property=StandardError=append:$root/result.log /usr/bin/env MNEBY_CAPTURE_READY=$root/READY /usr/bin/python3 -B $root/observer.py"
           "$RUNNER_TEMP/de-phone" "for attempt in \$(seq 1 15); do if test -s '$root/READY'; then echo PHONE_CAPTURE_ACTUALLY_ARMED=true; date -u +%FT%TZ; exit 0; fi; sleep 1; done; exit 1"
       - name: Capture agreed phone playback window and retrieve metadata
         run: |
           set -Eeuo pipefail
-          root="/run/mnebydns-phone-$GITHUB_RUN_ID"
-          "$RUNNER_TEMP/de-phone" "timeout 210s bash -c 'while systemctl is-active --quiet mnebydns-phone-$GITHUB_RUN_ID.service; do sleep 5; done'; cat '$root/result.log'; grep -q 'TARGET_CAPTURE_NO_SERVER_CHANGES=true' '$root/result.log'"
+          root="/run/mnebydns-phone-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          "$RUNNER_TEMP/de-phone" "timeout 210s bash -c 'while systemctl is-active --quiet mnebydns-phone-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.service; do sleep 5; done'; cat '$root/result.log'; grep -q 'TARGET_CAPTURE_NO_SERVER_CHANGES=true' '$root/result.log'"
