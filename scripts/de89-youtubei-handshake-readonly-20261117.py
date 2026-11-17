@@ -17,7 +17,7 @@ import time
 TARGET = "youtubei.googleapis.com"
 PUBLIC = "89.125.90.101"
 LOOP = "127.0.0.1"
-CAPTURE_SECONDS = 180
+CAPTURE_SECONDS = 110
 HASH_BYTES = 64
 MAX_SEGMENTS = 24
 
