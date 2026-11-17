@@ -1,0 +1,38 @@
+# Example only. Never enabled by Nodekit staging workflow.
+# New VPS must have verified service user mnebyvpn-nodekit-xray,
+# protected controller PUBLIC SPKI, verified Xray and reviewed local ports.
+[Unit]
+Description=MNEBYVPN Nodekit isolated Xray VPN supervisor (%i)
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/var/lib/mnebyvpn-nodekit/%i/vpn/xray-config.json
+ConditionPathExists=/var/lib/mnebyvpn-nodekit/%i/controller-access.spki
+
+[Service]
+Type=exec
+User=root
+Group=root
+UMask=0077
+ExecStart=/usr/bin/python3 /opt/mnebyvpn-nodekit/vpn_supervisor.py --node-id %i --xray /opt/xray/xray --controller-pub /var/lib/mnebyvpn-nodekit/%i/controller-access.spki
+KillMode=control-group
+Restart=on-failure
+RestartSec=3s
+TimeoutStopSec=8s
+RuntimeDirectory=mnebyvpn-nodekit
+RuntimeDirectoryMode=0755
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectHome=yes
+ProtectSystem=strict
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ReadWritePaths=/var/lib/mnebyvpn-nodekit /run/mnebyvpn-nodekit
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID
+AmbientCapabilities=
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target
