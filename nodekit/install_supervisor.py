@@ -187,6 +187,13 @@ def install(node_id: str, source_dir: Path, controller_source: Path,
     created_dir = False
     owner_uid = 0 if require_root else os.geteuid()
     service = f"mnebyvpn-nodekit-vpn@{node_id}.service"
+    # Never turn an existing enabled or active systemd instance into a
+    # supposedly unpublished empty canary. Check BEFORE writing files.
+    for query in ("is-active", "is-enabled"):
+        state = runner(["systemctl", query, "--quiet", service],
+                       check=False, timeout=6, capture_output=True)
+        if state.returncode == 0:
+            raise InstallError("New-node service already active or enabled")
     started = False
     try:
         if install_dir.is_symlink():
@@ -209,10 +216,11 @@ def install(node_id: str, source_dir: Path, controller_source: Path,
                capture_output=True)
         if mode == "canary":
             # Refuse altering a pre-existing running service or subscriber pool.
-            existing = runner(["systemctl", "is-active", "--quiet", service],
-                              check=False, timeout=6, capture_output=True)
-            if existing.returncode == 0:
-                raise InstallError("Already active canary needs independent audit")
+            for query in ("is-active", "is-enabled"):
+                existing = runner(["systemctl", query, "--quiet", service],
+                                  check=False, timeout=6, capture_output=True)
+                if existing.returncode == 0:
+                    raise InstallError("Existing service state prevents empty canary")
             # Start can fail after partially launching a unit. Always stop
             # this just-attempted service before rolling back new files.
             started = True
