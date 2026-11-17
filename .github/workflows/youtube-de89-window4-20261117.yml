@@ -1,7 +1,7 @@
 name: DE89 source-scoped initial TCP window experiment
 on:
   push:
-    branches: [diag/youtube-de89-window4-20261117]
+    branches: [diag/youtube-de89-window4-preserve-scale-20261117]
     paths: ['.github/workflows/youtube-de89-window4-20261117.yml','scripts/youtube-de89-window4-20261117.py']
 permissions: {contents: read}
 concurrency:
@@ -36,9 +36,9 @@ jobs:
           chmod 700 "$RUNNER_TEMP/de-only"
           root="/run/mnebydns-w4-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           "$RUNNER_TEMP/de-only" "umask 077; mkdir '$root'; cat > '$root/experiment.py'" < scripts/youtube-de89-window4-20261117.py
-          sed 's/^CAPTURE_SECONDS = 90$/CAPTURE_SECONDS = 240/' scripts/youtube-return-trace-20261117.py > "$RUNNER_TEMP/window-observer.py"
+          sed 's/^CAPTURE_SECONDS = 90$/CAPTURE_SECONDS = 180/' scripts/youtube-return-trace-20261117.py > "$RUNNER_TEMP/window-observer.py"
           "$RUNNER_TEMP/de-only" "cat > '$root/observer.py'" < "$RUNNER_TEMP/window-observer.py"
-          "$RUNNER_TEMP/de-only" "systemd-run --quiet --unit=mnebydns-w4-capture-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT} --property=RuntimeMaxSec=280 --property=MemoryMax=256M --property=StandardOutput=append:$root/capture.log --property=StandardError=append:$root/capture.log /usr/bin/env MNEBY_CAPTURE_READY=$root/READY /usr/bin/python3 -B $root/observer.py"
+          "$RUNNER_TEMP/de-only" "systemd-run --quiet --unit=mnebydns-w4-capture-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT} --property=RuntimeMaxSec=220 --property=MemoryMax=256M --property=StandardOutput=append:$root/capture.log --property=StandardError=append:$root/capture.log /usr/bin/env MNEBY_CAPTURE_READY=$root/READY /usr/bin/python3 -B $root/observer.py"
           "$RUNNER_TEMP/de-only" "for attempt in \$(seq 1 15); do if test -s '$root/READY'; then echo WINDOW4_CAPTURE_READY=true; exit 0; fi; sleep 1; done; exit 1"
       - name: Validate window rewrite on the external control before phone traffic
         run: |
@@ -56,4 +56,4 @@ jobs:
         run: |
           set -Eeuo pipefail
           root="/run/mnebydns-w4-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          "$RUNNER_TEMP/de-only" "python3 -B '$root/experiment.py' cleanup '$root'; timeout 280s bash -c 'while systemctl is-active --quiet mnebydns-w4-capture-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.service; do sleep 5; done'; cat '$root/capture.log'; grep -q 'TARGET_CAPTURE_NO_SERVER_CHANGES=true' '$root/capture.log'; ! grep -q 'RuntimeError' '$root/capture.log'"
+          "$RUNNER_TEMP/de-only" "python3 -B '$root/experiment.py' cleanup '$root'; timeout 220s bash -c 'while systemctl is-active --quiet mnebydns-w4-capture-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.service; do sleep 5; done'; cat '$root/capture.log'; grep -q 'TARGET_CAPTURE_NO_SERVER_CHANGES=true' '$root/capture.log'; ! grep -q 'RuntimeError' '$root/capture.log'"

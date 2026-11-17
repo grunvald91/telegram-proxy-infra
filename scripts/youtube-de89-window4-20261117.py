@@ -37,12 +37,12 @@ def prepare():
     (ROOT/'HASHES.json').write_text(json.dumps(hashes()))
     suffix=ROOT.name.removeprefix('mnebydns-w4-')
     # Cleanup is independent of this SSH session and is armed before rule insertion.
-    cmd(['systemd-run','--quiet','--collect','--unit=mnebydns-w4-clean-'+suffix,'--on-active=240s','/usr/bin/python3','-B',str(pathlib.Path(__file__).resolve()),'cleanup',str(ROOT)])
-    cmd(['systemd-run','--quiet','--unit=mnebydns-w4-nfq-'+suffix,'--property=RuntimeMaxSec=250','--property=StandardOutput=null','--property=StandardError=null','/opt/zapret2/nfqws2','--qnum=211','--debug=0','--server','--lua-init=@/opt/zapret2/lua/zapret-lib.lua','--lua-init=@/opt/zapret2/lua/zapret-antidpi.lua','--filter-tcp=443','--payload=empty','--lua-desync=wsize:wsize=4:scale=0'])
+    cmd(['systemd-run','--quiet','--collect','--unit=mnebydns-w4-clean-'+suffix,'--on-active=180s','/usr/bin/python3','-B',str(pathlib.Path(__file__).resolve()),'cleanup',str(ROOT)])
+    cmd(['systemd-run','--quiet','--unit=mnebydns-w4-nfq-'+suffix,'--property=RuntimeMaxSec=190','--property=StandardOutput=null','--property=StandardError=null','/opt/zapret2/nfqws2','--qnum=211','--debug=0','--server','--lua-init=@/opt/zapret2/lua/zapret-lib.lua','--lua-init=@/opt/zapret2/lua/zapret-antidpi.lua','--filter-tcp=443','--payload=empty','--lua-desync=wsize:wsize=4'])
     time.sleep(1)
     cmd(['systemctl','is-active','--quiet','mnebydns-w4-nfq-'+suffix])
     runner=os.environ.get('SSH_CONNECTION','').split()[0]
-    add_rule(runner);emit('WINDOW4_RUNNER_CONTROL_ARMED',True)
+    add_rule(runner);emit('WINDOW4_RUNNER_CONTROL_ARMED',True);emit('WINDOW4_PRESERVES_NEGOTIATED_SCALE',True)
 def phone():
     clear_rules()
     spec=importlib.util.spec_from_file_location('observer',ROOT/'observer.py');obs=importlib.util.module_from_spec(spec);spec.loader.exec_module(obs)
