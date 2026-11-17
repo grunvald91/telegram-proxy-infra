@@ -1,0 +1,102 @@
+name: Fix consistent QUIC CRYPTO repacketization in owner canary
+on:
+  push:
+    branches: [diag/youtube-de89-quic-repacket-fix-20261117]
+    paths:
+      - .github/workflows/youtube-de89-quic-repacket-fix-20261117.yml
+      - scripts/youtube-de89-owner-return-bypass-20261117.py
+permissions: {contents: read}
+concurrency:
+  group: mnebydns-youtube-quic-repacket-fix
+  cancel-in-progress: false
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Validate existing parser and prepare pinned SSH
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/youtube-de89-owner-return-bypass-20261117.py scripts/termux-youtube-libcurl-20261117.py
+          test -n "$DE_PASS" && test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass >/dev/null
+          cat > "$RUNNER_TEMP/de-phone" <<'SHELL'
+          #!/bin/bash
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          exec sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes \
+            -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -o HostKeyAlgorithms=ssh-ed25519 \
+            -o "UserKnownHostsFile=$GITHUB_WORKSPACE/ops/mnebydns-owner-ssh-known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR \
+            root@89.125.90.101 "$@"
+          SHELL
+          chmod 700 "$RUNNER_TEMP/de-phone"
+      - name: Stage tested candidate and preserve owner canary rollback
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/test-youtube-quic-repacket-20261117.py
+          python3 -m venv "$RUNNER_TEMP/h3-control"
+          timeout 60s "$RUNNER_TEMP/h3-control/bin/pip" -q install aioquic==1.2.0
+          root="/run/mnebydns-quic-repacket-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          "$RUNNER_TEMP/de-phone" "umask 077; mkdir '$root'; cat > '$root/candidate.py'" < scripts/youtube-quic-repacket-20261117.py
+          "$RUNNER_TEMP/de-phone" "python3 -B - '$root'" <<'PYTHON'
+          import hashlib,ipaddress,json,os,pathlib,shutil,subprocess,sys,time
+          root=pathlib.Path(sys.argv[1]);base=pathlib.Path('/opt/mnebydns-h3-origin-diag-44096073096-1')
+          def cmd(a):
+              p=subprocess.run(a,capture_output=True,text=True,timeout=12)
+              if p.returncode:raise RuntimeError('COMMAND_FAILED_'+a[0])
+              return p.stdout
+          cmd(['systemctl','is-active','--quiet','mnebydns-h3-clean-44096073096-1.timer'])
+          assert time.time()<1794924900,'ORIGINAL_TIMER_NEAR_EXPIRY'
+          old=base/'relay.py';assert hashlib.sha256(old.read_bytes()).hexdigest()=='bde13ba42945a6489c7fdc235996ff9858961bde27e2881759dc24112122d46f'
+          shutil.copy2(old,root/'relay.before.py');shutil.copy2(base/'peers.json',root/'peers.before.json')
+          peer=os.environ['SSH_CONNECTION'].split()[0];assert ipaddress.ip_address(peer).is_global
+          peers=json.loads((base/'peers.json').read_text())
+          (root/'control.private.json').write_text(json.dumps({'peer':peer,'added':peer not in peers}))
+          if peer not in peers:
+              peers.append(peer)
+              cmd(['iptables','-I','INPUT','1','-d','89.125.90.101/32','-s',peer,'-p','udp','--dport','443','-m','comment','--comment','MNEBYDNS_H3_OWNER_CANARY_20261117','-j','ACCEPT'])
+          (base/'peers.json').write_text(json.dumps(peers));os.chmod(base/'peers.json',0o644)
+          shutil.copyfile(root/'candidate.py',base/'relay.py.new');os.chmod(base/'relay.py.new',0o644);os.replace(base/'relay.py.new',old)
+          cmd(['systemctl','restart','mnebydns-h3-canary-44096073096-1.service'])
+          cmd(['systemctl','is-active','--quiet','mnebydns-h3-canary-44096073096-1.service'])
+          print('OWNER_CANARY_REPACKET_FIX_ACTIVE=true')
+          print('ORIGINAL_INDEPENDENT_EXPIRY_TIMER_STILL_ACTIVE=true')
+          PYTHON
+      - name: Verify external certificate and public HTTP3 after the fix
+        run: |
+          set -Eeuo pipefail
+          "$RUNNER_TEMP/h3-control/bin/python" - <<'PYTHON'
+          import asyncio,runpy
+          probe=runpy.run_path('scripts/youtube-de89-h3-origin-20261117.py')['probe']
+          async def main():
+              rows=await asyncio.gather(*(probe(t,('89.125.90.101',443)) for t in [
+                {'label':'api','url':'https://youtubei.googleapis.com/'},
+                {'label':'phone_cdn','url':'https://rr1---sn-gxuo03g-ig3s.googlevideo.com/'}]))
+              assert all(r.get('tls_verified') and 100<=r.get('status',0)<=599 for r in rows),'FIX_PUBLIC_H3_FAILED'
+          asyncio.run(main())
+          PYTHON
+          root="/run/mnebydns-quic-repacket-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          "$RUNNER_TEMP/de-phone" "touch '$root/VERIFIED'; echo OWNER_REPACKET_FIX_PUBLIC_CONTROL_VERIFIED=true"
+      - name: Roll back candidate if its external control failed
+        if: always()
+        run: |
+          set -Eeuo pipefail
+          root="/run/mnebydns-quic-repacket-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          "$RUNNER_TEMP/de-phone" "python3 -B - '$root'" <<'PYTHON'
+          import json,pathlib,shutil,subprocess,sys
+          root=pathlib.Path(sys.argv[1]);base=pathlib.Path('/opt/mnebydns-h3-origin-diag-44096073096-1')
+          if (root/'VERIFIED').exists():
+              print('OWNER_QUIC_PATCH_VERIFIED_WINDOW_READY=true')
+          elif (root/'relay.before.py').exists():
+              shutil.copy2(root/'relay.before.py',base/'relay.py');shutil.copy2(root/'peers.before.json',base/'peers.json')
+              state=json.loads((root/'control.private.json').read_text()) if (root/'control.private.json').exists() else {}
+              if state.get('added'):subprocess.run(['iptables','-D','INPUT','-d','89.125.90.101/32','-s',state['peer'],'-p','udp','--dport','443','-m','comment','--comment','MNEBYDNS_H3_OWNER_CANARY_20261117','-j','ACCEPT'],check=True)
+              subprocess.run(['systemctl','restart','mnebydns-h3-canary-44096073096-1.service'],check=True)
+              print('UNVERIFIED_CANDIDATE_ROLLED_BACK=true')
+          PYTHON
