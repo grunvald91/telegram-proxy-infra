@@ -1,4 +1,4 @@
-name: FI canonical hostname migration dispatcher (one-off)
+name: FI canonical canonical FI repeated setup dispatcher (one-off)
 on:
   push:
     branches: [feat/nodekit-fi-host-20261117]
@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
-      - name: Safely migrate staged FI country hostname
+      - name: Verify repeatable Nodekit prepare_all using canonical FI hostname
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -25,4 +25,4 @@ jobs:
             -f "inputs[host]=217.11.167.91" \
             -f "inputs[node_id]=fi-test-01" \
             -f "inputs[advertise_host]=fi.mnebyvpn.site" \
-            -f "inputs[mode]=hostname_migrate"
+            -f "inputs[mode]=prepare_all"
