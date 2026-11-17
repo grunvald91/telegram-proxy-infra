@@ -48,7 +48,7 @@ async def probe(target,via=None):
             r=await p.request(target['url'],target.get('media',False));r['tls_verified']=True;return r
     try:r=await asyncio.wait_for(run(),12)
     except Exception as e:r={'error':type(e).__name__,'tls_and_http_verified':False}
-    r.update(label=target['label'],route='isolated_relay' if via else 'DE89_origin')
+    r.update(label=target['label'],route=('DE89_public_relay' if via==('89.125.90.101',443) else 'isolated_relay') if via else 'DE89_origin')
     print('H3_ROUTE_RESULT='+json.dumps(r,sort_keys=True),flush=True)
     return r
 

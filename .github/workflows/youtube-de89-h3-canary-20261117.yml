@@ -1,0 +1,112 @@
+name: DE89 scoped public QUIC real media canary
+on:
+  push:
+    branches: [diag/youtube-de89-h3-canary-20261117]
+    paths:
+      - .github/workflows/youtube-de89-h3-canary-20261117.yml
+      - scripts/youtube-de89-owner-return-bypass-20261117.py
+permissions: {contents: read}
+concurrency:
+  group: mnebydns-youtube-h3-canary
+  cancel-in-progress: false
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Validate existing parser and prepare pinned SSH
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/youtube-de89-owner-return-bypass-20261117.py scripts/termux-youtube-libcurl-20261117.py
+          test -n "$DE_PASS" && test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass >/dev/null
+          cat > "$RUNNER_TEMP/de-phone" <<'SHELL'
+          #!/bin/bash
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          exec sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes \
+            -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -o HostKeyAlgorithms=ssh-ed25519 \
+            -o "UserKnownHostsFile=$GITHUB_WORKSPACE/ops/mnebydns-owner-ssh-known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR \
+            root@89.125.90.101 "$@"
+          SHELL
+          chmod 700 "$RUNNER_TEMP/de-phone"
+      - name: Prepare temporary H3 dependencies for DE Python 3.10
+        run: |
+          set -Eeuo pipefail
+          mkdir "$RUNNER_TEMP/h3-wheels"
+          timeout 90s python3 -m pip download --disable-pip-version-check -q --only-binary=:all: --platform manylinux2014_x86_64 --implementation cp --python-version 3.10 --dest "$RUNNER_TEMP/h3-wheels" aioquic==1.2.0 typing-extensions==4.15.0
+          python3 -m pip download --disable-pip-version-check -q --no-deps --dest "$RUNNER_TEMP" pip==24.3.1
+          python3 -m venv "$RUNNER_TEMP/yt-venv"
+          timeout 90s "$RUNNER_TEMP/yt-venv/bin/pip" -q install 'yt-dlp[default]'
+          "$RUNNER_TEMP/yt-venv/bin/pip" -q install aioquic==1.2.0
+          python3 -m py_compile scripts/youtube-de89-h3-canary-20261117.py scripts/youtube-de89-h3-origin-20261117.py scripts/youtube-quic-pinned-20261114.py
+          root="/opt/mnebydns-h3-origin-diag-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          "$RUNNER_TEMP/de-phone" "umask 077; mkdir '$root' '$root/wheels'"
+          tar -czf - -C "$RUNNER_TEMP/h3-wheels" . | "$RUNNER_TEMP/de-phone" "tar -xzf - -C '$root/wheels'"
+          "$RUNNER_TEMP/de-phone" "cat > '$root/pip.whl'" < "$RUNNER_TEMP/pip-24.3.1-py3-none-any.whl"
+          "$RUNNER_TEMP/de-phone" "cat > '$root/probe.py'" < scripts/youtube-de89-h3-origin-20261117.py
+          "$RUNNER_TEMP/de-phone" "cat > '$root/relay.py'" < scripts/youtube-quic-pinned-20261114.py
+          "$RUNNER_TEMP/de-phone" "PYTHONPATH='$root/pip.whl' timeout 45s python3 -m pip install --disable-pip-version-check --no-index --find-links '$root/wheels' --target '$root/deps' --no-cache-dir --no-input -q aioquic==1.2.0"
+          "$RUNNER_TEMP/de-phone" "PYTHONPATH='$root/deps' python3 -c 'import aioquic.asyncio.client; print(\"H3_TEMP_IMPORT=PASS\")'"
+      - name: Obtain DE-bound media and compare direct origin with isolated UDP relay
+        run: |
+          set -Eeuo pipefail
+          control="$RUNNER_TEMP/h3-socks"
+          trap 'ssh -S "$control" -O exit root@89.125.90.101 >/dev/null 2>&1 || true' EXIT
+          SSHPASS="$DE_PASS" sshpass -e ssh -T -M -S "$control" -f -N -D 127.0.0.1:10889 \
+            -o ExitOnForwardFailure=yes -o ConnectTimeout=12 -o StrictHostKeyChecking=yes \
+            -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -o HostKeyAlgorithms=ssh-ed25519 \
+            -o "UserKnownHostsFile=$GITHUB_WORKSPACE/ops/mnebydns-owner-ssh-known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@89.125.90.101
+          "$RUNNER_TEMP/yt-venv/bin/python" - <<'PYTHON'
+          import json,os,pathlib,subprocess,sys,urllib.parse
+          cmd=[sys.executable,'-m','yt_dlp','--proxy','socks5://127.0.0.1:10889','--js-runtimes','node','--socket-timeout','10','--extractor-retries','0','--retries','0','--no-playlist','--skip-download','--no-warnings','--no-progress','--dump-single-json','https://www.youtube.com/watch?v=jNQXAC9IVRw']
+          r=subprocess.run(cmd,capture_output=True,text=True,timeout=100)
+          if r.returncode:raise SystemExit('DE89_MEDIA_EXTRACTION_FAILED_CODE='+str(r.returncode))
+          data=json.loads(r.stdout)
+          formats=[f for f in data.get('formats',[]) if (urllib.parse.urlsplit(f.get('url','')).hostname or '').endswith('.googlevideo.com') and f.get('protocol') in ('http','https')]
+          assert formats,'NO_MEDIA_FORMAT'
+          f=next((f for f in formats if f.get('vcodec') not in (None,'none')),formats[0]);url=f['url']
+          assert urllib.parse.parse_qs(urllib.parse.urlsplit(url).query).get('ip')==['89.125.90.101'],'MEDIA_IP_BINDING_MISMATCH'
+          targets=[{'label':'homepage','url':'https://www.youtube.com/'},{'label':'api','url':'https://youtubei.googleapis.com/'},{'label':'phone_cdn','url':'https://rr1---sn-gxuo03g-ig3s.googlevideo.com/'},{'label':'media','url':url+'&range=0-65535','media':True}]
+          p=pathlib.Path(os.environ['RUNNER_TEMP'])/'h3-targets.private.json';p.write_text(json.dumps(targets));p.chmod(0o600)
+          print('DE89_MEDIA_URL_PREPARED_WITHOUT_LOGGING=true')
+          PYTHON
+          root="/opt/mnebydns-h3-origin-diag-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          "$RUNNER_TEMP/de-phone" "PYTHONPATH='$root/deps' timeout 50s python3 -B '$root/probe.py'" < "$RUNNER_TEMP/h3-targets.private.json" | tee "$RUNNER_TEMP/h3-isolated.log"
+          grep -q 'H3_ACTUAL_MEDIA_DIRECT_AND_RELAY=true' "$RUNNER_TEMP/h3-isolated.log"
+      - name: Arm independent rollback and open UDP only for the bound phone and control
+        run: |
+          set -Eeuo pipefail
+          root="/opt/mnebydns-h3-origin-diag-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          "$RUNNER_TEMP/de-phone" "cat > '$root/canary.py'" < scripts/youtube-de89-h3-canary-20261117.py
+          "$RUNNER_TEMP/de-phone" "python3 -B '$root/canary.py' apply '$root'"
+      - name: Verify public ingress certificate and actual media from external control
+        run: |
+          set -Eeuo pipefail
+          "$RUNNER_TEMP/yt-venv/bin/python" - <<'PYTHON'
+          import asyncio,json,os,pathlib,runpy
+          probe=runpy.run_path('scripts/youtube-de89-h3-origin-20261117.py')['probe']
+          targets=json.loads((pathlib.Path(os.environ['RUNNER_TEMP'])/'h3-targets.private.json').read_text())
+          async def main():
+              results=await asyncio.gather(*(probe(t,('89.125.90.101',443)) for t in targets))
+              good=any(r.get('label')=='media' and r.get('status')==206 and r.get('bytes',0)>=65536 and r.get('mime','').startswith(('video/','audio/')) and r.get('tls_verified') for r in results)
+              if not good:raise SystemExit('PUBLIC_H3_MEDIA_NOT_VERIFIED')
+              print('PUBLIC_H3_ACTUAL_MEDIA_VERIFIED=true')
+          asyncio.run(main())
+          PYTHON
+          root="/opt/mnebydns-h3-origin-diag-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          "$RUNNER_TEMP/de-phone" "touch '$root/KEEP_CANARY'; echo PHONE_H3_WINDOW_READY=true"
+      - name: Keep verified bounded canary or restore immediately on failure
+        if: always()
+        run: |
+          set -Eeuo pipefail
+          root="/opt/mnebydns-h3-origin-diag-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          "$RUNNER_TEMP/de-phone" "if test -f '$root/KEEP_CANARY'; then echo SCOPED_UDP_CANARY_UNTIL_INDEPENDENT_EXPIRY=true; else if test -f '$root/canary.py'; then python3 -B '$root/canary.py' clean '$root'; fi; test ! -e '$root' || rm -rf -- '$root'; echo UNVERIFIED_CANARY_REMOVED=true; fi"
+          rm -f "$RUNNER_TEMP/h3-targets.private.json"
