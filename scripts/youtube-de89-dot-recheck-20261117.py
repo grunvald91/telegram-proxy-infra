@@ -12,24 +12,37 @@ def run(a,timeout=10):
         return p.returncode,p.stdout
     except (OSError,subprocess.TimeoutExpired) as e:return -1,type(e).__name__
 def emit(k,v):print(k+'='+json.dumps(v,sort_keys=True),flush=True)
-for unit in ['nginx','mnebydns-googlepilot','mnebydns-dot','mnebydns-personal-dot-private','telegram-foreign-nfqws']:
+for unit in ['nginx','mnebydns-googlepilot','mnebydns-dot','mnebydns-personal-sni-stream','mnebydns-personal-sni-redirect','telegram-foreign-nfqws']:
     emit('SERVICE',{'unit':unit,'state':run(['systemctl','is-active',unit])[1].strip()})
 rc,raw=run(['nft','-j','list','ruleset'])
 if rc or any(tag in raw for tag in ['mnebydns_youtube_window4_test','mnebydns_youtube_synsplit_test']):raise RuntimeError('TCP_EXPERIMENT_NOT_CLEAN')
 emit('TEMPORARY_TCP_RULES_ABSENT',True)
 for path in ['/etc/nginx/nginx.conf','/etc/mnebydns-googlepilot/nginx.conf','/opt/mnebydns-dot/Corefile']:
     if pathlib.Path(path).is_file():emit('CONFIG_HASH',{'path':path,'sha256':hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()})
-for port in [853,8858]:
+config=pathlib.Path('/etc/mnebydns/personal-sni/nginx.conf')
+front_port=853
+if config.exists():
+    content=config.read_text()
+    ports={int(v.rsplit(':',1)[-1]) for v in re.findall(r'^\s*listen\s+([^;\s]+)',content,re.M) if v.rsplit(':',1)[-1].isdigit()}
+    if len(ports)==1:front_port=next(iter(ports))
+    targets=re.findall(r'10\.66\.77\.2:(\d+)',content)
+    emit('PERSONAL_SNI_PATH',{'frontend_port':front_port,'backend_ports':targets,'config_sha256':hashlib.sha256(config.read_bytes()).hexdigest()})
+for port in sorted({853,front_port}):
     rc,out=run(['ss','-Hlnpt','(','sport','=',':'+str(port),')'])
     emit('LISTENER',{'port':port,'present':bool(out.strip()),'exit':rc})
-for url in ['http://127.0.0.1:8859/readyz','http://127.0.0.1:8793/readyz']:
-    rc,out=run(['curl','--noproxy','*','--silent','--output','/dev/null','--max-time','3','--write-out','%{http_code}',url])
-    emit('LOCAL_READY',{'port':int(url.split(':')[2].split('/')[0]),'exit':rc,'http_status':out.strip()})
+if config.exists():
+    for backend_port in sorted({int(x) for x in targets}):
+        try:
+            with socket.create_connection(('10.66.77.2',backend_port),timeout=5) as raw:
+                raw.settimeout(5)
+                with ssl.create_default_context().wrap_socket(raw,server_hostname='aaaaaaaaaaaa.dns.mnebyvpn.site') as tls:
+                    emit('EXISTING_PERSONAL_DNS_BACKEND_TLS',{'port':backend_port,'verified':bool(tls.getpeercert()),'version':tls.version()})
+        except Exception as e:emit('EXISTING_PERSONAL_DNS_BACKEND_TLS',{'port':backend_port,'error':type(e).__name__})
 source=pathlib.Path('/run/mnebydns-w4-44047955995-1/PHONE_SOURCE.json')
 if not source.exists():emit('PERSONAL_DOT_RECHECK','NO_PRIOR_OBSERVED_SOURCE');raise SystemExit(0)
 record=json.loads(source.read_text());addr=record['address']
 if not ipaddress.ip_address(addr).is_global or time.time()-record['observed_at']>2400:emit('PERSONAL_DOT_RECHECK','STALE_SOURCE');raise SystemExit(0)
-expr=['(','sport','=',':853','and','dst',addr,')']
+expr=['(','sport','=',':'+str(front_port),'and','dst',addr,')']
 rc,out=run(['ss','-Hnt','state','established',*expr])
 rows=out.strip().splitlines() if out.strip() else []
 emit('OBSERVED_SOURCE_ACTIVE_DOT_SOCKETS',len(rows))
@@ -41,7 +54,7 @@ capture=subprocess.Popen(['timeout','20','tcpdump','-i','eth0','-n','-U','-B','1
 host=None;chunks={}
 try:
     endian,link=obs.read_header(capture.stdout)
-    rc,_=run(['ss','-K','state','established','(','sport','=',':853','and','dst',addr,'and','dport','=',':'+port,')'])
+    rc,_=run(['ss','-K','state','established','(','sport','=',':'+str(front_port),'and','dst',addr,'and','dport','=',':'+port,')'])
     emit('SINGLE_OBSERVED_DOT_SOCKET_RECONNECTED',rc==0)
     while True:
         h=obs.read_exact(capture.stdout,16)
