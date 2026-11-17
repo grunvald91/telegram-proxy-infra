@@ -15,6 +15,7 @@ Workflow: MNEBYVPN NEW VPS bootstrap (old production untouched).
 
 Ввод: host=217.11.167.91; node_id=fi-test-01; advertise_host=fi-test.mnebyvpn.site.
 
+0. mode=prepare_all: единым запуском (с возможностью безопасного возобновления) выполняет stage → identity → components_install → vpn_stage для нового или частично подготовленного узла. Перед повторным запуском сверяет существующую спецификацию и никогда не перегенерирует ключи.
 1. mode=components_check: проверить состояние нового узла без изменений.
 2. mode=components_install: скачать и установить Xray v26.11.9, CoreDNS v1.15.0 по закреплённым SHA-256 архивов, поставить через Ubuntu APT nginx, libnginx-mod-stream, wireguard-tools. Временный policy-rc.d запрещает запуски во время APT; nginx затем остановлен и отключён от автозапуска.
 3. mode=vpn_stage_auto: взять SHA-256 установленного Xray из локального манифеста и независимо проверить бинарник через существующий vpn_stage.py, создать неактивную конфигурацию REALITY без клиентов.
