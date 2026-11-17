@@ -1,0 +1,39 @@
+name: YouTube ingress filters and stream return-path audit
+on:
+  push:
+    branches: [diag/youtube-path-audit-20261117]
+    paths: ['.github/workflows/youtube-path-audit-20261117.yml','scripts/youtube-path-audit-20261117.py']
+permissions: {contents: read}
+concurrency:
+  group: mnebydns-youtube-path-audit
+  cancel-in-progress: false
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Validate and inspect both nodes without changing configuration
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/youtube-path-audit-20261117.py
+          test -n "$DE_PASS" && test -n "$RU_PASS"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass >/dev/null
+          opts=(-T -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3
+            -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          SSHPASS="$DE_PASS" timeout 90s sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -B - DE' < scripts/youtube-path-audit-20261117.py &
+          de_job=$!
+          SSHPASS="$RU_PASS" timeout 90s sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -B - RU' < scripts/youtube-path-audit-20261117.py &
+          ru_job=$!
+          status=0
+          wait "$de_job" || status=1
+          wait "$ru_job" || status=1
+          exit "$status"
