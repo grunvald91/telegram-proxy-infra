@@ -37,8 +37,8 @@ def prepare():
     (ROOT/'HASHES.json').write_text(json.dumps(hashes()))
     suffix=ROOT.name.removeprefix('mnebydns-w4-')
     # Cleanup is independent of this SSH session and is armed before rule insertion.
-    cmd(['systemd-run','--quiet','--collect','--unit=mnebydns-w4-clean-'+suffix,'--on-active=180s','/usr/bin/python3','-B',str(pathlib.Path(__file__).resolve()),'cleanup',str(ROOT)])
-    cmd(['systemd-run','--quiet','--unit=mnebydns-w4-nfq-'+suffix,'--property=RuntimeMaxSec=190','--property=StandardOutput=null','--property=StandardError=null','/opt/zapret2/nfqws2','--qnum=211','--debug=0','--server','--lua-init=@/opt/zapret2/lua/zapret-lib.lua','--lua-init=@/opt/zapret2/lua/zapret-antidpi.lua','--filter-tcp=443','--payload=empty','--lua-desync=wsize:wsize=4'])
+    cmd(['systemd-run','--quiet','--collect','--unit=mnebydns-w4-clean-'+suffix,'--on-active=260s','/usr/bin/python3','-B',str(pathlib.Path(__file__).resolve()),'cleanup',str(ROOT)])
+    cmd(['systemd-run','--quiet','--unit=mnebydns-w4-nfq-'+suffix,'--property=RuntimeMaxSec=270','--property=StandardOutput=null','--property=StandardError=null','/opt/zapret2/nfqws2','--qnum=211','--debug=0','--server','--lua-init=@/opt/zapret2/lua/zapret-lib.lua','--lua-init=@/opt/zapret2/lua/zapret-antidpi.lua','--filter-tcp=443','--payload=empty','--lua-desync=wsize:wsize=4'])
     time.sleep(1)
     cmd(['systemctl','is-active','--quiet','mnebydns-w4-nfq-'+suffix])
     runner=os.environ.get('SSH_CONNECTION','').split()[0]
@@ -47,10 +47,10 @@ def phone():
     clear_rules()
     spec=importlib.util.spec_from_file_location('observer',ROOT/'observer.py');obs=importlib.util.module_from_spec(spec);spec.loader.exec_module(obs)
     candidates=set()
-    p=subprocess.Popen(['timeout','45','tcpdump','-i','eth0','-n','-U','-B','32768','-s','8192','-w','-','ip and tcp and dst host 89.125.90.101 and dst port 443'],stdout=subprocess.PIPE,stderr=subprocess.PIPE,bufsize=0)
+    p=subprocess.Popen(['timeout','120','tcpdump','-i','eth0','-n','-U','-B','32768','-s','8192','-w','-','ip and tcp and dst host 89.125.90.101 and dst port 443'],stdout=subprocess.PIPE,stderr=subprocess.PIPE,bufsize=0)
     try:
         endian,link=obs.read_header(p.stdout)
-        emit('PHONE_MEDIA_SELECTOR_ARMED_SECONDS',45)
+        emit('PHONE_MEDIA_SELECTOR_ARMED_SECONDS',120)
         while True:
             head=obs.read_exact(p.stdout,16)
             if head is None:break
@@ -62,15 +62,20 @@ def phone():
             pkt=obs.decode(body,link)
             if pkt:
                 name=obs.tls_sni(pkt[-1])
-                if name and name.endswith('.googlevideo.com'):candidates.add(pkt[0])
+                if name and name.endswith('.googlevideo.com') and pkt[0] not in ('89.125.90.101',os.environ.get('SSH_CONNECTION','').split()[0]):
+                    candidates.add(pkt[0]);break
     finally:
-        p.wait(timeout=10)
-    stats=p.stderr.read().decode('utf-8','replace');drops=re.search(r'(\d+) packets dropped by kernel',stats)
+        import signal
+        if p.poll() is None:p.send_signal(signal.SIGINT)
+        remaining,errors=p.communicate(timeout=10)
+    stats=errors.decode('utf-8','replace');drops=re.search(r'(\d+) packets dropped by kernel',stats)
     emit('PHONE_MEDIA_CANDIDATE_COUNT',len(candidates))
     emit('PHONE_SELECTOR_KERNEL_DROPS',int(drops[1]) if drops else None)
     if len(candidates)!=1 or not drops or int(drops[1]):
         emit('PHONE_WINDOW4_APPLIED',False);return
-    add_rule(next(iter(candidates)));emit('PHONE_WINDOW4_APPLIED',True)
+    addr=next(iter(candidates))
+    (ROOT/'PHONE_SOURCE.json').write_text(json.dumps({'address':addr,'observed_at':time.time()}))
+    add_rule(addr);emit('PHONE_WINDOW4_APPLIED',True)
     time.sleep(60);emit('PHONE_WINDOW4_OBSERVATION_SECONDS',60)
     clear_rules()
 if __name__=='__main__':

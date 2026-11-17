@@ -5,7 +5,7 @@ def emit(k,v):print(k+'='+json.dumps(v,sort_keys=True),flush=True)
 start=time.monotonic()
 cmd=[sys.executable,'-m','yt_dlp','--proxy','socks5://127.0.0.1:10889','--js-runtimes','node',
      '--socket-timeout','10','--extractor-retries','0','--retries','0','--no-playlist',
-     '--skip-download','--no-warnings','--no-progress','--dump-single-json','https://www.youtube.com/watch?v=BaW_jenozKc']
+     '--skip-download','--no-warnings','--no-progress','--dump-single-json','https://www.youtube.com/watch?v=jNQXAC9IVRw']
 try:p=subprocess.run(cmd,capture_output=True,text=True,timeout=100)
 except subprocess.TimeoutExpired:
     emit('MEDIA_EXTRACTION',{'success':False,'reason':'timeout','media_transfer_tested':False});raise SystemExit(0)
