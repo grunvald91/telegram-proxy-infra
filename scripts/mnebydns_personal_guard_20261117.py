@@ -192,5 +192,13 @@ if __name__=='__main__':
     except KeyError:
         raise SystemExit('usage: preflight|install|rollback|tick')
     except Exception as exc:
-        print('PERSONAL_DOT_REPAIR_ERROR='+type(exc).__name__,file=sys.stderr)
+        allowed={'personal SNI map unexpected',
+                 'personal backend outside expected allowlist',
+                 'NO_UNAMBIGUOUS_VALID_PERSONAL_PROBE_SNI',
+                 'AUTHENTICATED_DOT_DNS_ANSWER_INVALID',
+                 'UNKNOWN_PERSONAL_SNI_RECEIVED_DNS_ANSWER',
+                 'required systemd unit inactive',
+                 'root required'}
+        reason=str(exc) if str(exc) in allowed else type(exc).__name__
+        print('PERSONAL_DOT_REPAIR_REASON='+reason,file=sys.stderr)
         sys.exit(1)
