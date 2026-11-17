@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
-      - name: Run approved new VPS component check
+      - name: Provision approved new VPS (staged only)
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -26,4 +26,4 @@ jobs:
             -f "inputs[host]=217.11.167.91" \
             -f "inputs[node_id]=fi-test-01" \
             -f "inputs[advertise_host]=fi-test.mnebyvpn.site" \
-            -f "inputs[mode]=components_check"
+            -f "inputs[mode]=prepare_all"
