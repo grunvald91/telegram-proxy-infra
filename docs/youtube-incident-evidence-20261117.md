@@ -160,3 +160,32 @@ uncaptured tail went or prove a specific ISP/DPI mechanism.
 No persistent production configuration change was applied. The agreed capture
 used one Actions run. The timing API reports run_duration_ms=199000 (199
 seconds), UBUNTU.total_ms=0 and one job; no charge is inferred from elapsed time.
+
+## Explicit Termux TLS 1.2 comparison, 17 November, 08:14:24–08:17:24 Moscow
+
+[Run 44021809780, attempt 2](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/44021809780/attempts/2)
+used the same observer and address/SNI as the preceding test, while curl was
+limited with `--tlsv1.2 --tls-max 1.2`.
+
+The owner supplied an outgoing 243-byte handshake plus a five-byte record
+header (248 bytes total), followed by no ServerHello and error 28 after
+7002 milliseconds. The observer did not identify a Googlevideo flow or a
+248-byte target TLS record in that window. Do not report this as a complete
+248-byte record received by Nginx. The observer does not emit per-flow
+SYN-only entries, so this log does not independently correlate an empty TCP
+flow to that attempt.
+
+Nine other target-family records from one anonymous source were complete and
+matched Pilot and origin egress. Eight had public response payload. One
+gstatic.com record (517 bytes) matched both Pilot and origin; 2805 upstream
+response bytes were counted but zero public response bytes. Three complete
+initial TLS records overall (including two other host families) had no public
+response. Per-flow close/first-response timing and Pilot-to-shared return
+bytes were not logged, so this does not yet establish a server forwarding
+defect: late upstream response, client closure and return processing remain
+unresolved alternatives.
+
+The short TLS 1.2 test also timed out. Therefore the large-record split
+observed in the earlier test is not, on its own, a complete explanation.
+Neither a specific ISP/DPI mechanism nor absence of server-side defects has
+been established. Persistent routes/configuration were unchanged.
