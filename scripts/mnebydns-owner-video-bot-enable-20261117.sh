@@ -89,7 +89,11 @@ case "$phase" in
     test -f "$backup" || exit 2
     cp -p "$backup" "$envfile"
     bash "$promoter" "$source_sha"
-    verify_bot no
+    test "$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:8793/readyz)" = 200
+    if docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' mnebyvpn-bot-info |
+      grep -Fxq 'MNEBYDNS_OWNER_SMART_DNS_LINKS_ENABLED=yes';then
+      echo 'OWNER_SMART_DNS_FLAG_STILL_ENABLED=true';exit 2
+    fi
     echo 'OWNER_SMART_DNS_LINK_ISSUANCE=DISABLED'
     ;;
   status)
