@@ -1,0 +1,41 @@
+name: Nodekit FI DNS readiness check
+on:
+  push:
+    branches: [feat/nodekit-fi-host-20261117]
+    paths: [.github/workflows/nodekit-fi-dns-check-once.yml]
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Verify new country hostname from several external resolvers
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          host=fi.mnebyvpn.site
+          ip=217.11.167.91
+          for resolver in 1.1.1.1 8.8.8.8 9.9.9.9; do
+            answers=$(dig +time=3 +tries=1 +short A @"$resolver" "$host" | sort -u | tr '\n' ' ' || true)
+            echo "resolver_$resolver=$answers"
+            if echo " $answers " | grep -q " $ip "; then
+              echo "resolver_${resolver}_expected=true"
+            else
+              echo "resolver_${resolver}_expected=false"
+            fi
+          done
+          for ns in ns1.jino.ru ns2.jino.ru ns3.jino.ru ns4.jino.ru; do
+            answers=$(dig +time=3 +tries=1 +short A @"$ns" "$host" | sort -u | tr '\n' ' ' || true)
+            echo "authoritative_$ns=$answers"
+          done
+          python3 - <<'PY'
+          import socket
+          name='fi.mnebyvpn.site'
+          try:
+              ips=sorted({x[4][0] for x in socket.getaddrinfo(name, None, family=socket.AF_INET)})
+          except OSError:
+              ips=[]
+          print('runner_ipv4='+str(ips))
+          print('runner_expected='+str('217.11.167.91' in ips).lower())
+          PY
