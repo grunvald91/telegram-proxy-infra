@@ -52,8 +52,8 @@ jobs:
       XRAY_SHA256: ${{ inputs.xray_sha256 }}
       CONTROLLER_PUBLIC_SHA256: ${{ inputs.controller_public_sha256 }}
       CONTROLLER_PUBLIC_B64: ${{ secrets.MNEBYVPN_CONTROLLER_ACCESS_PUB_SPKI_B64 }}
-      NEW_NODE_SSH_KEY: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_KEY }}
-      NEW_NODE_KNOWN_HOSTS: ${{ secrets.MNEBYVPN_NEW_NODE_KNOWN_HOSTS }}
+      NEW_NODE_SSH_USER: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_USER }}
+      SSHPASS: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -63,7 +63,15 @@ jobs:
         run: |
           set -Eeuo pipefail
           umask 077
-          test -n "$NEW_NODE_SSH_KEY" && test -n "$NEW_NODE_KNOWN_HOSTS"
+          # Credentials are read only from this repository's Actions secrets.
+          test -n "$SSHPASS" || { echo '::error::Missing MNEBYVPN_NEW_NODE_SSH_PASSWORD'; exit 2; }
+          [[ "$NEW_NODE_SSH_USER" == root ]] || {
+            echo '::error::MNEBYVPN_NEW_NODE_SSH_USER must be root for this bootstrap'; exit 2;
+          }
+          # Password-only bootstrap is initially allowed only for this isolated test VPS.
+          [[ "$INPUT_HOST" == '217.11.167.91' ]] || {
+            echo '::error::Password transport restricted to approved test VPS'; exit 2;
+          }
           [[ "$INPUT_HOST" =~ ^[a-zA-Z0-9.-]+$ ]]
           test "$INPUT_HOST" != '89.125.90.101'
           test "$INPUT_HOST" != '188.120.254.223'
@@ -74,15 +82,14 @@ jobs:
               echo '::error::Supervisor/Xray staging requires a preverified SHA256'; exit 2;
             }
           fi
-          # Resolve exactly once and use the resulting IP in every SSH/SCP.
-          # Pinned original alias is checked via the private known_hosts file.
+          # Resolve once and pin this IP for every SSH/SCP connection.
+          # Host keys are TOFU (accept-new) within this ephemeral Actions run;
+          # they are NOT independently verified or persistent across runs.
           target_ip="$(python3 nodekit/resolve_new_vps.py "$INPUT_HOST")"
           printf 'TARGET_IP=%s\n' "$target_ip" >> "$GITHUB_ENV"
           mkdir -m 700 -p "$RUNNER_TEMP/nodekit-credentials"
-          printf '%s\n' "$NEW_NODE_SSH_KEY" > "$RUNNER_TEMP/nodekit-credentials/id_key"
-          printf '%s\n' "$NEW_NODE_KNOWN_HOSTS" > "$RUNNER_TEMP/nodekit-credentials/known_hosts"
-          chmod 600 "$RUNNER_TEMP/nodekit-credentials/"*
-          ssh-keygen -F "$INPUT_HOST" -f "$RUNNER_TEMP/nodekit-credentials/known_hosts" >/dev/null
+          : > "$RUNNER_TEMP/nodekit-credentials/known_hosts"
+          chmod 600 "$RUNNER_TEMP/nodekit-credentials/known_hosts"
           if [[ "$MODE" == 'supervisor_install' || "$MODE" == 'supervisor_canary' ]]; then
             [[ "$CONTROLLER_PUBLIC_SHA256" =~ ^[a-f0-9]{64}$ ]]
             test -n "$CONTROLLER_PUBLIC_B64"
@@ -117,67 +124,56 @@ jobs:
           path = pathlib.Path(os.environ["RUNNER_TEMP"]) / "nodekit-credentials" / "spec.json"
           path.write_text(json.dumps(data))
           PY
+      - name: Install password SSH transport on ephemeral runner
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass
       - name: Transfer staged tools and run remote preflight
         shell: bash
         run: |
           set -Eeuo pipefail
           umask 077
-          key="$RUNNER_TEMP/nodekit-credentials/id_key"
           known="$RUNNER_TEMP/nodekit-credentials/known_hosts"
-          target="root@$INPUT_HOST"
-          remote_dir="$(ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes \
-            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known" \
-            -o HostName="$TARGET_IP" -o HostKeyAlias="$INPUT_HOST" \
-            -o ConnectTimeout=12 "$target" \
-            'umask 077; mktemp -d /tmp/mnebyvpn-nodekit.XXXXXXXX')"
+          target="$NEW_NODE_SSH_USER@$INPUT_HOST"
+          ssh_opts=(
+            -o PubkeyAuthentication=no
+            -o PreferredAuthentications=password,keyboard-interactive
+            -o NumberOfPasswordPrompts=1
+            -o StrictHostKeyChecking=accept-new
+            -o UserKnownHostsFile="$known"
+            -o HostName="$TARGET_IP"
+            -o HostKeyAlias="$INPUT_HOST"
+            -o ConnectTimeout=12
+          )
+          remote_ssh() { sshpass -e ssh "${ssh_opts[@]}" "$target" "$@"; }
+          remote_scp() { sshpass -e scp "${ssh_opts[@]}" "$@"; }
+
+          remote_dir="$(remote_ssh 'umask 077; mktemp -d /tmp/mnebyvpn-nodekit.XXXXXXXX')"
           [[ "$remote_dir" =~ ^/tmp/mnebyvpn-nodekit\.[a-zA-Z0-9]{8}$ ]]
           cleanup() {
-            ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes \
-              -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known" \
-            -o HostName="$TARGET_IP" -o HostKeyAlias="$INPUT_HOST" \
-              -o ConnectTimeout=12 "$target" \
-              "rm -rf -- '$remote_dir'" >/dev/null 2>&1 || true
+            remote_ssh "rm -rf -- '$remote_dir'" >/dev/null 2>&1 || true
           }
           trap cleanup EXIT
-          scp -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes \
-            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known" \
-            -o HostName="$TARGET_IP" -o HostKeyAlias="$INPUT_HOST" \
-            -o ConnectTimeout=12 nodekit/nodekit.py nodekit/identity.py nodekit/vpn_stage.py \
+
+          remote_scp nodekit/nodekit.py nodekit/identity.py nodekit/vpn_stage.py \
             nodekit/vpn_supervisor.py nodekit/install_supervisor.py nodekit/forward_command.py \
             nodekit/systemd/mnebyvpn-nodekit-vpn@.service.example \
             "$RUNNER_TEMP/nodekit-credentials/spec.json" "$target:$remote_dir/"
           if [[ "$MODE" == 'supervisor_install' || "$MODE" == 'supervisor_canary' ]]; then
-            scp -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes \
-              -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known" \
-              -o HostName="$TARGET_IP" -o HostKeyAlias="$INPUT_HOST" \
-              -o ConnectTimeout=12 "$RUNNER_TEMP/nodekit-credentials/controller-access.spki" \
+            remote_scp "$RUNNER_TEMP/nodekit-credentials/controller-access.spki" \
               "$target:$remote_dir/"
           fi
           if [[ "$MODE" == 'identity' ]]; then
-            ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes \
-              -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known" \
-            -o HostName="$TARGET_IP" -o HostKeyAlias="$INPUT_HOST" \
-              -o ConnectTimeout=12 "$target" \
-              "python3 '$remote_dir/identity.py' --node-id '$NODE_ID'"
+            remote_ssh "python3 '$remote_dir/identity.py' --node-id '$NODE_ID'"
           elif [[ "$MODE" == 'vpn_stage' ]]; then
-            ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes \
-              -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known" \
-            -o HostName="$TARGET_IP" -o HostKeyAlias="$INPUT_HOST" \
-              -o ConnectTimeout=12 "$target" \
-              "python3 '$remote_dir/vpn_stage.py' --node-id '$NODE_ID' --xray /opt/xray/xray --xray-sha256 '$XRAY_SHA256'"
+            remote_ssh "python3 '$remote_dir/vpn_stage.py' --node-id '$NODE_ID' --xray /opt/xray/xray --xray-sha256 '$XRAY_SHA256'"
           elif [[ "$MODE" == 'supervisor_install' || "$MODE" == 'supervisor_canary' ]]; then
             install_mode=install
             if [[ "$MODE" == 'supervisor_canary' ]]; then install_mode=canary; fi
-            ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes \
-              -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known" \
-              -o HostName="$TARGET_IP" -o HostKeyAlias="$INPUT_HOST" \
-              -o ConnectTimeout=12 "$target" \
-              "python3 '$remote_dir/install_supervisor.py' --node-id '$NODE_ID' --source-dir '$remote_dir' --controller-public '$remote_dir/controller-access.spki' --controller-public-sha256 '$CONTROLLER_PUBLIC_SHA256' --xray /opt/xray/xray --xray-sha256 '$XRAY_SHA256' --mode '$install_mode'"
+            remote_ssh "python3 '$remote_dir/install_supervisor.py' --node-id '$NODE_ID' --source-dir '$remote_dir' --controller-public '$remote_dir/controller-access.spki' --controller-public-sha256 '$CONTROLLER_PUBLIC_SHA256' --xray /opt/xray/xray --xray-sha256 '$XRAY_SHA256' --mode '$install_mode'"
           else
-            ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes \
-              -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known" \
-            -o HostName="$TARGET_IP" -o HostKeyAlias="$INPUT_HOST" \
-              -o ConnectTimeout=12 "$target" \
-              "python3 '$remote_dir/nodekit.py' '$MODE' --spec '$remote_dir/spec.json'"
+            remote_ssh "python3 '$remote_dir/nodekit.py' '$MODE' --spec '$remote_dir/spec.json'"
           fi
           echo "The new VPS is NOT published in subscriptions; success does not imply end-to-end readiness."
