@@ -61,6 +61,7 @@ class TestAmneziaWg(unittest.TestCase):
                 with self.assertRaises(m.AwgError):
                     m.verify_existing(node, {"awg": "0"*64})
 
+    @unittest.skipUnless(os.geteuid() == 0, 'Artifact owner contract requires root')
     def test_artifact_source_mismatch_never_overwrites(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
