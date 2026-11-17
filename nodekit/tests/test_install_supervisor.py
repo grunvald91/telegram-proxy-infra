@@ -161,6 +161,27 @@ class BootstrapTest(unittest.TestCase):
         with self.assertRaises(m.InstallError):
             self.install()
 
+    def test_malformed_stage_shapes_refuse_without_partial_install(self):
+        node = self.stage / self.node
+        for path, invalid in [
+            (node / "manifest.json", []),
+            (node / "vpn" / "vpn-stage-manifest.json", []),
+            (node / "vpn" / "xray-config.json", []),
+            (node / "vpn" / "xray-config.json", {"inbounds": [None]}),
+            (node / "vpn" / "xray-config.json", {
+                "inbounds": [{"settings": None, "streamSettings": None}]}),
+        ]:
+            original = path.read_text()
+            with self.subTest(path=path.name, value=invalid):
+                path.write_text(json.dumps(invalid))
+                try:
+                    with self.assertRaises(m.InstallError):
+                        self.install(mode="canary", check_canary=lambda _: True)
+                    self.assertFalse(self.dest.exists())
+                    self.assertFalse(self.unit.exists())
+                finally:
+                    path.write_text(original)
+
     def test_rollback_when_systemd_start_fails_after_partial_launch(self):
         self.runner.fail_start = True
         with self.assertRaises(subprocess.CalledProcessError):
