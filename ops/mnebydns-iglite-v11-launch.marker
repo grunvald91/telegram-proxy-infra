@@ -1,0 +1,4 @@
+Owner-authorized single v11 route-only Meta DNS/SNI diagnostic, 2026-11-11.
+Window: 900 seconds; independent same-boot config-only rollback timer: 1200 seconds.
+No global TCP scaling changes or nftables packet manipulation.
+No repeat on commits outside this unique launch marker.

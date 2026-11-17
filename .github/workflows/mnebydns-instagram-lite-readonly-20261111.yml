@@ -1,0 +1,93 @@
+name: MNEBYDNS Instagram Lite SNI and DoT read-only diagnostics
+on:
+  push:
+    branches: [audit/mnebydns-instagram-lite-20261111]
+    paths:
+      - '.github/workflows/mnebydns-instagram-lite-readonly-20261111.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  public-dns-tls:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compare original DNS, live MNEBYDNS DoT and TLS SNI for Lite host
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns_iglite_readonly_audit.py
+          python3 scripts/mnebydns_iglite_readonly_audit.py
+  inspect-running-stream-router:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prepare pinned authenticated read-only SSH
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS"
+          test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+      - name: Read only actual RU TLS SNI routing and service health
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 -' <<'PY'
+          import re,subprocess,sys
+          p=subprocess.run(['nginx','-T'],capture_output=True,text=True,timeout=18)
+          if p.returncode:raise SystemExit('RU nginx config read failed')
+          config=p.stdout
+          print('ru_nginx_syntax_valid=true',flush=True)
+          exact=sum(bool(re.search(r'(?mi)^\s*iglite-z\.instagram\.com\s+\S+;',line)) for line in config.splitlines())
+          print('ru_iglite_exact_stream_routes='+str(exact),flush=True)
+          maps=list(re.finditer(r'(?m)^\s*map\s+\$ssl_preread_server_name\s+\$\S+\s*\{',config))
+          print('ru_sni_map_count='+str(len(maps)),flush=True)
+          for i,m in enumerate(maps):
+              tail=config[m.end():].split('}',1)[0]
+              vals=[row.strip() for row in tail.splitlines() if re.match(r'^\s*(?:default|iglite-z\.instagram\.com)\s+',row)]
+              print('ru_sni_map_'+str(i)+'_rules='+' | '.join(vals),flush=True)
+          print('ru_telegram_worker_active='+str(subprocess.run(['systemctl','is-active','--quiet','telegram-nfqws.service'],timeout=8).returncode==0).lower(),flush=True)
+          PY
+      - name: Read only actual DE DoT and SNI routing for Lite
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY'
+          import pathlib,re,subprocess
+          p=subprocess.run(['nginx','-T'],capture_output=True,text=True,timeout=18)
+          if p.returncode:raise SystemExit('DE nginx config read failed')
+          cfg=p.stdout
+          print('de_nginx_syntax_valid=true',flush=True)
+          maps=list(re.finditer(r'(?m)^\s*map\s+\$ssl_preread_server_name\s+\$\S+\s*\{',cfg))
+          print('de_sni_map_count='+str(len(maps)),flush=True)
+          for i,m in enumerate(maps):
+              tail=cfg[m.end():].split('}',1)[0]
+              vals=[row.strip() for row in tail.splitlines() if re.match(r'^\s*(?:default|iglite-z\.instagram\.com)\s+',row)]
+              print('de_sni_map_'+str(i)+'_rules='+' | '.join(vals),flush=True)
+          core=pathlib.Path('/opt/mnebydns-dot/Corefile')
+          if core.is_file():
+              t=core.read_text()
+              print('de_coredns_iglite_literal_count='+str(t.lower().count('iglite-z')),flush=True)
+              print('de_coredns_iglite_matching_lines='+str(sum('iglite' in l.lower() for l in t.splitlines())),flush=True)
+              print('de_coredns_iglite_mention_present='+str('iglite-z' in t.lower()).lower(),flush=True)
+          else:print('de_coredns_current_file=MISSING',flush=True)
+          PY

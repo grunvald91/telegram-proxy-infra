@@ -1,0 +1,293 @@
+name: MNEBYDNS Instagram Lite DE egress and checkpoint read-only gate
+on:
+  push:
+    branches: [audit/mnebydns-instagram-lite-20261111]
+    paths:
+      - '.github/workflows/mnebydns-instagram-lite-de-egress-20261111.yml'
+permissions:
+  contents: read
+jobs:
+  egress:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install pinned SSH client and validate access
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+      - name: Validate unmodified DE live configuration and Instagram Lite TLS egress
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY'
+          import pathlib,socket,ssl,subprocess,time
+          host='iglite-z.instagram.com'
+          for target in ('57.144.244.32','157.240.0.160'):
+              t=time.monotonic()
+              try:
+                  sock=socket.create_connection((target,443),timeout=7)
+                  sock.settimeout(7)
+                  tls=ssl.create_default_context().wrap_socket(sock,server_hostname=host)
+                  print('de_meta_tls_target='+target+' status=VERIFIED version='+str(tls.version())+' seconds='+str(round(time.monotonic()-t,2)),flush=True)
+                  tls.close()
+              except Exception as exc:
+                  print('de_meta_tls_target='+target+' status=FAILED type='+type(exc).__name__,flush=True)
+          base=pathlib.Path('/opt/mnebydns-stable-checkpoints/current')
+          core=pathlib.Path('/opt/mnebydns-dot/Corefile')
+          nginx=pathlib.Path('/etc/nginx/nginx.conf')
+          proxy=pathlib.Path('/etc/mnebydns-googlepilot/nginx.conf')
+          if base.is_file():
+              name=base.read_text().strip()
+              root=pathlib.Path(name)
+              print('de_checkpoint_dir_exists='+str(root.is_dir()).lower(),flush=True)
+              for key,p in (('dns',core),('nginx',nginx),('proxy',proxy)):
+                  expected=root/(key+'.stable')
+                  same=expected.is_file() and p.is_file() and expected.read_bytes()==p.read_bytes()
+                  print('de_checkpoint_'+key+'_matches='+str(same).lower(),flush=True)
+          else:print('de_checkpoint_current=MISSING',flush=True)
+          for svc in ('nginx.service','mnebydns-dot.service','mnebydns-googlepilot.service'):
+              active=subprocess.run(['systemctl','is-active','--quiet',svc],timeout=9).returncode==0
+              print('de_service_'+svc.replace('.service','')+'_active='+str(active).lower(),flush=True)
+          if core.is_file():
+              text=core.read_text()
+              print('de_core_anchor_gemini_count='+str(text.count('template IN A gemini.google.com {')),flush=True)
+              print('de_core_cache_30_count='+str(text.count('    cache 30')),flush=True)
+          PY
+
+      - name: DE 443 SYNACK global experimental preflight - READ ONLY
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY'
+          import ctypes.util,pathlib,re,shutil,subprocess
+          def cmd(a,limit=12):
+              try:
+                  p=subprocess.run(a,capture_output=True,text=True,timeout=limit)
+                  return p.returncode,p.stdout
+              except Exception:
+                  return 255,""
+          print("de_global_probe_read_only=true")
+          for tool in ("nft","iptables","systemd-run","systemctl","ss","nginx","python3"):
+              print("de_experiment_tool_"+tool+"="+str(shutil.which(tool) is not None).lower())
+          print("de_nfq_lib_available="+str(bool(ctypes.util.find_library("netfilter_queue"))).lower())
+          p=pathlib.Path("/proc/net/netfilter/nfnetlink_queue")
+          owners=[]
+          if p.is_file():
+              for row in p.read_text().splitlines():
+                  x=row.split()
+                  if x and x[0].isdigit():
+                      owners.append(x[0])
+          print("de_queue211_unowned="+str("211" not in owners).lower())
+          code,sockets=cmd(["ss","-ltn"])
+          print("de_socket_audit_works="+str(code==0).lower())
+          print("de_public_tcp443_listener_present="+str(bool(re.search(r":443\s",sockets))).lower())
+          rc,nft=cmd(["nft","-a","list","ruleset"])
+          print("de_nft_readable="+str(rc==0).lower())
+          print("de_mneby_ig_canary_absent="+str("MNEBY_IG_" not in nft).lower())
+          print("de_existing_queue211_reference="+str(bool(re.search(r"\b(?:queue\s+(?:num\s+)?211|to\s+211)\b",nft))).lower())
+          print("de_existing_postrouting_hooks="+str(len(re.findall(r"hook\s+postrouting",nft))))
+          print("de_existing_output_hooks="+str(len(re.findall(r"hook\s+output",nft))))
+          code,ip=cmd(["iptables","-t","mangle","-S","OUTPUT"])
+          print("de_iptables_mangle_readable="+str(code==0).lower())
+          print("de_existing_iptables_queue211="+str("211" in ip).lower())
+          conf=cmd(["nginx","-T"],20)
+          nginx=conf[1]
+          print("de_nginx_syntax_readable="+str(conf[0]==0).lower())
+          print("de_exact_lite_rules="+str(len(re.findall(r"(?mi)^\s*iglite-z[.]instagram[.]com\s+",nginx))))
+          print("de_ssl_preread_map_count="+str(nginx.count("map $ssl_preread_server_name $direct_mtproxy_backend {")))
+          print("de_instagram_lite_dns_existing="+str("iglite-z.instagram.com" in pathlib.Path("/opt/mnebydns-dot/Corefile").read_text() if pathlib.Path("/opt/mnebydns-dot/Corefile").is_file() else "unknown").lower())
+          print("de_rollback_systemd_available="+str(cmd(["systemctl","is-system-running"])[0] in (0,1)).lower())
+          print("de_coredns_executable_candidates="+str([str(p) for p in (pathlib.Path("/usr/local/bin/coredns"),pathlib.Path("/usr/bin/coredns"),pathlib.Path("/opt/mnebydns-dot/coredns")) if p.is_file()]))
+          print("de_coredns_on_path="+str(shutil.which("coredns") is not None).lower())
+          code,unit=cmd(["systemctl","show","mnebydns-dot.service","-p","ExecStart","--value"])
+          print("de_dot_service_exec_readable="+str(code==0).lower())
+          print("de_dot_exec_uses_docker="+str("docker" in unit).lower())
+          print("de_dot_exec_uses_podman="+str("podman" in unit).lower())
+          print("de_dot_exec_uses_coredns="+str("coredns" in unit.lower()).lower())
+          code,ng=cmd(["nginx","-V"])
+          print("de_nginx_available="+str(code==0).lower())
+          print("de_coredns_running="+str(cmd(["systemctl","is-active","--quiet","mnebydns-dot.service"])[0]==0).lower())
+          syntax=("add table inet mneby_ig_dryrun_443\n"
+                  "add chain inet mneby_ig_dryrun_443 output { type filter hook output priority mangle; policy accept; }\n"
+                  "add rule inet mneby_ig_dryrun_443 output ip saddr 89.125.90.101 tcp sport 443 tcp flags & (syn | ack) == (syn | ack) counter tcp window set 4\n")
+          try:
+              p=subprocess.run(["nft","--check","-f","-"],input=syntax,text=True,capture_output=True,timeout=12)
+              print("de_nft_window4_parse_check="+str(p.returncode==0).lower())
+              if p.returncode:print("de_nft_window4_parse_failure="+str(p.stderr.splitlines()[-1:]),flush=True)
+          except Exception as exc:
+              print("de_nft_window4_parse_exception="+type(exc).__name__,flush=True)
+          PY
+
+      - name: DE old rollback timer and safe checkpoint - READ ONLY
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY'
+          import pathlib,subprocess
+          def rc(a):
+              return subprocess.run(a,capture_output=True,text=True,timeout=10).returncode
+          root=pathlib.Path('/run/mneby-iglite-short-de-20261111')
+          unit='mneby-ig-lite-short-20261111.timer'
+          current=pathlib.Path('/opt/mnebydns-stable-checkpoints/current')
+          stable=pathlib.Path(current.read_text().strip()) if current.is_file() else pathlib.Path('/missing')
+          nx=pathlib.Path('/etc/nginx/nginx.conf')
+          core=pathlib.Path('/opt/mnebydns-dot/Corefile')
+          print('old_timer_active='+str(rc(['systemctl','is-active','--quiet',unit])==0).lower(),flush=True)
+          print('old_state_dir_exists='+str(root.exists()).lower(),flush=True)
+          print('old_state_original_backup_exists='+str(root.joinpath('nginx.original').is_file() and root.joinpath('core.original').is_file()).lower(),flush=True)
+          print('old_nft_table_absent='+str(rc(['nft','list','table','inet','mneby_ig_lite_w4_20261111'])!=0).lower(),flush=True)
+          print('current_nginx_eq_checkpoint='+str(stable.joinpath('nginx.stable').is_file() and nx.read_bytes()==stable.joinpath('nginx.stable').read_bytes()).lower(),flush=True)
+          print('current_dns_eq_checkpoint='+str(stable.joinpath('dns.stable').is_file() and core.read_bytes()==stable.joinpath('dns.stable').read_bytes()).lower(),flush=True)
+          print('nginx_active='+str(rc(['systemctl','is-active','--quiet','nginx.service'])==0).lower(),flush=True)
+          print('dns_active='+str(rc(['systemctl','is-active','--quiet','mnebydns-dot.service'])==0).lower(),flush=True)
+          PY
+
+      - name: Read-only DE DoT listener bind and certificate readiness
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY'
+          import socket,ssl,subprocess,time
+          print('dot_check_scope=READ_ONLY',flush=True)
+          for host in ('127.0.0.1','89.125.90.101'):
+              started=time.monotonic()
+              try:
+                  with socket.create_connection((host,853),timeout=3) as raw:
+                      raw.settimeout(4)
+                      with ssl.create_default_context().wrap_socket(raw,server_hostname='dns.mnebyvpn.site') as tls:
+                          print('dot_addr_'+host+'_tls=VERIFIED_'+str(tls.version()),flush=True)
+              except Exception as exc:
+                  print('dot_addr_'+host+'_tls=FAIL_'+type(exc).__name__,flush=True)
+              print('dot_addr_'+host+'_elapsed='+str(round(time.monotonic()-started,2)),flush=True)
+          p=subprocess.run(['ss','-lnt'],capture_output=True,text=True,timeout=8)
+          targets=[x.strip().split()[3] for x in p.stdout.splitlines()[1:] if ':853' in x or ':443' in x]
+          print('dot_443_853_listen_addresses='+repr(targets),flush=True)
+          for svc in ('mnebydns-dot.service','nginx.service'):
+              q=subprocess.run(['systemctl','is-active','--quiet',svc],timeout=8)
+              print('dot_'+svc.replace('.service','')+'_service_active='+str(q.returncode==0).lower(),flush=True)
+          PY
+
+      - name: Read-only ingress 443 bind and route diagnosis
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY'
+          import pathlib,re,shutil,subprocess
+          print('de_443_diag=READ_ONLY',flush=True)
+          for x in ('tcpdump','ip','nft','iptables','ss','conntrack'):
+              print('de_443_diag_tool_'+x+'='+str(bool(shutil.which(x))).lower(),flush=True)
+          def run(cmd):
+              try:return subprocess.run(cmd,timeout=12,capture_output=True,text=True)
+              except Exception:return None
+          sockets=run(['ss','-lntp'])
+          if sockets is not None and sockets.returncode==0:
+              for line in sockets.stdout.splitlines():
+                  if re.search(r'(?:^|\s)(?:\S+:)?(?:443|853)\s',line):
+                      print('de_443_diag_listener='+line.split('users:',1)[0].strip(),flush=True)
+          rules=run(['nft','-a','list','ruleset'])
+          if rules is not None and rules.returncode==0:
+              # Count rather than emit unrelated firewall rules or connection data.
+              for hook in ('input','output','prerouting'):
+                  print('de_443_diag_hook_'+hook+'_count='+str(len(re.findall(r'\bhook\s+'+hook+r'\b',rules.stdout))),flush=True)
+              print('de_443_diag_rule_dport443_count='+str(len(re.findall(r'(?:tcp|th)\s+dport\s+443\b',rules.stdout))),flush=True)
+              print('de_443_diag_drop_verdict_count='+str(len(re.findall(r'\bdrop\b',rules.stdout))),flush=True)
+              print('de_443_diag_queue_verdict_count='+str(len(re.findall(r'\bqueue\b',rules.stdout))),flush=True)
+          route=run(['ip','-4','route','get','1.1.1.1'])
+          print('de_443_diag_default_route_readable='+str(route is not None and route.returncode==0).lower(),flush=True)
+          core=pathlib.Path('/opt/mnebydns-dot/Corefile')
+          print('de_443_diag_core_active='+str(core.is_file()).lower(),flush=True)
+          PY
+
+      - name: Read-only TCP443 INPUT and queue rule-order audit
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY'
+          import json,re,subprocess
+          def run(argv):
+              try:return subprocess.run(argv,capture_output=True,text=True,timeout=12)
+              except Exception:return None
+          print('de_firewall_audit=READ_ONLY',flush=True)
+          nft=run(['nft','-j','-a','list','ruleset'])
+          if nft and nft.returncode==0:
+              data=json.loads(nft.stdout).get('nftables',[])
+              chaininfo={}
+              for item in data:
+                  c=item.get('chain')
+                  if c:
+                      key=(c.get('family'),c.get('table'),c.get('name'))
+                      chaininfo[key]=(c.get('hook','none'),c.get('prio','none'),c.get('policy','none'))
+                      if c.get('hook') in ('input','output','forward','prerouting'):
+                          print('de_fw_chain='+str(key)+' hook='+str(c.get('hook'))+' prio='+str(c.get('prio'))+' policy='+str(c.get('policy')),flush=True)
+              shown=0
+              for item in data:
+                  rule=item.get('rule')
+                  if not rule:continue
+                  key=(rule.get('family'),rule.get('table'),rule.get('chain'))
+                  hook=chaininfo.get(key,('none',))[0]
+                  expr=rule.get('expr',[])
+                  tokens=json.dumps(expr,separators=(',',':'))
+                  # Sanitized output includes verdict expression but not raw addresses.
+                  if hook in ('input','output','prerouting') or any(x in tokens for x in ('queue','443','drop','reject')):
+                      clean=re.sub(r'(?<![0-9])(?:\d{1,3}\.){3}\d{1,3}(?:/\d+)?','IP_REDACTED',tokens)
+                      print('de_fw_rule_chain='+str(key)+' hook='+str(hook)+' id='+str(rule.get('handle'))+' exp='+clean[:850],flush=True)
+                      shown+=1
+                      if shown>=42:break
+          else:
+              print('de_fw_nft_json_readable=false',flush=True)
+          for table in ('filter','mangle','raw'):
+              args=['iptables','-t',table,'-S']
+              p=run(args)
+              if p and p.returncode==0:
+                  shown=0
+                  for line in p.stdout.splitlines():
+                      if ('INPUT' in line or 'PREROUTING' in line or '443' in line or
+                          'QUEUE' in line or '-j DROP' in line or '-j REJECT' in line):
+                          clean=re.sub(r'(?<![0-9])(?:\d{1,3}\.){3}\d{1,3}(?:/\d+)?','IP_REDACTED',line)
+                          print('de_fw_iptables_'+table+'='+clean[:420],flush=True)
+                          shown+=1
+                          if shown>=25:break
+          p=run(['sysctl','-n','net.ipv4.conf.all.rp_filter'])
+          print('de_fw_rp_filter_all='+p.stdout.strip() if p and p.returncode==0 else 'de_fw_rp_filter_all=UNKNOWN',flush=True)
+          nfq=run(['cat','/proc/net/netfilter/nfnetlink_queue'])
+          if nfq and nfq.returncode==0:
+              print('de_fw_nfqueue_ids='+repr([row.split()[0] for row in nfq.stdout.splitlines() if row.split()]),flush=True)
+          PY

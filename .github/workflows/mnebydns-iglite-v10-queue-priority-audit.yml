@@ -1,0 +1,39 @@
+name: MNEBYDNS v10 readonly NFQUEUE priority audit
+on:
+  push:
+    branches: [audit/mnebydns-instagram-lite-20261111]
+    paths:
+      - '.github/workflows/mnebydns-iglite-v10-queue-priority-audit.yml'
+permissions:
+  contents: read
+jobs:
+  priority:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Offline syntax gate
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns_ig_v10_nft_priority_readonly.py
+      - name: Install SSH verifier
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+      - name: Inspect DE NFQUEUE210 hook order without changes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -u -' \
+            < scripts/mnebydns_ig_v10_nft_priority_readonly.py
