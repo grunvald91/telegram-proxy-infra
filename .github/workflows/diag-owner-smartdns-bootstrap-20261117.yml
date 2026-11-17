@@ -1,0 +1,100 @@
+name: Android personal DoT bootstrap and active owner links read-only
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/diag-owner-smartdns-bootstrap-20261117.yml
+      - scripts/diag-owner-smartdns-live-link-20261117.mjs
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check public A/AAAA bootstrap for arbitrary personal DNS names
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import socket,ssl
+          for host in ('dns.mnebyvpn.site','aaaaaaaaaaaa.dns.mnebyvpn.site',
+                       'bbbbbbbbbbbb.dns.mnebyvpn.site'):
+              for family,name in ((socket.AF_INET,'A'),(socket.AF_INET6,'AAAA')):
+                  try:
+                      ip=sorted({result[4][0] for result in
+                               socket.getaddrinfo(host,853,family,socket.SOCK_STREAM)})
+                      print('BOOTSTRAP='+host+' TYPE='+name+' VALUES='+(','.join(ip) if ip else 'NONE'),flush=True)
+                  except socket.gaierror as exc:
+                      print('BOOTSTRAP='+host+' TYPE='+name+' ERROR='+str(exc.errno),flush=True)
+              try:
+                  with socket.create_connection(('89.125.90.101',853),timeout=7) as raw:
+                      raw.settimeout(7)
+                      with ssl.create_default_context().wrap_socket(raw,server_hostname=host) as conn:
+                          print('DIRECT_IP_TLS='+host+' VERIFIED='+str(bool(conn.getpeercert())).lower()+
+                                ' VERSION='+str(conn.version()),flush=True)
+              except Exception as exc:
+                  print('DIRECT_IP_TLS='+host+' ERROR='+type(exc).__name__,flush=True)
+          PY
+      - name: Compare independent DNS resolvers public wildcard results
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq dnsutils sshpass >/dev/null
+          for resolver in 1.1.1.1 8.8.8.8 9.9.9.9;do
+            for hostname in dns.mnebyvpn.site aaaaaaaaaaaa.dns.mnebyvpn.site;do
+              for typ in A AAAA;do
+                answer="$(dig +time=3 +tries=1 +short @"$resolver" "$hostname" "$typ" | tr '\n' ',' || true)"
+                echo "RECURSOR=$resolver NAME=$hostname TYPE=$typ ANSWER=$answer"
+                status="$(dig +time=3 +tries=1 @"$resolver" "$hostname" "$typ" +noall +comments | grep -o 'status: [A-Z]*' | head -1 || true)"
+                echo "RECURSOR_STATUS=$resolver NAME=$hostname TYPE=$typ $status"
+              done
+            done
+          done
+      - name: Check new owner Smart DNS records and private gateway without exposing credentials
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          echo PRIVATE_GATEWAY_8859_READY="$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 4 http://127.0.0.1:8859/readyz)"
+          echo TELEGRAM_BOT_8793_READY="$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 4 http://127.0.0.1:8793/readyz)"
+          docker exec mnebyvpn-stage-postgres psql -X -U mnebyvpn_stage -d mnebyvpn_stage -At -v ON_ERROR_STOP=1 -c \
+            "SELECT 'OWNER_SMARTDNS_ACTIVE_COUNT='||count(*) FROM owner_dns_links WHERE video_route='smart_dns' AND revoked_at IS NULL AND (permanent OR expires_at>clock_timestamp());"
+          docker exec mnebyvpn-stage-postgres psql -X -U mnebyvpn_stage -d mnebyvpn_stage -At -v ON_ERROR_STOP=1 -c \
+            "SELECT 'OWNER_SMARTDNS_CREATED_LAST_2H='||count(*) FROM owner_dns_links WHERE video_route='smart_dns' AND created_at>clock_timestamp()-interval '2 hours';"
+          docker exec mnebyvpn-stage-postgres psql -X -U mnebyvpn_stage -d mnebyvpn_stage -At -v ON_ERROR_STOP=1 -c \
+            "SELECT 'OWNER_SMARTDNS_TOKEN_HASHES_VALID='||coalesce(bool_and(token_sha256~'^[a-f0-9]{64}$'),true) FROM owner_dns_links WHERE video_route='smart_dns';"
+          python3 - <<'PY'
+          import json,subprocess
+          p=json.loads(subprocess.check_output(['docker','inspect','mnebyvpn-bot-info']))[0]
+          flags=[v for v in p['Config']['Env'] if v.startswith('MNEBYDNS_OWNER_SMART_DNS_LINKS_ENABLED=')]
+          print('OWNER_SMARTDNS_BOT_FLAG_ACTIVE='+str(flags==['MNEBYDNS_OWNER_SMART_DNS_LINKS_ENABLED=yes']).lower())
+          PY
+          echo READONLY_NO_USER_BEARERS_PRINTED=true
+          REMOTE
+      - name: Verify actual newly issued owner link without printing credentials
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          test -s scripts/diag-owner-smartdns-live-link-20261117.mjs
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 \
+            'docker exec -i mnebyvpn-bot-info node --experimental-strip-types --input-type=module -' \
+            < scripts/diag-owner-smartdns-live-link-20261117.mjs
