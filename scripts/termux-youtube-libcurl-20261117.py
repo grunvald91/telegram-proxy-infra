@@ -55,10 +55,12 @@ def test(domain,tls12):
     finally:
         lib.curl_easy_cleanup(h);lib.curl_slist_free_all(addresses)
     result['elapsed_ms']=round((time.monotonic()-start)*1000)
-    result.update({k:state[k] for k in ['before','after','tcp_info_error'] if k in state})
+    result['tcp_state']=state.get('after',{}).get('state')
+    result['unacked_segments']=state.get('after',{}).get('unacked_segments')
+    if 'tcp_info_error' in state:result['tcp_info_error']=state['tcp_info_error']
     for k in ['bytes_acked','bytes_received','bytes_sent','bytes_retransmitted','total_retransmits']:
         if k in state.get('before',{}) and k in state.get('after',{}):result['delta_'+k]=state['after'][k]-state['before'][k]
-    print(json.dumps(result,sort_keys=True),flush=True)
+    print(json.dumps(result,sort_keys=True,separators=(',',':')),flush=True)
 print('MNEBYDNS_NORMAL_LIBCURL_CHECK_V1 '+lib.curl_version().decode(),flush=True)
 for domain in ['youtubei.googleapis.com','rr1---sn-gxuo03g-ig3s.googlevideo.com']:
     for tls12 in [False,True]:test(domain,tls12)
