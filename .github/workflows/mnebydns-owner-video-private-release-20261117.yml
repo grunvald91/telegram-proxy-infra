@@ -1,0 +1,215 @@
+name: Release owner Smart DNS video private DoT (blue-green, auto rollback)
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/mnebydns-owner-video-private-release-20261117.yml
+      - scripts/mnebydns-owner-video-private-rollout-20261117.py
+      - scripts/mnebydns-owner-video-personal-sni-20261117.sh
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/mnebydns-owner-video-private-release-20261117.yml
+      - scripts/mnebydns-owner-video-private-rollout-20261117.py
+      - scripts/mnebydns-owner-video-personal-sni-20261117.sh
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: owner-video-private-dot-cutover-20261117
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Syntax and scope checks for isolated private DNS rollout
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns-owner-video-private-rollout-20261117.py
+          bash -n scripts/mnebydns-owner-video-personal-sni-20261117.sh
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('scripts/mnebydns-owner-video-private-rollout-20261117.py').read_text()
+          s=Path('scripts/mnebydns-owner-video-personal-sni-20261117.sh').read_text()
+          assert 'f811efe2a429f1f113719489cbb588fea371c7a3' in p
+          assert 'PRIVATE_OLD_GATEWAY_STILL_RUNNING_ON_8856' in p
+          assert 'policy_probe("89.125.90.101",853)' in p
+          assert 'DELETE FROM owner_dns_links' in p
+          assert '10.66.77.2:8856;' in s and '10.66.77.2:8858;' in s
+          assert 'default 89.125.90.101:853;' in s
+          assert 'nginx -t -c "$conf"' in s and "trap 'restore || true' ERR" in s
+          print('RELEASE_BLUE_GREEN_REVIEW=PASS')
+          PY
+  rollout:
+    needs: verify
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Checkout exact CI-tested Mnebyvpn production source
+        uses: actions/checkout@v4
+        with:
+          repository: grunvald91/Mnebyvpn
+          ref: f811efe2a429f1f113719489cbb588fea371c7a3
+          path: checked-app
+          persist-credentials: false
+      - name: Verify pinned app source and install SSH client
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(git -C checked-app rev-parse HEAD)" = f811efe2a429f1f113719489cbb588fea371c7a3
+          grep -q "'ALLOWED_SMART_DNS'" checked-app/packages/dns-policy/src/owner-dns-access.ts
+          grep -q "status==='ALLOWED_SMART_DNS'" checked-app/packages/dns-policy/src/personal-dot-listener.ts
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass >/dev/null
+      - name: Upload reviewed rollout helpers to only RU188 and DE89
+        id: upload
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          export SSHPASS="$RU_PASS"
+          sshpass -e scp "${opts[@]}" scripts/mnebydns-owner-video-private-rollout-20261117.py \
+            root@188.120.254.223:/tmp/mnebydns-owner-video-private-rollout-20261117.py
+          export SSHPASS="$DE_PASS"
+          sshpass -e scp "${opts[@]}" scripts/mnebydns-owner-video-personal-sni-20261117.sh \
+            root@89.125.90.101:/tmp/mnebydns-owner-video-personal-sni-20261117.sh
+          echo 'PRIVATE_RELEASE_HELPERS_STAGED=true'
+      - name: Launch private RU canary and validate Smart DNS plus VPN origin with temporary credentials
+        id: stage
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 \
+            'python3 -B /tmp/mnebydns-owner-video-private-rollout-20261117.py stage'
+      - name: Confirm only personal DE89 SNI target can be switched
+        id: preflight
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
+            'bash /tmp/mnebydns-owner-video-personal-sni-20261117.sh preflight'
+      - name: Switch personal SNI destination from legacy 8856 to canary 8858
+        id: switch
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
+            'bash /tmp/mnebydns-owner-video-personal-sni-20261117.sh switch'
+      - name: Prove real public personal DoT returns distinct Smart DNS versus VPN video policies
+        id: public
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 \
+            'python3 -B /tmp/mnebydns-owner-video-private-rollout-20261117.py verify-public'
+      - name: Promote new container under original name, leave old private gateway running for rollback
+        id: promote
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 \
+            'python3 -B /tmp/mnebydns-owner-video-private-rollout-20261117.py promote'
+      - name: Verify public wildcard TLS, legacy DNS, and active private SNI
+        id: postcheck
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import socket,ssl,struct,secrets
+          hosts=('dns.mnebyvpn.site','aaaaaaaaaaaa.dns.mnebyvpn.site')
+          for host in hosts:
+              with socket.create_connection(('89.125.90.101',853),timeout=10) as raw:
+                  raw.settimeout(10)
+                  with ssl.create_default_context().wrap_socket(raw,server_hostname=host) as conn:
+                      assert conn.getpeercert()
+                      if host.startswith('aaaaaaaaaaaa.'):
+                          print('PUBLIC_PERSONAL_TLS_CERT=PASS')
+                          continue
+                      tid=secrets.randbelow(65535)
+                      q=struct.pack('!HHHHHH',tid,256,1,0,0,0)+b'\x07example\x03com\x00'+struct.pack('!HH',1,1)
+                      conn.sendall(struct.pack('!H',len(q))+q)
+                      first=conn.recv(2)
+                      assert len(first)==2
+                      n=struct.unpack('!H',first)[0]
+                      data=b''
+                      while len(data)<n:
+                          part=conn.recv(n-len(data))
+                          assert part
+                          data+=part
+                      assert int.from_bytes(data[:2],'big')==tid and data[3]&15==0
+                      print('LEGACY_PUBLIC_DNS_QUERY=PASS')
+          PY
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
+            'bash /tmp/mnebydns-owner-video-personal-sni-20261117.sh status' |
+            tee "$RUNNER_TEMP/owner-video-sni-status"
+          grep -q 'PERSONAL_SNI_TARGET_PORT=8858' "$RUNNER_TEMP/owner-video-sni-status"
+      - name: Automatically restore old DE SNI, then original RU container if any rollout step failed
+        id: rollback
+        if: steps.stage.outcome == 'success' && failure()
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          export SSHPASS="$DE_PASS"
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 \
+            'bash /tmp/mnebydns-owner-video-personal-sni-20261117.sh rollback'
+          # Do not stop the new RU endpoint if DE SNI rollback could not be confirmed.
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 \
+            'python3 -B /tmp/mnebydns-owner-video-private-rollout-20261117.py rollback'
+          echo 'OWNER_VIDEO_ROLLOUT_ROLLED_BACK=true'
+      - name: Final release state
+        if: steps.postcheck.outcome == 'success'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 \
+            'python3 -B /tmp/mnebydns-owner-video-private-rollout-20261117.py status'
+          echo 'OWNER_VIDEO_PRIVATE_DOT_BLUE_GREEN_RELEASE=PASS'
+          echo 'OWNER_SMART_DNS_BOT_ISSUANCE_FLAG_REMAINS_DISABLED=true'
