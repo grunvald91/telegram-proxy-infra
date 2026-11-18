@@ -84,7 +84,7 @@ jobs:
               '-v','ON_ERROR_STOP=1','-U','mnebyvpn_stage','-d','mnebyvpn_stage',
               '-c',"""SELECT (to_regclass('public.vpn_node_enrollment_inventory') IS NOT NULL)::text || ':' ||
                (to_regclass('public.vpn_node_enrollment_challenges') IS NOT NULL)::text;"""])
-          print('database_enrollment_tables='+(raw if rc==0 and raw in ('t:t','t:f','f:t','f:f') else 'unavailable'))
+          print('database_enrollment_tables='+(raw if rc==0 and raw in ('true:true','true:false','false:true','false:false') else 'unavailable'))
           rc,raw=run(['docker','exec','mnebyvpn-stage-postgres','psql','-AtX',
               '-v','ON_ERROR_STOP=1','-U','mnebyvpn_stage','-d','mnebyvpn_stage',
               '-c',"""SELECT COALESCE((SELECT status FROM vpn_node_enrollment_inventory
