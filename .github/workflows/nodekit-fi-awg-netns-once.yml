@@ -1,0 +1,25 @@
+name: FI AWG encrypted dataplane one-shot dispatcher
+on:
+  push:
+    branches: [feat/nodekit-awg-netns-canary-20261118]
+    paths: [.github/workflows/nodekit-fi-awg-netns-once.yml]
+permissions:
+  contents: read
+  actions: write
+jobs:
+  dispatch:
+    if: github.repository == 'grunvald91/telegram-proxy-infra'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Test disposable AWG 3.1 client against isolated FI Nodekit server
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          gh api --method POST \
+            repos/grunvald91/telegram-proxy-infra/actions/workflows/nodekit-fleet-bootstrap.yml/dispatches \
+            -f ref=main \
+            -f "inputs[country]=fi" \
+            -f "inputs[phase]=awg-netns-canary"
