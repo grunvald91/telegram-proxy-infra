@@ -149,7 +149,7 @@ def de_public_dns_route():
     try:
         answer=socket.gethostbyname(PUBLIC)
         routes=run(["ip","-o","-4","addr","show","dev","eth0"])
-        addrs=re.findall(r"\\binet\\s+([0-9.]+)/",routes)
+        addrs=re.findall(r"\binet\s+([0-9.]+)/",routes)
         return "eth0_public" if answer in addrs else "not_eth0_public"
     except Exception as ex:
         return "route_unknown_"+type(ex).__name__
