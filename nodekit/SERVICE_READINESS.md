@@ -1,4 +1,4 @@
-# FI Nodekit: separate DNS, SNI proxy and AmneziaWG readiness audit
+# FI Nodekit: personal DNS, DNS SNI transport, Telegram MTProxy and AWG readiness
 
 Status: **read-only diagnostics**, NOT production authorization.
 
@@ -16,7 +16,7 @@ starting systemd, touching NAT, opening ports, or changing subscriptions.
   `<token>.dns.mnebyvpn.site`; a matching wildcard/personal SNI,
   backend entitlement authorization, expiry/revocation and independent
   Android/iOS DoT client tests are mandatory. No common public resolver.
-- **SNI proxy**: integrity of the staged Nginx stream configuration
+- **DNS SNI transport (NOT Telegram proxy)**: integrity of the staged Nginx stream configuration
   and its policy hash. No route is considered enabled until a signed
   allowlist, measured allowed/unknown SNI denial, external egress and
   service health are separately verified. Do not expose an open proxy.
@@ -31,7 +31,8 @@ starting systemd, touching NAT, opening ports, or changing subscriptions.
   and end-to-end verification.
 
 The CLI emits machine-readable `services.personal_dns`,
-`services.sni_proxy`, `services.amneziawg` with explicit blockers.
+`services.dns_sni_transport`, `services.telegram_proxy`,
+`services.amneziawg` with explicit blockers.
 `controller_enrollment_candidate` is solely a preliminary, nonmutating
 signal. It must not be interpreted as `enrolled` (a trusted database
 challenge/response is required).
@@ -53,13 +54,25 @@ and cannot be used as a caller-supplied positive evidence blob.
 
 ## Steps still needed to connect real clients
 
-1. Independently provision a trusted controller's private Ed25519 signer
-   on a protected controller host, approve its public SPKI SHA256 out-of-band;
+1. Provision the signer in a root-only segregated directory on the **existing
+   controller 188.120.254.223**, never on a second controller, approve its public SPKI SHA256 out-of-band;
    never put the signing key in GitHub Actions, on the customer VPS or in an AI prompt.
 2. Register `fi-test-01` through the existing one-use challenge/response
    against the central PostgreSQL inventory. Never equate bootstrap with enrollment.
 3. Prove one signed AWG grant + actual external client E2E + local expiration and
-   revoke; separately prove per-customer DNS DoT, SNI proxy and Xray.
+   revoke; separately prove per-customer DNS DoT, Telegram Telemt MTProxy,
+   internal DNS SNI transport and Xray.
 4. Implement independent evidence collection, country confirmation,
    guarded per-service release and rollback with current customer
    subscriptions untouched. No blanket enable for all services.
+
+
+## Clarification: central controller and Telegram proxy
+
+The single central controller remains **RU188 188.120.254.223** (website,
+Telegram bot, PostgreSQL, subscription/expiry workers). There is **no new
+controller host**. On FI, `dns_sni_transport` refers only to a staged Nginx
+SmartDNS component; the Telegram user-facing proxy is `telegram_proxy`
+(Telemt/MTProto). No Telegram proxy has been installed or verified on FI.
+This is audit schema **v2**, not evidence of customer release. See
+[CONTROLLER188_TELEGRAM_PROXY.md](CONTROLLER188_TELEGRAM_PROXY.md).
