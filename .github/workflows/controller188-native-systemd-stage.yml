@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 18
     env:
-      SOURCE_SHA: 'REVIEWED_SOURCE_COMMIT'
+      SOURCE_SHA: '42b5eb796607b8cde66e275c2aedb07fdce1e578'
       NODE_VERSION: '22.23.5'
       RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
     steps:
@@ -27,7 +27,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: grunvald91/Mnebyvpn
-          ref: REVIEWED_SOURCE_COMMIT
+          ref: 42b5eb796607b8cde66e275c2aedb07fdce1e578
           path: vpn
           persist-credentials: false
       - name: Verify immutable sources and existing SSH pin
