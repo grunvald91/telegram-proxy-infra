@@ -4,6 +4,7 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/mnebydns-dot-external-five-minute-20261113.yml'
+      - 'scripts/mnebydns-dot-minute-probe-20261113.py'
   workflow_dispatch:
   # GitHub Actions scheduling has a minimum five-minute cadence and can drift.
   # The separate on-node systemd timer is responsible for minute-resolution data.
