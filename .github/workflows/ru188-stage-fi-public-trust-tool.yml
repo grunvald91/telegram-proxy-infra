@@ -52,12 +52,21 @@ jobs:
             -o ForwardAgent=no -o ClearAllForwardings=yes -o LogLevel=ERROR)
           source_file="vpn/ops/controller188-systemd/stage-fi-public-trust.py"
           expected="$(sha256sum "$source_file" | awk '{print $1}')"
+          # Stream reviewed code over the already-pinned SSH session.
+          # No SCP subsystem; never overwrite a different root-owned file.
           sshpass -e ssh -T "${opts[@]}" root@188.120.254.223 \
-            'test ! -e /run/mnebyvpn-fi-trust-tool-reviewed.py && test ! -L /run/mnebyvpn-fi-trust-tool-reviewed.py'
-          sshpass -e scp "${opts[@]}" "$source_file" \
-            root@188.120.254.223:/run/mnebyvpn-fi-trust-tool-reviewed.py
+            "set -eu; umask 077; p=/run/mnebyvpn-fi-trust-tool-reviewed.py;
+             if [ -e \"\$p\" ] || [ -L \"\$p\" ]; then
+               test -f \"\$p\" && test ! -L \"\$p\";
+             else
+               cat > \"\$p\";
+             fi;
+             test \"\$(stat -c %u:%a \"\$p\")\" = 0:600;
+             test \"\$(sha256sum \"\$p\" | cut -d \" \" -f 1)\" = \"$expected\";
+             echo fi_public_tool_uploaded_sha256_verified=true" < "$source_file"
           sshpass -e ssh -T "${opts[@]}" root@188.120.254.223 \
-            "bash -s -- '$expected'" < infra/scripts/ru188-install-fi-public-trust-tool.sh
+            "bash -s -- \"$expected\"" < infra/scripts/ru188-install-fi-public-trust-tool.sh
+          echo fi_public_tool_host_installer_finished=true
       - name: Assert approval gates are absent and existing services still run
         shell: bash
         run: |
