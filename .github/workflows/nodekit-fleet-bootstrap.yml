@@ -122,7 +122,7 @@ jobs:
           scripts=(nodekit/nodekit.py nodekit/identity.py nodekit/install_components.py
             nodekit/vpn_stage.py nodekit/provision_node.py nodekit/dns_proxy_stage.py
             nodekit/amneziawg_artifacts.py nodekit/amneziawg_stage.py
-            nodekit/awg_lifecycle.py nodekit/awg_netns_canary.py nodekit/awg_peer_grants.py nodekit/install_awg_watchdog.py nodekit/tls_stage.py nodekit/dot_local_canary.py)
+            nodekit/awg_lifecycle.py nodekit/awg_netns_canary.py nodekit/awg_egress.py nodekit/awg_peer_grants.py nodekit/install_awg_watchdog.py nodekit/tls_stage.py nodekit/dot_local_canary.py)
           remote_scp "${scripts[@]}" "$RUNNER_TEMP/nodekit-spec.json" "${user}@${target}:$remote_dir/"
           # Filenames are fixed and node_id/ip/host all come from reviewed inventory.
           if [[ "$NODE_PHASE" == bootstrap ]]; then
@@ -135,6 +135,7 @@ jobs:
             remote_ssh "python3 '$remote_dir/amneziawg_stage.py' --node-id '$NODE_ID' --awg-sha256 '$AWG_SHA' --awg-quick-sha256 '$AWG_QUICK_SHA' --amneziawg-go-sha256 '$AWG_GO_SHA'"
             remote_ssh "python3 '$remote_dir/awg_lifecycle.py' --node-id '$NODE_ID' --mode install"
             remote_ssh "python3 '$remote_dir/install_awg_watchdog.py' --node-id '$NODE_ID'"
+            remote_ssh "python3 '$remote_dir/awg_egress.py' --node-id '$NODE_ID' --mode install"
             remote_ssh "python3 '$remote_dir/dns_proxy_stage.py' --node-id '$NODE_ID' --external-ipv4 '$TARGET_IP' --dns-host '$NODE_HOST'"
           elif [[ "$NODE_PHASE" == certificate ]]; then
             remote_ssh 'command -v certbot >/dev/null || (export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l; apt-get update -qq && apt-get install -y -qq --no-install-recommends certbot >/dev/null)'
@@ -151,6 +152,7 @@ jobs:
           elif [[ "$NODE_PHASE" == inspect ]]; then
             remote_ssh "python3 '$remote_dir/awg_lifecycle.py' --node-id '$NODE_ID' --mode inspect"
             remote_ssh "python3 '$remote_dir/awg_peer_grants.py' --node-id '$NODE_ID' --mode inspect"
+            remote_ssh "python3 '$remote_dir/awg_egress.py' --node-id '$NODE_ID' --mode inspect"
             remote_ssh "python3 '$remote_dir/tls_stage.py' --node-id '$NODE_ID' --host '$NODE_HOST' --expected-ipv4 '$TARGET_IP' --mode verify"
           else exit 2; fi
           echo 'FLEET_STAGE_COMPLETE=true'
