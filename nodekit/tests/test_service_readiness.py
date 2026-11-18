@@ -106,7 +106,14 @@ class TestServiceReadiness(unittest.TestCase):
                 self.assertFalse(report["automatic_publication_authorized"])
                 self.assertFalse(report["existing_clients_changed"])
                 self.assertEqual(set(report["services"]),
-                                 {"personal_dns", "sni_proxy", "amneziawg"})
+                                 {"personal_dns", "dns_sni_transport", "telegram_proxy", "amneziawg"})
+                self.assertEqual(report["schema_version"], 2)
+                self.assertEqual(report["controller_host"], "188.120.254.223")
+                self.assertEqual(report["services"]["telegram_proxy"]["implementation"],
+                                 "telemt_mtproto")
+                self.assertFalse(report["services"]["telegram_proxy"]["telemt_installed_verified"])
+                self.assertNotEqual(report["services"]["telegram_proxy"]["blockers"],
+                                    report["services"]["dns_sni_transport"]["blockers"])
                 self.assertTrue(all(not service["ready"] for service in
                                     report["services"].values()))
                 with self.assertRaises(audit.ServiceReadinessError):

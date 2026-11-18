@@ -42,3 +42,17 @@ Workflow `MNEBYVPN fleet bootstrap (inventory-approved, subscribers off)`: `.git
 **Ни одна стадия этого workflow не включает подписки**. Следующий production rollout должен использовать отдельный подписанный контроллером service-release с E2E gate и автоматическим откатом. Страна в подписке определяется внешней проверкой egress, а не двухбуквенным названием DNS или из инвентаря.
 
 Первоисточники AWG: https://github.com/amnezia-vpn/amneziawg-go и https://github.com/amnezia-vpn/amneziawg-tools ; документация GitHub repository_dispatch: https://docs.github.com/en/rest/repos/repos#create-a-repository-dispatch-event .
+
+
+## 188 and Telegram proxy are not optional architectural substitutions
+
+The existing central controller is `188.120.254.223` with MNEBYVPN site,
+Telegram bot, PostgreSQL and subscription workers. Do not commission a
+second authority or copy signing keys into Actions. The `sni-proxy` field
+in the immutable v1 FI spec denotes the staged **SmartDNS Nginx SNI
+transport**, NOT a customer Telegram proxy. The customer proxy target is
+**Telemt MTProto**, controlled by separate per-entitlement credentials,
+expiry and revoke. It is not yet installed on FI. Do not re-stage/overwrite
+the existing FI v1 manifest to fix this label; add Telemt as a separately
+reviewed schema v2 component after its secure installer is complete.
+See [CONTROLLER188_TELEGRAM_PROXY.md](CONTROLLER188_TELEGRAM_PROXY.md).

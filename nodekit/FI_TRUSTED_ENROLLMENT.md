@@ -4,7 +4,8 @@ New component: `nodekit/fi_enrollment_ssh.py`, a **FI-only OpenSSH forced-comman
 
 ## Trust chain
 
-1. On a **separate trusted controller machine** keep the controller private Ed25519 signer in root-only storage, out of GitHub Actions, ChatGPT/agents and web workers. Independently approve SHA256 of the public 44-byte DER SPKI.
+1. On the **existing MNEBYVPN central controller 188.120.254.223**, in a
+   segregated root-only directory outside web/bot/worker permissions, keep the controller private Ed25519 signer in root-only storage, out of GitHub Actions, ChatGPT/agents and web workers. Independently approve SHA256 of the public 44-byte DER SPKI.
 2. The Nodekit FI `controller-access.spki` file must contain precisely that **public** SPKI, be root-owned `0600` and independently approved. The FI node identity SHA256 remains `c3689b687e8888d15e3ece8e45cf7d01672b9dadb77b1963a7871ffd8e967ed9` from reviewed `nodekit/fleet/fi.json`.
 3. Create a **dedicated**, separately scoped SSH Ed25519 keypair for controller enrollment, distinct from operator/bootstrap and AWG delivery keys. Independently pin the FI sshd host public key (TOFU/accept-new is **not** acceptable). Ensure `/opt/mnebyvpn-nodekit/fi_enrollment_ssh.py` is root-owned, byte-for-byte reviewed, and cannot be modified by the SSH caller.
 4. Install one restrictive `authorized_keys` entry, using the **independently approved real controller fingerprint** (not a placeholder), and no shell permission:
@@ -39,3 +40,12 @@ as Ed25519 challenge/proof signatures.
 The script is **not** installed on the FI server by this review. Its
 trusted-controller public key and the independent SSH host pin still require
 operator-approved provisioning before real enrollment.
+
+
+## Existing authority, not a new server
+
+The controller is RU188 (`188.120.254.223`), not FI, DE89 or a newly
+commissioned host. This Nodekit handler merely verifies a controller-signed
+challenge and signs a one-time proof; it is not a Telegram proxy.
+Telegram proxy means Telemt MTProto, and is an independently provisioned
+per-customer component. See [CONTROLLER188_TELEGRAM_PROXY.md](CONTROLLER188_TELEGRAM_PROXY.md).
