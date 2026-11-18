@@ -185,7 +185,14 @@ def up():
     finally:unlock(fd)
 
 def _down():
-    old=state()
+    try:
+        old=state()
+    except EgressError:
+        # When the state is corrupt, do not leave a functioning egress path.
+        # Remove our exact rules, but do not guess another service's sysctl.
+        for table,chain,args in reversed(firewall()):
+            ipt(table,"-D",chain,args,check=False)
+        raise EgressError("Corrupt state: owned NAT removed, forwarding requires review")
     if old is None:return {"network_enabled":False}
     for table,chain,args in reversed(firewall()):
         ipt(table,"-D",chain,args,check=False)
@@ -210,11 +217,17 @@ def main():
     try:
         if os.geteuid()!=0 or args.node_id!=NODE:
             raise EgressError("Unauthorized Nodekit egress target")
+        if args.mode=="down":
+            # Cleanup MUST work even if the manifest, installed AWG binaries,
+            # or controller verification layer has become corrupt.
+            info={"node_id":NODE}
+            info.update(down())
+            print(json.dumps(info,sort_keys=True))
+            return 0
         node=node_ready(ROOT,NODE)
         info=validate(node)
         if args.mode=="install":info.update(install_code(Path(__file__)))
         elif args.mode=="up":info.update(up())
-        elif args.mode=="down":info.update(down())
         elif args.mode=="inspect":
             info.update({"network_enabled":state() is not None,
                          "watchdog_running":active_unit(WATCHDOG),
