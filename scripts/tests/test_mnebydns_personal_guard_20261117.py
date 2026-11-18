@@ -2,7 +2,7 @@ import importlib.util
 import pathlib
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 SOURCE=pathlib.Path(__file__).resolve().parents[1]/'mnebydns_personal_guard_20261117.py'
 spec=importlib.util.spec_from_file_location('personal_guard',SOURCE)
@@ -34,20 +34,20 @@ class WatchTests(unittest.TestCase):
 
     def test_check_requires_dns_answer_at_both_hops(self):
         with patch.object(watch,'route',return_value=('10.0.0.2',8858)), \
-             patch.object(watch.PROFILE,'exists',return_value=True), \
+             patch.object(watch,'PROFILE',Mock(exists=lambda:True)), \
              patch.object(watch,'profile_name',return_value='probe1234567.dns.mnebyvpn.site'), \
              patch.object(watch,'probe',side_effect=[(0,1)]*6+[(5,0)]) as p:
             watch.check()
             self.assertEqual(p.call_count,7)
         with patch.object(watch,'route',return_value=('10.0.0.2',8858)), \
-             patch.object(watch.PROFILE,'exists',return_value=True), \
+             patch.object(watch,'PROFILE',Mock(exists=lambda:True)), \
              patch.object(watch,'profile_name',return_value='probe1234567.dns.mnebyvpn.site'), \
              patch.object(watch,'probe',return_value=(3,0)):
             with self.assertRaises(RuntimeError):watch.check()
 
     def test_missing_service_profile_is_transport_only(self):
         with patch.object(watch,'route',return_value=('10.0.0.2',8858)), \
-             patch.object(watch.PROFILE,'exists',return_value=False), \
+             patch.object(watch,'PROFILE',Mock(exists=lambda:False)), \
              patch.object(watch,'tls_reachable') as tls, \
              patch.object(watch,'probe',return_value=(5,0)) as p:
             watch.check()
