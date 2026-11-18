@@ -19,6 +19,7 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import socket
 import stat
 import subprocess
@@ -373,6 +374,60 @@ def watchdog(node: Path, *, sleeper=time.sleep) -> None:
                        check=False, capture_output=True)
 
 
+def signed_node_receipt(node: Path, req: dict, *, runner=subprocess.run) -> dict:
+    """Sign a post-reconciliation acknowledgement with NODE identity, not
+    the controller. The acknowledged command is fixed by its payload hash.
+    """
+    priv = node / "identity" / "node-private.pk8"
+    pub = node / "identity" / "node-public.spki"
+    private_der = protected_file(priv, max_bytes=256)
+    public_der = protected_file(pub, max_bytes=100)
+    if (not private_der.startswith(bytes.fromhex("302e020100300506032b6570")) or
+            len(public_der) != 44 or not public_der.startswith(KEY_PREFIX)):
+        raise GrantError("Invalid locally enrolled Ed25519 node identity")
+    try:
+        derived = runner(
+            ["/usr/bin/openssl", "pkey", "-inform", "DER", "-in", str(priv),
+             "-pubout", "-outform", "DER"],
+            capture_output=True, check=True, timeout=5,
+        ).stdout
+        if derived != public_der:
+            raise GrantError("Node identity private and public keys mismatch")
+        receipt = {
+            "nodeId": req["nodeId"],
+            "op": req["op"],
+            "entitlementId": req["entitlementId"],
+            "revision": req["revision"],
+            "commandSha256": hashlib.sha256(signed_message(req)).hexdigest(),
+            "appliedAt": dt.datetime.now(dt.timezone.utc).isoformat(
+                timespec="milliseconds").replace("+00:00", "Z"),
+            "nonce": secrets.token_hex(32),
+        }
+        payload = json.dumps([
+            "MNEBYVPN_AWG_APPLIED_V1",
+            receipt["nodeId"], receipt["op"], receipt["entitlementId"],
+            receipt["revision"], receipt["commandSha256"],
+            receipt["appliedAt"], receipt["nonce"],
+        ], separators=(",", ":")).encode("utf8")
+        with tempfile.TemporaryDirectory(prefix="nodekit-awg-ack-") as folder:
+            msg = Path(folder) / "payload"
+            sig = Path(folder) / "signature"
+            msg.write_bytes(payload)
+            msg.chmod(0o600)
+            runner(
+                ["/usr/bin/openssl", "pkeyutl", "-sign", "-inkey", str(priv),
+                 "-keyform", "DER", "-rawin", "-in", str(msg), "-out", str(sig)],
+                capture_output=True, check=True, timeout=5,
+            )
+            signature = sig.read_bytes()
+        if len(signature) != 64:
+            raise GrantError("Unexpected node Ed25519 receipt size")
+        return dict(receipt, signature=base64.urlsafe_b64encode(signature)
+                    .rstrip(b"=").decode())
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise GrantError("Could not sign verifiable node receipt") from exc
+
+
 class LedgerLock:
     """Serialize signed updates, expiry sweeps and reconciliations."""
 
@@ -456,6 +511,19 @@ def main() -> int:
                     raise GrantError("AWG interface stopped during access grant")
             else:
                 live = {"active": False, "published": False}
+            node_receipt = None
+            if args.mode == "apply":
+                try:
+                    node_receipt = signed_node_receipt(node, req)
+                except BaseException:
+                    # Do not leave a peer active without proof for the
+                    # controller's pending command acknowledgement.
+                    subprocess.run(
+                        ["systemctl", "stop",
+                         "mnebyvpn-nodekit-awg@" + node.name + ".service"],
+                        capture_output=True, check=False, timeout=35,
+                    )
+                    raise
             report = {
                 "node_id": node.name,
                 "signed_command_verified": args.mode in ("verify", "apply"),
@@ -465,6 +533,8 @@ def main() -> int:
                 "external_e2e_verified": False,
                 **live,
             }
+            if node_receipt is not None:
+                report["node_receipt"] = node_receipt
         print(json.dumps(report, sort_keys=True))
         return 0
     except (OSError, ValueError, TypeError, subprocess.SubprocessError) as error:

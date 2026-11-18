@@ -27,8 +27,14 @@ APP=Path("/opt/mnebyvpn-nodekit")
 # Git *blob* hashes of the previously reviewed code already installed on FI.
 # Changing this allowlist requires a new audited PR.
 BASELINE={
-    "awg_peer_grants.py":"4a9b336a072157e18b41a25ee63b96ea50ea8b50",
-    "awg_egress.py":"e9f094f0ae15d36732169a5bd18da72a2576dcf1",
+    "awg_peer_grants.py":{
+        "4a9b336a072157e18b41a25ee63b96ea50ea8b50",
+        "dedd8543f6eb9d630b62cff908b6c7ade17ff6d7",
+    },
+    "awg_egress.py":{
+        "e9f094f0ae15d36732169a5bd18da72a2576dcf1",
+        "5d275e58690cb79e8143da821b2787050c123633",
+    },
 }
 
 class UpgradeError(ValueError):
@@ -81,7 +87,7 @@ def prepare(node:Path,source_dir:Path):
         ast.parse(desired.decode("utf8"),filename=name)
         existing=blob_sha1(original)
         target=blob_sha1(desired)
-        if existing!=old_sha and existing!=target:
+        if existing not in old_sha and existing!=target:
             raise UpgradeError("Installed AWG code differs from approved baseline")
         # Never downgrade if already deployed, and never rewrite identical code.
         current[name]={"old":existing,"new":target,
