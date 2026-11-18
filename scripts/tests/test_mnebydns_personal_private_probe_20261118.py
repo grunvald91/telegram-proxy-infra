@@ -18,8 +18,8 @@ class PrivateProbeTests(unittest.TestCase):
         private=('10.0.0.2',8858)
         public=('dns.mnebyvpn.site',853)
         def answer(label,domain,endpoint):
-            return ['173.194.188.102'] if domain==mod.DOMAIN else ['198.51.100.21']
-        with patch.object(mod,'status',return_value='ALLOWED'), \
+            return ['198.51.100.21']
+        with patch.object(mod,'status',return_value='ALLOWED_SMART_DNS'), \
              patch.object(mod,'endpoints',return_value=(private,public,'198.51.100.21')), \
              patch.object(mod,'dns_query',side_effect=answer) as q:
             mod.verify_profile(obj)
@@ -38,7 +38,7 @@ class PrivateProbeTests(unittest.TestCase):
     def test_route_drift_is_rejected(self):
         obj={'label':'monitorabc12'}
         def bad(label,domain,endpoint):
-            return ['198.51.100.21']  # Wrong for vpn_origin googlevideo.com
+            return ['173.194.188.102'] if domain==mod.DOMAIN else ['198.51.100.21']  # Wrong for smart_dns video
         with patch.object(mod,'status',return_value='ALLOWED'), \
              patch.object(mod,'endpoints',return_value=(('10.0.0.2',8858),('dns.mnebyvpn.site',853),'198.51.100.21')), \
              patch.object(mod,'dns_query',side_effect=bad):
@@ -132,7 +132,9 @@ class PrivateProbeTests(unittest.TestCase):
 
     def test_service_monitor_is_non_permanent_and_has_short_lease(self):
         code=SOURCE.read_text()
-        self.assertIn("'vpn_origin'",code)
+        self.assertIn("'smart_dns'",code)
+        self.assertNotIn("repeat('x',54)",code)
+        self.assertIn('encrypt_for_owner_link(data)',code)
         self.assertNotIn('89.125.90.101',code)
         self.assertNotIn('188.120.254.223',code)
         self.assertIn("permanent,expires_at,video_route",code)
