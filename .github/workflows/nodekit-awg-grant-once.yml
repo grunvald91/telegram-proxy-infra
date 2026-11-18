@@ -4,7 +4,7 @@ on:
     branches: [feat/nodekit-awg-signed-access-20261118]
     paths: [.github/workflows/nodekit-awg-grant-once.yml]
 permissions:
-  contents: read
+  contents: write
   actions: write
 jobs:
   dispatch:
