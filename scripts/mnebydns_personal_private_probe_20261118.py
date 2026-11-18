@@ -283,16 +283,16 @@ def install():
     stage()
     try:
         SERVICE.write_text(
-            '[Unit]\\nDescription=MNEBYDNS private authenticated DoT health\\n'
-            '[Service]\\nType=oneshot\\n'
-            'ExecStart=/usr/bin/python3 -B '+str(SELF)+' stage\\n'
-            'TimeoutStartSec=55\\nNoNewPrivileges=true\\nPrivateTmp=true\\n')
+            '[Unit]\nDescription=MNEBYDNS private authenticated DoT health\n'
+            '[Service]\nType=oneshot\n'
+            'ExecStart=/usr/bin/python3 -B '+str(SELF)+' stage\n'
+            'TimeoutStartSec=55\nNoNewPrivileges=true\nPrivateTmp=true\n')
         TIMER.write_text(
-            '[Unit]\\nDescription=MNEBYDNS personal Smart DNS availability\\n'
-            '[Timer]\\nOnBootSec=2min\\nOnUnitInactiveSec=5min\\n'
-            'AccuracySec=20s\\nRandomizedDelaySec=10s\\n'
-            'Unit=mnebydns-personal-private-probe.service\\n'
-            '[Install]\\nWantedBy=timers.target\\n')
+            '[Unit]\nDescription=MNEBYDNS personal Smart DNS availability\n'
+            '[Timer]\nOnBootSec=2min\nOnUnitInactiveSec=5min\n'
+            'AccuracySec=20s\nRandomizedDelaySec=10s\n'
+            'Unit=mnebydns-personal-private-probe.service\n'
+            '[Install]\nWantedBy=timers.target\n')
         tmpfd,tmpname=tempfile.mkstemp(dir=str(SELF.parent),prefix='.private-probe-')
         try:
             with os.fdopen(tmpfd,'wb') as dest,open(__file__,'rb') as source:
