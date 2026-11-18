@@ -7,6 +7,7 @@ on:
       - '.github/workflows/nodekit-prepare-new-vps.yml'
       - '.github/workflows/nodekit-fleet-bootstrap.yml'
       - '.github/workflows/fi-enrollment-trust-preflight-readonly.yml'
+      - '.github/workflows/fi-public-enrollment-stage.yml'
       - '.github/workflows/nodekit-fi-awg-external-e2e.yml'
       - '.github/workflows/nodekit-fi-service-readiness-once.yml'
   workflow_dispatch:
@@ -30,6 +31,7 @@ jobs:
         run: |
           set -euo pipefail
           bash -n nodekit/bootstrap.sh
+          bash -n nodekit/fi_public_stage_runner.sh
           python3 -m py_compile nodekit/nodekit.py nodekit/control_plane.py nodekit/incident_gateway.py nodekit/monitor_policy.py nodekit/owned_runbook.py nodekit/diagnostics.py nodekit/fleet_plan.py nodekit/fleet_host_trust.py nodekit/approved_ssh_key.py nodekit/fi_public_enrollment_stage.py nodekit/awg_external_canary.py nodekit/awg_upgrade.py nodekit/awg_controller_readiness.py nodekit/service_readiness.py nodekit/fi_enrollment_ssh.py nodekit/awg_egress.py nodekit/awg_netns_canary.py nodekit/awg_peer_grants.py nodekit/install_awg_watchdog.py nodekit/awg_lifecycle.py nodekit/amneziawg_artifacts.py nodekit/amneziawg_stage.py nodekit/dns_proxy_stage.py nodekit/dot_local_canary.py nodekit/hostname_migrate.py nodekit/tls_stage.py nodekit/install_components.py nodekit/provision_node.py nodekit/vpn_stage.py nodekit/vpn_supervisor.py nodekit/install_supervisor.py nodekit/forward_command.py
           # Root-only fleet SSH trust store is exercised against disposable /root fixtures.
           sudo python3 -m unittest discover -s nodekit/tests -p 'test_fleet_host_trust.py' -v
