@@ -1,0 +1,70 @@
+name: RU188 isolated Node SSH controller no-key canary (one-time)
+"on":
+  push:
+    branches: [main]
+    paths: ['.github/workflows/controller188-isolated-runtime-canary.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: controller188-runtime-canary
+  cancel-in-progress: false
+
+jobs:
+  offline-canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      RU188_SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      MNEBYVPN_SOURCE_SHA: c017b6a4746f981a84e9aad30314281328b1706b
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Fetch reviewed immutable controller runtime source
+        uses: actions/checkout@v4
+        with:
+          repository: grunvald91/Mnebyvpn
+          ref: c017b6a4746f981a84e9aad30314281328b1706b
+          path: controller-source
+          persist-credentials: false
+      - name: Verify reviewed source and produce no-secrets release archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$RU188_SSH_PASSWORD"
+          test "$(git -C controller-source rev-parse HEAD)" = "$MNEBYVPN_SOURCE_SHA"
+          grep -q '^188\.120\.254\.223 ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts
+          bash -n controller-source/ops/controller188-runtime/stage.sh
+          (cd controller-source && node --test tests/controller188-runtime.test.mjs)
+          tar -czf "$RUNNER_TEMP/controller188-runtime.tar.gz" \
+            -C controller-source \
+            ops/controller188-runtime/Dockerfile \
+            ops/controller188-runtime/probe.mjs \
+            ops/controller188-runtime/stage.sh \
+            packages/provisioning/src \
+            apps/service/src/fi-enrollment-controller.ts \
+            apps/service/src/awg-controller-delivery-worker.ts
+          # Reviewed archive is code only; no environment files or SSH keys.
+          tar -tzf "$RUNNER_TEMP/controller188-runtime.tar.gz" \
+            | grep -vE '^(ops/controller188-runtime/|packages/provisioning/src/|apps/service/src/(fi-enrollment-controller|awg-controller-delivery-worker)\.ts)' \
+            | grep -q . && { echo 'Unexpected archive path'; exit 2; } || true
+          echo 'controller_source_reviewed=true;keys_in_archive=false'
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass >/dev/null
+      - name: Build stand-alone image and run networkless keyless canary on existing 188
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$RU188_SSH_PASSWORD"
+          remote='set -eu; umask 077; stage="$(mktemp -d /run/mnebyvpn-controller-build.XXXXXXXX)"; trap '\''rm -rf "$stage"'\'' EXIT; tar -xzf - -C "$stage" --no-same-owner; bash "$stage/ops/controller188-runtime/stage.sh" "$stage" '"$MNEBYVPN_SOURCE_SHA"
+          sshpass -e ssh -T -F /dev/null \
+            -o ConnectTimeout=12 -o BatchMode=no \
+            -o PasswordAuthentication=yes -o PubkeyAuthentication=no \
+            -o KbdInteractiveAuthentication=no -o StrictHostKeyChecking=yes \
+            -o HostKeyAlgorithms=ssh-ed25519 \
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no \
+            -o ForwardAgent=no -o ClearAllForwardings=yes -o LogLevel=ERROR \
+            root@188.120.254.223 "$remote" \
+            < "$RUNNER_TEMP/controller188-runtime.tar.gz"
