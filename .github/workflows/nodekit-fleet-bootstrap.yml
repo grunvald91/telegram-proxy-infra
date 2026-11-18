@@ -98,6 +98,7 @@ jobs:
       LEGACY_FI_SSH_PASSWORD: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_PASSWORD }}
       NODEKIT_SSH_USER: ${{ secrets.NODEKIT_SSH_USER }}
       NODEKIT_SSH_PASSWORD: ${{ secrets.NODEKIT_SSH_PASSWORD }}
+      EXISTING_APPROVED_KNOWN_HOSTS: ${{ secrets.NODEKIT_SSH_KNOWN_HOSTS }}
       RU188_SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
       NODEKIT_CONTROLLER_PUBLIC_SHA256: ${{ vars.NODEKIT_CONTROLLER_PUBLIC_SHA256 }}
     steps:
@@ -180,6 +181,20 @@ jobs:
             < nodekit/fleet_host_trust.py > "$known"
           [[ "$(wc -l < "$known")" == 1 ]] || exit 2
           grep -Eq "^$TARGET_IP ssh-ed25519 [A-Za-z0-9+/]+=*$" "$known" || exit 2
+          # Honor a stronger, pre-existing provider/owner pin when available.
+          # No manual pin is required for brand-new nodes.
+          if [[ -n "$EXISTING_APPROVED_KNOWN_HOSTS" ]]; then
+            python3 - "$known" <<'PY'
+          import os,sys
+          stored=open(sys.argv[1],encoding="ascii").read().strip().split()
+          expected=[x.split() for x in os.environ["EXISTING_APPROVED_KNOWN_HOSTS"].splitlines()
+                    if x.strip() and not x.lstrip().startswith("#")]
+          if (len(stored)!=3 or len(expected)!=1 or len(expected[0])<3 or
+              stored[0] not in expected[0][0].split(",") or
+              stored[1:]!=expected[0][1:3]):
+              raise SystemExit("Existing approved SSH host key conflicts with RU188 pin")
+          PY
+          fi
           if [[ -n "$NODEKIT_SSH_PASSWORD" && "$NODEKIT_SSH_USER" == root ]]; then
             export SSHPASS="$NODEKIT_SSH_PASSWORD"
             user="$NODEKIT_SSH_USER"
