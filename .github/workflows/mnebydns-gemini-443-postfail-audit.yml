@@ -1,0 +1,50 @@
+name: MNEBYDNS Gemini rollback verify and 443 active dispatcher audit
+on:
+  push:
+    branches: ['feature/mnebydns-vpn-google-readonly-20261108']
+    paths: ['.github/workflows/mnebydns-gemini-443-postfail-audit.yml']
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - name: Disarm completed rollback watchdog and audit actual HTTPS listener read-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PASS"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          export SSHPASS="$PASS"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@89.125.90.101 'python3 -' <<'PY'
+          import subprocess,re,pathlib
+          def run(cmd):
+              return subprocess.run(cmd,capture_output=True,text=True,timeout=12)
+          print('disarm_completed_rollback_timer=attempted')
+          run(['systemctl','stop','mnebydns-gemini-watchdog-42461360968.timer'])
+          r=run(['nginx','-T'])
+          if r.returncode: raise SystemExit('Nginx config invalid')
+          t=r.stdout
+          print('nginx_active='+str(run(['systemctl','is-active','nginx']).returncode==0).lower())
+          print('dot_active='+str(run(['systemctl','is-active','mnebydns-dot.service']).returncode==0).lower())
+          print('gemini_local_backend_active='+str(run(['systemctl','is-active','mnebydns-gemini.service']).returncode==0).lower())
+          print('dns_gemini_canary_enabled='+str('MNEBYDNS Gemini-only canary' in pathlib.Path('/opt/mnebydns-dot/Corefile').read_text()).lower())
+          print('nginx_gemini_map_entry_present='+str(bool(re.search(r'(?m)^\s*gemini[.]google[.]com\s+127[.]0[.]0[.]1:15443\s*;',t))).lower())
+          files=re.split(r'(?m)^# configuration file (.+?):\n',t)
+          for i in range(1,len(files),2):
+              path,source=files[i],files[i+1]
+              for block in re.findall(r'server\s*\{([^{}]*)\}',source,re.S):
+                  listeners=re.findall(r'(?m)^\s*listen\s+([^;]+);',block)
+                  if any(re.search(r'(^|[:\s])443(\s|$)',v) for v in listeners):
+                      proxy=re.findall(r'(?m)^\s*proxy_pass\s+([^;]+);',block)
+                      print('listener443_owner_file='+path)
+                      print('listener443_mode='+('stream' if 'ssl_preread on;' in block else 'other'))
+                      print('listener443_proxy_variable='+','.join(p for p in proxy if p.startswith('$'))[:80])
+          ss=run(['ss','-H','-lntp','sport = :443'])
+          print('socket_443_listeners='+str(len(ss.stdout.splitlines())))
+          print('postfailure_audit_read_only=true')
+          PY

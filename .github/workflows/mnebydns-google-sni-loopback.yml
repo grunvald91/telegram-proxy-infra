@@ -1,0 +1,117 @@
+name: MNEBYDNS Google exact-SNI foreign-only loopback canary
+on:
+  push:
+    branches: ['feature/mnebydns-vpn-google-readonly-20261108']
+    paths: ['.github/workflows/mnebydns-google-sni-loopback.yml']
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-google-sni-loopback
+  cancel-in-progress: false
+jobs:
+  google-sni:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      FOREIGN_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: grunvald91/Mnebyvpn
+          ref: 0e4a5f602bb85e7b3ec488166528d1ee7e13be84
+          path: mnebyvpn
+          persist-credentials: false
+      - name: Offline policy invariants and read-only source review
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 mnebyvpn/ops/smart-dns-poc/test-google-sni-staging.py
+      - name: Run ephemeral localhost-only SNI passthrough on foreign VPS
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$FOREIGN_PASSWORD" || exit 2
+          [[ "$GITHUB_RUN_ID" =~ ^[0-9]+$ ]] || exit 2
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass
+          export SSHPASS="$FOREIGN_PASSWORD"
+          target="root@89.125.90.101"
+          work="/tmp/mnebydns-ci-$GITHUB_RUN_ID"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" "$target" \
+            "test ! -e '$work' && mkdir -m 711 -- '$work'"
+          sed "s/GH_RUN_ID/$GITHUB_RUN_ID/g" \
+            mnebyvpn/ops/smart-dns-poc/Google-SNI-staging.nginx.conf |
+            sshpass -e ssh "${opts[@]}" "$target" \
+              "cat > '$work/nginx.conf'"
+          sshpass -e ssh "${opts[@]}" "$target" "RUN_ID='$GITHUB_RUN_ID' bash -se" <<'REMOTE'
+          set -Eeuo pipefail
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]] || exit 2
+          dir="/tmp/mnebydns-ci-$RUN_ID"
+          pid=""
+          cleanup() {
+            original="$?"
+            trap - EXIT
+            if [[ -n "$pid" ]]; then
+              kill "$pid" 2>/dev/null || true
+              wait "$pid" 2>/dev/null || true
+            fi
+            for _ in $(seq 1 20); do
+              test -z "$(ss -H -lnt 'sport = :15443')" && break
+              sleep 0.2
+            done
+            if test -n "$(ss -H -lnt 'sport = :15443')"; then
+              echo "google_staging_listener_cleanup_unconfirmed=yes"
+              original=1
+            else
+              echo "google_staging_listener_removed=yes"
+            fi
+            rm -f -- "$dir/nginx.conf" "$dir/google-sni.log" "$dir/google-sni.pid" "$dir/stdout.log"
+            rmdir -- "$dir" || true
+            exit "$original"
+          }
+          trap cleanup EXIT
+          test -z "$(ss -H -lnt 'sport = :15443')"
+          test "$(awk '/^MemAvailable:/{print int($2/1024)}' /proc/meminfo)" -ge 700
+          nginx -t -c "$dir/nginx.conf" > /dev/null 2>&1
+          # The root syntax check creates root-owned nginx log files.
+          rm -f -- "$dir/google-sni.log" "$dir/google-sni.pid"
+          chown 65532:65532 "$dir"
+          chmod 700 "$dir"
+          chmod 644 "$dir/nginx.conf"
+          timeout --signal=TERM --kill-after=3s 95s \
+            setpriv --reuid 65532 --regid 65532 --clear-groups --no-new-privs \
+            nginx -c "$dir/nginx.conf" -g 'daemon off;' > "$dir/stdout.log" 2>&1 &
+          pid="$!"
+          for i in $(seq 1 40); do
+            if [[ "$(ss -H -lnt 'sport = :15443' | awk '{print $4}')" == "127.0.0.1:15443" ]]; then break; fi
+            if ! kill -0 "$pid" 2>/dev/null; then
+              echo "google_sni_nginx_exited_early=yes"
+              tail -n 10 "$dir/stdout.log" || true
+              exit 1
+            fi
+            sleep 0.2
+          done
+          test "$(ss -H -lnt 'sport = :15443' | awk '{print $4}')" = "127.0.0.1:15443"
+          echo "google_sni_test_binding=loopback_only"
+          for domain in gemini.google.com aistudio.google.com accounts.google.com \
+            generativelanguage.googleapis.com labs.google www.google.com \
+            www.youtube.com www.gstatic.com; do
+            http="$(curl --noproxy '*' -4 -sS --connect-timeout 5 --max-time 15 \
+              --connect-to "$domain:443:127.0.0.1:15443" \
+              -o /dev/null -w '%{http_code}' "https://$domain/" || true)"
+            if [[ "$http" == "000" || -z "$http" ]]; then
+              echo "google_sni_test_failure=$domain"
+              exit 1
+            fi
+            echo "google_sni_test_$domain=TLS_valid_HTTP_$http"
+          done
+          if curl --noproxy '*' -sS -o /dev/null --max-time 5 \
+             --connect-to "example.org:443:127.0.0.1:15443" \
+             https://example.org/ >/dev/null 2>&1; then
+            echo "UNKNOWN_SNI_PROXIED_UNEXPECTEDLY=yes"
+            exit 1
+          fi
+          echo "google_unknown_sni_rejected=yes"
+          echo "foreign_google_tls_passthrough=passed"
+          REMOTE
