@@ -54,7 +54,17 @@ jobs:
                   nft_nat=sum('rule' in r and r['rule'].get('expr') and any('masquerade' in e or 'snat' in e for e in r['rule']['expr']) for r in tables)
               except: nft_chains=-1;nft_nat=-1
           else: nft_chains=None;nft_nat=None
+          iptables=cmd('iptables','-S','INPUT')
+          forward=cmd('iptables','-S','FORWARD')
+          nat=cmd('iptables','-t','nat','-S','POSTROUTING')
           print(json.dumps({
+              'iptables_available':iptables[0]==0,
+              'iptables_input_rule_count':len(iptables[1].splitlines()) if iptables[0]==0 else None,
+              'iptables_forward_rule_count':len(forward[1].splitlines()) if forward[0]==0 else None,
+              'iptables_nat_postrouting_rule_count':len(nat[1].splitlines()) if nat[0]==0 else None,
+              'ufw_forward_hook_present':'ufw-' in forward[1],
+              'ufw_input_hook_present':'ufw-' in iptables[1],
+              'tun_device_available':pathlib.Path('/dev/net/tun').exists(),
               'expected_host_ip':'217.11.167.91',
               'egress_interface':iface,
               'egress_private_source_ip':source_ip if source_ip and ipaddress.ip_address(source_ip).is_private else None,
@@ -70,6 +80,11 @@ jobs:
               'awg_watchdog_service_active':yes('mnebyvpn-nodekit-awg-watchdog@fi-test-01.service'),
               'network_modified':False
           },sort_keys=True))
+          PY
+          python3 - <<'PY'
+          import socket,os,subprocess,pathlib
+          print('RUNNER_TUN='+str(pathlib.Path('/dev/net/tun').exists()).lower())
+          print('RUNNER_IPTOOLS='+str(subprocess.run(['which','ip'],capture_output=True).returncode==0).lower())
           PY
           python3 - <<'PY'
           import socket
