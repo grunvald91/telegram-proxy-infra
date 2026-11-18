@@ -140,6 +140,20 @@ def install(source: Path) -> dict:
             raise AwgLifecycleError("Installed code drift, refusing overwrite")
     else:
         _install_bytes(target, code, 0o600)
+    # ExecStartPre executes the durable copy, not the ephemeral SSH upload.
+    # Preserve the exact supporting validator and refuse unexpected changes.
+    dependency = source.parent / "install_components.py"
+    if (dependency.is_symlink() or not dependency.is_file() or
+            dependency.stat().st_uid != 0):
+        raise AwgLifecycleError("Missing trusted Nodekit dependency")
+    dependency_target = APP / "install_components.py"
+    if dependency_target.is_symlink():
+        raise AwgLifecycleError("Nodekit dependency symlink not permitted")
+    if dependency_target.exists():
+        if checked_file(dependency_target) != dependency.read_bytes():
+            raise AwgLifecycleError("Installed Nodekit validator differs")
+    else:
+        _install_bytes(dependency_target, dependency.read_bytes(), 0o600)
     unit = unit_source().encode()
     if UNIT_PATH.is_symlink():
         raise AwgLifecycleError("Systemd unit symlink forbidden")
