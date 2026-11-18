@@ -1,0 +1,165 @@
+name: FI enrollment independent trust preflight (188 + FI read only)
+"on":
+  push:
+    branches: [main]
+    paths: [.github/workflows/fi-enrollment-trust-preflight-readonly.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: fi-enrollment-trust-readonly
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    environment: node-fi
+    timeout-minutes: 12
+    env:
+      RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      FI_PASSWORD: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_PASSWORD }}
+      FI_SSH_USER: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_USER }}
+      FI_PINNED_KNOWN_HOSTS: ${{ secrets.NODEKIT_SSH_KNOWN_HOSTS }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prepare pinned RU188 SSH access and public-only FI host-key observation
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "$RU_PASSWORD"
+          grep -q '^188\.120\.254\.223 ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends sshpass >/dev/null
+          # ssh-keyscan is NOT independent identity evidence; no password
+          # authentication is attempted when an approved FI pin is absent.
+          candidate="$RUNNER_TEMP/fi_unapproved_ssh_host_key"
+          ssh-keyscan -T 7 -t ed25519 217.11.167.91 > "$candidate" 2>/dev/null || true
+          if [ -s "$candidate" ]; then
+            if [ "$(grep -c '^217\.11\.167\.91 ssh-ed25519 ' "$candidate")" = 1 ]; then
+              ssh-keygen -E sha256 -lf "$candidate" | sed 's/^/fi_candidate_UNAPPROVED_ssh_fingerprint=/'
+            else
+              echo 'fi_ssh_candidate=invalid'
+            fi
+          else
+            echo 'fi_ssh_candidate=unavailable'
+          fi
+      - name: Verify RU188 root-only trust inputs and exact FI inventory state (no writes)
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$RU_PASSWORD"
+          sshpass -e ssh -T -F /dev/null -o ConnectTimeout=12 \
+            -o BatchMode=no -o PasswordAuthentication=yes -o PubkeyAuthentication=no \
+            -o KbdInteractiveAuthentication=no -o StrictHostKeyChecking=yes \
+            -o HostKeyAlgorithms=ssh-ed25519 \
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no \
+            -o ForwardAgent=no -o ClearAllForwardings=yes -o LogLevel=ERROR \
+            root@188.120.254.223 'python3 -' <<'PY'
+          import base64,hashlib,json,os,pathlib,stat,subprocess
+          p=pathlib.Path('/root/mnebyvpn-controller')
+          def trusted_file(name):
+              try:
+                  s=(p/name).lstat()
+                  return stat.S_ISREG(s.st_mode) and s.st_uid==0 and s.st_mode&0o077==0
+              except OSError:return False
+          print('controller=188.120.254.223')
+          for name in ('controller-signing-key.pem','controller-public.spki',
+                  'fi-enrollment-ssh','fi-enrollment-ssh.pub',
+                  'fi-known_hosts','fi-node-public.spki',
+                  'config/fi-enrollment.env','approvals/fi-enrollment.enable'):
+              print('controller_asset_'+name.replace('/','_').replace('.','_')+'_protected='+
+                    str(trusted_file(name)).lower())
+          if trusted_file('controller-public.spki'):
+              raw=(p/'controller-public.spki').read_bytes()
+              print('controller_public_sha256='+hashlib.sha256(raw).hexdigest())
+          def run(cmd):
+              try:
+                  x=subprocess.run(cmd,capture_output=True,text=True,timeout=10)
+                  return x.returncode,x.stdout.strip()
+              except Exception:return 99,''
+          rc,raw=run(['docker','exec','mnebyvpn-stage-postgres','psql','-AtX',
+              '-v','ON_ERROR_STOP=1','-U','mnebyvpn_stage','-d','mnebyvpn_stage',
+              '-c',"""SELECT (to_regclass('public.vpn_node_enrollment_inventory') IS NOT NULL)::text || ':' ||
+               (to_regclass('public.vpn_node_enrollment_challenges') IS NOT NULL)::text;"""])
+          print('database_enrollment_tables='+(raw if rc==0 and raw in ('t:t','t:f','f:t','f:f') else 'unavailable'))
+          rc,raw=run(['docker','exec','mnebyvpn-stage-postgres','psql','-AtX',
+              '-v','ON_ERROR_STOP=1','-U','mnebyvpn_stage','-d','mnebyvpn_stage',
+              '-c',"""SELECT COALESCE((SELECT status FROM vpn_node_enrollment_inventory
+                         WHERE node_id='fi-test-01'), 'absent');"""])
+          print('database_fi_inventory='+(raw if rc==0 and raw in ('absent','planned','approved','enrolled','revoked') else 'unavailable'))
+          for unit in ('mnebyvpn-fi-enrollment.service','mnebyvpn-awg-delivery.service'):
+              rc,raw=run(['systemctl','is-active',unit])
+              print('controller_unit_'+unit.replace('.service','').replace('-','_')+'_active='+
+                    str(rc==0 and raw=='active').lower())
+          print('controller_read_only=true')
+          PY
+      - name: Inspect FI only if an already approved pinned SSH key is configured
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          known="$RUNNER_TEMP/fi_preapproved_known_hosts"
+          if [ -z "$FI_PINNED_KNOWN_HOSTS" ]; then
+            echo 'fi_pinned_ssh_access=missing;no_password_login_attempted=true'
+            exit 0
+          fi
+          printf '%s\n' "$FI_PINNED_KNOWN_HOSTS" > "$known"
+          chmod 600 "$known"
+          if [ "$(grep -c '^217\.11\.167\.91 ssh-ed25519 ' "$known" || true)" != 1 ]; then
+            echo 'fi_pinned_ssh_access=not_for_expected_fi;no_password_login_attempted=true'
+            exit 0
+          fi
+          [[ "$FI_SSH_USER" == root && -n "$FI_PASSWORD" ]] || {
+            echo 'fi_pinned_ssh_access=present_but_credentials_missing'; exit 0;
+          }
+          export SSHPASS="$FI_PASSWORD"
+          sshpass -e ssh -T -F /dev/null -o ConnectTimeout=12 \
+            -o BatchMode=no -o PasswordAuthentication=yes -o PubkeyAuthentication=no \
+            -o KbdInteractiveAuthentication=no -o StrictHostKeyChecking=yes \
+            -o HostKeyAlgorithms=ssh-ed25519 \
+            -o "UserKnownHostsFile=$known" \
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no \
+            -o ForwardAgent=no -o ClearAllForwardings=yes -o LogLevel=ERROR \
+            root@217.11.167.91 'python3 -' <<'PY'
+          import base64,hashlib,json,pathlib,stat,subprocess
+          print('fi_node=fi-test-01;authenticated_pinned_ssh=true')
+          node=pathlib.Path('/var/lib/mnebyvpn-nodekit/fi-test-01')
+          for name in ('manifest.json','identity/node-public.spki',
+                       'identity/node-private.pk8','controller-access.spki'):
+              p=node/name
+              try:
+                  s=p.lstat()
+                  good=stat.S_ISREG(s.st_mode) and s.st_uid==0 and s.st_mode&0o077==0
+              except OSError:good=False
+              print('fi_asset_'+name.replace('/','_').replace('.','_')+'_root_protected='+str(good).lower())
+          try:
+              meta=json.loads((node/'manifest.json').read_text())
+              print('fi_manifest_node_id='+str(meta.get('node_id')))
+              print('fi_manifest_state='+str(meta.get('state')))
+              print('fi_manifest_registration_enabled='+str(meta.get('registration_enabled')).lower())
+              print('fi_manifest_activation_enabled='+str(meta.get('activation_enabled')).lower())
+          except Exception:
+              print('fi_manifest=unavailable')
+          p=node/'identity/node-public.spki'
+          try:
+              raw=p.read_bytes()
+              if len(raw)==44 and raw[:12]==bytes.fromhex('302a300506032b6570032100'):
+                  print('fi_node_spki_sha256='+hashlib.sha256(raw).hexdigest())
+                  print('fi_node_spki_public_base64url='+base64.urlsafe_b64encode(raw).rstrip(b'=').decode())
+              else:print('fi_node_spki=invalid')
+          except OSError:print('fi_node_spki=unavailable')
+          p=pathlib.Path('/etc/ssh/ssh_host_ed25519_key.pub')
+          try:
+              public=p.read_text().split()
+              import base64
+              b=base64.b64decode(public[1],validate=True)
+              print('fi_ssh_host_ed25519_fingerprint=SHA256:'+
+                    base64.b64encode(hashlib.sha256(b).digest()).rstrip(b'=').decode())
+          except Exception:print('fi_ssh_host_key=unavailable')
+          program=pathlib.Path('/opt/mnebyvpn-nodekit/fi_enrollment_ssh.py')
+          print('fi_forced_command_handler_installed='+str(program.is_file()).lower())
+          print('fi_auth_read_only=true;fi_clients_published=false')
+          PY
