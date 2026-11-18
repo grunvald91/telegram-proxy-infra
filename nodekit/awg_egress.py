@@ -188,37 +188,40 @@ def up():
             raise
     finally:unlock(fd)
 
+def _remove_owned_rules():
+    """Remove ALL copies of our exact rules and verify no owned rules remain.
+
+    A stale or manually duplicated NAT rule must never survive one pass.
+    We do not touch unrelated UFW chains or broader firewall policies.
+    """
+    for table, chain, args in reversed(firewall()):
+        for _ in range(64):
+            result = ipt(table, "-C", chain, args, check=False)
+            if result.returncode != 0:
+                break
+            ipt(table, "-D", chain, args)
+    if any(ipt(t, "-C", c, args, check=False).returncode == 0
+           for t, c, args in firewall()):
+        raise EgressError("Owned AWG firewall rules remain after cleanup")
+
+
 def _down():
     try:
         old=state()
-    except EgressError:
-        # When the state is corrupt, do not leave a functioning egress path.
-        # Remove our exact rules, but do not guess another service's sysctl.
-        for table,chain,args in reversed(firewall()):
-            ipt(table,"-D",chain,args,check=False)
-        raise EgressError("Corrupt state: owned NAT removed, forwarding requires review")
+    except (EgressError, json.JSONDecodeError):
+        # Malformed state must not leave a functional public VPN pathway.
+        # Do NOT guess a previous value for global ip_forward.
+        _remove_owned_rules()
+        raise EgressError("Corrupt state: NAT removed, forwarding requires review")
     if old is None:
         # The host could have crashed after inserting firewall entries but
         # before the state file became visible, or state may have been lost.
         # Remove ONLY our exact rules; never change global ip_forward
         # without a previously recorded value.
-        for table, chain, args in reversed(firewall()):
-            for _ in range(16):
-                if ipt(table, "-C", chain, args, check=False).returncode != 0:
-                    break
-                ipt(table, "-D", chain, args)
-        if any(ipt(t, "-C", c, args, check=False).returncode == 0
-               for t,c,args in firewall()):
-            raise EgressError("Orphan AWG firewall rules still present")
+        _remove_owned_rules()
         return {"network_enabled":False, "orphan_rules_checked":True}
-    for table,chain,args in reversed(firewall()):
-        for _ in range(16):
-            if ipt(table,"-C",chain,args,check=False).returncode != 0:
-                break
-            ipt(table,"-D",chain,args)
-    # Do not erase state while residual egress rules are still present.
-    if any(ipt(t,"-C",c,args,check=False).returncode==0 for t,c,args in firewall()):
-        raise EgressError("Egress cleanup incomplete: residual firewall rules")
+    # Never restore forwarding or delete state until EVERY owned rule is gone.
+    _remove_owned_rules()
     if old["previous_forward"]=="0":
         call(["sysctl","-w","net.ipv4.ip_forward=0"])
         if Path("/proc/sys/net/ipv4/ip_forward").read_text().strip()!="0":
