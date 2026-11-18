@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "country_code": "FI",
+  "node_id": "fi-test-01",
+  "advertise_host": "fi.mnebyvpn.site",
+  "ssh_ipv4": "217.11.167.91",
+  "role": "combined",
+  "services": [
+    "dns",
+    "vpn",
+    "sni-proxy",
+    "tunnel"
+  ],
+  "listeners": {
+    "dot_tcp": 853,
+    "vpn_tcp": 2053,
+    "sni_tcp": 443,
+    "tunnel_udp": 51820
+  },
+  "status": "testing",
+  "automatic_bootstrap_allowed": true,
+  "subscriber_publication_allowed": false,
+  "expected_identity_public_sha256": "c3689b687e8888d15e3ece8e45cf7d01672b9dadb77b1963a7871ffd8e967ed9"
+}
