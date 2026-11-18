@@ -49,3 +49,11 @@ commissioned host. This Nodekit handler merely verifies a controller-signed
 challenge and signs a one-time proof; it is not a Telegram proxy.
 Telegram proxy means Telemt MTProto, and is an independently provisioned
 per-customer component. See [CONTROLLER188_TELEGRAM_PROXY.md](CONTROLLER188_TELEGRAM_PROXY.md).
+
+## Безручной SSH preflight для FI (18.11.2026)
+
+Обновлённый `.github/workflows/fi-enrollment-trust-preflight-readonly.yml` автоматически получает и сохраняет первый Ed25519 SSH host key FI на **существующем RU188** посредством `nodekit/fleet_host_trust.py` по SSH-каналу, уже закреплённому для RU188. Никакого ручного ввода `NODEKIT_SSH_KNOWN_HOSTS` не требуется: если он заранее задан и проверен, его ключ дополнительно должен совпасть.
+
+После сохранения pin CI использует `StrictHostKeyChecking=yes` для входа в FI, проверяет ожидаемый Nodekit Ed25519 public SPKI SHA-256 и manifest, выводит только публичные признаки готовности. Не создаёт `authorized_keys`, не вносит регистрацию в PostgreSQL, не запускает AWG delivery и не открывает клиентский доступ. Ошибка/недоступность FI приводит к провалу проверки; не трактовать это как успешное развёртывание.
+
+**TOFU не является криптографическим подтверждением идентичности на первом соединении:** возможна первоначальная подмена SSH-хоста. Для production-замены VPS и выдачи клиентских подписок рекомендуется API attestation провайдера и подписание Nodekit challenge. Это автоматизируемые проверки, а не ручная процедура.
