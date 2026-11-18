@@ -2,7 +2,7 @@
 """Read-only service release readiness for a reviewed FI Nodekit VPS.
 
 Staged binaries, a successful CI job, and a valid certificate do not by
-themselves authorize personal DNS, a public SNI proxy, or VPN clients.
+themselves authorize personal DNS, Telegram MTProxy/Telemt, or VPN clients.
 This module deliberately has NO release or service-start operation.
 """
 from __future__ import annotations
@@ -118,7 +118,7 @@ def assess(node: Path, host: str, identity_sha: str, controller_sha: str = "") -
     # AWG readiness is a controller enrollment *candidate*, not a release.
     enroll_candidate = bool(awg["control_plane_prerequisites_met"])
     result = {
-        "schema_version": 1,
+        "schema_version": 2,
         "node_id": node.name,
         "hostname": host,
         "node_identity_pinned": True,
@@ -133,14 +133,31 @@ def assess(node: Path, host: str, identity_sha: str, controller_sha: str = "") -
                 "ready": False,
                 "blockers": list(candidate["blockers"]) + list(tls["blockers"]),
             },
-            "sni_proxy": {
+            # The Nginx stream SNI candidate is part of the DNS routing
+            # stack. It is NOT Telegram MTProxy and has no Telegram users.
+            "dns_sni_transport": {
                 "local_candidate_verified": candidate["staged"],
                 "route_count": candidate["route_count"],
                 "signed_policy_verified": False,
                 "independent_external_e2e_verified": False,
                 "ready": False,
-                "blockers": ["signed_proxy_policy_missing",
-                             "external_sni_allow_and_deny_tests_missing"],
+                "blockers": ["signed_dns_sni_policy_missing",
+                             "external_dns_sni_allow_and_deny_tests_missing"],
+            },
+            # Telegram proxy is Telemt / MTProto with separate client grants,
+            # expiry, health and external Telegram-client probes. No such
+            # Nodekit-owned service has been staged or verified on FI.
+            "telegram_proxy": {
+                "implementation": "telemt_mtproto",
+                "local_candidate_verified": False,
+                "telemt_installed_verified": False,
+                "personal_client_grants_verified": False,
+                "expiration_revoke_e2e_verified": False,
+                "independent_telegram_client_e2e_verified": False,
+                "ready": False,
+                "blockers": ["telegram_mtproxy_telemt_stage_missing",
+                             "telegram_proxy_client_auth_and_revocation_missing",
+                             "external_telegram_client_e2e_missing"],
             },
             "amneziawg": {
                 "local_stage_integrity_verified": True,
@@ -158,7 +175,8 @@ def assess(node: Path, host: str, identity_sha: str, controller_sha: str = "") -
         },
         "automatic_publication_authorized": False,
         "existing_clients_changed": False,
-        "note": "Staging checks are not authorization; independent trusted controller E2E and explicit release are required.",
+        "controller_host": "188.120.254.223",
+        "note": "SNI stream is DNS transport, not Telegram MTProxy/Telemt. Existing controller is 188. Independent E2E, database authorization and release are required.",
     }
     return result
 
