@@ -159,6 +159,14 @@ def authorized_key(ssh_dir: Path, expected: bytes, key_b64: str,
                    *, install: bool) -> None:
     protected_dir(ssh_dir, create=install)
     path = ssh_dir / "authorized_keys"
+    if not install:
+        # Read-only verification must never create a lock or SSH file.
+        existing = protected_read(path, max_bytes=131072)
+        matches = [line for line in existing.splitlines()
+                   if key_b64.encode() in line.split()]
+        if len(matches) != 1 or matches[0] + b"\n" != expected:
+            raise StageError("Required restrictive enrollment SSH entry is missing")
+        return
     lock = ssh_dir / ".fi-enrollment-stage.lock"
     fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
     try:
