@@ -333,6 +333,7 @@ def watchdog(node: Path, *, sleeper=time.sleep) -> None:
     pinned_controller_key(node)
     from awg_lifecycle import active_unit, unit_name
     unit = unit_name(node.name)
+    previous_view: str | None = None
     try:
         while True:
             with LedgerLock(node):
@@ -342,7 +343,20 @@ def watchdog(node: Path, *, sleeper=time.sleep) -> None:
                 table = (validate_state(json.loads(protected_file(path)), node.name)
                          if path.exists() or path.is_symlink()
                          else empty_state(node.name))
-                reconcile(node, table, dt.datetime.now(dt.timezone.utc).timestamp())
+                now = dt.datetime.now(dt.timezone.utc).timestamp()
+                peers = active_peers(table, now)
+                view = json.dumps(peers, sort_keys=True, separators=(",", ":"))
+                # Do not run full awg syncconf every 2 seconds on a 1-vCPU VPS.
+                # Still verify live peers on every tick to catch drift.
+                if view != previous_view:
+                    reconcile(node, table, now)
+                    previous_view = view
+                else:
+                    actual = subprocess.run(
+                        [str(AWG_BIN / "awg"), "show", INTERFACE, "peers"],
+                        capture_output=True, check=True, timeout=8, text=True).stdout
+                    if set(actual.split()) != {p["public_key"] for p in peers}:
+                        raise GrantError("Unauthorized or missing live AWG peer")
             sleeper(2)
     finally:
         subprocess.run(["systemctl", "stop", unit], timeout=35,
