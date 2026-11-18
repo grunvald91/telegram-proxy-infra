@@ -38,23 +38,36 @@ class EnrollmentSshError(ValueError):
 
 
 def private_dir(path: Path) -> None:
-    if path.is_symlink() or not path.is_dir():
-        raise EnrollmentSshError("Missing protected enrollment directory")
-    st=path.stat()
-    if st.st_uid!=0 or st.st_mode & 0o077:
+    # lstat once: do not follow a symlink into a writable directory.
+    try:
+        st=path.lstat()
+    except OSError as exc:
+        raise EnrollmentSshError("Missing protected enrollment directory") from exc
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid!=0 or st.st_mode & 0o077:
         raise EnrollmentSshError("Unsafe enrollment directory")
 
 
 def private_file(path: Path, max_bytes: int = 4096) -> bytes:
-    if path.is_symlink() or not path.is_file():
-        raise EnrollmentSshError("Missing protected enrollment file")
-    st=path.stat()
-    if st.st_uid!=0 or st.st_mode & 0o077 or not 1<=st.st_size<=max_bytes:
-        raise EnrollmentSshError("Unsafe enrollment file")
-    data=path.read_bytes()
-    if len(data)!=st.st_size:
-        raise EnrollmentSshError("Enrollment file changed during read")
-    return data
+    # Open without following links, then validate the SAME inode we read.
+    # O_NONBLOCK prevents an unexpected FIFO/device from hanging root SSH.
+    if not isinstance(max_bytes,int) or not 1<=max_bytes<=10000:
+        raise EnrollmentSshError("Unbounded enrollment file")
+    try:
+        fd=os.open(path,os.O_RDONLY|os.O_CLOEXEC|os.O_NOFOLLOW|os.O_NONBLOCK)
+    except OSError as exc:
+        raise EnrollmentSshError("Missing or linked enrollment file") from exc
+    try:
+        st=os.fstat(fd)
+        if (not stat.S_ISREG(st.st_mode) or st.st_uid!=0 or
+                st.st_mode & 0o077 or not 1<=st.st_size<=max_bytes):
+            raise EnrollmentSshError("Unsafe enrollment file")
+        with os.fdopen(fd,"rb",closefd=False) as opened:
+            data=opened.read(max_bytes+1)
+        if len(data)!=st.st_size:
+            raise EnrollmentSshError("Enrollment file changed during read")
+        return data
+    finally:
+        os.close(fd)
 
 
 def b64(text: str, shape: re.Pattern, size: int) -> bytes:
@@ -179,6 +192,17 @@ def sign_challenge(
     return proof
 
 
+def unique_json_pairs(pairs: list[tuple[str, object]]) -> dict:
+    # Reject duplicate JSON field names; no parser-dependent reinterpretation
+    # of a signed challenge is allowed.
+    result={}
+    for key,value in pairs:
+        if key in result:
+            raise EnrollmentSshError("Duplicate enrollment JSON field")
+        result[key]=value
+    return result
+
+
 def main() -> int:
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--node-id",required=True)
@@ -189,10 +213,11 @@ def main() -> int:
         if (os.geteuid()!=0 or os.environ.get("SSH_ORIGINAL_COMMAND")!="false" or
                 args.node_id!=NODE):
             raise EnrollmentSshError("Forced-command root SSH only")
+        private_dir(ROOT)
         raw=sys.stdin.buffer.read(2049)
         if len(raw)>2048 or not raw.endswith(b"\n"):
             raise EnrollmentSshError("Oversized or malformed enrollment request")
-        challenge=json.loads(raw)
+        challenge=json.loads(raw,object_pairs_hook=unique_json_pairs)
         proof=sign_challenge(challenge,ROOT/NODE,args.expected_identity_sha256,
                              args.expected_controller_sha256)
         sys.stdout.write(json.dumps(proof,separators=(",",":"),sort_keys=True)+"\n")
