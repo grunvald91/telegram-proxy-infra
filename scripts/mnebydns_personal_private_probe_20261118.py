@@ -32,6 +32,8 @@ PUBLIC_DOT_NAME='dns.mnebyvpn.site'
 PRIVATE_CONTAINER='mnebydns-personal-dot-private'
 LOCK=Path('/run/lock/mnebydns-personal-private-probe.lock')
 DOMAIN='rr1---sn-4g5ednss.googlevideo.com'
+ROUTE='smart_dns'
+EXPECTED_STATUS='ALLOWED_SMART_DNS'
 
 def db(sql):
     result=subprocess.run(
@@ -158,7 +160,7 @@ def delete_own_row(data):
         raise RuntimeError('MONITOR_REVOKE_ROW_COUNT_INVALID')
 
 def verify_profile(data):
-    if status(data['label'])!='ALLOWED':
+    if status(data['label'])!=EXPECTED_STATUS:
         raise RuntimeError('MONITOR_SUBSCRIPTION_NOT_ACTIVE')
     # RU private service and the real public personal SNI entrance on DE.
     # Identity remains on RU; it is never passed to GitHub Actions or DE.
@@ -168,8 +170,8 @@ def verify_profile(data):
             addresses=dns_query(data['label'],domain,endpoint)
             if domain!=DOMAIN and expected_mapped_ipv4 not in addresses:
                 raise RuntimeError('MONITOR_DNS_API_ROUTE_DRIFT')
-            if domain==DOMAIN and expected_mapped_ipv4 in addresses:
-                raise RuntimeError('MONITOR_DNS_VPN_ORIGIN_ROUTE_DRIFT')
+            if domain==DOMAIN and expected_mapped_ipv4 not in addresses:
+                raise RuntimeError('MONITOR_DNS_SMART_VIDEO_ROUTE_DRIFT')
 
 def stage():
     if os.geteuid()!=0:raise RuntimeError('ROOT_REQUIRED')
@@ -183,19 +185,20 @@ def stage():
                    "AND revoked_at IS NULL RETURNING id) "
                    "SELECT count(*) FROM updated;")
         if changed!='1':raise RuntimeError('MONITOR_RENEWAL_ROW_COUNT_INVALID')
-        if status(data['label'])!='ALLOWED':
+        if status(data['label'])!=EXPECTED_STATUS:
             raise RuntimeError('MONITOR_RENEWAL_NOT_CONFIRMED')
         print('PRIVATE_PERSONAL_MONITOR=RENEWED_AND_VERIFIED')
         return
     label=''.join(secrets.choice(ALPHABET) for _ in range(12))
     data={'label':label,'id':str(uuid.uuid4()),
           'request_key':'internal-monitor-'+uuid.uuid4().hex}
+    ciphertext=encrypt_for_owner_link(data)
     db("INSERT INTO owner_dns_links "
        "(id,owner_telegram_id,token_sha256,token_ciphertext,request_key,"
        "permanent,expires_at,video_route) VALUES ('"+data['id']+"',"+str(OWNER)+
        ",'"+hashlib.sha256(label.encode()).hexdigest()+
-       "',repeat('x',54),'"+data['request_key']+
-       "',false,clock_timestamp()+interval '30 days','vpn_origin');")
+       "','"+ciphertext+"','"+data['request_key']+
+       "',false,clock_timestamp()+interval '30 days','smart_dns');")
     try:
         verify_profile(data)
         STATE.parent.mkdir(parents=True,exist_ok=True)
