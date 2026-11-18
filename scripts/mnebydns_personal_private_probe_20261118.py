@@ -7,6 +7,7 @@ A single non-permanent internal owner row is renewed only after positive checks.
 from __future__ import annotations
 
 import hashlib
+import fcntl
 import ipaddress
 import json
 import os
@@ -29,6 +30,7 @@ OWNER=9000000000000000000
 ALPHABET='abcdefghijklmnopqrstuvwxyz0123456789'
 PUBLIC_DOT_NAME='dns.mnebyvpn.site'
 PRIVATE_CONTAINER='mnebydns-personal-dot-private'
+LOCK=Path('/run/lock/mnebydns-personal-private-probe.lock')
 DOMAIN='rr1---sn-4g5ednss.googlevideo.com'
 
 def db(sql):
@@ -57,11 +59,14 @@ def endpoints():
         port=int(port_raw)
     except ValueError:
         raise RuntimeError('PRIVATE_DOT_BIND_INVALID') from None
-    if not (address.version==4 and address.is_private and 1<=port<=65535):
+    if not (address.version==4 and address.is_private and
+            not (address.is_unspecified or address.is_loopback or address.is_link_local or address.is_reserved)
+            and 1<=port<=65535):
         raise RuntimeError('PRIVATE_DOT_BIND_UNSAFE')
     public_ip=socket.gethostbyname(PUBLIC_DOT_NAME)
     public_address=ipaddress.ip_address(public_ip)
-    if public_address.version!=4 or not public_address.is_global:
+    if (public_address.version!=4 or not public_address.is_global or
+            public_address.is_multicast or public_address.is_reserved):
         raise RuntimeError('PUBLIC_DOT_DNS_INVALID')
     return (host,port),(PUBLIC_DOT_NAME,853),public_ip
 
@@ -259,9 +264,13 @@ def revoke():
 if __name__=='__main__':
     try:
         action=sys.argv[1] if len(sys.argv)==2 else ''
-        {'stage':stage,'install':install,'report':report,'revoke':revoke}[action]()
-    except KeyError:
-        raise SystemExit('usage: stage|install|report|revoke')
+        fn={'stage':stage,'install':install,'report':report,'revoke':revoke}.get(action)
+        if fn is None:raise SystemExit('usage: stage|install|report|revoke')
+        if os.geteuid()!=0:raise RuntimeError('ROOT_REQUIRED')
+        LOCK.parent.mkdir(parents=True,exist_ok=True)
+        with LOCK.open('a+') as lock:
+            fcntl.flock(lock.fileno(),fcntl.LOCK_EX|fcntl.LOCK_NB)
+            fn()
     except Exception as ex:
         print('PRIVATE_PERSONAL_MONITOR_ERROR='+type(ex).__name__,file=sys.stderr)
         sys.exit(1)
