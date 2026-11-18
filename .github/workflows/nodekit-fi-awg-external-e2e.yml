@@ -1,0 +1,153 @@
+name: MNEBYVPN FI external AWG 3.1 E2E (temporary)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebyvpn-fleet-fi
+  cancel-in-progress: false
+jobs:
+  external-awg:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: node-fi
+    env:
+      SSHPASS: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_PASSWORD }}
+      SSH_USER: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_USER }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.25.4'
+          check-latest: false
+      - name: Build pinned official AmneziaWG 3.1 test client
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends sshpass iproute2 iputils-ping curl make gcc >/dev/null
+          mkdir -p "$RUNNER_TEMP/awgrepos" "$RUNNER_TEMP/awgbin"
+          cd "$RUNNER_TEMP/awgrepos"
+          git clone -q --no-checkout https://github.com/amnezia-vpn/amneziawg-go.git userspace
+          git -C userspace checkout -q --detach 08fe3d33bbb116be09a6183d02609311b8b0c9e8
+          [[ "$(git -C userspace rev-parse HEAD)" == 08fe3d33bbb116be09a6183d02609311b8b0c9e8 ]]
+          (cd userspace && GOTOOLCHAIN=local go build -trimpath -o "$RUNNER_TEMP/awgbin/amneziawg-go" .)
+          git clone -q --no-checkout https://github.com/amnezia-vpn/amneziawg-tools.git tools
+          git -C tools checkout -q --detach ee0f0a9aa34ff0a0da4b3433b9512781cfe02843
+          [[ "$(git -C tools rev-parse HEAD)" == ee0f0a9aa34ff0a0da4b3433b9512781cfe02843 ]]
+          make -s -C tools/src
+          install -m 0755 tools/src/wg "$RUNNER_TEMP/awgbin/awg"
+          install -m 0755 tools/src/wg-quick/linux.bash "$RUNNER_TEMP/awgbin/awg-quick"
+          chmod 0755 "$RUNNER_TEMP/awgbin/amneziawg-go"
+      - name: Test AWG external handshake, scoped IPv4 forwarding and NAT
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          [[ "$SSH_USER" == root && -n "$SSHPASS" ]] || exit 2
+          tmp="$RUNNER_TEMP/awg-fi-external"
+          mkdir -m 0700 "$tmp"
+          known="$tmp/known"
+          : > "$known"; chmod 0600 "$known"
+          ssh_opts=(-T -o PubkeyAuthentication=no -o PreferredAuthentications=password,keyboard-interactive
+                    -o NumberOfPasswordPrompts=1 -o StrictHostKeyChecking=accept-new
+                    -o UserKnownHostsFile="$known" -o ConnectTimeout=12
+                    -o ServerAliveInterval=10 -o ServerAliveCountMax=4)
+          scp_opts=(-o PubkeyAuthentication=no -o PreferredAuthentications=password,keyboard-interactive
+                    -o NumberOfPasswordPrompts=1 -o StrictHostKeyChecking=accept-new
+                    -o UserKnownHostsFile="$known" -o ConnectTimeout=12)
+          remote(){ sshpass -e ssh "${ssh_opts[@]}" root@217.11.167.91 "$@"; }
+          upl(){ sshpass -e scp "${scp_opts[@]}" "$@" root@217.11.167.91:"$remote_dir/"; }
+          ext="$RUNNER_TEMP/awgbin"
+          iface=awge2e0
+          remote_dir=""
+          server_pid=""
+          cleanup(){
+            set +e
+            sudo ip route del 10.73.91.1/32 dev "$iface" >/dev/null 2>&1
+            if [[ -n "${echo_ip:-}" ]]; then sudo ip route del "$echo_ip/32" dev "$iface" >/dev/null 2>&1; fi
+            sudo env PATH="$ext:/usr/sbin:/usr/bin:/sbin:/bin" WG_QUICK_USERSPACE_IMPLEMENTATION="$ext/amneziawg-go" "$ext/awg-quick" down "$tmp/$iface.conf" >/dev/null 2>&1
+            if [[ -n "$remote_dir" ]]; then
+              remote "python3 '$remote_dir/awg_external_canary.py' --mode cleanup" >/dev/null 2>&1
+              remote "rm -rf -- '$remote_dir'" >/dev/null 2>&1
+            fi
+            if [[ -n "$server_pid" ]]; then wait "$server_pid" >/dev/null 2>&1; fi
+            if [[ -f "$tmp/server.log" ]]; then grep -E 'AWG_EXTERNAL_(STEP|READY|ERROR|CLEANUP)=' "$tmp/server.log" || true; fi
+            rm -rf "$tmp"
+          }
+          trap cleanup EXIT
+          remote_dir=$(remote 'umask 077; mktemp -d /tmp/nodekit-awg-e2e.XXXXXXXX')
+          [[ "$remote_dir" =~ ^/tmp/nodekit-awg-e2e\.[A-Za-z0-9]{8}$ ]] || exit 2
+          upl nodekit/awg_external_canary.py nodekit/awg_lifecycle.py nodekit/install_components.py
+          remote "python3 '$remote_dir/awg_external_canary.py' --mode install" > "$tmp/install.json"
+          remote "python3 '$remote_dir/awg_external_canary.py' --mode material" > "$tmp/material.json"
+          echo "AWG_EXTERNAL_MATERIAL=VERIFIED"
+          "$ext/awg" genkey > "$tmp/client.key"
+          "$ext/awg" pubkey < "$tmp/client.key" > "$tmp/client.pub"
+          client_public=$(cat "$tmp/client.pub")
+          [[ "$client_public" =~ ^[A-Za-z0-9+/]{43}=$ ]] || exit 2
+          runner_ip=$(remote 'printf "%s" "${SSH_CONNECTION%% *}"')
+          [[ "$runner_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 2
+          echo_ip=$(getent ahostsv4 api.ipify.org | awk '/STREAM/ {print $1;exit}')
+          [[ "$echo_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 2
+          export TMP_AWG="$tmp" AWG_ECHO_IP="$echo_ip"
+          python3 - <<'PY'
+          import json,os,ipaddress,pathlib
+          base=pathlib.Path(os.environ["TMP_AWG"])
+          entry=json.loads((base/"material.json").read_text())
+          assert entry["hostname"]=="fi.mnebyvpn.site"
+          assert entry["client_ip"]=="10.73.91.2"
+          assert entry["port"]==51821
+          keys=[entry["server_public_key"],entry["header_key"],(base/"client.key").read_text().strip()]
+          assert all(len(k)==44 for k in keys)
+          private=keys[2]
+          content=(
+              "[Interface]\nAddress = 10.73.91.2/32\nPrivateKey = "+private+
+              "\nListenPort = 0\nMTU = 1280\nTable = off\n"+
+              "Jc = 0\nJmin = 0\nJmax = 0\nS1 = 16\nS2 = 16\nS3 = 16\nS4 = 16\n"+
+              "H1 = 1\nH2 = 2\nH3 = 3\nH4 = 4\n"+
+              "HeaderProtectionKey = "+entry["header_key"]+
+              "\nRandomTrailers = on\nDisableCookies = off\n"+
+              "\n[Peer]\nPublicKey = "+entry["server_public_key"]+
+              "\nEndpoint = 217.11.167.91:51821\n"+
+              "AllowedIPs = 10.73.91.1/32, "+os.environ["AWG_ECHO_IP"]+"/32\n"+
+              "PersistentKeepalive = 10\n"
+          )
+          path=base/"awge2e0.conf";path.write_text(content);path.chmod(0o600)
+          PY
+          echo "AWG_EXTERNAL_STEP=ARM_REMOTE_TTL"
+          remote "python3 '$remote_dir/awg_external_canary.py' --mode run --peer-public '$client_public' --source-ip '$runner_ip' --seconds 85" > "$tmp/server.log" 2>&1 &
+          server_pid=$!
+          ready=no
+          for i in {1..20}; do
+            sleep 2
+            if remote "python3 '$remote_dir/awg_external_canary.py' --mode status" | grep -q '"ready": true'; then
+              ready=yes;break
+            fi
+            if ! kill -0 "$server_pid" >/dev/null 2>&1; then break;fi
+          done
+          if [[ "$ready" != yes ]]; then
+            echo "::error::External canary VPS failed to arm temporary AWG interface"
+            exit 2
+          fi
+          echo "AWG_EXTERNAL_STEP=START_REAL_REMOTE_CLIENT"
+          sudo env PATH="$ext:/usr/sbin:/usr/bin:/sbin:/bin" WG_QUICK_USERSPACE_IMPLEMENTATION="$ext/amneziawg-go" "$ext/awg-quick" up "$tmp/$iface.conf" >/dev/null
+          sudo ip route add 10.73.91.1/32 dev "$iface"
+          sudo ip route add "$echo_ip/32" dev "$iface"
+          echo "AWG_EXTERNAL_STEP=ENCRYPTED_ICMP"
+          sudo ping -I "$iface" -n -c 3 -W 4 10.73.91.1 >/dev/null
+          handshake=$(sudo "$ext/awg" show "$iface" latest-handshakes | awk 'NF==2{print $2;exit}')
+          [[ "$handshake" =~ ^[1-9][0-9]*$ ]] || { echo "::error::No AWG 3.1 handshake"; exit 2; }
+          echo "AWG_EXTERNAL_HANDSHAKE=PASS"
+          echo "AWG_EXTERNAL_STEP=HTTPS_EGRESS"
+          observed=$(curl --noproxy '*' --interface "$iface" -4 --fail --silent --show-error
+                     --connect-timeout 8 --max-time 16
+                     --resolve "api.ipify.org:443:$echo_ip" https://api.ipify.org)
+          [[ "$observed" == '217.11.167.91' ]] || { echo "::error::Unexpected VPN egress IP";exit 2; }
+          echo "AWG_EXTERNAL_ICMP=PASS"
+          echo "AWG_EXTERNAL_HTTPS_EGRESS=PASS"
+          echo "AWG_EXTERNAL_EGRESS_EQUALS_FI_VPS=true"
+          echo "AWG_CLIENT_PROFILE_PUBLISHED=false"
