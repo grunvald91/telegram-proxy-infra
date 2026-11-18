@@ -30,6 +30,8 @@ on:
           - tls_issue
           - tls_verify
           - dot_local_canary
+          - awg_install
+          - awg_canary
           - components_install
           - prepare_all
           - vpn_stage_auto
@@ -92,7 +94,7 @@ jobs:
           [[ "$ADVERTISE_HOST" == 'fi.mnebyvpn.site' ]] || {
             echo '::error::Approved FI test IP is reserved for fi.mnebyvpn.site'; exit 2;
           }
-          [[ "$MODE" == 'preflight' || "$MODE" == 'stage' || "$MODE" == 'identity' || "$MODE" == 'components_check' || "$MODE" == 'dns_proxy_stage' || "$MODE" == 'hostname_migrate' || "$MODE" == 'tls_issue' || "$MODE" == 'tls_verify' || "$MODE" == 'dot_local_canary' || "$MODE" == 'components_install' || "$MODE" == 'prepare_all' || "$MODE" == 'vpn_stage_auto' || "$MODE" == 'vpn_stage' || "$MODE" == 'supervisor_install' || "$MODE" == 'supervisor_canary' ]]
+          [[ "$MODE" == 'preflight' || "$MODE" == 'stage' || "$MODE" == 'identity' || "$MODE" == 'components_check' || "$MODE" == 'dns_proxy_stage' || "$MODE" == 'hostname_migrate' || "$MODE" == 'tls_issue' || "$MODE" == 'tls_verify' || "$MODE" == 'dot_local_canary' || "$MODE" == 'awg_install' || "$MODE" == 'awg_canary' || "$MODE" == 'components_install' || "$MODE" == 'prepare_all' || "$MODE" == 'vpn_stage_auto' || "$MODE" == 'vpn_stage' || "$MODE" == 'supervisor_install' || "$MODE" == 'supervisor_canary' ]]
           if [[ "$MODE" == 'vpn_stage' || "$MODE" == 'supervisor_install' || "$MODE" == 'supervisor_canary' ]]; then
             [[ "$XRAY_SHA256" =~ ^[a-f0-9]{64}$ ]] || {
               echo '::error::Supervisor/Xray staging requires a preverified SHA256'; exit 2;
@@ -175,7 +177,7 @@ jobs:
           }
           trap cleanup EXIT
 
-          remote_scp nodekit/nodekit.py nodekit/identity.py nodekit/install_components.py nodekit/dns_proxy_stage.py nodekit/hostname_migrate.py nodekit/dot_local_canary.py nodekit/tls_stage.py nodekit/provision_node.py nodekit/vpn_stage.py \
+          remote_scp nodekit/nodekit.py nodekit/identity.py nodekit/install_components.py nodekit/dns_proxy_stage.py nodekit/hostname_migrate.py nodekit/dot_local_canary.py nodekit/awg_lifecycle.py nodekit/tls_stage.py nodekit/provision_node.py nodekit/vpn_stage.py \
             nodekit/vpn_supervisor.py nodekit/install_supervisor.py nodekit/forward_command.py \
             nodekit/systemd/mnebyvpn-nodekit-vpn@.service.example \
             "$RUNNER_TEMP/nodekit-credentials/spec.json" "$target:$remote_dir/"
@@ -190,6 +192,9 @@ jobs:
               echo '::error::Host migration only approved for the existing isolated FI staging node'; exit 2;
             }
             remote_ssh "python3 '$remote_dir/hostname_migrate.py' --node-id '$NODE_ID'"
+          elif [[ "$MODE" == 'awg_install' || "$MODE" == 'awg_canary' ]]; then
+            if [[ "$MODE" == 'awg_install' ]]; then awg_mode=install; else awg_mode=canary; fi
+            remote_ssh "python3 '$remote_dir/awg_lifecycle.py' --node-id '$NODE_ID' --mode '$awg_mode'"
           elif [[ "$MODE" == 'dot_local_canary' ]]; then
             remote_ssh "python3 '$remote_dir/dot_local_canary.py' --node-id '$NODE_ID' --host '$ADVERTISE_HOST' --expected-ipv4 '$TARGET_IP'"
           elif [[ "$MODE" == 'tls_issue' || "$MODE" == 'tls_verify' ]]; then
