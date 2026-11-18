@@ -31,13 +31,12 @@ from install_components import safe_dir, safe_manifest
 from awg_lifecycle import AWG_BIN, INTERFACE, validate as validate_awg
 
 ROOT = Path("/var/lib/mnebyvpn-nodekit")
-CONTROLLER_KEY = Path("/var/lib/mnebyvpn-nodekit")
 KEY_PREFIX = bytes.fromhex("302a300506032b6570032100")
 KEY = re.compile(r"[A-Za-z0-9+/]{43}=\Z")
 SIGNATURE = re.compile(r"[A-Za-z0-9_-]{86}\Z")
 NONCE = re.compile(r"[a-f0-9]{64}\Z")
 UTC = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z\Z")
-MAX_LEASE_SECONDS = 100 * 86400
+MAX_LEASE_SECONDS = 60 * 60  # Bound stale access to one hour if controller delivery fails
 MAX_PEERS = 250
 AUTHORIZED_NET = ipaddress.IPv4Network("10.73.91.0/24")
 CMD_FIELDS = {
@@ -277,6 +276,25 @@ def persist_state(path: Path, state: dict) -> None:
         Path(temp).unlink(missing_ok=True)
 
 
+def assert_runtime_peers(peers: list[dict], *, runner=subprocess.run) -> None:
+    """Validate peer keys AND allowed IPs. A surviving /0 is a breach.
+
+    A key-only comparison would miss externally widened AllowedIPs, thereby
+    silently permitting a signed user to impersonate another client address.
+    """
+    result = runner([str(AWG_BIN / "awg"), "show", INTERFACE, "allowed-ips"],
+                    capture_output=True, check=True, text=True, timeout=10)
+    observed: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        columns = line.split()
+        if len(columns) != 2 or columns[0] in observed:
+            raise GrantError("Invalid live AWG peer address table")
+        observed[columns[0]] = columns[1]
+    expected = {row["public_key"]: row["allowed_ips"] for row in peers}
+    if observed != expected:
+        raise GrantError("Live AWG allowed-ips differ from active entitlements")
+
+
 def reconcile(node: Path, state: dict, now: float, *,
               runner=subprocess.run) -> dict:
     """Synchronize live interface from ledger; on any mismatch STOP AWG."""
@@ -286,10 +304,10 @@ def reconcile(node: Path, state: dict, now: float, *,
     if not active_unit(unit):
         return {"active": False, "peers": 0, "published": False}
     config = node / "amneziawg" / "awg0.conf"
-    if hashlib.sha256(protected_file(config)).hexdigest() != (
-            safe_manifest(node / "amneziawg" / "manifest.json")["config_sha256"]):
-        raise GrantError("Staged AWG config drift")
     try:
+        if hashlib.sha256(protected_file(config)).hexdigest() != (
+                safe_manifest(node / "amneziawg" / "manifest.json")["config_sha256"]):
+            raise GrantError("Staged AWG config drift")
         base = runner([str(AWG_BIN / "awg-quick"), "strip", str(config)],
                       capture_output=True, check=True, text=True, timeout=15).stdout
         runtime = render_runtime_config(base, peers)
@@ -302,11 +320,7 @@ def reconcile(node: Path, state: dict, now: float, *,
                    capture_output=True, check=True, text=True, timeout=15)
         finally:
             Path(filename).unlink(missing_ok=True)
-        actual = runner([str(AWG_BIN / "awg"), "show", INTERFACE, "peers"],
-                        capture_output=True, check=True, text=True, timeout=10).stdout
-        expected = {row["public_key"] for row in peers}
-        if set(actual.split()) != expected:
-            raise GrantError("Live AWG peer table inconsistent with entitlement state")
+        assert_runtime_peers(peers, runner=runner)
     except BaseException:
         # Invalid/stale peers must never survive an unverified reconciliation.
         runner(["systemctl", "stop", unit], capture_output=True,
@@ -352,11 +366,7 @@ def watchdog(node: Path, *, sleeper=time.sleep) -> None:
                     reconcile(node, table, now)
                     previous_view = view
                 else:
-                    actual = subprocess.run(
-                        [str(AWG_BIN / "awg"), "show", INTERFACE, "peers"],
-                        capture_output=True, check=True, timeout=8, text=True).stdout
-                    if set(actual.split()) != {p["public_key"] for p in peers}:
-                        raise GrantError("Unauthorized or missing live AWG peer")
+                    assert_runtime_peers(peers)
             sleeper(2)
     finally:
         subprocess.run(["systemctl", "stop", unit], timeout=35,
@@ -392,7 +402,6 @@ def main() -> int:
     p.add_argument("--node-id", required=True)
     p.add_argument("--mode", choices=("inspect", "verify", "apply", "reconcile", "watchdog", "controller-check"),
                    required=True)
-    p.add_argument("--controller-public", type=Path)
     p.add_argument("--command", type=Path)
     p.add_argument("--stage-root", type=Path, default=ROOT)
     args = p.parse_args()
@@ -423,7 +432,10 @@ def main() -> int:
                     raise GrantError("Signed command required")
                 req = json.loads(protected_file(args.command, max_bytes=4096))
                 validate_command(req, node.name, now)
-                verify_signature(req, args.controller_public or pinned_controller_key(node))
+                # Never accept a caller-provided trust anchor. Even an
+                # otherwise valid Ed25519 command MUST come from the public
+                # key independently pinned during node enrollment.
+                verify_signature(req, pinned_controller_key(node))
                 planned = transition(state, req, now)
                 if args.mode == "apply":
                     # Do NOT grant remote access if AWG is not already running
