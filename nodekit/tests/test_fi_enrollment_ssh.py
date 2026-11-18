@@ -154,7 +154,7 @@ const proof=JSON.stringify([
   'MNEBYVPN_NODE_ENROLL_V1',
   c.nodeId,c.endpointHost,c.publicSpki,c.challengeId,c.nonce
 ]);
-process.stdout.write(data+'\\n'+proof+'\\n');
+process.stdout.write(data+'\n'+proof+'\n');
 """
         result=subprocess.run(["node","-e",script],
                               input=json.dumps(example).encode(),
