@@ -6,7 +6,6 @@ Does not read bearer credentials, issue profiles, or touch DNS/proxy/VPN rules.
 """
 from __future__ import annotations
 import argparse
-import hashlib
 import json
 import math
 import os
@@ -125,51 +124,29 @@ def check(name,endpoint):
             "tls_versions":sorted(versions),"unknown_sni_denial":denied,
             "authenticated_dns_queries":"NOT_TESTED_NO_SERVICE_PROFILE"}
 
-def compare_public_cert_to_local_de():
-    # Diagnostic fingerprint comparison ONLY. The main probes still enforce
-    # CA verification. This never authenticates a client or changes TLS policy.
-    digests=[]
-    for endpoint in ((PUBLIC,853),("127.0.0.1",8854)):
-        sni="".join(secrets.choice("abcdefghijklmnopqrstuvwxyz0123456789")
-                    for _ in range(12))+".dns.mnebyvpn.site"
-        try:
-            with socket.create_connection(endpoint,timeout=TIMEOUT) as raw:
-                raw.settimeout(TIMEOUT)
-                with ssl._create_unverified_context().wrap_socket(
-                     raw,server_hostname=sni) as tls:
-                    der=tls.getpeercert(binary_form=True)
-                    if not der:return "certificate_absent"
-                    digests.append(hashlib.sha256(der).digest())
-        except Exception as ex:
-            return "compare_error_"+type(ex).__name__
-    return "same_leaf" if digests[0]==digests[1] else "different_leaf"
-
-def de_public_dns_route():
-    # Compare resolved hostname to the DE public eth0 address without logging IP.
-    try:
-        answer=socket.gethostbyname(PUBLIC)
-        routes=run(["ip","-o","-4","addr","show","dev","eth0"])
-        addrs=re.findall(r"\binet\s+([0-9.]+)/",routes)
-        return "eth0_public" if answer in addrs else "not_eth0_public"
-    except Exception as ex:
-        return "route_unknown_"+type(ex).__name__
+def endpoints_for(role):
+    if role=="de":
+        # Self-connect to DE's public IP bypasses eth0/PREROUTING, so it would
+        # reach the legacy :853 listener instead of the external personal SNI
+        # redirect to :8854. Never classify this as a client TLS failure.
+        return [("de_local_personal_sni",("127.0.0.1",8854))]
+    return [("public_personal_ingress",(PUBLIC,853))]
 
 def node(role):
-    endpoints=[("public_personal_ingress",(PUBLIC,853))]
+    endpoints=endpoints_for(role)
     if role=="ru":
         try:endpoints.append(("ru_private_personal_backend",private_endpoint()))
         except Exception as ex:
             return {"vantage":role,"error":str(ex),"authenticated_dns_queries":"NOT_TESTED"}
-    if role=="de":
-        endpoints.append(("de_local_personal_sni",("127.0.0.1",8854)))
     result={"vantage":role,"time_utc":int(time.time()),
             "measurement":"synthetic unauthenticated TLS and denial; not client DNS/video",
             "checks":[check(name,endpoint) for name,endpoint in endpoints]}
     if role=="de":
         raw=run(["systemctl","is-active","mnebydns-personal-sni-watch.timer"])
         result["personal_watch_timer"]=raw or "unknown"
-        result["public_tls_cert_vs_local_sni"]=compare_public_cert_to_local_de()
-        result["public_dns_resolves_to"]=de_public_dns_route()
+        result["personal_ingress_redirect_unit"]=run([
+            "systemctl","is-active","mnebydns-personal-sni-redirect.service"]) or "unknown"
+        result["self_to_public"]= "SKIPPED_OUTPUT_BYPASSES_PREROUTING"
     print(json.dumps(result,separators=(",",":"),sort_keys=True))
     # Bad denial is an explicit security test failure; report not a silent pass.
     if any(c["unknown_sni_denial"]=="SECURITY_FAILURE_UNISSUED_SNI_ANSWERED"
@@ -185,6 +162,8 @@ def main():
         assert stats([1,3,7,9,12])["p50_ms"]==7
         assert stats([1,3,7,9,12])["p95_ms"]==12
         assert "aaa".isascii()
+        assert endpoints_for("de")==[("de_local_personal_sni",("127.0.0.1",8854))]
+        assert endpoints_for("ru")==[("public_personal_ingress",(PUBLIC,853))]
         print("PERSONAL_DOT_LATENCY_OFFLINE=PASS")
     else:node(opt.vantage)
 
