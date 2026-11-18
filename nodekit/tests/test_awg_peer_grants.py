@@ -114,11 +114,60 @@ class TestAWGAccess(unittest.TestCase):
         with self.assertRaises(awg.GrantError):
             awg.render_runtime_config(base+"[Peer]\n",[])
 
-    def test_perpetual_grant_cannot_exceed_hour_without_fresh_controller(self):
+    def test_offline_paid_grant_valid_for_seven_days_without_controller(self):
+        end=dt.datetime.fromtimestamp(NOW+7*86400,dt.timezone.utc).isoformat(
+            timespec="milliseconds").replace("+00:00","Z")
+        too_long=dt.datetime.fromtimestamp(NOW+7*86400+0.001,dt.timezone.utc).isoformat(
+            timespec="milliseconds").replace("+00:00","Z")
+        awg.validate_command(command(expiresAt=end),NODE,NOW)
+        state=awg.transition(awg.empty_state(NODE),command(expiresAt=end),NOW)
+        # This is a pure LOCAL lookup. An unreachable RU188 is irrelevant to the
+        # handshake and the peer remains active until the signed expiry.
+        self.assertEqual(len(awg.active_peers(state,NOW+6*86400)),1)
+        self.assertEqual(awg.active_peers(state,NOW+7*86400),[])
         with self.assertRaises(awg.GrantError):
-            awg.validate_command(command(
-                expiresAt="2026-11-18T05:00:01.000Z"),NODE,NOW)
-        awg.validate_command(command(expiresAt="2026-11-18T05:00:00.000Z"),NODE,NOW)
+            awg.validate_command(command(expiresAt=too_long),NODE,NOW)
+
+    def test_offline_clock_detects_rollback_and_persists_high_watermark(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as folder:
+            path=pathlib.Path(folder)/"clock.json"
+            wall=[NOW]
+            tick=[100.0]
+            def save(p,record): p.write_text(json.dumps(record))
+            def load(p,*,max_bytes): return p.read_bytes()
+            guard=awg.OfflineClock(path,wall=lambda:wall[0],
+                                   monotonic=lambda:tick[0],
+                                   load=load,save=save)
+            self.assertAlmostEqual(guard.now(),NOW)
+            wall[0]+=20
+            tick[0]+=20
+            self.assertAlmostEqual(guard.now(),NOW+20)
+            self.assertEqual(json.loads(path.read_text())["last_seen_ms"],
+                             int((NOW+20)*1000))
+            wall[0]-=18
+            tick[0]+=10
+            with self.assertRaises(awg.GrantError):
+                guard.now()
+            with self.assertRaises(awg.GrantError):
+                awg.OfflineClock(path,wall=lambda:NOW-20,
+                                 monotonic=lambda:0.0,load=load,save=save)
+            # A later corrected UTC permits safe restart; the history persists.
+            recovered=awg.OfflineClock(path,wall=lambda:NOW+30,
+                                        monotonic=lambda:0.0,load=load,save=save)
+            self.assertEqual(recovered.now(),NOW+30)
+            # Large forward NTP jump must not permit later rollback to
+            # resurrect peers already expired during the jump.
+            wall[0]=NOW+3600
+            tick[0]=200.0
+            jumped=awg.OfflineClock(path,wall=lambda:wall[0],
+                                    monotonic=lambda:tick[0],
+                                    load=load,save=save)
+            self.assertEqual(jumped.now(),NOW+3600)
+            wall[0]=NOW+60
+            tick[0]+=5
+            with self.assertRaises(awg.GrantError):
+                jumped.now()
 
     def test_same_live_key_with_widened_allowed_ips_is_rejected(self):
         expected=[{"public_key": KEY1, "allowed_ips": "10.73.91.2/32"}]

@@ -9,7 +9,7 @@ const NODE=/^[a-z0-9][a-z0-9-]{2,39}$/;
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const KEY=/^[A-Za-z0-9+/]{43}=$/;
 const TS=/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/;
-const MAX_AGE=60*60_000; // one-hour max offline entitlement exposure
+const MAX_AGE=7*24*60*60_000; // local signed offline capability, never a per-connection callback
 export class AwgLeaseError extends Error {}
 
 export function awgLeasePayload(req){
