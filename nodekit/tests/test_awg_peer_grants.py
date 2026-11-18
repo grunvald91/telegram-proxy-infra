@@ -16,7 +16,7 @@ UID2="22222222-3333-4444-8555-666666666666"
 KEY1=base64.b64encode(bytes(range(32))).decode()
 KEY2=base64.b64encode(bytes(range(32,64))).decode()
 DATE="2026-11-18T04:00:00.000Z"
-EXPIRES="2026-11-19T04:00:00.000Z"
+EXPIRES="2026-11-18T04:30:00.000Z"
 
 
 def command(op="grant",**overrides):
@@ -41,7 +41,7 @@ class TestAWGAccess(unittest.TestCase):
         initial=awg.empty_state(NODE)
         added=awg.transition(initial,command(),NOW)
         self.assertEqual(len(awg.active_peers(added,NOW)),1)
-        self.assertEqual(len(awg.active_peers(added,NOW+86401)),0)
+        self.assertEqual(len(awg.active_peers(added,NOW+1801)),0)
         self.assertEqual(initial["grants"],{})
         with self.assertRaises(awg.GrantError):
             awg.transition(added,command(),NOW)
