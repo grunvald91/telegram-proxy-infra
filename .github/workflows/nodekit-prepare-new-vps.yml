@@ -34,6 +34,8 @@ on:
           - awg_canary
           - awg_watchdog_install
           - awg_grants_inspect
+          - awg_egress_install
+          - awg_egress_inspect
           - components_install
           - prepare_all
           - vpn_stage_auto
@@ -96,7 +98,7 @@ jobs:
           [[ "$ADVERTISE_HOST" == 'fi.mnebyvpn.site' ]] || {
             echo '::error::Approved FI test IP is reserved for fi.mnebyvpn.site'; exit 2;
           }
-          [[ "$MODE" == 'preflight' || "$MODE" == 'stage' || "$MODE" == 'identity' || "$MODE" == 'components_check' || "$MODE" == 'dns_proxy_stage' || "$MODE" == 'hostname_migrate' || "$MODE" == 'tls_issue' || "$MODE" == 'tls_verify' || "$MODE" == 'dot_local_canary' || "$MODE" == 'awg_install' || "$MODE" == 'awg_canary' || "$MODE" == 'awg_watchdog_install' || "$MODE" == 'awg_grants_inspect' || "$MODE" == 'components_install' || "$MODE" == 'prepare_all' || "$MODE" == 'vpn_stage_auto' || "$MODE" == 'vpn_stage' || "$MODE" == 'supervisor_install' || "$MODE" == 'supervisor_canary' ]]
+          [[ "$MODE" == 'preflight' || "$MODE" == 'stage' || "$MODE" == 'identity' || "$MODE" == 'components_check' || "$MODE" == 'dns_proxy_stage' || "$MODE" == 'hostname_migrate' || "$MODE" == 'tls_issue' || "$MODE" == 'tls_verify' || "$MODE" == 'dot_local_canary' || "$MODE" == 'awg_install' || "$MODE" == 'awg_canary' || "$MODE" == 'awg_watchdog_install' || "$MODE" == 'awg_grants_inspect' || "$MODE" == 'awg_egress_install' || "$MODE" == 'awg_egress_inspect' || "$MODE" == 'components_install' || "$MODE" == 'prepare_all' || "$MODE" == 'vpn_stage_auto' || "$MODE" == 'vpn_stage' || "$MODE" == 'supervisor_install' || "$MODE" == 'supervisor_canary' ]]
           if [[ "$MODE" == 'vpn_stage' || "$MODE" == 'supervisor_install' || "$MODE" == 'supervisor_canary' ]]; then
             [[ "$XRAY_SHA256" =~ ^[a-f0-9]{64}$ ]] || {
               echo '::error::Supervisor/Xray staging requires a preverified SHA256'; exit 2;
@@ -179,7 +181,7 @@ jobs:
           }
           trap cleanup EXIT
 
-          remote_scp nodekit/nodekit.py nodekit/identity.py nodekit/install_components.py nodekit/dns_proxy_stage.py nodekit/hostname_migrate.py nodekit/dot_local_canary.py nodekit/awg_lifecycle.py nodekit/awg_peer_grants.py nodekit/install_awg_watchdog.py nodekit/tls_stage.py nodekit/provision_node.py nodekit/vpn_stage.py \
+          remote_scp nodekit/nodekit.py nodekit/identity.py nodekit/install_components.py nodekit/dns_proxy_stage.py nodekit/hostname_migrate.py nodekit/dot_local_canary.py nodekit/awg_lifecycle.py nodekit/awg_peer_grants.py nodekit/awg_egress.py nodekit/install_awg_watchdog.py nodekit/tls_stage.py nodekit/provision_node.py nodekit/vpn_stage.py \
             nodekit/vpn_supervisor.py nodekit/install_supervisor.py nodekit/forward_command.py \
             nodekit/systemd/mnebyvpn-nodekit-vpn@.service.example \
             "$RUNNER_TEMP/nodekit-credentials/spec.json" "$target:$remote_dir/"
@@ -194,6 +196,10 @@ jobs:
               echo '::error::Host migration only approved for the existing isolated FI staging node'; exit 2;
             }
             remote_ssh "python3 '$remote_dir/hostname_migrate.py' --node-id '$NODE_ID'"
+          elif [[ "$MODE" == 'awg_egress_install' || "$MODE" == 'awg_egress_inspect' ]]; then
+            egress_mode=inspect
+            if [[ "$MODE" == 'awg_egress_install' ]]; then egress_mode=install; fi
+            remote_ssh "python3 '$remote_dir/awg_egress.py' --node-id '$NODE_ID' --mode '$egress_mode'"
           elif [[ "$MODE" == 'awg_watchdog_install' ]]; then
             remote_ssh "python3 '$remote_dir/install_awg_watchdog.py' --node-id '$NODE_ID'"
           elif [[ "$MODE" == 'awg_grants_inspect' ]]; then
