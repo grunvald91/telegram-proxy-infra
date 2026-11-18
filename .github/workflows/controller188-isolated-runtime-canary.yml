@@ -36,7 +36,7 @@ jobs:
           test "$(git -C controller-source rev-parse HEAD)" = "$MNEBYVPN_SOURCE_SHA"
           grep -q '^188\.120\.254\.223 ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts
           bash -n controller-source/ops/controller188-runtime/stage.sh
-          node --test controller-source/tests/controller188-runtime.test.mjs
+          (cd controller-source && node --test tests/controller188-runtime.test.mjs)
           tar -czf "$RUNNER_TEMP/controller188-runtime.tar.gz" \
             -C controller-source \
             ops/controller188-runtime/Dockerfile \
