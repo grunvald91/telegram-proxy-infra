@@ -24,13 +24,14 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 
 from install_components import safe_dir, safe_manifest
 from awg_lifecycle import AWG_BIN, INTERFACE, validate as validate_awg
 
 ROOT = Path("/var/lib/mnebyvpn-nodekit")
-CONTROLLER_KEY = Path("/etc/mnebyvpn-nodekit/controller-access.spki")
+CONTROLLER_KEY = Path("/var/lib/mnebyvpn-nodekit")
 KEY_PREFIX = bytes.fromhex("302a300506032b6570032100")
 KEY = re.compile(r"[A-Za-z0-9+/]{43}=\Z")
 SIGNATURE = re.compile(r"[A-Za-z0-9_-]{86}\Z")
@@ -314,6 +315,40 @@ def reconcile(node: Path, state: dict, now: float, *,
     return {"active": True, "peers": len(peers), "published": False}
 
 
+def pinned_controller_key(node: Path) -> Path:
+    """The same root-only Ed25519 identity approved for Xray supervisor."""
+    path = node / "controller-access.spki"
+    der = protected_file(path, max_bytes=100)
+    if len(der) != 44 or not der.startswith(KEY_PREFIX):
+        raise GrantError("Controller public Ed25519 key is not installed")
+    return path
+
+
+def watchdog(node: Path, *, sleeper=time.sleep) -> None:
+    """Enforce expirations every 2s; fail closed on corrupt state or failed sync.
+
+    A systemd ExecStopPost additionally tears down awg0 if this Python
+    process crashes, is SIGKILL'ed, or its watchdog unit is stopped.
+    """
+    pinned_controller_key(node)
+    from awg_lifecycle import active_unit, unit_name
+    unit = unit_name(node.name)
+    try:
+        while True:
+            with LedgerLock(node):
+                if not active_unit(unit):
+                    raise GrantError("AWG interface is no longer managed by systemd")
+                path = node / "amneziawg" / "peer-grants.json"
+                table = (validate_state(json.loads(protected_file(path)), node.name)
+                         if path.exists() or path.is_symlink()
+                         else empty_state(node.name))
+                reconcile(node, table, dt.datetime.now(dt.timezone.utc).timestamp())
+            sleeper(2)
+    finally:
+        subprocess.run(["systemctl", "stop", unit], timeout=35,
+                       check=False, capture_output=True)
+
+
 class LedgerLock:
     """Serialize signed updates, expiry sweeps and reconciliations."""
 
@@ -341,9 +376,9 @@ class LedgerLock:
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--node-id", required=True)
-    p.add_argument("--mode", choices=("inspect", "verify", "apply", "reconcile"),
+    p.add_argument("--mode", choices=("inspect", "verify", "apply", "reconcile", "watchdog", "controller-check"),
                    required=True)
-    p.add_argument("--controller-public", type=Path, default=CONTROLLER_KEY)
+    p.add_argument("--controller-public", type=Path)
     p.add_argument("--command", type=Path)
     p.add_argument("--stage-root", type=Path, default=ROOT)
     args = p.parse_args()
@@ -355,6 +390,15 @@ def main() -> int:
         safe_dir(node)
         safe_dir(node / "amneziawg")
         validate_awg(node)
+        if args.mode in ("controller-check", "watchdog"):
+            pinned_controller_key(node)
+        if args.mode == "watchdog":
+            watchdog(node)
+            return 0
+        if args.mode == "controller-check":
+            print(json.dumps({"node_id": node.name, "controller_key_installed": True,
+                              "public_subscriptions_enabled": False}, sort_keys=True))
+            return 0
         ledger = node / "amneziawg" / "peer-grants.json"
         with LedgerLock(node):
             state = (validate_state(json.loads(protected_file(ledger)), node.name)
@@ -365,18 +409,25 @@ def main() -> int:
                     raise GrantError("Signed command required")
                 req = json.loads(protected_file(args.command, max_bytes=4096))
                 validate_command(req, node.name, now)
-                verify_signature(req, args.controller_public)
+                verify_signature(req, args.controller_public or pinned_controller_key(node))
                 planned = transition(state, req, now)
                 if args.mode == "apply":
                     # Do NOT grant remote access if AWG is not already running
                     # under an approved service lifecycle.
                     from awg_lifecycle import active_unit, unit_name
-                    if not active_unit(unit_name(node.name)):
-                        raise GrantError("AWG is inactive; cannot grant access")
+                    if (not active_unit(unit_name(node.name)) or
+                            not active_unit("mnebyvpn-nodekit-awg-watchdog@" + node.name + ".service")):
+                        raise GrantError("AWG and expiry watchdog must both be running")
                     persist_state(ledger, planned)
                     state = planned
             if args.mode in ("reconcile", "apply"):
+                from awg_lifecycle import active_unit
+                if args.mode == "reconcile" and not active_unit(
+                        "mnebyvpn-nodekit-awg-watchdog@" + node.name + ".service"):
+                    raise GrantError("No expiry watchdog; refuse standalone reconciliation")
                 live = reconcile(node, state, now)
+                if args.mode == "apply" and live.get("active") is not True:
+                    raise GrantError("AWG interface stopped during access grant")
             else:
                 live = {"active": False, "published": False}
             report = {
