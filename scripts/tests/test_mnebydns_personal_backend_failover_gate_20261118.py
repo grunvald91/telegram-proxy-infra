@@ -21,8 +21,12 @@ def evidence():
             "ingress_id":"de89-personal-sni",
             "authorization":{
                 "active_smart_dns":"pass", "active_vpn_origin":"pass",
-                "unknown_sni_denied":"pass", "expired_denied":"pass",
-                "revoked_denied":"pass",
+                "active_paid_premium":"pass",
+                "paid_expired_premium_denied":"pass",
+                "paid_quota_exhausted_premium_denied":"pass",
+                "unknown_sni_denied":"pass",
+                "cross_subscriber_sni_denied":"pass",
+                "expired_denied":"pass", "revoked_denied":"pass",
             },
             "routes":copy.deepcopy(ROUTES),
             "timing":{"sample_count":20,"dns_p50_ms":50,"dns_p95_ms":p95},
@@ -71,6 +75,16 @@ class PersonalFailoverTests(unittest.TestCase):
         self.assertFalse(out["personal_backend_process_fallback_candidate"])
         self.assertIn("legacy_anonymous_fallback_not_explicitly_closed",
                       out["missing_or_failed_gates"])
+
+    def test_paid_customer_and_tenant_isolation_must_be_safe(self):
+        for key in ("active_paid_premium", "paid_expired_premium_denied",
+                    "paid_quota_exhausted_premium_denied",
+                    "cross_subscriber_sni_denied"):
+            data=evidence()
+            data["standby"]["authorization"][key]="unverified"
+            out=assess(data)
+            self.assertFalse(out["personal_backend_process_fallback_candidate"])
+            self.assertIn("standby_"+key+"_unverified",out["missing_or_failed_gates"])
 
     def test_revoked_or_expired_identity_must_fail_on_both(self):
         for check in ("revoked_denied","expired_denied","unknown_sni_denied"):
