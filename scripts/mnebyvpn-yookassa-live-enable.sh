@@ -49,10 +49,11 @@ with urllib.request.urlopen(req, timeout=12) as resp:
 acct = str(data.get('account_id', ''))
 if acct != shop:
     raise RuntimeError(f'YooKassa account_id mismatch: got {acct!r}, expected {shop!r}')
-fisc = (data.get('fiscalization') or {}).get('enabled')
+fisc_obj = data.get('fiscalization')
+fisc = fisc_obj.get('enabled') if isinstance(fisc_obj, dict) else data.get('fiscalization_enabled')
 methods = data.get('payment_methods') or []
 print(f'yookassa_account_id={acct} status={data.get("status")} test={data.get("test")} fiscalization={fisc} methods={",".join(methods)}', file=sys.stderr)
-print('no' if fisc is False else 'yes')
+print('yes' if fisc is True else 'no')
 PY
 )"
 [[ "$SEND_RECEIPT" == "yes" || "$SEND_RECEIPT" == "no" ]] || exit 2
@@ -151,14 +152,7 @@ PY
 
 bash "$PUBLISH" "$SHA"
 
-curl -fsS --max-time 7 http://127.0.0.1:8792/api/plans | python3 - <<'PY'
-import json, sys
-a = json.load(sys.stdin)
-assert a['checkoutEnabled'] is True, a
-assert a['paymentProvider'] == 'yookassa', a
-assert len(a['plans']) == 12, len(a['plans'])
-print('local_yookassa_plans=verified_12')
-PY
+curl -fsS --max-time 7 http://127.0.0.1:8792/api/plans | python3 -c 'import json,sys; a=json.load(sys.stdin); assert a["checkoutEnabled"] is True and a["paymentProvider"]=="yookassa" and len(a["plans"])==12; print("local_yookassa_plans=verified_12")'
 
 trap - ERR
 rm -f "$ENV_BACKUP" "$YOOKASSA_BACKUP"

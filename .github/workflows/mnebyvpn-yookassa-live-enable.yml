@@ -115,14 +115,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          curl -fsSL --max-time 12 --retry 2 https://mnebyvpn.site/api/plans | python3 - <<'PY'
-          import json, sys
-          a = json.load(sys.stdin)
-          assert a['checkoutEnabled'] is True, a
-          assert a['paymentProvider'] == 'yookassa', a
-          assert len(a['plans']) == 12, len(a['plans'])
-          print('external_yookassa_catalog=verified')
-          PY
+          curl -fsSL --max-time 12 --retry 2 https://mnebyvpn.site/api/plans | \
+            python3 -c 'import json,sys; a=json.load(sys.stdin); assert a["checkoutEnabled"] is True and a["paymentProvider"]=="yookassa" and len(a["plans"])==12; print("external_yookassa_catalog=verified")'
           code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -X POST -H 'Content-Type: text/plain' https://mnebyvpn.site/webhooks/yookassa || true)"
           echo "external_yookassa_webhook_415_check=$code"
           test "$code" = 415
