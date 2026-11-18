@@ -57,12 +57,20 @@ jobs:
           sshpass -e ssh -T "${opts[@]}" root@188.120.254.223 \
             "set -eu; umask 077; p=/run/mnebyvpn-fi-trust-tool-reviewed.py;
              if [ -e \"\$p\" ] || [ -L \"\$p\" ]; then
-               test -f \"\$p\" && test ! -L \"\$p\";
+               test -f \"\$p\" && test ! -L \"\$p\" ||
+                 { echo fi_public_tool_invalid_temp_type; exit 2; };
+               echo fi_public_tool_existing_temp=true;
              else
                cat > \"\$p\";
+               echo fi_public_tool_streamed_new_temp=true;
              fi;
-             test \"\$(stat -c %u:%a \"\$p\")\" = 0:600;
-             test \"\$(sha256sum \"\$p\" | cut -d \" \" -f 1)\" = \"$expected\";
+             test \"\$(stat -c %u \"\$p\")\" = 0 ||
+               { echo fi_public_tool_temp_owner_mismatch; exit 2; };
+             test \"\$(sha256sum \"\$p\" | cut -d \" \" -f 1)\" = \"$expected\" ||
+               { echo fi_public_tool_temp_digest_mismatch; exit 2; };
+             chmod 600 \"\$p\";
+             test \"\$(stat -c %a \"\$p\")\" = 600 ||
+               { echo fi_public_tool_temp_mode_mismatch; exit 2; };
              echo fi_public_tool_uploaded_sha256_verified=true" < "$source_file"
           sshpass -e ssh -T "${opts[@]}" root@188.120.254.223 \
             "bash -s -- \"$expected\"" < infra/scripts/ru188-install-fi-public-trust-tool.sh
