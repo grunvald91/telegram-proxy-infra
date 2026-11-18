@@ -1,0 +1,63 @@
+name: MNEBYDNS Antigravity repeatability bounded read-only 20261118
+on:
+  push:
+    branches: [diag/mnebydns-google-antigravity-20261118]
+    paths: ['.github/workflows/mnebydns-antigravity-rr-repeatability-20261118.yml']
+permissions: {contents: read}
+jobs:
+  repeatability:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Check both failing hosts repeatedly via public DoT without configuration change
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import os,socket,ssl,struct,time,collections
+          hosts=('aicode.googleapis.com','generativelanguage.googleapis.com')
+          rounds=8
+          types=(1,5,28,64,65)
+          failures=[]
+          stats=collections.Counter()
+          def get(sock,n):
+              x=b''
+              while len(x)<n:
+                  z=sock.recv(n-len(x))
+                  if not z:raise ConnectionError('EOF')
+                  x+=z
+              return x
+          for round_id in range(1,rounds+1):
+              for host in hosts:
+                  for qtype in types:
+                      ident=int.from_bytes(os.urandom(2),'big')
+                      wire=b''.join(bytes([len(a)])+a.encode() for a in host.split('.'))+b'\0'
+                      packet=struct.pack('!HHHHHH',ident,256,1,0,0,0)+wire+struct.pack('!HH',qtype,1)
+                      try:
+                          with socket.create_connection(('89.125.90.101',853),timeout=5) as s:
+                              s.settimeout(5)
+                              with ssl.create_default_context().wrap_socket(s,server_hostname='dns.mnebyvpn.site') as tls:
+                                  tls.sendall(struct.pack('!H',len(packet))+packet)
+                                  n=struct.unpack('!H',get(tls,2))[0]
+                                  body=get(tls,n)
+                          rid,flags,qd,an=struct.unpack_from('!HHHH',body,0)
+                          if rid!=ident or qd!=1 or not flags&0x8000:raise ValueError('invalid_reply')
+                          rcode=flags&15
+                          ok=(rcode==0 and (an==1 if qtype==1 else an==0))
+                          key=(host,qtype,rcode,an)
+                          stats[key]+=1
+                          if not ok:
+                              failures.append((round_id,host,qtype,rcode,an))
+                      except Exception as ex:
+                          failures.append((round_id,host,qtype,type(ex).__name__))
+              print('DNS_REPEAT_ROUND='+str(round_id)+' FAILURES_SO_FAR='+str(len(failures)),flush=True)
+          for k,n in sorted(stats.items()):
+              print('DNS_REPEAT_STAT',*k,'COUNT='+str(n))
+          for e in failures[:30]:
+              print('DNS_REPEAT_BAD',*e)
+          print('DNS_REPEAT_TOTAL='+str(rounds*len(hosts)*len(types)),
+                'BAD='+str(len(failures)),
+                'AUTHENTICATED_PERSONAL_PROFILE=NOT_TESTED',
+                'PRODUCTION_MUTATIONS=NONE')
+          if failures:print('::warning title=Intermittent Antigravity DNS::Inconsistent DNS response sample(s) detected.')
+          PY
