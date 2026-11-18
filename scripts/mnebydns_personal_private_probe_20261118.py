@@ -20,6 +20,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 
 STATE=Path('/etc/mnebydns/personal-dot/monitor-probe-20261118.json')
@@ -198,24 +199,38 @@ def verify_profile(data):
     # RU private service and the real public personal SNI entrance on DE.
     # Identity remains on RU; it is never passed to GitHub Actions or DE.
     private,public,expected_mapped_ipv4=endpoints()
-    for endpoint in (private,public):
+    # Synthetic probes run out of band: never delay a customer's DNS query.
+    # Bound probes and keep measurements separate from actual Android latency.
+    for name,endpoint in (('PRIVATE',private),('PUBLIC',public)):
+        durations=[]
         for domain in ('youtube.com','youtubei.googleapis.com',DOMAIN):
+            start=time.monotonic()
             addresses=dns_query(data['label'],domain,endpoint)
-            if domain!=DOMAIN and expected_mapped_ipv4 not in addresses:
-                raise RuntimeError('MONITOR_DNS_API_ROUTE_DRIFT')
-            if domain==DOMAIN and expected_mapped_ipv4 not in addresses:
-                raise RuntimeError('MONITOR_DNS_SMART_VIDEO_ROUTE_DRIFT')
+            durations.append(round((time.monotonic()-start)*1000))
+            if expected_mapped_ipv4 not in addresses:
+                raise RuntimeError('MONITOR_DNS_SMART_ROUTE_DRIFT')
+        print('MONITOR_'+name+'_MAX_DOT_MS='+str(max(durations)))
 
 def stage():
     if os.geteuid()!=0:raise RuntimeError('ROOT_REQUIRED')
     if STATE.is_file():
         data=read_state()
         verify_profile(data)
+        # Health runs every few minutes; do not write the DB on every run.
+        lease=db("SELECT CASE WHEN expires_at <=clock_timestamp()+interval '7 days' "
+                 "THEN 'DUE' ELSE 'CURRENT' END FROM owner_dns_links WHERE "
+                 "id='"+data['id']+"' AND owner_telegram_id="+str(OWNER)+
+                 " AND request_key='"+data['request_key']+"' AND permanent=false "
+                 "AND video_route='smart_dns' AND revoked_at IS NULL;")
+        if lease=='CURRENT':
+            print('PRIVATE_PERSONAL_MONITOR=HEALTHY_LEASE_CURRENT')
+            return
+        if lease!='DUE':raise RuntimeError('MONITOR_LEASE_STATE_INVALID')
         changed=db("WITH updated AS (UPDATE owner_dns_links "
                    "SET expires_at=clock_timestamp()+interval '30 days' "
                    "WHERE id='"+data['id']+"' AND owner_telegram_id="+str(OWNER)+
                    " AND request_key='"+data['request_key']+"' AND permanent=false "
-                   "AND revoked_at IS NULL RETURNING id) "
+                   "AND video_route='smart_dns' AND revoked_at IS NULL RETURNING id) "
                    "SELECT count(*) FROM updated;")
         if changed!='1':raise RuntimeError('MONITOR_RENEWAL_ROW_COUNT_INVALID')
         if status(data['label'])!=EXPECTED_STATUS:
@@ -245,22 +260,24 @@ def stage():
         raise
 
 def install():
-    stage()
+    # Refuse unit-name conflicts BEFORE creating a DB credential.
     # Restricted to RU monitoring identity and units, no network rule changes.
     if SERVICE.exists() and 'ExecStart=/usr/bin/python3 -B '+str(SELF)+' stage' not in SERVICE.read_text():
         raise RuntimeError('SERVICE_NAME_CONFLICT')
     if TIMER.exists() and 'Unit=mnebydns-personal-private-probe.service' not in TIMER.read_text():
         raise RuntimeError('TIMER_NAME_CONFLICT')
+    stage()
     if not SERVICE.exists():
         SERVICE.write_text(
             '[Unit]\nDescription=MNEBYDNS private authenticated DoT health\n'
             '[Service]\nType=oneshot\n'
             'ExecStart=/usr/bin/python3 -B '+str(SELF)+' stage\n'
-            'TimeoutStartSec=50\nNoNewPrivileges=true\nPrivateTmp=true\n')
+            'TimeoutStartSec=55\nNoNewPrivileges=true\nPrivateTmp=true\n')
     if not TIMER.exists():
         TIMER.write_text(
-            '[Unit]\nDescription=MNEBYDNS private DoT health weekly\n'
-            '[Timer]\nOnBootSec=15min\nOnUnitInactiveSec=7d\n'
+            '[Unit]\nDescription=MNEBYDNS personal Smart DNS availability\n'
+            '[Timer]\nOnBootSec=2min\nOnUnitInactiveSec=5min\n'
+            'AccuracySec=20s\nRandomizedDelaySec=10s\n'
             'Unit=mnebydns-personal-private-probe.service\n'
             '[Install]\nWantedBy=timers.target\n')
     tmpfd,tmpname=tempfile.mkstemp(dir=str(SELF.parent),prefix='.private-probe-')
