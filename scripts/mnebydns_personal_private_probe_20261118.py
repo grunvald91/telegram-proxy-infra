@@ -65,6 +65,40 @@ def recvn(conn,n):
         out.extend(piece)
     return bytes(out)
 
+def _skip_name(wire,position):
+    # DNS label compression pointers are followed by stepping over two bytes.
+    for _ in range(128):
+        if position>=len(wire):raise RuntimeError('DOT_BAD_DNS_NAME')
+        size=wire[position]
+        if size&0xc0==0xc0:
+            if position+1>=len(wire):raise RuntimeError('DOT_BAD_DNS_POINTER')
+            return position+2
+        if size>63 or position+size+1>len(wire):
+            raise RuntimeError('DOT_BAD_DNS_LABEL')
+        position+=size+1
+        if size==0:return position
+    raise RuntimeError('DOT_BAD_DNS_NAME_LOOP')
+
+def _answer_ipv4(wire):
+    if len(wire)<12:raise RuntimeError('DOT_SHORT_DNS_REPLY')
+    question_count,answer_count=struct.unpack_from('!HH',wire,4)
+    if question_count!=1 or answer_count>128:
+        raise RuntimeError('DOT_DNS_COUNTS_INVALID')
+    pos=_skip_name(wire,12)
+    if pos+4>len(wire):raise RuntimeError('DOT_DNS_QUESTION_TRUNCATED')
+    pos+=4
+    addresses=[]
+    for _ in range(answer_count):
+        pos=_skip_name(wire,pos)
+        if pos+10>len(wire):raise RuntimeError('DOT_DNS_RR_TRUNCATED')
+        rtype,rclass,ttl,rdlen=struct.unpack_from('!HHIH',wire,pos)
+        pos+=10
+        if pos+rdlen>len(wire):raise RuntimeError('DOT_DNS_RDATA_TRUNCATED')
+        if rtype==1 and rclass==1 and rdlen==4:
+            addresses.append(socket.inet_ntoa(wire[pos:pos+4]))
+        pos+=rdlen
+    return addresses
+
 def dns_query(label,domain,endpoint):
     name=label+'.dns.mnebyvpn.site'
     ident=secrets.randbelow(65535)+1
@@ -75,14 +109,14 @@ def dns_query(label,domain,endpoint):
         with ssl.create_default_context().wrap_socket(conn,server_hostname=name) as tls:
             tls.sendall(struct.pack('!H',len(wire))+wire)
             n=struct.unpack('!H',recvn(tls,2))[0]
-            if not 12<=n<=8192:
-                raise RuntimeError('DOT_INVALID_FRAME')
+            if not 12<=n<=8192:raise RuntimeError('DOT_INVALID_FRAME')
             answer=recvn(tls,n)
     if (len(answer)<12 or int.from_bytes(answer[:2],'big')!=ident
             or not answer[2]&0x80 or answer[3]&15):
         raise RuntimeError('DOT_INVALID_ANSWER')
-    if struct.unpack_from('!H',answer,6)[0]<1:
-        raise RuntimeError('DOT_NO_ANSWER')
+    values=_answer_ipv4(answer)
+    if not values:raise RuntimeError('DOT_NO_IPV4_ANSWER')
+    return values
 
 def delete_own_row(data):
     db("DELETE FROM owner_dns_links WHERE id='"+data['id']+
@@ -96,17 +130,24 @@ def verify_profile(data):
     # Identity remains on RU; it is never passed to GitHub Actions or DE.
     for endpoint in (BACKEND,PUBLIC):
         for domain in ('youtube.com','youtubei.googleapis.com',DOMAIN):
-            dns_query(data['label'],domain,endpoint)
+            addresses=dns_query(data['label'],domain,endpoint)
+            if domain!=DOMAIN and '89.125.90.101' not in addresses:
+                raise RuntimeError('MONITOR_DNS_API_ROUTE_DRIFT')
+            if domain==DOMAIN and '89.125.90.101' in addresses:
+                raise RuntimeError('MONITOR_DNS_VPN_ORIGIN_ROUTE_DRIFT')
 
 def stage():
     if os.geteuid()!=0:raise RuntimeError('ROOT_REQUIRED')
     if STATE.is_file():
         data=read_state()
         verify_profile(data)
-        db("UPDATE owner_dns_links SET expires_at=clock_timestamp()+interval '30 days' "
-           "WHERE id='"+data['id']+"' AND owner_telegram_id="+str(OWNER)+
-           " AND request_key='"+data['request_key']+"' AND permanent=false "
-           "AND revoked_at IS NULL;")
+        changed=db("WITH updated AS (UPDATE owner_dns_links "
+                   "SET expires_at=clock_timestamp()+interval '30 days' "
+                   "WHERE id='"+data['id']+"' AND owner_telegram_id="+str(OWNER)+
+                   " AND request_key='"+data['request_key']+"' AND permanent=false "
+                   "AND revoked_at IS NULL RETURNING id) "
+                   "SELECT count(*) FROM updated;")
+        if changed!='1':raise RuntimeError('MONITOR_RENEWAL_ROW_COUNT_INVALID')
         if status(data['label'])!='ALLOWED':
             raise RuntimeError('MONITOR_RENEWAL_NOT_CONFIRMED')
         print('PRIVATE_PERSONAL_MONITOR=RENEWED_AND_VERIFIED')
