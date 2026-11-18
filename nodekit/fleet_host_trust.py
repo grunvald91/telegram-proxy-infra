@@ -79,12 +79,22 @@ def check_controller() -> None:
     if os.geteuid() != 0:
         raise TrustError("Controller root required")
     # Refuse accidental execution on FI, DE89, Actions, or an agent laptop.
-    addresses = subprocess.run(
-        ["/usr/sbin/ip", "-o", "-4", "addr", "show", "scope", "global"],
-        capture_output=True, text=True, timeout=8, check=True,
-    ).stdout
-    if not any(re.search(r"\binet " + re.escape(CONTROLLER) + r"/\d{1,2}\b", line)
-               for line in addresses.splitlines()):
+    # Use the same kernel IPv4 interface check as the reviewed RU188 installer;
+    # do not assume the optional iproute2 binary exists on the host.
+    assigned = False
+    for _, name in socket.if_nameindex():
+        if len(name.encode()) > 15:
+            continue
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as channel:
+            try:
+                data = fcntl.ioctl(channel.fileno(), 0x8915,
+                                   struct.pack("256s", name.encode()))
+                if socket.inet_ntoa(data[20:24]) == CONTROLLER:
+                    assigned = True
+                    break
+            except OSError:
+                pass
+    if not assigned:
         raise TrustError("Existing RU188 assigned IPv4 required")
     _private_directory(Path("/root"))
     _private_directory(ROOT.parent)
