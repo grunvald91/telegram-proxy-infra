@@ -43,19 +43,20 @@ def recv_exact(sock, length):
 def read_answer(sock, txid, question):
     length = struct.unpack("!H", recv_exact(sock, 2))[0]
     if length < 12 + len(question) or length > MAX_FRAME:
-        raise ValueError("invalid DNS/TLS length")
+        raise ValueError("dns_frame_length")
     wire = recv_exact(sock, length)
     answer_id, flags, qd, _, _, _ = struct.unpack_from("!HHHHHH", wire)
     if answer_id != txid or flags & 0x8000 == 0 or flags & 0x7800 or qd != 1:
-        raise ValueError("invalid DNS/TLS response")
+        raise ValueError("dns_invalid_header")
     if wire[12:12 + len(question)] != question:
-        raise ValueError("DNS/TLS question mismatch")
+        raise ValueError("dns_question_mismatch")
     return flags & 0x0F
 
 
 def probe():
     start = time.monotonic()
     phase = "tcp"
+    synthetic_host = None
     try:
         with socket.create_connection((EDGE, 853), timeout=3.5) as plain:
             plain.settimeout(3.5)
@@ -65,18 +66,30 @@ def probe():
                 phase = "dns"
                 rcode_by_host = {}
                 for host in HOSTS:
+                    synthetic_host = host
                     txid = int.from_bytes(os.urandom(2), "big")
                     query, question = request_for(host, txid)
                     tls.sendall(struct.pack("!H", len(query)) + query)
                     rcode = read_answer(tls, txid, question)
                     if rcode != 0:
-                        raise ValueError("nonzero DNS response code")
+                        raise ValueError("dns_rcode_" + str(rcode))
                     rcode_by_host[host] = rcode
         return {"ok": True, "phase": "done", "query_count": len(rcode_by_host),
                 "latency_ms": round((time.monotonic() - start) * 1000, 1)}
     except (OSError, ssl.SSLError, EOFError, ValueError, TimeoutError) as ex:
-        return {"ok": False, "phase": phase, "error_class": type(ex).__name__,
-                "latency_ms": round((time.monotonic() - start) * 1000, 1)}
+        result = {"ok": False, "phase": phase, "error_class": type(ex).__name__,
+                  "latency_ms": round((time.monotonic() - start) * 1000, 1)}
+        if phase == "dns":
+            # Only these two hard-coded synthetic names are ever reported.
+            result["synthetic_host"] = synthetic_host if synthetic_host in HOSTS else "unknown"
+            if isinstance(ex, ValueError):
+                reason = str(ex)
+                allowed = {"dns_frame_length", "dns_invalid_header", "dns_question_mismatch"}
+                if reason.startswith("dns_rcode_") and reason.removeprefix("dns_rcode_").isdigit():
+                    result["error_reason"] = reason
+                else:
+                    result["error_reason"] = reason if reason in allowed else "dns_validation_other"
+        return result
 
 
 def self_test():
