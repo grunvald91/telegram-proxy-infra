@@ -160,7 +160,9 @@ jobs:
               print('fi_manifest_registration_enabled='+str(meta.get('registration_enabled')).lower())
               print('fi_manifest_activation_enabled='+str(meta.get('activation_enabled')).lower())
           except Exception:
-              print('fi_manifest=unavailable')
+              raise SystemExit('FI Nodekit manifest unavailable')
+          if meta.get('node_id')!='fi-test-01' or meta.get('advertise_host')!='fi.mnebyvpn.site':
+              raise SystemExit('FI Nodekit manifest identity mismatch')
           p=node/'identity/node-public.spki'
           try:
               raw=p.read_bytes()
@@ -170,8 +172,8 @@ jobs:
                   if actual_sha != 'c3689b687e8888d15e3ece8e45cf7d01672b9dadb77b1963a7871ffd8e967ed9':
                       raise SystemExit('Pinned FI Nodekit identity mismatch')
                   print('fi_node_spki_public_base64url='+base64.urlsafe_b64encode(raw).rstrip(b'=').decode())
-              else:print('fi_node_spki=invalid')
-          except OSError:print('fi_node_spki=unavailable')
+              else:raise SystemExit('FI node identity public key invalid')
+          except OSError:raise SystemExit('FI node identity public key unavailable')
           p=pathlib.Path('/etc/ssh/ssh_host_ed25519_key.pub')
           try:
               public=p.read_text().split()
