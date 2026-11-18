@@ -267,38 +267,75 @@ def stage():
         raise
 
 def install():
-    # Refuse unit-name conflicts BEFORE creating a DB credential.
-    # Restricted to RU monitoring identity and units, no network rule changes.
+    if os.geteuid()!=0:raise RuntimeError('ROOT_REQUIRED')
+    # Refuse collisions before any database or filesystem mutation.
     if SERVICE.exists() and 'ExecStart=/usr/bin/python3 -B '+str(SELF)+' stage' not in SERVICE.read_text():
         raise RuntimeError('SERVICE_NAME_CONFLICT')
     if TIMER.exists() and 'Unit=mnebydns-personal-private-probe.service' not in TIMER.read_text():
         raise RuntimeError('TIMER_NAME_CONFLICT')
+    if SELF.exists() and 'Service-only personal DoT proof' not in SELF.read_text():
+        raise RuntimeError('EXECUTABLE_NAME_CONFLICT')
+    old_self=SELF.read_bytes() if SELF.exists() else None
+    old_mode=SELF.stat().st_mode & 0o777 if SELF.exists() else None
+    old_service=SERVICE.read_bytes() if SERVICE.exists() else None
+    old_timer=TIMER.read_bytes() if TIMER.exists() else None
+    had_state=STATE.exists()
     stage()
-    if not SERVICE.exists():
-        SERVICE.write_text(
-            '[Unit]\nDescription=MNEBYDNS private authenticated DoT health\n'
-            '[Service]\nType=oneshot\n'
-            'ExecStart=/usr/bin/python3 -B '+str(SELF)+' stage\n'
-            'TimeoutStartSec=55\nNoNewPrivileges=true\nPrivateTmp=true\n')
-    if not TIMER.exists():
-        TIMER.write_text(
-            '[Unit]\nDescription=MNEBYDNS personal Smart DNS availability\n'
-            '[Timer]\nOnBootSec=2min\nOnUnitInactiveSec=5min\n'
-            'AccuracySec=20s\nRandomizedDelaySec=10s\n'
-            'Unit=mnebydns-personal-private-probe.service\n'
-            '[Install]\nWantedBy=timers.target\n')
-    tmpfd,tmpname=tempfile.mkstemp(dir=str(SELF.parent),prefix='.private-probe-')
     try:
-        with os.fdopen(tmpfd,'wb') as dest,open(__file__,'rb') as source:
-            shutil.copyfileobj(source,dest)
-            dest.flush();os.fsync(dest.fileno())
-        os.chmod(tmpname,0o750)
-        os.replace(tmpname,SELF)
-    finally:
-        if os.path.exists(tmpname):os.unlink(tmpname)
-    subprocess.run(['systemctl','daemon-reload'],check=True,timeout=10,capture_output=True)
-    subprocess.run(['systemctl','enable','--now',TIMER.name],
-                   check=True,timeout=15,capture_output=True)
+        SERVICE.write_text(
+            '[Unit]\\nDescription=MNEBYDNS private authenticated DoT health\\n'
+            '[Service]\\nType=oneshot\\n'
+            'ExecStart=/usr/bin/python3 -B '+str(SELF)+' stage\\n'
+            'TimeoutStartSec=55\\nNoNewPrivileges=true\\nPrivateTmp=true\\n')
+        TIMER.write_text(
+            '[Unit]\\nDescription=MNEBYDNS personal Smart DNS availability\\n'
+            '[Timer]\\nOnBootSec=2min\\nOnUnitInactiveSec=5min\\n'
+            'AccuracySec=20s\\nRandomizedDelaySec=10s\\n'
+            'Unit=mnebydns-personal-private-probe.service\\n'
+            '[Install]\\nWantedBy=timers.target\\n')
+        tmpfd,tmpname=tempfile.mkstemp(dir=str(SELF.parent),prefix='.private-probe-')
+        try:
+            with os.fdopen(tmpfd,'wb') as dest,open(__file__,'rb') as source:
+                shutil.copyfileobj(source,dest)
+                dest.flush();os.fsync(dest.fileno())
+            os.chmod(tmpname,0o750)
+            os.replace(tmpname,SELF)
+        finally:
+            if os.path.exists(tmpname):os.unlink(tmpname)
+        subprocess.run(['systemctl','daemon-reload'],check=True,timeout=10,capture_output=True)
+        subprocess.run(['systemctl','enable','--now',TIMER.name],
+                       check=True,timeout=15,capture_output=True)
+        subprocess.run(['systemctl','is-active','--quiet',TIMER.name],
+                       check=True,timeout=10,capture_output=True)
+    except BaseException:
+        # A failed install must not leave a newly minted bearer unattended.
+        subprocess.run(['systemctl','disable','--now',TIMER.name],
+                       check=False,timeout=15,capture_output=True)
+        for path,previous in ((SERVICE,old_service),(TIMER,old_timer)):
+            if previous is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_bytes(previous)
+        if old_self is None:
+            SELF.unlink(missing_ok=True)
+        else:
+            fd,tmp=tempfile.mkstemp(dir=str(SELF.parent),prefix='.private-restore-')
+            try:
+                with os.fdopen(fd,'wb') as out:
+                    out.write(old_self)
+                os.chmod(tmp,old_mode if old_mode is not None else 0o750)
+                os.replace(tmp,SELF)
+            finally:
+                if os.path.exists(tmp):os.unlink(tmp)
+        subprocess.run(['systemctl','daemon-reload'],check=False,timeout=10,capture_output=True)
+        if old_timer is not None:
+            subprocess.run(['systemctl','enable','--now',TIMER.name],
+                           check=False,timeout=15,capture_output=True)
+        if not had_state and STATE.exists():
+            row=read_state()
+            delete_own_row(row)
+            STATE.unlink()
+        raise
     print('PRIVATE_PERSONAL_MONITOR_TIMER=INSTALLED')
 
 def report():
