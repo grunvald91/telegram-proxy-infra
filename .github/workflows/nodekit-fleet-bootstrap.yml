@@ -1,0 +1,152 @@
+name: MNEBYVPN fleet bootstrap (inventory-approved, subscribers off)
+on:
+  workflow_dispatch:
+    inputs:
+      country:
+        description: 'Two-letter country (committed nodekit/fleet/xx.json)'
+        required: true
+        type: string
+      phase:
+        description: 'Idempotent bootstrap, certificate or isolated canary'
+        required: true
+        default: bootstrap
+        type: choice
+        options: [bootstrap, certificate, canary, inspect]
+  repository_dispatch:
+    types: [nodekit-bootstrap-approved]
+permissions:
+  contents: read
+concurrency:
+  group: mnebyvpn-fleet-${{ inputs.country || github.event.client_payload.country }}
+  cancel-in-progress: false
+jobs:
+  bootstrap:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    environment: node-${{ inputs.country || github.event.client_payload.country }}
+    env:
+      NODE_COUNTRY: ${{ inputs.country || github.event.client_payload.country }}
+      NODE_PHASE: ${{ github.event_name == 'repository_dispatch' && 'bootstrap' || inputs.phase }}
+      LEGACY_FI_SSH_USER: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_USER }}
+      LEGACY_FI_SSH_PASSWORD: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_PASSWORD }}
+      NODEKIT_SSH_USER: ${{ secrets.NODEKIT_SSH_USER }}
+      NODEKIT_SSH_PASSWORD: ${{ secrets.NODEKIT_SSH_PASSWORD }}
+      NODEKIT_SSH_KNOWN_HOSTS: ${{ secrets.NODEKIT_SSH_KNOWN_HOSTS }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify immutable public inventory; generate private node-spec
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          [[ "$NODE_COUNTRY" =~ ^[a-z]{2}$ ]] || exit 2
+          [[ "$NODE_PHASE" =~ ^(bootstrap|certificate|canary|inspect)$ ]] || exit 2
+          python3 nodekit/fleet_plan.py --country "$NODE_COUNTRY" --write-spec "$RUNNER_TEMP/nodekit-spec.json" > "$RUNNER_TEMP/nodekit-reviewed.json"
+          python3 - <<'PY'
+          import json,os,pathlib
+          entry=json.loads((pathlib.Path(os.environ['RUNNER_TEMP'])/'nodekit-reviewed.json').read_text())
+          with open(os.environ['GITHUB_ENV'],'a') as env:
+              for target,key in [('TARGET_IP','ssh_ipv4'),('NODE_ID','node_id'),('NODE_HOST','advertise_host')]:
+                  print(f'{target}={entry[key]}',file=env)
+              print('EXPECTED_IDENTITY_SHA='+str(entry['expected_identity_public_sha256'] or ''),file=env)
+          PY
+      - name: Setup pinned compiler for official AWG 3.1 sources
+        if: env.NODE_PHASE == 'bootstrap'
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.25.4'
+          check-latest: false
+      - name: Build pinned AWG 3.1 artifacts for exact native CPU
+        if: env.NODE_PHASE == 'bootstrap'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p "$RUNNER_TEMP/awg-repos" "$RUNNER_TEMP/awg-bin"
+          cd "$RUNNER_TEMP/awg-repos"
+          git clone -q --no-checkout https://github.com/amnezia-vpn/amneziawg-go.git userspace
+          git -C userspace checkout -q --detach 08fe3d33bbb116be09a6183d02609311b8b0c9e8
+          [[ "$(git -C userspace rev-parse HEAD)" == '08fe3d33bbb116be09a6183d02609311b8b0c9e8' ]]
+          (cd userspace && GOTOOLCHAIN=local go build -trimpath -o "$RUNNER_TEMP/awg-bin/amneziawg-go" .)
+          git clone -q --no-checkout https://github.com/amnezia-vpn/amneziawg-tools.git tools
+          git -C tools checkout -q --detach ee0f0a9aa34ff0a0da4b3433b9512781cfe02843
+          [[ "$(git -C tools rev-parse HEAD)" == 'ee0f0a9aa34ff0a0da4b3433b9512781cfe02843' ]]
+          make -s -C tools/src
+          install -m 0755 tools/src/wg "$RUNNER_TEMP/awg-bin/awg"
+          install -m 0755 tools/src/wg-quick/linux.bash "$RUNNER_TEMP/awg-bin/awg-quick"
+          chmod 0755 "$RUNNER_TEMP/awg-bin/amneziawg-go"
+          for program in awg awg-quick amneziawg-go; do
+            sum=$(sha256sum "$RUNNER_TEMP/awg-bin/$program" | cut -d' ' -f1)
+            case "$program" in
+              awg) echo "AWG_SHA=$sum" >> "$GITHUB_ENV" ;;
+              awg-quick) echo "AWG_QUICK_SHA=$sum" >> "$GITHUB_ENV" ;;
+              amneziawg-go) echo "AWG_GO_SHA=$sum" >> "$GITHUB_ENV" ;;
+            esac
+          done
+      - name: Bootstrap or canary only inventory-approved VPS
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends sshpass >/dev/null
+          target="$TARGET_IP"
+          known="$RUNNER_TEMP/nodekit_known_hosts"
+          : > "$known"; chmod 0600 "$known"
+          strict=yes
+          if [[ "$NODE_COUNTRY" == fi && "$TARGET_IP" == '217.11.167.91' ]]; then
+            # Legacy password-only testing exception; not allowed for NEW countries.
+            export SSHPASS="$LEGACY_FI_SSH_PASSWORD"
+            user="$LEGACY_FI_SSH_USER"
+            strict=accept-new
+          else
+            export SSHPASS="$NODEKIT_SSH_PASSWORD"
+            user="$NODEKIT_SSH_USER"
+            [[ -n "$NODEKIT_SSH_KNOWN_HOSTS" ]] || { echo '::error::Pin SSH host key per environment'; exit 2; }
+            printf '%s\n' "$NODEKIT_SSH_KNOWN_HOSTS" > "$known"
+            [[ -s "$known" ]] || exit 2
+          fi
+          [[ "$user" == root && -n "$SSHPASS" ]] || exit 2
+          opts=(-o PubkeyAuthentication=no -o PreferredAuthentications=password,keyboard-interactive
+            -o NumberOfPasswordPrompts=1 -o StrictHostKeyChecking="$strict"
+            -o UserKnownHostsFile="$known" -o HostKeyAlias="$TARGET_IP"
+            -o ConnectTimeout=12 -o ServerAliveInterval=20 -o ServerAliveCountMax=12)
+          remote_ssh() { sshpass -e ssh "${opts[@]}" "${user}@${target}" "$@"; }
+          remote_scp() { sshpass -e scp "${opts[@]}" "$@"; }
+          remote_dir=$(remote_ssh 'umask 077; mktemp -d /tmp/mnebyvpn-nodekit.XXXXXXXX')
+          [[ "$remote_dir" =~ ^/tmp/mnebyvpn-nodekit\.[A-Za-z0-9]{8}$ ]] || exit 2
+          cleanup() { remote_ssh "rm -rf -- '$remote_dir'" >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          scripts=(nodekit/nodekit.py nodekit/identity.py nodekit/install_components.py
+            nodekit/vpn_stage.py nodekit/provision_node.py nodekit/dns_proxy_stage.py
+            nodekit/amneziawg_artifacts.py nodekit/amneziawg_stage.py
+            nodekit/awg_lifecycle.py nodekit/tls_stage.py nodekit/dot_local_canary.py)
+          remote_scp "${scripts[@]}" "$RUNNER_TEMP/nodekit-spec.json" "${user}@${target}:$remote_dir/"
+          # Filenames are fixed and node_id/ip/host all come from reviewed inventory.
+          if [[ "$NODE_PHASE" == bootstrap ]]; then
+            remote_scp "$RUNNER_TEMP/awg-bin/awg" "$RUNNER_TEMP/awg-bin/awg-quick" "$RUNNER_TEMP/awg-bin/amneziawg-go" "${user}@${target}:$remote_dir/"
+            remote_ssh "python3 '$remote_dir/provision_node.py' --source-dir '$remote_dir' --spec '$remote_dir/nodekit-spec.json'"
+            if [[ -n "$EXPECTED_IDENTITY_SHA" ]]; then
+              remote_ssh "python3 -c 'import hashlib,pathlib; from sys import exit; p=pathlib.Path(\"/var/lib/mnebyvpn-nodekit/$NODE_ID/identity/node-public.spki\"); exit(0 if hashlib.sha256(p.read_bytes()).hexdigest()==\"$EXPECTED_IDENTITY_SHA\" else 2)'"
+            fi
+            remote_ssh "python3 '$remote_dir/amneziawg_artifacts.py' --node-id '$NODE_ID' --bundle '$remote_dir' --awg-sha256 '$AWG_SHA' --awg-quick-sha256 '$AWG_QUICK_SHA' --amneziawg-go-sha256 '$AWG_GO_SHA'"
+            remote_ssh "python3 '$remote_dir/amneziawg_stage.py' --node-id '$NODE_ID' --awg-sha256 '$AWG_SHA' --awg-quick-sha256 '$AWG_QUICK_SHA' --amneziawg-go-sha256 '$AWG_GO_SHA'"
+            remote_ssh "python3 '$remote_dir/awg_lifecycle.py' --node-id '$NODE_ID' --mode install"
+            remote_ssh "python3 '$remote_dir/dns_proxy_stage.py' --node-id '$NODE_ID' --external-ipv4 '$TARGET_IP' --dns-host '$NODE_HOST'"
+          elif [[ "$NODE_PHASE" == certificate ]]; then
+            remote_ssh 'command -v certbot >/dev/null || (export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l; apt-get update -qq && apt-get install -y -qq --no-install-recommends certbot >/dev/null)'
+            remote_ssh "python3 '$remote_dir/tls_stage.py' --node-id '$NODE_ID' --host '$NODE_HOST' --expected-ipv4 '$TARGET_IP' --mode issue"
+            remote_ssh 'systemctl enable --now certbot.timer'
+          elif [[ "$NODE_PHASE" == canary ]]; then
+            remote_ssh "python3 '$remote_dir/awg_lifecycle.py' --node-id '$NODE_ID' --mode canary"
+            remote_ssh "python3 '$remote_dir/dot_local_canary.py' --node-id '$NODE_ID' --host '$NODE_HOST' --expected-ipv4 '$TARGET_IP'"
+          elif [[ "$NODE_PHASE" == inspect ]]; then
+            remote_ssh "python3 '$remote_dir/awg_lifecycle.py' --node-id '$NODE_ID' --mode inspect"
+            remote_ssh "python3 '$remote_dir/tls_stage.py' --node-id '$NODE_ID' --host '$NODE_HOST' --expected-ipv4 '$TARGET_IP' --mode verify"
+          else exit 2; fi
+          echo 'FLEET_STAGE_COMPLETE=true'
+          echo 'SUBSCRIBER_PUBLICATION=false'
+          echo 'FIREWALL_MODIFIED=false'
+          echo 'PAID_ENTITLEMENTS_PROVISIONED=false'
