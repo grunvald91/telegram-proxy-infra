@@ -65,7 +65,8 @@ class TestServiceReadiness(unittest.TestCase):
                 "personal_dns_enabled": False, "published": False,
                 "certificate_sha256": DIGEST,
             }
-            with patch.object(audit, "safe_manifest", return_value=meta), \
+            with patch.object(audit, "safe_dir"), \
+                 patch.object(audit, "safe_manifest", return_value=meta), \
                  patch.object(audit, "protected_file", return_value=DATA):
                 out = audit.tls_stage(node, audit.HOST_REVIEWED)
                 self.assertTrue(out["staged"])
