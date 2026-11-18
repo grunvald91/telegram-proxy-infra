@@ -75,7 +75,7 @@ psql_exec() {
 }
 
 for mig in 0125_website_personal_dns_apple.sql 0132_yookassa_and_3in1_catalog.sql 0134_stars_ratio_and_3in1_bot.sql; do
-  has_mig="$(psql_exec -c "SELECT count(*) FROM schema_migrations WHERE version = '$mig';")"
+  has_mig="$(psql_exec -c "SELECT count(*) FROM deployment_schema_migrations WHERE file_name = '$mig';")"
   test "${has_mig:-0}" -ge 1 || { echo "missing_migration=$mig"; exit 2; }
 done
 
