@@ -137,8 +137,12 @@ def discover(ip: str) -> str:
 
 
 def ensure_pin(country: str, node: str, ip: str, *, root: Path = ROOT,
-               probe=discover) -> tuple[str, bool]:
+               probe=discover, expected_key_b64: str | None = None) -> tuple[str, bool]:
     check_identity(country, node, ip)
+    # An approved/provider-furnished public key is stronger than TOFU.
+    # Validate and compare it BEFORE committing anything to disk.
+    expected = (canonical_key(f"{ip} ssh-ed25519 {expected_key_b64}", ip)
+                if expected_key_b64 is not None else None)
     _create_store(root)
     # Serialize the entire check/create operation across concurrent runners.
     lock = root / ".fleet-host-trust.lock"
@@ -150,8 +154,13 @@ def ensure_pin(country: str, node: str, ip: str, *, root: Path = ROOT,
         fcntl.flock(lock_fd, fcntl.LOCK_EX)
         dest = root / f"{country}-{node}.known_hosts"
         if dest.exists() or dest.is_symlink():
-            return _read_pin(dest, ip), False
+            stored = _read_pin(dest, ip)
+            if expected is not None and stored != expected:
+                raise TrustError("Existing host pin differs from provider/owner key")
+            return stored, False
         value = canonical_key(probe(ip), ip)
+        if expected is not None and value != expected:
+            raise TrustError("First contact differs from approved public host key")
         fd = os.open(dest, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
         try:
             with os.fdopen(fd, "wb") as output:
@@ -171,10 +180,12 @@ def main() -> int:
     parser.add_argument("--country", required=True)
     parser.add_argument("--node-id", required=True)
     parser.add_argument("--ip", required=True)
+    parser.add_argument("--expected-key-b64")
     args = parser.parse_args()
     try:
         check_controller()
-        value, created = ensure_pin(args.country, args.node_id, args.ip)
+        value, created = ensure_pin(args.country, args.node_id, args.ip,
+                                    expected_key_b64=args.expected_key_b64 or None)
         # stdout is a single known_hosts line; no private material.
         sys.stdout.write(value)
         print("fleet_ssh_first_contact=" + ("pinned" if created else "existing"),

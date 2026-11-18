@@ -28,6 +28,7 @@ jobs:
     timeout-minutes: 3
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
+      has_nodes: ${{ steps.plan.outputs.has_nodes }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -80,11 +81,12 @@ jobs:
           value=json.dumps({"include":planned},separators=(",",":"))
           with open(os.environ["GITHUB_OUTPUT"],"a") as output:
               print("matrix="+value,file=output)
+              print("has_nodes="+("true" if planned else "false"),file=output)
           print("fleet_discovered_nodes="+str(len(planned)))
           PY
   bootstrap:
     needs: discover
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && needs.discover.outputs.has_nodes == 'true'
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
@@ -167,6 +169,9 @@ jobs:
           # First contact is TOFU (not independent attestation); every later run is strictly pinned.
           [[ -n "$RU188_SSH_PASSWORD" ]] || { echo "::error::Missing RU188 transport secret"; exit 2; }
           grep -q '^188\.120\.254\.223 ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts
+          # Reject any conflicting approved key BEFORE asking RU188 to persist TOFU.
+          expected_ssh_key="$(PREAPPROVED_SSH_KNOWN_HOSTS="$EXISTING_APPROVED_KNOWN_HOSTS" \
+            python3 nodekit/approved_ssh_key.py --ip "$TARGET_IP")"
           export SSHPASS="$RU188_SSH_PASSWORD"
           ru_opts=(-T -F /dev/null -o ConnectTimeout=12 -o BatchMode=no
             -o PasswordAuthentication=yes -o PubkeyAuthentication=no
@@ -177,24 +182,10 @@ jobs:
             -o ForwardAgent=no -o ClearAllForwardings=yes
             -o ControlMaster=no -o ProxyCommand=none -o LogLevel=ERROR)
           sshpass -e ssh "${ru_opts[@]}" root@188.120.254.223 \
-            "python3 - --country '$NODE_COUNTRY' --node-id '$NODE_ID' --ip '$TARGET_IP'" \
+            "python3 - --country '$NODE_COUNTRY' --node-id '$NODE_ID' --ip '$TARGET_IP' --expected-key-b64 '$expected_ssh_key'" \
             < nodekit/fleet_host_trust.py > "$known"
           [[ "$(wc -l < "$known")" == 1 ]] || exit 2
           grep -Eq "^$TARGET_IP ssh-ed25519 [A-Za-z0-9+/]+=*$" "$known" || exit 2
-          # Honor a stronger, pre-existing provider/owner pin when available.
-          # No manual pin is required for brand-new nodes.
-          if [[ -n "$EXISTING_APPROVED_KNOWN_HOSTS" ]]; then
-            python3 - "$known" <<'PY'
-          import os,sys
-          stored=open(sys.argv[1],encoding="ascii").read().strip().split()
-          expected=[x.split() for x in os.environ["EXISTING_APPROVED_KNOWN_HOSTS"].splitlines()
-                    if x.strip() and not x.lstrip().startswith("#")]
-          if (len(stored)!=3 or len(expected)!=1 or len(expected[0])<3 or
-              stored[0] not in expected[0][0].split(",") or
-              stored[1:]!=expected[0][1:3]):
-              raise SystemExit("Existing approved SSH host key conflicts with RU188 pin")
-          PY
-          fi
           if [[ -n "$NODEKIT_SSH_PASSWORD" && "$NODEKIT_SSH_USER" == root ]]; then
             export SSHPASS="$NODEKIT_SSH_PASSWORD"
             user="$NODEKIT_SSH_USER"
@@ -216,6 +207,17 @@ jobs:
             -o ConnectTimeout=12 -o ServerAliveInterval=20 -o ServerAliveCountMax=12)
           remote_ssh() { sshpass -e ssh "${opts[@]}" "${user}@${target}" "$@"; }
           remote_scp() { sshpass -e scp "${opts[@]}" "$@"; }
+          if [[ "$NODE_PHASE" == auto || "$NODE_PHASE" == bootstrap ]]; then
+            # AWG tools are built for the runner CPU. A different VPS architecture
+            # must not receive an unusable x86_64 binary.
+            [[ "$(uname -m)" == x86_64 ]] || {
+              echo "::error::Unsupported runner architecture for AWG"; exit 2;
+            }
+            remote_arch="$(remote_ssh 'uname -m')"
+            [[ "$remote_arch" == x86_64 ]] || {
+              echo "::error::VPS architecture differs from reviewed AWG build"; exit 2;
+            }
+          fi
           remote_dir=$(remote_ssh 'umask 077; mktemp -d /tmp/mnebyvpn-nodekit.XXXXXXXX')
           [[ "$remote_dir" =~ ^/tmp/mnebyvpn-nodekit\.[A-Za-z0-9]{8}$ ]] || exit 2
           cleanup() { remote_ssh "rm -rf -- '$remote_dir'" >/dev/null 2>&1 || true; }

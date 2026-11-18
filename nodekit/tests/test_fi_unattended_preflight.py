@@ -19,6 +19,10 @@ class FiAutomaticTrustContract(unittest.TestCase):
         self.assertIn("FI node identity public key unavailable", text)
         self.assertIn("Pinned FI Nodekit identity mismatch", text)
         self.assertIn("FI Nodekit manifest identity mismatch", text)
+        self.assertIn("FI testing node was unexpectedly activated", text)
+        self.assertIn("Required FI identity file unsafe", text)
+        self.assertIn("Existing FI controller public key is unsafe", text)
+        self.assertIn("FI Nodekit identity directory unsafe", text)
 
     def test_no_production_service_mutation_or_secret_export(self):
         text = WORKFLOW.read_text(encoding="utf-8")
