@@ -36,7 +36,7 @@ Workflow `MNEBYVPN fleet bootstrap (inventory-approved, subscribers off)`: `.git
 
 ## Полностью автоматическая подготовительная цепочка
 
-`repository_dispatch` и `workflow_dispatch` теперь используют `phase=auto` как штатный режим. Это **один запуск**: inventory → сохранение первого SSH ключа на RU188 → bootstrap Nodekit/AWG/DNS-stage → ACME certificate → пустой AWG/DNS canary → read-only inspect. Ошибка останавливает процесс и не включает клиентские ссылки. Отдельные фазы доступны для диагностики, но не нужны при нормальном развёртывании.
+Обновление разрешённых `nodekit/fleet/*.json` в `main` автоматически выбирает изменённые страны (до 8 за push) и запускает цепочку для каждой; явный запуск контроллером через `repository_dispatch` и диагностика через `workflow_dispatch` также поддерживаются. `repository_dispatch` и `workflow_dispatch` теперь используют `phase=auto` как штатный режим. Это **один запуск**: inventory → сохранение первого SSH ключа на RU188 → bootstrap Nodekit/AWG/DNS-stage → ACME certificate → пустой AWG/DNS canary → read-only inspect. Ошибка останавливает процесс и не включает клиентские ссылки. Отдельные фазы доступны для диагностики, но не нужны при нормальном развёртывании.
 
 Это **автоматизация подготовки**, а не полноценная выдача платных подписок. Для end-to-end Zero Touch дополнительно нужны заранее настроенные интеграции API провайдера VPS, DNS и выдачи отдельных credentials (без ручного добавления secrets по стране), доверенная регистрация node на RU188, hard-expiry/revoke, Telemt MTProto installer, независимые E2E и подтверждение страны выхода. Пока этих частей нет, `SUBSCRIBER_PUBLICATION=false`, а `FI` не следует объявлять рабочим клиентским узлом.
 ## Что пока НЕ автоматизировано
