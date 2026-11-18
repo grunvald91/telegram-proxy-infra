@@ -37,7 +37,7 @@ KEY = re.compile(r"[A-Za-z0-9+/]{43}=\Z")
 SIGNATURE = re.compile(r"[A-Za-z0-9_-]{86}\Z")
 NONCE = re.compile(r"[a-f0-9]{64}\Z")
 UTC = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z\Z")
-MAX_LEASE_SECONDS = 60 * 60  # Bound stale access to one hour if controller delivery fails
+MAX_LEASE_SECONDS = 7 * 24 * 60 * 60  # Offline availability cap; expires locally, never asks RU188 on handshake
 MAX_PEERS = 250
 AUTHORIZED_NET = ipaddress.IPv4Network("10.73.91.0/24")
 CMD_FIELDS = {
