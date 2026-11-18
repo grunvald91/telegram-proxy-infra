@@ -8,6 +8,7 @@ An unexpected installed source is a hard failure, not a blind overwrite.
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import os
@@ -73,6 +74,8 @@ def prepare(node:Path,source_dir:Path):
         installed=APP/name
         original=safe_bytes(installed)
         desired=safe_bytes(source_dir/name)
+        # Refuse to replace a working service with syntactically invalid code.
+        ast.parse(desired.decode("utf8"),filename=name)
         existing=blob_sha1(original)
         target=blob_sha1(desired)
         if existing!=old_sha and existing!=target:
@@ -106,9 +109,9 @@ def execute(node:Path,source_dir:Path):
             if not entry["needed"]:continue
             services_idle(node.name)
             atomic_bytes(APP/name,entry["new_source"])
+            changed.append(name)
             if blob_sha1(safe_bytes(APP/name))!=entry["new"]:
                 raise UpgradeError("Post-install code hash mismatch")
-            changed.append(name)
         # Checking the installed source cannot accidentally open a network
         # port; no systemd unit or runtime configuration is modified.
         return {"node_id":node.name,
