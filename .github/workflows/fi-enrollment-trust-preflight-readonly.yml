@@ -1,4 +1,4 @@
-name: FI enrollment independent trust preflight (188 + FI read only)
+name: FI enrollment automatic first-contact pin and read-only inspection
 "on":
   push:
     branches: [main]
@@ -96,24 +96,42 @@ jobs:
                     str(rc==0 and raw=='active').lower())
           print('controller_read_only=true')
           PY
-      - name: Inspect FI only if an already approved pinned SSH key is configured
+      - name: Auto-pin FI on RU188 and inspect FI by strict SSH without operator input
         shell: bash
         run: |
           set -euo pipefail
           umask 077
-          known="$RUNNER_TEMP/fi_preapproved_known_hosts"
-          if [ -z "$FI_PINNED_KNOWN_HOSTS" ]; then
-            echo 'fi_pinned_ssh_access=missing;no_password_login_attempted=true'
-            exit 0
-          fi
-          printf '%s\n' "$FI_PINNED_KNOWN_HOSTS" > "$known"
+          # Trust authority is existing RU188; never accept-new on the ephemeral runner.
+          # A first key is TOFU, not independently verified by provider.
+          known="$RUNNER_TEMP/fi_controller_pinned_known_hosts"
+          export SSHPASS="$RU_PASSWORD"
+          sshpass -e ssh -T -F /dev/null -o ConnectTimeout=12 \
+            -o BatchMode=no -o PasswordAuthentication=yes -o PubkeyAuthentication=no \
+            -o KbdInteractiveAuthentication=no -o StrictHostKeyChecking=yes \
+            -o HostKeyAlgorithms=ssh-ed25519 \
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no \
+            -o ForwardAgent=no -o ClearAllForwardings=yes -o LogLevel=ERROR \
+            root@188.120.254.223 \
+            "python3 - --country fi --node-id fi-test-01 --ip 217.11.167.91" \
+            < nodekit/fleet_host_trust.py > "$known"
           chmod 600 "$known"
-          if [ "$(grep -c '^217\.11\.167\.91 ssh-ed25519 ' "$known" || true)" != 1 ]; then
-            echo 'fi_pinned_ssh_access=not_for_expected_fi;no_password_login_attempted=true'
-            exit 0
+          test "$(wc -l < "$known")" = 1
+          grep -q '^217\.11\.167\.91 ssh-ed25519 ' "$known"
+          # Optional pre-provisioned pin is STRONGER than TOFU. It must agree.
+          if [ -n "$FI_PINNED_KNOWN_HOSTS" ]; then
+            python3 - "$known" <<'PY'
+          import os,sys
+          stored=open(sys.argv[1],encoding="ascii").read().strip().split()
+          approved=[x.split() for x in os.environ["FI_PINNED_KNOWN_HOSTS"].splitlines()
+                    if x.strip() and not x.lstrip().startswith("#")]
+          if (len(stored)!=3 or len(approved)!=1 or len(approved[0])<3 or
+              stored[0] not in approved[0][0].split(",") or stored[1:]!=approved[0][1:3]):
+              raise SystemExit("Previously approved FI pin conflicts with RU188 trust store")
+          PY
           fi
           [[ "$FI_SSH_USER" == root && -n "$FI_PASSWORD" ]] || {
-            echo 'fi_pinned_ssh_access=present_but_credentials_missing'; exit 0;
+            echo "::error::FI access credentials are not provisioned"; exit 2;
           }
           export SSHPASS="$FI_PASSWORD"
           sshpass -e ssh -T -F /dev/null -o ConnectTimeout=12 \
@@ -142,15 +160,20 @@ jobs:
               print('fi_manifest_registration_enabled='+str(meta.get('registration_enabled')).lower())
               print('fi_manifest_activation_enabled='+str(meta.get('activation_enabled')).lower())
           except Exception:
-              print('fi_manifest=unavailable')
+              raise SystemExit('FI Nodekit manifest unavailable')
+          if meta.get('node_id')!='fi-test-01' or meta.get('advertise_host')!='fi.mnebyvpn.site':
+              raise SystemExit('FI Nodekit manifest identity mismatch')
           p=node/'identity/node-public.spki'
           try:
               raw=p.read_bytes()
               if len(raw)==44 and raw[:12]==bytes.fromhex('302a300506032b6570032100'):
-                  print('fi_node_spki_sha256='+hashlib.sha256(raw).hexdigest())
+                  actual_sha=hashlib.sha256(raw).hexdigest()
+                  print('fi_node_spki_sha256='+actual_sha)
+                  if actual_sha != 'c3689b687e8888d15e3ece8e45cf7d01672b9dadb77b1963a7871ffd8e967ed9':
+                      raise SystemExit('Pinned FI Nodekit identity mismatch')
                   print('fi_node_spki_public_base64url='+base64.urlsafe_b64encode(raw).rstrip(b'=').decode())
-              else:print('fi_node_spki=invalid')
-          except OSError:print('fi_node_spki=unavailable')
+              else:raise SystemExit('FI node identity public key invalid')
+          except OSError:raise SystemExit('FI node identity public key unavailable')
           p=pathlib.Path('/etc/ssh/ssh_host_ed25519_key.pub')
           try:
               public=p.read_text().split()
