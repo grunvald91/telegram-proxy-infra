@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 from pathlib import Path
 
 AUTH_CHECKS = (
@@ -85,6 +86,18 @@ def assess(evidence, *, max_age_seconds=900, max_extra_p95_ms=100,
         and (primary["port"], standby["port"]) == EXPECTED_PORTS
     )
     need(ports_valid, "primary_standby_ports_not_verified")
+
+    # A handful of matching answers cannot prove identical subscription and
+    # routing behavior. Require full content hashes of the gateway, route
+    # policy and SQL status function as separate independent evidence.
+    for artifact in ("gateway_build_sha256", "route_policy_sha256",
+                     "owner_status_function_sha256"):
+        hashes = [node.get(artifact) for _, node in nodes]
+        complete = all(isinstance(value,str)
+                       and re.fullmatch(r"[0-9a-f]{64}",value)
+                       for value in hashes)
+        need(complete and hashes[0] == hashes[1],
+             artifact + "_not_proven_identical")
 
     for label, node in nodes:
         need(_pass(node, "ca_verified_personal_tls"),
