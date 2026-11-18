@@ -103,6 +103,33 @@ class PrivateProbeTests(unittest.TestCase):
         with patch.object(mod,'db',return_value='1'):
             mod.delete_own_row(obj)
 
+    def test_revoke_reenables_monitor_if_database_delete_fails(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            timer=root/'monitor.timer'
+            unit=root/'monitor.service'
+            state=root/'state.json'
+            timer.write_text('Unit=mnebydns-personal-private-probe.service\n')
+            unit.write_text('ExecStart=/usr/local/sbin/mnebydns-personal-private-probe\n')
+            state.write_text('{}')
+            mock_data={'id':'5bd8b96a-7549-42c7-ae21-123d9a0df12d',
+                       'request_key':'internal-monitor-123'}
+            with patch.object(mod,'TIMER',timer), \
+                 patch.object(mod,'SERVICE',unit), \
+                 patch.object(mod,'STATE',state), \
+                 patch.object(mod,'read_state',return_value=mock_data), \
+                 patch.object(mod,'delete_own_row',side_effect=RuntimeError('db offline')), \
+                 patch.object(mod.subprocess,'run') as command, \
+                 patch.object(mod.os,'geteuid',return_value=0):
+                with self.assertRaisesRegex(RuntimeError,'db offline'):
+                    mod.revoke()
+                self.assertTrue(state.exists())
+                self.assertEqual(command.call_count,2)
+                self.assertEqual(command.call_args_list[0].args[0][:3],
+                                 ['systemctl','disable','--now'])
+                self.assertEqual(command.call_args_list[1].args[0][:3],
+                                 ['systemctl','enable','--now'])
+
     def test_service_monitor_is_non_permanent_and_has_short_lease(self):
         code=SOURCE.read_text()
         self.assertIn("'vpn_origin'",code)
