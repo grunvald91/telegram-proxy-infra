@@ -33,6 +33,7 @@ jobs:
       NODEKIT_SSH_USER: ${{ secrets.NODEKIT_SSH_USER }}
       NODEKIT_SSH_PASSWORD: ${{ secrets.NODEKIT_SSH_PASSWORD }}
       NODEKIT_SSH_KNOWN_HOSTS: ${{ secrets.NODEKIT_SSH_KNOWN_HOSTS }}
+      NODEKIT_CONTROLLER_PUBLIC_SHA256: ${{ vars.NODEKIT_CONTROLLER_PUBLIC_SHA256 }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -159,7 +160,7 @@ jobs:
             [[ "$EXPECTED_IDENTITY_SHA" =~ ^[a-f0-9]{64}$ ]] || {
               echo '::error::Independent node identity pin is required'; exit 2;
             }
-            remote_ssh "python3 '$remote_dir/awg_controller_readiness.py' --node-id '$NODE_ID' --host '$NODE_HOST' --expected-identity-sha256 '$EXPECTED_IDENTITY_SHA'"
+            remote_ssh "python3 '$remote_dir/awg_controller_readiness.py' --node-id '$NODE_ID' --host '$NODE_HOST' --expected-identity-sha256 '$EXPECTED_IDENTITY_SHA' --expected-controller-sha256 '$NODEKIT_CONTROLLER_PUBLIC_SHA256'"
           elif [[ "$NODE_PHASE" == inspect ]]; then
             remote_ssh "python3 '$remote_dir/awg_lifecycle.py' --node-id '$NODE_ID' --mode inspect"
             remote_ssh "python3 '$remote_dir/awg_peer_grants.py' --node-id '$NODE_ID' --mode inspect"
