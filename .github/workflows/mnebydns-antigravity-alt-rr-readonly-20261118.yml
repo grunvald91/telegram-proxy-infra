@@ -1,0 +1,67 @@
+name: MNEBYDNS Antigravity alternate DNS RR diagnostic read-only 20261118
+on:
+  push:
+    branches: [diag/mnebydns-google-antigravity-20261118]
+    paths: ['.github/workflows/mnebydns-antigravity-alt-rr-readonly-20261118.yml']
+permissions: {contents: read}
+jobs:
+  alt-rr:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Identify exact DoT RCODE and RR types for two failing API hosts and good controls
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import os,socket,ssl,struct,time
+          hosts=('aicode.googleapis.com','generativelanguage.googleapis.com',
+                 'accounts.google.com','cloudcode-pa.googleapis.com')
+          def read_n(s,n):
+              out=b''
+              while len(out)<n:
+                  z=s.recv(n-len(out))
+                  if not z:raise ConnectionError('unexpected_eof')
+                  out+=z
+              return out
+          def skip_name(p,b):
+              for _ in range(100):
+                  n=b[p]
+                  if n&0xc0==0xc0:return p+2
+                  if n==0:return p+1
+                  p+=n+1
+              raise ValueError('bad_name')
+          for host in hosts:
+              for qtype in (1,5,28,64,65):
+                  ident=int.from_bytes(os.urandom(2),'big')
+                  wire=b''.join(bytes((len(t),))+t.encode() for t in host.split('.'))+b'\0'
+                  qry=struct.pack('!HHHHHH',ident,0x100,1,0,0,0)+wire+struct.pack('!HH',qtype,1)
+                  now=time.monotonic()
+                  try:
+                      with socket.create_connection(('89.125.90.101',853),timeout=5) as raw:
+                          raw.settimeout(5)
+                          with ssl.create_default_context().wrap_socket(raw,server_hostname='dns.mnebyvpn.site') as tls:
+                              tls.sendall(struct.pack('!H',len(qry))+qry)
+                              n=struct.unpack('!H',read_n(tls,2))[0]
+                              buf=read_n(tls,n)
+                      if struct.unpack_from('!H',buf,0)[0]!=ident:raise ValueError('id_mismatch')
+                      flags,qd,an,ns,ar=struct.unpack_from('!HHHHH',buf,2)
+                      pos=12
+                      for _ in range(qd):pos=skip_name(pos,buf)+4
+                      records=[]
+                      for _ in range(an):
+                          pos=skip_name(pos,buf)
+                          typ,cl,ttl,length=struct.unpack_from('!HHIH',buf,pos)
+                          pos+=10
+                          ip=socket.inet_ntoa(buf[pos:pos+4]) if typ==1 and length==4 else '-'
+                          records.append(str(typ)+(':'+ip if ip!='-' else ''))
+                          pos+=length
+                      print('ALT_RR',host,'TYPE='+str(qtype),'RCODE='+str(flags&15),
+                            'AN='+str(an),'NS='+str(ns),'AR='+str(ar),
+                            'ANSWERS='+(','.join(records) if records else 'none'),
+                            'MS='+str(round((time.monotonic()-now)*1000)),flush=True)
+                  except Exception as exc:
+                      print('ALT_RR',host,'TYPE='+str(qtype),
+                            'TRANSPORT_ERROR='+type(exc).__name__,flush=True)
+          print('READ_ONLY_NO_MUTATIONS=true')
+          PY
