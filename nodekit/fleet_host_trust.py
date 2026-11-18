@@ -91,8 +91,10 @@ def check_controller() -> None:
 
 
 def _create_store(root: Path) -> None:
-    if not root.exists() and not root.is_symlink():
-        root.mkdir(mode=0o700)
+    # Concurrent first arrivals for different countries may create the same root.
+    # exist_ok is safe here because the following lstat rejects symlinks and
+    # permissions that would permit another user to influence the registry.
+    root.mkdir(mode=0o700, exist_ok=True)
     _private_directory(root)
 
 
