@@ -1,4 +1,6 @@
 import json
+import stat
+from types import SimpleNamespace
 import pathlib
 import sys
 import tempfile
@@ -33,7 +35,9 @@ class TestAwgEgress(unittest.TestCase):
         self.assertEqual(m.HOST,"fi.mnebyvpn.site")
 
     def test_up_rejected_without_active_controller_watchdog(self):
-        with patch.object(m,"active_unit",return_value=False):
+        with patch.object(m,"lock",return_value=3),\
+             patch.object(m,"unlock",return_value=None),\
+             patch.object(m,"active_unit",return_value=False):
             with self.assertRaises(m.EgressError):
                 m.up()
 
@@ -42,7 +46,13 @@ class TestAwgEgress(unittest.TestCase):
             path=pathlib.Path(t)/"state"
             path.write_text(json.dumps({"unexpected":"content"}))
             path.chmod(0o600)
-            with patch.object(m,"STATE",path):
+            stub=SimpleNamespace(
+                is_symlink=lambda:False,exists=lambda:True,
+                stat=lambda:SimpleNamespace(st_uid=0,st_mode=stat.S_IFREG|0o600,
+                                            st_size=len(path.read_bytes())),
+                read_text=path.read_text,
+            )
+            with patch.object(m,"STATE",stub):
                 with self.assertRaises(m.EgressError):
                     m.state()
                 self.assertTrue(path.exists())
@@ -54,7 +64,13 @@ class TestAwgEgress(unittest.TestCase):
                 "schema_version":1,"node_id":m.NODE,"previous_forward":"0",
             }))
             state.chmod(0o600)
-            with patch.object(m,"STATE",state):
+            stub=SimpleNamespace(
+                is_symlink=lambda:False,exists=lambda:True,
+                stat=lambda:SimpleNamespace(st_uid=0,st_mode=stat.S_IFREG|0o600,
+                                            st_size=len(state.read_bytes())),
+                read_text=state.read_text,
+            )
+            with patch.object(m,"STATE",stub):
                 self.assertEqual(m.state()["previous_forward"],"0")
 
 
