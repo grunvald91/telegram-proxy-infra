@@ -96,23 +96,42 @@ jobs:
           target="$TARGET_IP"
           known="$RUNNER_TEMP/nodekit_known_hosts"
           : > "$known"; chmod 0600 "$known"
-          strict=yes
-          if [[ "$NODE_COUNTRY" == fi && "$TARGET_IP" == '217.11.167.91' ]]; then
-            # Legacy password-only testing exception; not allowed for NEW countries.
-            export SSHPASS="$LEGACY_FI_SSH_PASSWORD"
-            user="$LEGACY_FI_SSH_USER"
-            strict=accept-new
-          else
+          # Persist the first SSH host key on existing RU188 before ANY node password is sent.
+          # First contact is TOFU (not independent attestation); every later run is strictly pinned.
+          [[ -n "$RU188_SSH_PASSWORD" ]] || { echo "::error::Missing RU188 transport secret"; exit 2; }
+          grep -q '^188\.120\.254\.223 ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts
+          export SSHPASS="$RU188_SSH_PASSWORD"
+          ru_opts=(-T -F /dev/null -o ConnectTimeout=12 -o BatchMode=no
+            -o PasswordAuthentication=yes -o PubkeyAuthentication=no
+            -o KbdInteractiveAuthentication=no -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no
+            -o ForwardAgent=no -o ClearAllForwardings=yes
+            -o ControlMaster=no -o ProxyCommand=none -o LogLevel=ERROR)
+          sshpass -e ssh "${ru_opts[@]}" root@188.120.254.223 \
+            "python3 - --country '$NODE_COUNTRY' --node-id '$NODE_ID' --ip '$TARGET_IP'" \
+            < nodekit/fleet_host_trust.py > "$known"
+          [[ "$(wc -l < "$known")" == 1 ]] || exit 2
+          grep -Eq "^$TARGET_IP ssh-ed25519 [A-Za-z0-9+/]+=*$" "$known" || exit 2
+          if [[ -n "$NODEKIT_SSH_PASSWORD" && "$NODEKIT_SSH_USER" == root ]]; then
             export SSHPASS="$NODEKIT_SSH_PASSWORD"
             user="$NODEKIT_SSH_USER"
-            [[ -n "$NODEKIT_SSH_KNOWN_HOSTS" ]] || { echo '::error::Pin SSH host key per environment'; exit 2; }
-            printf '%s\n' "$NODEKIT_SSH_KNOWN_HOSTS" > "$known"
-            [[ -s "$known" ]] || exit 2
+          elif [[ "$NODE_COUNTRY" == fi && "$TARGET_IP" == 217.11.167.91 &&
+                  "$LEGACY_FI_SSH_USER" == root && -n "$LEGACY_FI_SSH_PASSWORD" ]]; then
+            export SSHPASS="$LEGACY_FI_SSH_PASSWORD"
+            user="$LEGACY_FI_SSH_USER"
+          else
+            echo "::error::Missing machine-provisioned per-node SSH credentials"; exit 2
           fi
-          [[ "$user" == root && -n "$SSHPASS" ]] || exit 2
-          opts=(-o PubkeyAuthentication=no -o PreferredAuthentications=password,keyboard-interactive
-            -o NumberOfPasswordPrompts=1 -o StrictHostKeyChecking="$strict"
-            -o UserKnownHostsFile="$known" -o HostKeyAlias="$TARGET_IP"
+          opts=(-F /dev/null -o PubkeyAuthentication=no
+            -o PreferredAuthentications=password,keyboard-interactive
+            -o NumberOfPasswordPrompts=1 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o UserKnownHostsFile="$known" -o GlobalKnownHostsFile=/dev/null
+            -o UpdateHostKeys=no -o ForwardAgent=no -o ClearAllForwardings=yes
+            -o ControlMaster=no -o ProxyCommand=none
+            -o HostKeyAlias="$TARGET_IP"
             -o ConnectTimeout=12 -o ServerAliveInterval=20 -o ServerAliveCountMax=12)
           remote_ssh() { sshpass -e ssh "${opts[@]}" "${user}@${target}" "$@"; }
           remote_scp() { sshpass -e scp "${opts[@]}" "$@"; }
