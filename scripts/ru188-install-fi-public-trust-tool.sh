@@ -17,9 +17,15 @@ trap 'rm -f "$source_file"' EXIT
 test "$(sha256sum "$source_file" | awk '{print $1}')" = "$expected_sha"
 install -d -m 0700 "$directory"
 [ "$(stat -c %u:%a "$directory")" = 0:700 ] || exit 2
-[ ! -e "$target" ] && [ ! -L "$target" ] || {
-  echo "PUBLIC_TRUST_TOOL_EXISTING_REFUSED"; exit 3;
-}
+if [ -e "$target" ] || [ -L "$target" ]; then
+  # Actions retry is safe only if the already installed root-only inode
+  # is precisely the reviewed, pinned public verifier script.
+  [ -f "$target" ] && [ ! -L "$target" ] || exit 3
+  [ "$(stat -c %u:%a "$target")" = "0:600" ] || exit 3
+  [ "$(sha256sum "$target" | cut -d ' ' -f 1)" = "$expected_sha" ] || exit 3
+  echo "fi_public_trust_tool_verified_existing=true"
+  exit 0
+fi
 tmp="$(mktemp "$directory/.incoming-trust.XXXXXXXX")"
 trap 'rm -f "$tmp" "$source_file"' EXIT
 cat "$source_file" > "$tmp"
