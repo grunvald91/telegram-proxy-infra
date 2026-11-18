@@ -151,6 +151,39 @@ def dns_query(label,domain,endpoint):
     if not values:raise RuntimeError('DOT_NO_IPV4_ANSWER')
     return values
 
+def encrypt_for_owner_link(data):
+    # Encrypt inside the already-authorized bot runtime. The bot's encryption
+    # key never enters the Actions runner, host stdout or this process.
+    # Exact envelope: iv(12) || GCM tag(16) || ciphertext(12), base64url.
+    # The row is not created if the bot runtime cannot encrypt.
+    js = (
+        "const {createCipheriv,randomBytes}=require('node:crypto');"
+        "let raw='';process.stdin.setEncoding('utf8');"
+        "process.stdin.on('data',s=>raw+=s);"
+        "process.stdin.on('end',()=>{"
+        "try{const d=JSON.parse(raw);"
+        "const v=process.env.MNEBYDNS_OWNER_LINK_KEY;"
+        "if(!/^[a-f0-9]{64}$/.test(v||''))process.exit(2);"
+        "if(!/^[a-z0-9]{12}$/.test(d.label))process.exit(3);"
+        "const iv=randomBytes(12);"
+        "const c=createCipheriv('aes-256-gcm',Buffer.from(v,'hex'),iv);"
+        "c.setAAD(Buffer.from('owner-dns:v1:'+d.id+':'+d.owner));"
+        "const e=Buffer.concat([c.update(d.label,'ascii'),c.final()]);"
+        "process.stdout.write(Buffer.concat([iv,c.getAuthTag(),e]).toString('base64url'));"
+        "}catch{process.exit(4)}});"
+    )
+    proc=subprocess.run(
+        ['docker','exec','-i','mnebyvpn-bot-info','node','-e',js],
+        input=json.dumps({'label':data['label'],'id':data['id'],'owner':str(OWNER)}),
+        text=True,capture_output=True,timeout=15)
+    if proc.returncode!=0:
+        raise RuntimeError('MONITOR_AUTHENTICATED_ENCRYPTION_UNAVAILABLE')
+    value=proc.stdout.strip()
+    if not (50<=len(value)<=300 and
+            all(ch in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_' for ch in value)):
+        raise RuntimeError('MONITOR_ENCRYPTION_FORMAT_INVALID')
+    return value
+
 def delete_own_row(data):
     result=db("WITH deleted AS (DELETE FROM owner_dns_links WHERE id='"+data['id']+
               "' AND owner_telegram_id="+str(OWNER)+
