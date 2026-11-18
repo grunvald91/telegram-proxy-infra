@@ -184,6 +184,54 @@ class PrivateProbeTests(unittest.TestCase):
             mod.verify_profile(obj)
             self.assertEqual(query.call_count,6)
 
+    def test_install_conflict_never_creates_service_profile(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            service=root/'monitor.service'
+            service.write_text('ExecStart=/usr/bin/unrelated-service')
+            with patch.object(mod,'SERVICE',service), \
+                 patch.object(mod,'TIMER',root/'monitor.timer'), \
+                 patch.object(mod,'SELF',root/'monitor-bin'), \
+                 patch.object(mod.os,'geteuid',return_value=0), \
+                 patch.object(mod,'stage') as make_row:
+                with self.assertRaisesRegex(RuntimeError,'SERVICE_NAME_CONFLICT'):
+                    mod.install()
+                make_row.assert_not_called()
+
+    def test_failed_systemd_install_revokes_only_new_monitor_profile(self):
+        import subprocess
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            service=root/'monitor.service'
+            timer=root/'monitor.timer'
+            executable=root/'monitor-bin'
+            state=root/'state.json'
+            obj={'label':'monitorabc12',
+                 'id':'5bd8b96a-7549-42c7-ae21-123d9a0df12d',
+                 'request_key':'internal-monitor-'+'a'*32}
+            def staging():
+                state.write_text(__import__('json').dumps(obj))
+            def manage(cmd,**kwargs):
+                if cmd[:3]==['systemctl','enable','--now']:
+                    raise subprocess.CalledProcessError(1,cmd)
+                return Mock(returncode=0)
+            with patch.object(mod,'SERVICE',service), \
+                 patch.object(mod,'TIMER',timer), \
+                 patch.object(mod,'SELF',executable), \
+                 patch.object(mod,'STATE',state), \
+                 patch.object(mod,'stage',side_effect=staging), \
+                 patch.object(mod,'delete_own_row') as delete, \
+                 patch.object(mod.subprocess,'run',side_effect=manage), \
+                 patch.object(mod.os,'geteuid',return_value=0):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    mod.install()
+                delete.assert_called_once_with(obj)
+                self.assertFalse(state.exists())
+                self.assertFalse(service.exists())
+                self.assertFalse(timer.exists())
+                self.assertFalse(executable.exists())
+
     def test_service_monitor_is_non_permanent_and_has_short_lease(self):
         code=SOURCE.read_text()
         self.assertIn("'smart_dns'",code)
