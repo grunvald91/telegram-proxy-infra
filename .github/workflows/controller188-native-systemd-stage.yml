@@ -1,0 +1,80 @@
+name: Install native RU188 Node.js runtime and staged systemd workers (one-shot)
+"on":
+  push:
+    branches: [main]
+    paths: ['.github/workflows/controller188-native-systemd-stage.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: controller188-native-systemd-staging
+  cancel-in-progress: false
+jobs:
+  install:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    env:
+      SOURCE_SHA: '42b5eb796607b8cde66e275c2aedb07fdce1e578'
+      NODE_VERSION: '22.23.5'
+      RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Checkout pinned RU188 host keys
+        uses: actions/checkout@v4
+        with:
+          path: infra
+          persist-credentials: false
+      - name: Checkout exact reviewed native controller runtime
+        uses: actions/checkout@v4
+        with:
+          repository: grunvald91/Mnebyvpn
+          ref: 42b5eb796607b8cde66e275c2aedb07fdce1e578
+          path: vpn
+          persist-credentials: false
+      - name: Verify immutable sources and existing SSH pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]]
+          test "$(git -C vpn rev-parse HEAD)" = "$SOURCE_SHA"
+          test -n "$RU_PASSWORD"
+          grep -q '^188\.120\.254\.223 ssh-ed25519 ' infra/ops/mnebydns-owner-ssh-known_hosts
+          python3 -m py_compile vpn/ops/controller188-systemd/install-runtime.py vpn/ops/controller188-systemd/build-bundle.py
+          bash -n vpn/ops/controller188-systemd/ship.sh
+      - name: Prepare local Node 22 toolchain for artifact build only
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.5'
+      - name: Install exact production pg dependency with scripts blocked
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd vpn
+          npm install --omit=dev --ignore-scripts --no-audit --no-fund --no-save
+          node -e "if(require('./node_modules/pg/package.json').version!=='8.16.3')process.exit(2)"
+      - name: Download and independently checksum official Node 22.23.5 Linux x64
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --silent --show-error --retry 2 --connect-timeout 12 --max-time 120 \
+            "https://nodejs.org/dist/v22.23.5/node-v22.23.5-linux-x64.tar.xz" \
+            -o node-v22.23.5-linux-x64.tar.xz
+          echo 'cdeb8670a0c81f51b4dc4ac61919f9b1ad917b304bf8221eb939570663d240f8  node-v22.23.5-linux-x64.tar.xz' \
+            | sha256sum -c -
+      - name: Construct explicit allowlist-only controller188 bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 vpn/ops/controller188-systemd/build-bundle.py \
+            --node-archive node-v22.23.5-linux-x64.tar.xz \
+            --source vpn --output controller188-runtime.tar.gz
+          test -s controller188-runtime.tar.gz
+      - name: Install existing pinned SSH transport
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass >/dev/null
+      - name: Stage immutable root-only host Node and protected inactive systemd services on 188
+        shell: bash
+        env:
+          PINNED_KNOWN_HOSTS: ${{ github.workspace }}/infra/ops/mnebydns-owner-ssh-known_hosts
+        run: |
+          set -euo pipefail
+          bash vpn/ops/controller188-systemd/ship.sh \
+            controller188-runtime.tar.gz vpn/ops/controller188-systemd/install-runtime.py
