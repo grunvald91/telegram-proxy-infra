@@ -1,0 +1,23 @@
+name: FI external AWG one-time dispatch
+on:
+  push:
+    branches: [feat/nodekit-awg-external-e2e-20261118]
+    paths: [.github/workflows/nodekit-fi-external-dispatch-once.yml]
+permissions:
+  contents: read
+  actions: write
+jobs:
+  trigger:
+    if: github.repository == 'grunvald91/telegram-proxy-infra'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Run FI public AWG canary from reviewed main
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          gh api --method POST \
+            repos/grunvald91/telegram-proxy-infra/actions/workflows/nodekit-fi-awg-external-e2e.yml/dispatches \
+            -f ref=main
