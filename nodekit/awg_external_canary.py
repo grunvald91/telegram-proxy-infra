@@ -124,6 +124,9 @@ def cleanup():
         if state["forward"]=="0":
             call(["sysctl","-w","net.ipv4.ip_forward=0"],check=False)
         STATE.unlink(missing_ok=True)
+        # The independent cleanup timer is no longer necessary after
+        # a successful explicit cleanup. Its service cannot restart AWG.
+        call(["systemctl","stop",TIMER+".timer"],check=False,timeout=10)
     finally:unlock(fd)
 
 def prepare(peer,source,seconds):
