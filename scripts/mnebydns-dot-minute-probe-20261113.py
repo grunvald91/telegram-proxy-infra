@@ -104,10 +104,12 @@ def self_test():
     assert read_answer(Stub(struct.pack("!H", len(response)) + response), 0x1234, q) == 0
     try:
         read_answer(Stub(struct.pack("!H", len(response)) + response), 0x5678, q)
-    except ValueError:
-        pass
+    except ValueError as exc:
+        assert str(exc) == "dns_invalid_header"
     else:
         raise AssertionError("wrong DNS transaction accepted")
+    servfail = struct.pack("!HHHHHH", 0x1234, 0x8182, 1, 0, 0, 0) + q
+    assert read_answer(Stub(struct.pack("!H", len(servfail)) + servfail), 0x1234, q) == 2
     print("MNEBYDNS_MINUTE_PROBE_SELF_TEST=PASS")
 
 
