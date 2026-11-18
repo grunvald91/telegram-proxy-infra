@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
-      - name: Check full idempotent country fleet bootstrap on existing FI
+      - name: Test both AWG and local DoT fleet canaries
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -21,4 +21,4 @@ jobs:
             repos/grunvald91/telegram-proxy-infra/actions/workflows/nodekit-fleet-bootstrap.yml/dispatches \
             -f ref=main \
             -f "inputs[country]=fi" \
-            -f "inputs[phase]=bootstrap"
+            -f "inputs[phase]=canary"
