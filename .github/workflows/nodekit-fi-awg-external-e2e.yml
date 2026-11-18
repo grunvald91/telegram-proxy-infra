@@ -143,8 +143,8 @@ jobs:
           [[ "$handshake" =~ ^[1-9][0-9]*$ ]] || { echo "::error::No AWG 3.1 handshake"; exit 2; }
           echo "AWG_EXTERNAL_HANDSHAKE=PASS"
           echo "AWG_EXTERNAL_STEP=HTTPS_EGRESS"
-          observed=$(curl --noproxy '*' --interface "$iface" -4 --fail --silent --show-error
-                     --connect-timeout 8 --max-time 16
+          observed=$(curl --noproxy '*' --interface "$iface" -4 --fail --silent --show-error \
+                     --connect-timeout 8 --max-time 16 \
                      --resolve "api.ipify.org:443:$echo_ip" https://api.ipify.org)
           [[ "$observed" == '217.11.167.91' ]] || { echo "::error::Unexpected VPN egress IP";exit 2; }
           echo "AWG_EXTERNAL_ICMP=PASS"
