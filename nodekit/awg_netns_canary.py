@@ -27,8 +27,8 @@ ROOT=Path("/var/lib/mnebyvpn-nodekit")
 NETNS="mneby-awg-canary"
 VETH_HOST="nkitawg0"
 VETH_PEER="nkitawg1"
-LINK_HOST="172.31.254.1/30"
-LINK_PEER="172.31.254.2/30"
+LINK_HOST="198.19.254.1/30"
+LINK_PEER="198.19.254.2/30"
 TEST_IP="10.73.91.2"
 KEY=re.compile(r"[A-Za-z0-9+/]{43}=\Z")
 
@@ -67,7 +67,7 @@ def cli_preflight(node:Path,host:str) -> None:
     for iface in (VETH_HOST,VETH_PEER,"awgclient","awg0"):
         if run(["ip","link","show","dev",iface],check=False).returncode==0:
             raise NetnsCanaryError("Testing interface collides with host")
-    if run(["ip","route","show","172.31.254.0/30"]).stdout.strip():
+    if run(["ip","route","show","198.19.254.0/30"]).stdout.strip():
         raise NetnsCanaryError("Testing link network would collide with host route")
     if not (AWG_BIN/"awg").is_file() or not (AWG_BIN/"awg-quick").is_file():
         raise NetnsCanaryError("Official AmneziaWG tools not installed")
@@ -101,7 +101,7 @@ def make_client_config(private:str,server_pub:str,header_key:str)->str:
         "HeaderProtectionKey = "+header_key+"\n"
         "RandomTrailers = on\nDisableCookies = off\nTable = off\n"
         "\n[Peer]\nPublicKey = "+server_pub+"\n"
-        "Endpoint = 172.31.254.1:51821\n"
+        "Endpoint = 198.19.254.1:51821\n"
         "AllowedIPs = 10.73.91.1/32\n"
         "PersistentKeepalive = 10\n"
     )
@@ -146,7 +146,7 @@ def ping_canary(node:Path,host:str)->dict:
         # persistent grant ledger. It is removed before service shutdown.
         run(ns(str(AWG_BIN/"awg-quick"),"up",str(cfg)),timeout=40)
         client_up=True
-        # Bounded handshake and ICMP test entirely through 172.31.254.0/30.
+        # Bounded handshake and ICMP test entirely through 198.19.254.0/30.
         reply=run(ns("ping","-n","-c","3","-W","3","-i","0.5",
                      "10.73.91.1"),timeout=20)
         if "3 received" not in reply.stdout and "3 packets received" not in reply.stdout:
@@ -170,7 +170,8 @@ def ping_canary(node:Path,host:str)->dict:
         }
     finally:
         # Prefer bounded best-effort cleanup; never print private keys.
-        if client_up:
+        if created_ns:
+            # Also undo a partially successful awg-quick up that threw.
             run(ns(str(AWG_BIN/"awg-quick"),"down",str(cfg)),
                 timeout=30,check=False)
         if attempted_start:
@@ -186,6 +187,9 @@ def ping_canary(node:Path,host:str)->dict:
             raise NetnsCanaryError("AWG test did not stop cleanly")
         if test_success and run(["ip","netns","list"]).stdout.find(NETNS)>=0:
             raise NetnsCanaryError("Test namespace cleanup incomplete")
+        if test_success and run(["ip","link","show","dev",VETH_HOST],
+                                check=False).returncode==0:
+            raise NetnsCanaryError("Test veth cleanup incomplete")
 
 
 def main()->int:
