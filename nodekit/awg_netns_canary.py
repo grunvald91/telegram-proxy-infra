@@ -125,7 +125,12 @@ def ping_canary(node:Path,host:str)->dict:
     attempted_start=False
     client_up=False
     test_success=False
+    original_sigterm=signal.getsignal(signal.SIGTERM)
+    def interrupted(signum, frame):
+        raise NetnsCanaryError("AWG canary interrupted")
+    signal.signal(signal.SIGTERM,interrupted)
     try:
+        print("AWG_NETNS_STEP=CREATE_ISOLATED_NAMESPACE",flush=True)
         run(["ip","netns","add",NETNS])
         created_ns=True
         run(["ip","link","add",VETH_HOST,"type","veth","peer","name",VETH_PEER])
@@ -137,6 +142,7 @@ def ping_canary(node:Path,host:str)->dict:
         run(ns("ip","link","set","lo","up"))
         run(ns("ip","link","set",VETH_PEER,"up"))
         attempted_start=True
+        print("AWG_NETNS_STEP=START_EMPTY_SERVER",flush=True)
         run(["systemctl","start",service],timeout=40)
         if not active_unit(service):
             raise NetnsCanaryError("AWG server did not start")
@@ -144,9 +150,11 @@ def ping_canary(node:Path,host:str)->dict:
              "allowed-ips",TEST_IP+"/32"])
         # The single ephemeral server peer is not part of billing or the
         # persistent grant ledger. It is removed before service shutdown.
+        print("AWG_NETNS_STEP=CONNECT_TRANSIENT_CLIENT",flush=True)
         run(ns(str(AWG_BIN/"awg-quick"),"up",str(cfg)),timeout=40)
         client_up=True
         # Bounded handshake and ICMP test entirely through 198.19.254.0/30.
+        print("AWG_NETNS_STEP=ENCRYPTED_DATA_TRANSFER",flush=True)
         reply=run(ns("ping","-n","-c","3","-W","3","-i","0.5",
                      "10.73.91.1"),timeout=20)
         if "3 received" not in reply.stdout and "3 packets received" not in reply.stdout:
@@ -169,6 +177,8 @@ def ping_canary(node:Path,host:str)->dict:
             "nat_enabled":False,"subscriber_credentials_issued":False,
         }
     finally:
+        signal.signal(signal.SIGTERM,original_sigterm)
+        print("AWG_NETNS_STEP=CLEANUP",flush=True)
         # Prefer bounded best-effort cleanup; never print private keys.
         if created_ns:
             # Also undo a partially successful awg-quick up that threw.
