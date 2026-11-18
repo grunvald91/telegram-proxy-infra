@@ -1,0 +1,99 @@
+name: MNEBYDNS Google Antigravity temporary read-only endpoint diagnosis 20261118
+on:
+  push:
+    branches: [diag/mnebydns-google-antigravity-20261118]
+    paths: ['.github/workflows/mnebydns-google-antigravity-live-readonly-20261118.yml']
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-google-antigravity-diagnose-20261118
+  cancel-in-progress: true
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Probe Google and Antigravity global and regional SNI with verified TLS and no auth
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import concurrent.futures, socket, ssl, time
+          hosts=(
+           'antigravity.google','daily-cloudcode-pa.googleapis.com','aicode.googleapis.com',
+           'accounts.google.com','oauth2.googleapis.com','generativelanguage.googleapis.com',
+           'cloudcode-pa.googleapis.com','antigravity-pa.googleapis.com',
+           'antigravity.googleapis.com','businessaicode.googleapis.com',
+           'aiplatform.googleapis.com','discoveryengine.googleapis.com',
+           'businessaicode.us.rep.googleapis.com','businessaicode.eu.rep.googleapis.com',
+           'aiplatform.us.rep.googleapis.com','aiplatform.eu.rep.googleapis.com',
+           'businessaicode.mtls.googleapis.com','aiplatform.mtls.googleapis.com',
+           'us-discoveryengine.googleapis.com','eu-discoveryengine.googleapis.com',
+           'gemini.google.com','aistudio.google.com','youtubei.googleapis.com',
+           'www.google.com','www.youtube.com')
+          targets={'ORIGIN':'direct','DE89':'89.125.90.101','RU188':'188.120.254.223'}
+          def check(spec):
+              label,host=spec
+              addr=host if label=='ORIGIN' else targets[label]
+              start=time.monotonic()
+              try:
+                  with socket.create_connection((addr,443),timeout=4) as raw:
+                      raw.settimeout(4)
+                      with ssl.create_default_context().wrap_socket(raw,server_hostname=host) as s:
+                          tls_ms=int((time.monotonic()-start)*1000)
+                          s.settimeout(3)
+                          s.sendall(('HEAD / HTTP/1.1\r\nHost: '+host+'\r\nConnection: close\r\nUser-Agent: MNEBYDNS-readonly-synthetic\r\n\r\n').encode())
+                          try:
+                              first=s.recv(512).split(b'\r\n',1)[0].decode('latin1','replace')
+                              http=first.split(' ',2)[1] if first.startswith('HTTP/') else 'NON_HTTP'
+                          except (socket.timeout,OSError,ssl.SSLError):
+                              http='NO_HTTP_REPLY'
+                          return (label,host,'TLS_OK',tls_ms,http)
+              except Exception as exc:
+                  return (label,host,'TLS_'+type(exc).__name__,int((time.monotonic()-start)*1000),'NONE')
+          specs=[(target,host) for host in hosts for target in targets]
+          with concurrent.futures.ThreadPoolExecutor(max_workers=7) as pool:
+              results=list(pool.map(check,specs))
+          failures=0
+          print('CHECK_SCOPE=verified_tls_without_user_auth_HTTP_HEAD_not_login_test')
+          for label,host,tls,ms,http in results:
+              if label != 'ORIGIN' and tls!='TLS_OK': failures+=1
+              print('GOOGLE_DIAG',label,host,tls,str(ms)+'ms','HTTP='+http,flush=True)
+          print('GOOGLE_DIAG_SUMMARY endpoints='+str(len(results))+
+                ' edge_tls_failures='+str(failures)+
+                ' personal_authorized_dns=NOT_TESTED'+
+                ' app_login=NOT_TESTED')
+          if failures:print('::warning title=Google/Antigravity synthetic::Edge TLS failures detected; see per-host results.')
+          PY
+      - name: Read-only service presence on both known servers with pinned SSH
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          if [[ -z "$RU_PASS" || -z "$DE_PASS" ]]; then
+            echo "SSH_SERVICE_STATUS=UNKNOWN_SECRETS_UNAVAILABLE"; exit 0
+          fi
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          for role in RU DE; do
+            if [[ "$role" == RU ]]; then export SSHPASS="$RU_PASS"; ip=188.120.254.223
+            else export SSHPASS="$DE_PASS"; ip=89.125.90.101; fi
+            echo "READONLY_NODE=$role"
+            sshpass -e ssh -T -o ConnectTimeout=10 -o StrictHostKeyChecking=yes \
+              -o HostKeyAlgorithms=ssh-ed25519 \
+              -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" \
+              -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR \
+              "root@$ip" '
+                for s in nginx.service mnebydns-dot.service mnebydns-googlepilot.service mnebydns-google-tcp-only-20261117.service; do
+                  printf "%s=" "$s"; systemctl is-active "$s" 2>/dev/null || true
+                done
+                echo "TCP443_LISTEN=$(ss -Hlnpt "( sport = :443 )" | wc -l)"
+                echo "TCP853_LISTEN=$(ss -Hlnpt "( sport = :853 )" | wc -l)"
+                echo "UDP443_LISTEN=$(ss -Hlunp "( sport = :443 )" | wc -l)"
+              ' || echo "SSH_SERVICE_STATUS=UNKNOWN_NODE_UNREACHABLE"
+          done
+          echo "PRODUCTION_MUTATIONS=NONE"
