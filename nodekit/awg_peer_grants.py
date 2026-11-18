@@ -318,9 +318,9 @@ class OfflineClock:
         projected = self.baseline + elapsed
         wall_now = self.wall()
         if (not 0 < wall_now < 4102444800 or
-                wall_now + 5 < projected):
+                wall_now + 5 < max(projected, self.last_saved)):
             raise GrantError("System UTC rollback during offline access")
-        current = max(wall_now, projected)
+        current = max(wall_now, projected, self.last_saved)
         if current - self.last_saved >= 15:
             self._save(current)
         return current
