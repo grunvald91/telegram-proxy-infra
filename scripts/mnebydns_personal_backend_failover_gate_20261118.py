@@ -14,7 +14,10 @@ import re
 from pathlib import Path
 
 AUTH_CHECKS = (
-    "active_smart_dns", "active_vpn_origin", "unknown_sni_denied",
+    "active_smart_dns", "active_vpn_origin",
+    "active_paid_premium", "paid_expired_premium_denied",
+    "paid_quota_exhausted_premium_denied",
+    "unknown_sni_denied", "cross_subscriber_sni_denied",
     "expired_denied", "revoked_denied",
 )
 ROUTES = {
