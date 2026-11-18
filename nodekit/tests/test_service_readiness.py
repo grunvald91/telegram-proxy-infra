@@ -34,7 +34,8 @@ class TestServiceReadiness(unittest.TestCase):
                 "external_e2e_verified": False, "route_count": 0,
                 "config_sha256": {"Corefile": DIGEST, "nginx.conf": DIGEST},
             }
-            with patch.object(audit, "safe_manifest", return_value=meta), \
+            with patch.object(audit, "safe_dir"), \
+                 patch.object(audit, "safe_manifest", return_value=meta), \
                  patch.object(audit, "protected_file", return_value=DATA):
                 report = audit.dns_proxy_stage(node)
                 self.assertTrue(report["staged"])
