@@ -1,0 +1,81 @@
+name: Existing RU188 controller local signing keys (one-time, no activation)
+"on":
+  push:
+    branches: [main]
+    paths: ['.github/workflows/controller188-local-bootstrap-once.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: controller188-local-key-bootstrap
+  cancel-in-progress: false
+
+jobs:
+  stage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      SERVER188_SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Checkout reviewed, immutable controller-only bootstrap implementation
+        uses: actions/checkout@v4
+        with:
+          repository: grunvald91/Mnebyvpn
+          ref: '3362c3ae5e786cc22d13a5f150b091cdad1c2c58'
+          path: controller-source
+          persist-credentials: false
+      - name: Local review and immutable 188 guard preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SERVER188_SSH_PASSWORD"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          grep -q '^188\.120\.254\.223 ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts
+          test -f controller-source/ops/trusted-controller-bootstrap.mjs
+          node --check controller-source/ops/trusted-controller-bootstrap.mjs
+          grep -q 'requireExistingController188();' controller-source/ops/trusted-controller-bootstrap.mjs
+          grep -q 'awaiting_independent_approval' controller-source/ops/trusted-controller-bootstrap.mjs
+          echo 'source_reviewed=true'
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass >/dev/null
+      - name: Generate ONLY root-only signing and FI enrollment SSH key on existing 188
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$SERVER188_SSH_PASSWORD"
+          # No root key ever leaves RU188: the runner sends only reviewed
+          # source code over a pinned-host SSH channel. No echo of stdin.
+          remote='set -eu; umask 077; tmp="$(mktemp /run/mnebyvpn-controller-bootstrap.XXXXXXXX.mjs)"; trap '\''rm -f "$tmp"'\'' EXIT; cat > "$tmp"; if ! command -v node >/dev/null 2>&1; then echo "controller188_node_runtime=missing"; exit 6; fi; node "$tmp" init'
+          sshpass -e ssh -T -F /dev/null \
+            -o ConnectTimeout=12 -o BatchMode=no \
+            -o PasswordAuthentication=yes -o PubkeyAuthentication=no \
+            -o KbdInteractiveAuthentication=no -o StrictHostKeyChecking=yes \
+            -o HostKeyAlgorithms=ssh-ed25519 \
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no \
+            -o ForwardAgent=no -o ClearAllForwardings=yes -o LogLevel=ERROR \
+            root@188.120.254.223 "$remote" \
+            < controller-source/ops/trusted-controller-bootstrap.mjs
+      - name: Confirm other MNEBYVPN containers were not stopped (read-only)
+        shell: bash
+        if: success()
+        run: |
+          set -euo pipefail
+          export SSHPASS="$SERVER188_SSH_PASSWORD"
+          sshpass -e ssh -T -F /dev/null \
+            -o ConnectTimeout=12 -o BatchMode=no -o PasswordAuthentication=yes \
+            -o PubkeyAuthentication=no -o StrictHostKeyChecking=yes \
+            -o HostKeyAlgorithms=ssh-ed25519 \
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no \
+            -o ClearAllForwardings=yes -o LogLevel=ERROR \
+            root@188.120.254.223 \
+            'test -f /root/mnebyvpn-controller/bootstrap-manifest.json &&
+             docker inspect --format "{{.State.Running}}" mnebyvpn-stage-postgres mnebyvpn-public-web mnebyvpn-vpn-worker |
+             grep -c true | grep -qx 3 &&
+             echo "controller188_private_stage_present=true;existing_containers_unchanged_running=true;enrollment_not_started=true;subscriptions_unchanged=true"'
