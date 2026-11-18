@@ -62,7 +62,13 @@ jobs:
               try:
                   bindings=json.loads(raw)
                   values=bindings.get('5432/tcp') if isinstance(bindings,dict) else None
-                  print('host_postgres_port_mapped='+str(bool(values and any(v.get('HostPort') for v in values))).lower())
+                  hosts=[v.get('HostIp','') for v in values if isinstance(v,dict) and v.get('HostPort')] if isinstance(values,list) else []
+                  print('host_postgres_port_mapped='+str(bool(hosts)).lower())
+                  if not hosts: scope='none'
+                  elif all(ip in ('127.0.0.1','::1') for ip in hosts): scope='loopback_only'
+                  elif any(ip in ('','0.0.0.0','::') for ip in hosts): scope='wildcard'
+                  else: scope='nonloopback'
+                  print('host_postgres_port_binding_scope='+scope)
               except (TypeError,ValueError,AttributeError):print('host_postgres_port_mapped=unknown')
           else:print('host_postgres_port_mapped=unavailable')
           code,result=execute(['docker','exec','mnebyvpn-stage-postgres','psql','-AtX',
