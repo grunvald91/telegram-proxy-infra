@@ -69,7 +69,10 @@ def state():
     if not stat.S_ISREG(meta.st_mode) or meta.st_uid!=0 or meta.st_mode&0o077 or meta.st_size>256:
         raise EgressError("Untrusted AWG egress state")
     parsed=json.loads(STATE.read_text())
-    if parsed!={"schema_version":1,"node_id":NODE,"previous_forward":parsed.get("previous_forward")} or parsed["previous_forward"] not in ("0","1"):
+    if (not isinstance(parsed,dict) or
+        set(parsed)!={"schema_version","node_id","previous_forward"} or
+        parsed["schema_version"]!=1 or parsed["node_id"]!=NODE or
+        parsed["previous_forward"] not in ("0","1")):
         raise EgressError("Invalid egress state")
     return parsed
 
