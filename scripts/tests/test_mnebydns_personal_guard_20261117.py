@@ -22,23 +22,36 @@ class WatchTests(unittest.TestCase):
             with patch.object(watch,'CONF',f):
                 with self.assertRaises(RuntimeError):watch.route()
 
-    def test_candidates_do_not_use_placeholder_sni(self):
+    def test_candidates_never_mine_customer_credentials(self):
         with tempfile.TemporaryDirectory() as d:
             old=pathlib.Path(d,'watch')
-            old.write_text("'aaaaaaaaaaaa.dns.mnebyvpn.site' 'probe1234567.dns.mnebyvpn.site'")
-            with patch.object(watch,'PROFILE',pathlib.Path(d,'profile')), \
-                 patch.object(watch,'WATCH',old):
+            old.write_text("'probe1234567.dns.mnebyvpn.site'")
+            profile=pathlib.Path(d,'profile')
+            with patch.object(watch,'PROFILE',profile), patch.object(watch,'WATCH',old):
+                self.assertEqual(watch.candidate_names(),[])
+                profile.write_text('probe1234567.dns.mnebyvpn.site')
                 self.assertEqual(watch.candidate_names(),['probe1234567.dns.mnebyvpn.site'])
 
     def test_check_requires_dns_answer_at_both_hops(self):
         with patch.object(watch,'route',return_value=('10.0.0.2',8858)), \
+             patch.object(watch.PROFILE,'exists',return_value=True), \
              patch.object(watch,'profile_name',return_value='probe1234567.dns.mnebyvpn.site'), \
              patch.object(watch,'probe',side_effect=[(0,1)]*6+[(5,0)]) as p:
             watch.check()
             self.assertEqual(p.call_count,7)
         with patch.object(watch,'route',return_value=('10.0.0.2',8858)), \
+             patch.object(watch.PROFILE,'exists',return_value=True), \
              patch.object(watch,'profile_name',return_value='probe1234567.dns.mnebyvpn.site'), \
              patch.object(watch,'probe',return_value=(3,0)):
             with self.assertRaises(RuntimeError):watch.check()
+
+    def test_missing_service_profile_is_transport_only(self):
+        with patch.object(watch,'route',return_value=('10.0.0.2',8858)), \
+             patch.object(watch.PROFILE,'exists',return_value=False), \
+             patch.object(watch,'tls_reachable') as tls, \
+             patch.object(watch,'probe',return_value=(5,0)) as p:
+            watch.check()
+            self.assertEqual(tls.call_count,2)
+            self.assertEqual(p.call_count,1)
 
 if __name__=='__main__':unittest.main()
