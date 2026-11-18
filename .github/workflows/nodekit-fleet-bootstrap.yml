@@ -9,9 +9,9 @@ on:
       phase:
         description: 'Idempotent bootstrap, certificate or isolated canary'
         required: true
-        default: bootstrap
+        default: auto
         type: choice
-        options: [bootstrap, certificate, canary, inspect, controller-audit, service-audit, awg-netns-canary]
+        options: [auto, bootstrap, certificate, canary, inspect, controller-audit, service-audit, awg-netns-canary]
   repository_dispatch:
     types: [nodekit-bootstrap-approved]
 permissions:
@@ -27,12 +27,12 @@ jobs:
     environment: node-${{ inputs.country || github.event.client_payload.country }}
     env:
       NODE_COUNTRY: ${{ inputs.country || github.event.client_payload.country }}
-      NODE_PHASE: ${{ github.event_name == 'repository_dispatch' && 'bootstrap' || inputs.phase }}
+      NODE_PHASE: ${{ github.event_name == 'repository_dispatch' && 'auto' || inputs.phase }}
       LEGACY_FI_SSH_USER: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_USER }}
       LEGACY_FI_SSH_PASSWORD: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_PASSWORD }}
       NODEKIT_SSH_USER: ${{ secrets.NODEKIT_SSH_USER }}
       NODEKIT_SSH_PASSWORD: ${{ secrets.NODEKIT_SSH_PASSWORD }}
-      NODEKIT_SSH_KNOWN_HOSTS: ${{ secrets.NODEKIT_SSH_KNOWN_HOSTS }}
+      RU188_SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
       NODEKIT_CONTROLLER_PUBLIC_SHA256: ${{ vars.NODEKIT_CONTROLLER_PUBLIC_SHA256 }}
     steps:
       - uses: actions/checkout@v4
@@ -44,7 +44,7 @@ jobs:
           set -Eeuo pipefail
           umask 077
           [[ "$NODE_COUNTRY" =~ ^[a-z]{2}$ ]] || exit 2
-          [[ "$NODE_PHASE" =~ ^(bootstrap|certificate|canary|inspect|controller-audit|service-audit|awg-netns-canary)$ ]] || exit 2
+          [[ "$NODE_PHASE" =~ ^(auto|bootstrap|certificate|canary|inspect|controller-audit|service-audit|awg-netns-canary)$ ]] || exit 2
           python3 nodekit/fleet_plan.py --country "$NODE_COUNTRY" --write-spec "$RUNNER_TEMP/nodekit-spec.json" > "$RUNNER_TEMP/nodekit-reviewed.json"
           python3 - <<'PY'
           import json,os,pathlib
@@ -55,13 +55,13 @@ jobs:
               print('EXPECTED_IDENTITY_SHA='+str(entry['expected_identity_public_sha256'] or ''),file=env)
           PY
       - name: Setup pinned compiler for official AWG 3.1 sources
-        if: env.NODE_PHASE == 'bootstrap'
+        if: env.NODE_PHASE == 'bootstrap' || env.NODE_PHASE == 'auto'
         uses: actions/setup-go@v6
         with:
           go-version: '1.25.4'
           check-latest: false
       - name: Build pinned AWG 3.1 artifacts for exact native CPU
-        if: env.NODE_PHASE == 'bootstrap'
+        if: env.NODE_PHASE == 'bootstrap' || env.NODE_PHASE == 'auto'
         shell: bash
         run: |
           set -Eeuo pipefail
