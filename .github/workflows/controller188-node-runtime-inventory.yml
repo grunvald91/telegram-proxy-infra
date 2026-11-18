@@ -1,0 +1,77 @@
+name: RU188 existing isolated Node runtime opportunities (read-only)
+"on":
+  push:
+    branches: [main]
+    paths: [".github/workflows/controller188-node-runtime-inventory.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: controller188-node-runtime-readonly
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify 188 host trust and prepare existing SSH access
+        run: |
+          set -euo pipefail
+          test -n "$SSH_PASSWORD"
+          grep -q '^188\.120\.254\.223 ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass >/dev/null
+      - name: Inspect ONLY existing controller 188 Docker runtime (no writes)
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$SSH_PASSWORD"
+          sshpass -e ssh -T -F /dev/null -o ConnectTimeout=12 \
+            -o BatchMode=no -o PasswordAuthentication=yes -o PubkeyAuthentication=no \
+            -o KbdInteractiveAuthentication=no -o StrictHostKeyChecking=yes \
+            -o HostKeyAlgorithms=ssh-ed25519 \
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no \
+            -o ClearAllForwardings=yes -o ForwardAgent=no -o LogLevel=ERROR \
+            root@188.120.254.223 'python3 -' <<'PY'
+          import json,platform,shutil,subprocess
+          def cmd(args):
+              try:
+                  p=subprocess.run(args,capture_output=True,text=True,timeout=8)
+                  return p.returncode,p.stdout.strip()
+              except Exception:return 255,''
+          print('controller=188.120.254.223')
+          print('host_arch='+platform.machine())
+          print('host_node_available='+str(shutil.which('node') is not None).lower())
+          print('host_ssh_available='+str(shutil.which('ssh') is not None).lower())
+          print('host_docker_available='+str(shutil.which('docker') is not None).lower())
+          for container in ['mnebyvpn-public-web','mnebyvpn-stage-web',
+                            'mnebyvpn-vpn-worker','mnebyvpn-bot-info',
+                            'mnebyvpn-stage-postgres']:
+              rc,data=cmd(['docker','inspect','--format',
+                            '{{json .Config.Image}}',container])
+              if rc!=0:
+                  print('container_'+container+'=absent')
+                  continue
+              try: image=json.loads(data)
+              except ValueError: image='unknown'
+              print('container_'+container+'_image='+str(image)[:180])
+              rc,node=cmd(['docker','exec',container,'sh','-c',
+                            'command -v node >/dev/null 2>&1 && node -v || true'])
+              print('container_'+container+'_node_version='+
+                    (node if rc==0 and node.startswith('v') and len(node)<30 else 'not_available'))
+              rc,ssh=cmd(['docker','exec',container,'sh','-c',
+                            'command -v ssh >/dev/null 2>&1 && echo yes || echo no'])
+              print('container_'+container+'_ssh_available='+
+                    ('true' if ssh=='yes' else 'false'))
+          rc,images=cmd(['docker','image','ls','--format','{{.Repository}}:{{.Tag}}|{{.ID}}'])
+          if rc==0:
+              for line in images.splitlines():
+                  if any(s in line.lower() for s in ['node:','mnebyvpn','postgres:']):
+                      print('local_image='+line[:160])
+          print('audit_read_only=true')
+          PY
