@@ -17,7 +17,7 @@ import sys
 
 from awg_controller_readiness import inspect as awg_controller_inspect
 from awg_controller_readiness import HOST_REVIEWED, NODE_REVIEWED
-from install_components import node_ready, safe_manifest
+from install_components import node_ready, safe_manifest, safe_dir
 from awg_peer_grants import protected_file
 
 ROOT = Path("/var/lib/mnebyvpn-nodekit")
@@ -43,6 +43,7 @@ def dns_proxy_stage(node: Path) -> dict:
         return {"staged": False, "route_count": 0, "personal_access_verified": False,
                 "external_e2e_verified": False, "ready": False,
                 "blockers": ["dns_proxy_stage_missing"]}
+    safe_dir(stage_dir)
     meta = safe_manifest(stage_dir / "manifest.json")
     if (meta.get("node_id") != node.name or meta.get("state") != "staged" or
             meta.get("activation_enabled") is not False or
@@ -73,6 +74,7 @@ def tls_stage(node: Path, host: str) -> dict:
     if not tls.exists() and not tls.is_symlink():
         return {"staged": False, "personal_fqdn_tls_verified": False,
                 "blockers": ["tls_stage_missing"]}
+    safe_dir(tls)
     meta = safe_manifest(tls / "manifest.json")
     if (meta.get("node_id") != node.name or meta.get("hostname") != host or
             meta.get("state") != "certificate_staged" or
