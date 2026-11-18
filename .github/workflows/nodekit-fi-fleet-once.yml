@@ -1,24 +1,23 @@
-name: FI fleet controller smoke dispatcher (one-off)
+name: FI fleet automatic dispatch smoke (one-off)
 on:
   push:
     branches: [feat/nodekit-fleet-bootstrap-20261118]
     paths: [.github/workflows/nodekit-fi-fleet-once.yml]
 permissions:
-  contents: read
-  actions: write
+  contents: write
 jobs:
   dispatch:
+    if: github.repository == 'grunvald91/telegram-proxy-infra'
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
-      - name: Test both AWG and local DoT fleet canaries
+      - name: Simulate approved central-controller new-node event
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -Eeuo pipefail
           gh api --method POST \
-            repos/grunvald91/telegram-proxy-infra/actions/workflows/nodekit-fleet-bootstrap.yml/dispatches \
-            -f ref=main \
-            -f "inputs[country]=fi" \
-            -f "inputs[phase]=canary"
+            repos/grunvald91/telegram-proxy-infra/dispatches \
+            -f event_type=nodekit-bootstrap-approved \
+            -f "client_payload[country]=fi"
