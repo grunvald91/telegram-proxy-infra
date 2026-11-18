@@ -10,7 +10,7 @@ Trusted central controller должен **перед подписанием** п
 
 `nodeId, op, entitlementId, revision, peerPublicKey, clientIpv4, expiresAt, issuedAt, nonce, signature`
 
-- `op=grant`: только для установленного узла, `expiresAt` в будущем не дальше 100 дней, ревизия строго растёт.
+- `op=grant`: только для установленного узла, `expiresAt` в будущем не дальше 60 минут, ревизия строго растёт.
 - `op=revoke`: тот же entitlement, ключ и IP, новая ревизия, `expiresAt=null`; нельзя выдать доступ старой командой.
 - Адрес клиента внутри тестового туннеля `10.73.91.2…254/32`; локальная подсеть статична **только для одного финского тестового узла**. Для нескольких стран потребуется IPAM/подсеть из общего контроллера до реальной публикации. Одинаковые публичные ключи и IPv4 повторно не назначаются.
 - Публичный ключ клиента создаётся клиентом; приватный клиентский ключ никогда не попадает в Nodekit. Редкая ключевая ротация проходит отдельным одобренным процессом.
@@ -36,3 +36,5 @@ Trusted central controller должен **перед подписанием** п
 Actions `nodekit-prepare-new-vps.yml`: `awg_watchdog_install` и `awg_grants_inspect`. При запуске `fleet bootstrap` watchdog устанавливается без активации. Контроль безопасности: выполнять повторные bootstrap без изменения ключей, проверять целостность, одиночность адресов и режим без клиентов до выдачи первой подписки.
 
 Официальные первоисточники: [AmneziaWG Go](https://github.com/amnezia-vpn/amneziawg-go) и [AmneziaWG tools](https://github.com/amnezia-vpn/amneziawg-tools); команда `awg syncconf` используется в [официальном systemd service](https://github.com/amnezia-vpn/amneziawg-tools/blob/master/src/systemd/wg-quick@.service).
+
+Security review (2026-11-18): the node accepts no caller-supplied controller public key; only its pinned SPKI, and every signed grant expires within **60 minutes** even if the central controller is unavailable. A future delivery worker must refresh active leases before expiry (e.g. every 15 min). Live AWG peer `AllowedIPs` are checked exactly, not just the peer keys.
