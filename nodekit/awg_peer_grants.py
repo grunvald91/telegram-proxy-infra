@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import base64
 import datetime as dt
+import fcntl
 import hashlib
 import ipaddress
 import json
@@ -239,7 +240,8 @@ def active_peers(state: dict, now: float) -> list[dict]:
 
 def render_runtime_config(base: str, peers: list[dict]) -> str:
     if (not isinstance(base, str) or base.count("[Interface]") != 1 or
-            "[Peer]" in base or not base.rstrip().endswith(("off", "0"))):
+            "[Peer]" in base or "PrivateKey = " not in base or
+            "HeaderProtectionKey = " not in base):
         raise GrantError("Unexpected baseline AmneziaWG configuration")
     result = [base.rstrip() + "\n"]
     for peer in peers:
@@ -254,6 +256,8 @@ def render_runtime_config(base: str, peers: list[dict]) -> str:
 def persist_state(path: Path, state: dict) -> None:
     if path.is_symlink():
         raise GrantError("Grant ledger cannot be a symlink")
+    if path.exists():
+        protected_file(path, max_bytes=50000)
     fd, temp = tempfile.mkstemp(prefix=".grants-", dir=path.parent)
     try:
         os.fchmod(fd, 0o600)
@@ -310,6 +314,30 @@ def reconcile(node: Path, state: dict, now: float, *,
     return {"active": True, "peers": len(peers), "published": False}
 
 
+class LedgerLock:
+    """Serialize signed updates, expiry sweeps and reconciliations."""
+
+    def __init__(self, node: Path):
+        self.path = node / "amneziawg" / "peer-grants.lock"
+        self.fd: int | None = None
+
+    def __enter__(self):
+        self.fd = os.open(self.path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        st = os.fstat(self.fd)
+        if st.st_uid != 0 or st.st_mode & 0o077 or not stat.S_ISREG(st.st_mode):
+            os.close(self.fd)
+            self.fd = None
+            raise GrantError("Unsafe controller ledger lock")
+        fcntl.flock(self.fd, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if self.fd is not None:
+            fcntl.flock(self.fd, fcntl.LOCK_UN)
+            os.close(self.fd)
+            self.fd = None
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--node-id", required=True)
@@ -328,36 +356,39 @@ def main() -> int:
         safe_dir(node / "amneziawg")
         validate_awg(node)
         ledger = node / "amneziawg" / "peer-grants.json"
-        state = (validate_state(json.loads(protected_file(ledger)), node.name)
-                 if ledger.exists() or ledger.is_symlink() else empty_state(node.name))
-        now = dt.datetime.now(dt.timezone.utc).timestamp()
-        if args.mode in ("verify", "apply"):
-            if args.command is None:
-                raise GrantError("Signed command required")
-            req = json.loads(protected_file(args.command, max_bytes=4096))
-            validate_command(req, node.name, now)
-            verify_signature(req, args.controller_public)
-            planned = transition(state, req, now)
-            if args.mode == "apply":
-                # Do NOT grant remote access if AWG is not already running
-                # under an approved service lifecycle.
-                from awg_lifecycle import active_unit, unit_name
-                if not active_unit(unit_name(node.name)):
-                    raise GrantError("AWG is inactive; cannot grant access")
-                persist_state(ledger, planned)
-                state = planned
-        if args.mode in ("reconcile", "apply"):
-            live = reconcile(node, state, now)
-        else:
-            live = {"active": False, "published": False}
-        print(json.dumps({
-            "node_id": node.name, "signed_command_verified": args.mode in ("verify", "apply"),
-            "active_grants": len(active_peers(state, now)),
-            "ledger_entries": len(state["grants"]),
-            "controller_provisioning_active": False,
-            "external_e2e_verified": False,
-            **live,
-        }, sort_keys=True))
+        with LedgerLock(node):
+            state = (validate_state(json.loads(protected_file(ledger)), node.name)
+                     if ledger.exists() or ledger.is_symlink() else empty_state(node.name))
+            now = dt.datetime.now(dt.timezone.utc).timestamp()
+            if args.mode in ("verify", "apply"):
+                if args.command is None:
+                    raise GrantError("Signed command required")
+                req = json.loads(protected_file(args.command, max_bytes=4096))
+                validate_command(req, node.name, now)
+                verify_signature(req, args.controller_public)
+                planned = transition(state, req, now)
+                if args.mode == "apply":
+                    # Do NOT grant remote access if AWG is not already running
+                    # under an approved service lifecycle.
+                    from awg_lifecycle import active_unit, unit_name
+                    if not active_unit(unit_name(node.name)):
+                        raise GrantError("AWG is inactive; cannot grant access")
+                    persist_state(ledger, planned)
+                    state = planned
+            if args.mode in ("reconcile", "apply"):
+                live = reconcile(node, state, now)
+            else:
+                live = {"active": False, "published": False}
+            report = {
+                "node_id": node.name,
+                "signed_command_verified": args.mode in ("verify", "apply"),
+                "active_grants": len(active_peers(state, now)),
+                "ledger_entries": len(state["grants"]),
+                "controller_provisioning_active": False,
+                "external_e2e_verified": False,
+                **live,
+            }
+        print(json.dumps(report, sort_keys=True))
         return 0
     except (OSError, ValueError, TypeError, subprocess.SubprocessError) as error:
         print("nodekit_awg_grants_error=" + type(error).__name__, file=sys.stderr)
