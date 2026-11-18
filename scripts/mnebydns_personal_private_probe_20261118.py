@@ -251,18 +251,34 @@ def report():
 
 def revoke():
     if os.geteuid()!=0:raise RuntimeError('ROOT_REQUIRED')
-    if TIMER.exists() and 'Unit=mnebydns-personal-private-probe.service' in TIMER.read_text():
-        subprocess.run(['systemctl','disable','--now',TIMER.name],check=True,timeout=15,capture_output=True)
-        TIMER.unlink()
-    if SERVICE.exists() and str(SELF) in SERVICE.read_text():
-        SERVICE.unlink()
+    managed_timer=(TIMER.exists() and
+                   'Unit=mnebydns-personal-private-probe.service' in TIMER.read_text())
+    managed_service=(SERVICE.exists() and str(SELF) in SERVICE.read_text())
+    if TIMER.exists() and not managed_timer:
+        raise RuntimeError('TIMER_NAME_CONFLICT')
+    if SERVICE.exists() and not managed_service:
+        raise RuntimeError('SERVICE_NAME_CONFLICT')
+    # Stop the timer before revoking: it must not recreate the identity.
+    if managed_timer:
+        subprocess.run(['systemctl','disable','--now',TIMER.name],
+                       check=True,timeout=15,capture_output=True)
+    try:
+        if STATE.exists():
+            data=read_state()
+            delete_own_row(data)
+            STATE.unlink()
+            print('PRIVATE_PERSONAL_MONITOR=REVOKED')
+        else:
+            print('PRIVATE_PERSONAL_MONITOR=ALREADY_ABSENT')
+    except BaseException:
+        # Identity still exists, so restore monitoring if it was active.
+        if managed_timer:
+            subprocess.run(['systemctl','enable','--now',TIMER.name],
+                           check=True,timeout=15,capture_output=True)
+        raise
+    if managed_timer:TIMER.unlink()
+    if managed_service:SERVICE.unlink()
     subprocess.run(['systemctl','daemon-reload'],check=True,timeout=10,capture_output=True)
-    if not STATE.exists():
-        print('PRIVATE_PERSONAL_MONITOR=ALREADY_ABSENT');return
-    data=read_state()
-    delete_own_row(data)
-    STATE.unlink()
-    print('PRIVATE_PERSONAL_MONITOR=REVOKED')
 
 if __name__=='__main__':
     try:
