@@ -22,7 +22,7 @@ class TestNetnsAwgCanary(unittest.TestCase):
         self.assertIn('H1 = 1',result)
         self.assertIn('H4 = 4',result)
         self.assertIn('AllowedIPs = 10.73.91.1/32',result)
-        self.assertIn('Endpoint = 172.31.254.1:51821',result)
+        self.assertIn('Endpoint = 198.19.254.1:51821',result)
         self.assertIn('Address = 10.73.91.2/24',result)
         self.assertNotIn('PostUp',result)
         self.assertNotIn('iptables',result)
