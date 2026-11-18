@@ -150,9 +150,12 @@ def dns_query(label,domain,endpoint):
     return values
 
 def delete_own_row(data):
-    db("DELETE FROM owner_dns_links WHERE id='"+data['id']+
-       "' AND owner_telegram_id="+str(OWNER)+
-       " AND request_key='"+data['request_key']+"';")
+    result=db("WITH deleted AS (DELETE FROM owner_dns_links WHERE id='"+data['id']+
+              "' AND owner_telegram_id="+str(OWNER)+
+              " AND request_key='"+data['request_key']+"' RETURNING id) "
+              "SELECT count(*) FROM deleted;")
+    if result!='1':
+        raise RuntimeError('MONITOR_REVOKE_ROW_COUNT_INVALID')
 
 def verify_profile(data):
     if status(data['label'])!='ALLOWED':
