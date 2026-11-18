@@ -1,6 +1,7 @@
 import base64
 import datetime as dt
 import hashlib
+import os
 import json
 from pathlib import Path
 import subprocess
@@ -110,6 +111,56 @@ class EnrollmentProofTest(unittest.TestCase):
                              dt.datetime(2026,11,18,10,tzinfo=dt.timezone.utc))
         with self.assertRaises(m.EnrollmentSshError):
             m.b64("a"*44,m.B64_43,32)
+
+    def test_private_file_rejects_symlink_fifo_and_oversized_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory=Path(tmp)
+            target=directory/"file"
+            target.write_bytes(b"test")
+            # O_NOFOLLOW is independent of stat ownership checks.
+            (directory/"linked").symlink_to(target)
+            with self.assertRaises(m.EnrollmentSshError):
+                m.private_file(directory/"linked")
+            fifo=directory/"fifo"
+            os.mkfifo(fifo)
+            with self.assertRaises(m.EnrollmentSshError):
+                m.private_file(fifo)
+            with self.assertRaises(m.EnrollmentSshError):
+                m.private_file(target,max_bytes=0)
+            with self.assertRaises(m.EnrollmentSshError):
+                m.private_file(target,max_bytes=1)
+
+    def test_duplicate_signed_fields_are_rejected(self):
+        with self.assertRaises(m.EnrollmentSshError):
+            m.unique_json_pairs([("nodeId","fi-test-01"),
+                                 ("nodeId","attacker-node")])
+        self.assertEqual(m.unique_json_pairs([("nodeId","fi-test-01")]),
+                         {"nodeId":"fi-test-01"})
+
+    def test_controller_challenge_and_proof_serialize_identically_to_node_js(self):
+        example={
+            "nodeId":m.NODE,"endpointHost":m.HOST,
+            "publicSpki":"A"*59,"challengeId":"11111111-2222-4333-8444-555555555555",
+            "nonce":"B"*43,"expiresAt":"2026-11-18T10:04:00.000Z",
+        }
+        script=r"""
+const fs=require('node:fs');
+const c=JSON.parse(fs.readFileSync(0,'utf8'));
+const data=JSON.stringify([
+  'MNEBYVPN_ENROLL_CHALLENGE_V1',
+  c.nodeId,c.endpointHost,c.publicSpki,c.challengeId,c.nonce,c.expiresAt
+]);
+const proof=JSON.stringify([
+  'MNEBYVPN_NODE_ENROLL_V1',
+  c.nodeId,c.endpointHost,c.publicSpki,c.challengeId,c.nonce
+]);
+process.stdout.write(data+'\\n'+proof+'\\n');
+"""
+        result=subprocess.run(["node","-e",script],
+                              input=json.dumps(example).encode(),
+                              check=True,capture_output=True)
+        expected=m.canonical_message(example)+b"\n"+m.proof_message(example)+b"\n"
+        self.assertEqual(result.stdout,expected)
 
     def test_untrusted_directory_is_not_a_production_identity(self):
         with tempfile.TemporaryDirectory() as tmp:
