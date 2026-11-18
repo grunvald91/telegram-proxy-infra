@@ -1,0 +1,41 @@
+name: FI public-key enrollment stage (RU188 + FI only, subscribers off)
+"on":
+  push:
+    branches: [main]
+    paths:
+      - nodekit/fi_public_enrollment_stage.py
+      - nodekit/fi_public_stage_runner.sh
+      - .github/workflows/fi-public-enrollment-stage.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: fi-public-enrollment-stage-once
+  cancel-in-progress: false
+jobs:
+  stage:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: node-fi
+    timeout-minutes: 18
+    env:
+      RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      FI_PASSWORD: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_PASSWORD }}
+      FI_USER: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_USER }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate reviewed installer syntax before server contact
+        run: |
+          set -euo pipefail
+          bash -n nodekit/fi_public_stage_runner.sh
+          python3 -m py_compile nodekit/fi_public_enrollment_stage.py nodekit/fi_enrollment_ssh.py
+      - name: Install existing password SSH transport on ephemeral runner
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends sshpass >/dev/null
+      - name: Stage only pinned public identity and forced enrollment SSH on FI/RU188
+        shell: bash
+        run: bash nodekit/fi_public_stage_runner.sh
