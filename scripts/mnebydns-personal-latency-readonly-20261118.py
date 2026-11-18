@@ -135,7 +135,14 @@ def endpoints_for(role):
 def node(role):
     endpoints=endpoints_for(role)
     if role=="ru":
-        try:endpoints.append(("ru_private_personal_backend",private_endpoint()))
+        try:
+            active=private_endpoint()
+            endpoints.append(("ru_private_personal_backend",active))
+            # Old generation is an UNVERIFIED candidate, not an authorized
+            # fallback. Its real subscriber / revoked / expired behavior is
+            # NOT implied by a successful TLS handshake.
+            if active[1] != 8856:
+                endpoints.append(("ru_legacy_8856_transport_only",(active[0],8856)))
         except Exception as ex:
             return {"vantage":role,"error":str(ex),"authenticated_dns_queries":"NOT_TESTED"}
     result={"vantage":role,"time_utc":int(time.time()),
@@ -164,6 +171,7 @@ def main():
         assert "aaa".isascii()
         assert endpoints_for("de")==[("de_local_personal_sni",("127.0.0.1",8854))]
         assert endpoints_for("ru")==[("public_personal_ingress",(PUBLIC,853))]
+        assert "ru_legacy_8856_transport_only" in open(__file__,encoding="utf8").read()
         print("PERSONAL_DOT_LATENCY_OFFLINE=PASS")
     else:node(opt.vantage)
 
