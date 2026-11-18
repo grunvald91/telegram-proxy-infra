@@ -1,0 +1,23 @@
+name: FI AWG controlled egress installer one-shot
+on:
+  push:
+    branches: [feat/nodekit-awg-egress-service-20261118]
+    paths: [.github/workflows/nodekit-fi-awg-egress-once.yml]
+permissions:
+  contents: write
+jobs:
+  dispatch:
+    if: github.repository == 'grunvald91/telegram-proxy-infra'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Stage guarded AWG egress without enabling clients
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          gh api --method POST \
+            repos/grunvald91/telegram-proxy-infra/dispatches \
+            -f event_type=nodekit-bootstrap-approved \
+            -f "client_payload[country]=fi"
