@@ -13,6 +13,9 @@ def evidence():
     def node(port, p95):
         return {
             "port":port,
+            "gateway_build_sha256":"a"*64,
+            "route_policy_sha256":"b"*64,
+            "owner_status_function_sha256":"c"*64,
             "ca_verified_personal_tls":"pass",
             "failure_domain":"ru188-single-awg-tunnel",
             "ingress_id":"de89-personal-sni",
@@ -92,6 +95,21 @@ class PersonalFailoverTests(unittest.TestCase):
         for rr in ("googlevideo_aaaa","googlevideo_https"):
             data=evidence()
             data["standby"]["routes"]["smart_dns"][rr]="direct"
+            self.assertFalse(assess(data)["personal_backend_process_fallback_candidate"])
+
+    def test_matching_domains_do_not_override_different_gateway_code(self):
+        for name in ("gateway_build_sha256","route_policy_sha256",
+                     "owner_status_function_sha256"):
+            data=evidence()
+            data["standby"][name]="d"*64
+            out=assess(data)
+            self.assertFalse(out["personal_backend_process_fallback_candidate"])
+            self.assertIn(name+"_not_proven_identical",out["missing_or_failed_gates"])
+
+    def test_missing_or_malformed_policy_hash_never_passes(self):
+        for bad in (None,"",True,"x"*64,"a"*63):
+            data=evidence()
+            data["standby"]["route_policy_sha256"]=bad
             self.assertFalse(assess(data)["personal_backend_process_fallback_candidate"])
 
     def test_standby_latency_is_a_hard_gate(self):
