@@ -35,7 +35,7 @@ class TestWatchdogContract(unittest.TestCase):
         # Nodekit and official OpenSSL use the same Ed25519 payload; no
         # external Python package and no generated signing key in production.
         now='2026-11-18T04:00:00.000Z'
-        later='2026-11-19T04:00:00.000Z'
+        later='2026-11-18T04:30:00.000Z'
         request={
             'nodeId':'fi-test-01',
             'op':'grant',

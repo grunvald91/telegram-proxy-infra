@@ -10,7 +10,7 @@ const base={
   revision:1,
   peerPublicKey:Buffer.from(Array.from({length:32},(_,i)=>i)).toString('base64'),
   clientIpv4:'10.73.91.2',
-  expiresAt:'2026-11-19T04:00:00.000Z',
+  expiresAt:'2026-11-18T04:30:00.000Z',
   issuedAt:'2026-11-18T04:00:00.000Z',
   nonce:'a'.repeat(64)
 };

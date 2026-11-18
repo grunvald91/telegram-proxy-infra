@@ -165,7 +165,11 @@ def up():
         if old is not None:
             for table,chain,args in firewall():
                 if ipt(table,"-C",chain,args,check=False).returncode!=0:
-                    raise EgressError("Active egress rules drifted")
+                    _down()
+                    raise EgressError("Active egress rules drifted; rolled back")
+            if Path("/proc/sys/net/ipv4/ip_forward").read_text().strip()!="1":
+                _down()
+                raise EgressError("AWG forwarding drifted; rolled back")
             return {"network_enabled":True,"already_up":True}
         for table,chain,args in firewall():
             if COMMENT in ipt(table,"-S",chain,[]).stdout:
@@ -193,14 +197,32 @@ def _down():
         for table,chain,args in reversed(firewall()):
             ipt(table,"-D",chain,args,check=False)
         raise EgressError("Corrupt state: owned NAT removed, forwarding requires review")
-    if old is None:return {"network_enabled":False}
+    if old is None:
+        # The host could have crashed after inserting firewall entries but
+        # before the state file became visible, or state may have been lost.
+        # Remove ONLY our exact rules; never change global ip_forward
+        # without a previously recorded value.
+        for table, chain, args in reversed(firewall()):
+            for _ in range(16):
+                if ipt(table, "-C", chain, args, check=False).returncode != 0:
+                    break
+                ipt(table, "-D", chain, args)
+        if any(ipt(t, "-C", c, args, check=False).returncode == 0
+               for t,c,args in firewall()):
+            raise EgressError("Orphan AWG firewall rules still present")
+        return {"network_enabled":False, "orphan_rules_checked":True}
     for table,chain,args in reversed(firewall()):
-        ipt(table,"-D",chain,args,check=False)
-    if old["previous_forward"]=="0":
-        call(["sysctl","-w","net.ipv4.ip_forward=0"],check=False)
-    # Do not erase state if a rule survived; operator must investigate.
+        for _ in range(16):
+            if ipt(table,"-C",chain,args,check=False).returncode != 0:
+                break
+            ipt(table,"-D",chain,args)
+    # Do not erase state while residual egress rules are still present.
     if any(ipt(t,"-C",c,args,check=False).returncode==0 for t,c,args in firewall()):
-        raise EgressError("Egress cleanup incomplete")
+        raise EgressError("Egress cleanup incomplete: residual firewall rules")
+    if old["previous_forward"]=="0":
+        call(["sysctl","-w","net.ipv4.ip_forward=0"])
+        if Path("/proc/sys/net/ipv4/ip_forward").read_text().strip()!="0":
+            raise EgressError("IPv4 forwarding rollback could not be verified")
     STATE.unlink(missing_ok=True)
     return {"network_enabled":False,"rolled_back":True}
 

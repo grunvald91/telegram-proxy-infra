@@ -181,7 +181,7 @@ jobs:
           }
           trap cleanup EXIT
 
-          remote_scp nodekit/nodekit.py nodekit/identity.py nodekit/install_components.py nodekit/dns_proxy_stage.py nodekit/hostname_migrate.py nodekit/dot_local_canary.py nodekit/awg_lifecycle.py nodekit/awg_peer_grants.py nodekit/awg_egress.py nodekit/install_awg_watchdog.py nodekit/tls_stage.py nodekit/provision_node.py nodekit/vpn_stage.py \
+          remote_scp nodekit/nodekit.py nodekit/identity.py nodekit/install_components.py nodekit/dns_proxy_stage.py nodekit/hostname_migrate.py nodekit/dot_local_canary.py nodekit/awg_lifecycle.py nodekit/awg_peer_grants.py nodekit/awg_upgrade.py nodekit/awg_egress.py nodekit/install_awg_watchdog.py nodekit/tls_stage.py nodekit/provision_node.py nodekit/vpn_stage.py \
             nodekit/vpn_supervisor.py nodekit/install_supervisor.py nodekit/forward_command.py \
             nodekit/systemd/mnebyvpn-nodekit-vpn@.service.example \
             "$RUNNER_TEMP/nodekit-credentials/spec.json" "$target:$remote_dir/"
@@ -196,12 +196,19 @@ jobs:
               echo '::error::Host migration only approved for the existing isolated FI staging node'; exit 2;
             }
             remote_ssh "python3 '$remote_dir/hostname_migrate.py' --node-id '$NODE_ID'"
-          elif [[ "$MODE" == 'awg_egress_install' || "$MODE" == 'awg_egress_inspect' ]]; then
+          elif [[ "$MODE" == 'awg_egress_install' || "$MODE" == 'awg_watchdog_install' ]]; then
+            if [[ "$NODE_ID" == 'fi-test-01' && "$TARGET_IP" == '217.11.167.91' ]]; then
+              remote_ssh "python3 '$remote_dir/awg_upgrade.py' --node-id '$NODE_ID' --source-dir '$remote_dir'"
+            fi
+            if [[ "$MODE" == 'awg_egress_install' ]]; then
+              remote_ssh "python3 '$remote_dir/awg_egress.py' --node-id '$NODE_ID' --mode install"
+            else
+              remote_ssh "python3 '$remote_dir/install_awg_watchdog.py' --node-id '$NODE_ID'"
+            fi
+          elif [[ "$MODE" == 'awg_egress_inspect' ]]; then
             egress_mode=inspect
             if [[ "$MODE" == 'awg_egress_install' ]]; then egress_mode=install; fi
             remote_ssh "python3 '$remote_dir/awg_egress.py' --node-id '$NODE_ID' --mode '$egress_mode'"
-          elif [[ "$MODE" == 'awg_watchdog_install' ]]; then
-            remote_ssh "python3 '$remote_dir/install_awg_watchdog.py' --node-id '$NODE_ID'"
           elif [[ "$MODE" == 'awg_grants_inspect' ]]; then
             remote_ssh "python3 '$remote_dir/awg_peer_grants.py' --node-id '$NODE_ID' --mode inspect"
           elif [[ "$MODE" == 'awg_install' || "$MODE" == 'awg_canary' ]]; then
