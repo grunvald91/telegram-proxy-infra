@@ -24,3 +24,18 @@ restrict,command="/usr/bin/python3 /opt/mnebyvpn-nodekit/fi_enrollment_ssh.py --
 - No public proxy, personal DoT, AWG peer, REALITY/VLESS profile or paid entitlement is opened by this enrollment step.
 
 Node-side module and root ownership tests are offline only. Until separately pinned keys, a trusted controller host and production DB approval are provided, **do not run the enrollment**. See `nodekit/CONTROLLER_READINESS.md` and Mnebyvpn `docs/fi-controller-enrollment.md`.
+
+
+## Security review 2026-11-18
+
+The FI forced-command implementation now checks the private Nodekit stage root
+and reads each sensitive file using a single `O_NOFOLLOW` file descriptor,
+verifying its inode with `fstat` before reading. Symlink/fifo substitution
+and unexpectedly large files are rejected. Duplicate keys in the incoming
+signed JSON challenge are rejected rather than silently resolved by the JSON
+parser. Tests cover a real Node.js↔Python canonical-message comparison as well
+as Ed25519 challenge/proof signatures.
+
+The script is **not** installed on the FI server by this review. Its
+trusted-controller public key and the independent SSH host pin still require
+operator-approved provisioning before real enrollment.
