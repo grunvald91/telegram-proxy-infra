@@ -152,6 +152,10 @@ run_web() {
       merchant_env+=(--env-file "$ROOT/public/yookassa.env")
     fi
   fi
+  local proxy_env=()
+  if [ -s "$ROOT/public/web-proxy.env" ]; then
+    proxy_env+=(--env-file "$ROOT/public/web-proxy.env")
+  fi
   docker run -d "${policy_flags[@]}" --name "$name" \
     --network host --user 1000:1000 --read-only \
     --tmpfs /tmp:rw,nosuid,nodev,size=32m \
@@ -159,7 +163,7 @@ run_web() {
     --memory 300m --cpus 0.4 --env-file "$ENV_FILE" \
     --env-file "$ROOT/bot/worker.env" \
     --env-file "$ROOT/public/subscription-db.env" \
-    "${auth_env[@]}" "${billing_env[@]}" "${merchant_env[@]}" -e "WEB_PORT=$port" "$image" >/dev/null
+    "${auth_env[@]}" "${billing_env[@]}" "${merchant_env[@]}" "${proxy_env[@]}" -e "WEB_PORT=$port" "$image" >/dev/null
 }
 public_listener() { ss -H -lnt | awk '{print $4}' | grep -Fqx '127.0.0.1:8792'; }
 healthy() {

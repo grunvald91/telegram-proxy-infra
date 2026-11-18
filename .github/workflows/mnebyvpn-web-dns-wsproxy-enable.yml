@@ -1,0 +1,213 @@
+name: Enable MNEBYVPN Smart DNS & Telegram WebSocket Proxy
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mnebyvpn-auto-public-deploy
+  cancel-in-progress: false
+
+jobs:
+  enable:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      HOST_188: '188.120.254.223'
+      HOST_89: '89.125.90.101'
+      PASS_188: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      PASS_89: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: infra
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: grunvald91/Mnebyvpn
+          ref: main
+          path: vpn
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate shell scripts and source CI commit
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PASS_188" || { echo 'Missing SERVER188_SSH_PASSWORD'; exit 2; }
+          test -n "$PASS_89" || { echo 'Missing RELAY89_SSH_PASSWORD'; exit 2; }
+          bash -n infra/scripts/mnebyvpn-auto-web-promote.sh
+          bash -n infra/scripts/mnebyvpn-web-dns-wsproxy-enable.sh
+          sha="$(git -C vpn rev-parse HEAD)"
+          [[ "$sha" =~ ^[a-f0-9]{40}$ ]]
+          curl -fsSL --retry 2 --max-time 25 \
+            -H "Authorization: Bearer ${{ github.token }}" \
+            'https://api.github.com/repos/grunvald91/Mnebyvpn/actions/workflows/offline-contracts.yml/runs?branch=main&status=success&per_page=15' \
+            -o "$RUNNER_TEMP/ci.json"
+          green="$(python3 - "$RUNNER_TEMP/ci.json" <<'PY'
+          import json, sys
+          for r in json.load(open(sys.argv[1])).get('workflow_runs', []):
+              if r.get('conclusion') == 'success' and r.get('head_branch') == 'main' and r.get('event') == 'push':
+                  print(r['head_sha'])
+                  break
+          PY
+          )"
+          [[ "$green" =~ ^[a-f0-9]{40}$ ]]
+          git -C vpn merge-base --is-ancestor "$green" "$sha"
+          git -C vpn diff --quiet "$green" "$sha" -- apps/web packages db package.json tsconfig.json
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+
+      - name: Read and validate live Telegram WebSocket proxy routes from 89
+        shell: bash
+        run: |
+          set -euo pipefail
+          opts=(-o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          export SSHPASS="$PASS_89"
+          sshpass -e ssh "${opts[@]}" "root@$HOST_89" 'python3 - <<'\''PY'\''
+          import json, pathlib, subprocess
+
+          def read_json(p):
+              f = pathlib.Path(p)
+              return json.loads(f.read_text(encoding="utf-8")) if f.is_file() else {}
+
+          def active(unit):
+              return subprocess.run(["systemctl", "is-active", "--quiet", unit]).returncode == 0
+
+          out = {"ru": None, "direct": None}
+          if active("tproxy-server-ru"):
+              cfg = read_json("/etc/tproxy-server-ru/config.json")
+              profs = read_json("/etc/tproxy-server-ru/profiles.json")
+              secret = ""
+              if isinstance(profs.get("profiles"), list) and profs["profiles"]:
+                  secret = str(profs["profiles"][0].get("secret") or "")
+              secret = secret or str(cfg.get("web_secret") or cfg.get("secret") or "")
+              bp = str(cfg.get("base_path") or "").strip("/")
+              dom = str(cfg.get("domain") or "bandbook.site").strip()
+              if dom and bp and secret:
+                  out["ru"] = {"route": "ru", "server": f"{dom}/{bp}", "secret": secret}
+
+          if active("tproxy-server"):
+              cfg = read_json("/etc/tproxy-server/config.json")
+              profs = read_json("/etc/tproxy-server/profiles.json")
+              secret = ""
+              if isinstance(profs.get("profiles"), list) and profs["profiles"]:
+                  secret = str(profs["profiles"][0].get("secret") or "")
+              secret = secret or str(cfg.get("web_secret") or cfg.get("secret") or "")
+              bp = str(cfg.get("base_path") or "").strip("/")
+              dom = str(cfg.get("domain") or "cdn.servgo.ru").strip()
+              if dom and bp and secret:
+                  out["direct"] = {"route": "direct", "server": f"{dom}/{bp}", "secret": secret}
+
+          print(json.dumps(out))
+          PY' > "$RUNNER_TEMP/relay89_ws.json"
+          chmod 600 "$RUNNER_TEMP/relay89_ws.json"
+
+          # Mask every secret/path before probing URLs or writing payloads
+          python3 - "$RUNNER_TEMP/relay89_ws.json" "$RUNNER_TEMP/probe.env" <<'PY'
+          import json, pathlib, sys
+          data = json.load(open(sys.argv[1]))
+          lines = []
+          for key in ('ru', 'direct'):
+              item = data.get(key)
+              if not item:
+                  continue
+              srv = item['server']
+              sec = item['secret']
+              dom, bp = srv.split('/', 1)
+              print(f'::add-mask::{sec}')
+              print(f'::add-mask::{bp}')
+              print(f'::add-mask::{srv}')
+              lines.append(f'{key.upper()}_SERVER={srv}')
+              lines.append(f'{key.upper()}_SECRET={sec}')
+          pathlib.Path(sys.argv[2]).write_text('\n'.join(lines) + '\n', encoding='utf-8')
+          PY
+          chmod 600 "$RUNNER_TEMP/probe.env"
+          set -a
+          source "$RUNNER_TEMP/probe.env"
+          set +a
+
+          test -n "${RU_SERVER:-}" && test -n "${RU_SECRET:-}" || {
+            echo 'Active tproxy-server-ru route missing on 89.125.90.101'; exit 2
+          }
+          ru_host="${RU_SERVER%%/*}"
+          root_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "https://$ru_host/" || true)"
+          hidden_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "https://$RU_SERVER/not-a-real-route" || true)"
+          test "$root_code" != 000 && test "$root_code" = "$hidden_code" || {
+            echo "bandbook_ws_probe_failed root=$root_code hidden=$hidden_code"; exit 2
+          }
+          echo "ru_ws_route_verified=$ru_host code=$root_code"
+
+          export PASS_DIRECT=no
+          if [ -n "${DIRECT_SERVER:-}" ] && [ -n "${DIRECT_SECRET:-}" ]; then
+            export SSHPASS="$PASS_188"
+            direct_ok="$(sshpass -e ssh "${opts[@]}" "root@$HOST_188" "curl -s -o /dev/null -w '%{http_code}' --max-time 8 'https://$DIRECT_SERVER/not-a-real-route' || true")"
+            if [ -n "$direct_ok" ] && [ "$direct_ok" != 000 ]; then
+              PASS_DIRECT=yes
+              echo "direct_ws_route_verified=${DIRECT_SERVER%%/*} code=$direct_ok"
+            else
+              echo "direct_ws_route_skipped_unreachable_from_ru code=${direct_ok:-000}"
+            fi
+          fi
+
+          python3 - "$RUNNER_TEMP/relay89_ws.json" "$RUNNER_TEMP/routes.json" <<'PY'
+          import json, os, pathlib, sys
+          data = json.load(open(sys.argv[1]))
+          routes = [data['ru']]
+          if os.environ.get('PASS_DIRECT') == 'yes' and data.get('direct'):
+              routes.append(data['direct'])
+          payload = json.dumps(routes, separators=(',', ':'), ensure_ascii=True)
+          print(f'::add-mask::{payload}')
+          pathlib.Path(sys.argv[2]).write_text(payload, encoding='utf-8')
+          PY
+          chmod 600 "$RUNNER_TEMP/routes.json"
+
+      - name: Enable flags, stage proxy routes, verify DB grants, and promote web
+        shell: bash
+        run: |
+          set -euo pipefail
+          opts=(-o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          export SSHPASS="$PASS_188"
+          sha="${{ steps.source.outputs.sha }}"
+          sshpass -e scp "${opts[@]}" infra/scripts/mnebyvpn-web-dns-wsproxy-enable.sh \
+            "root@$HOST_188:/tmp/mnebyvpn-web-dns-wsproxy-enable-$sha.sh"
+          sshpass -e scp "${opts[@]}" infra/scripts/mnebyvpn-auto-web-promote.sh \
+            "root@$HOST_188:/tmp/mnebyvpn-auto-promote-$sha.sh"
+          sshpass -e ssh "${opts[@]}" "root@$HOST_188" \
+            "bash /tmp/mnebyvpn-web-dns-wsproxy-enable-$sha.sh '$sha' /tmp/mnebyvpn-auto-promote-$sha.sh" \
+            < "$RUNNER_TEMP/routes.json"
+
+      - name: External HTTPS smoke check
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsS --max-time 12 https://mnebyvpn.site/ | python3 -c '
+          import sys
+          html = sys.stdin.read()
+          assert "id=\"journey-order-switch\"" in html
+          assert "footer-seller" not in html
+          assert "745214444705" not in html
+          '
+          curl -fsS --max-time 12 https://mnebyvpn.site/api/plans | python3 -c '
+          import json, sys
+          d = json.load(sys.stdin)
+          assert d.get("checkoutEnabled") is True
+          assert len(d.get("plans", [])) == 12
+          print("external_plans_verified=12")
+          '
+          test "$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -X POST -H 'Content-Type: application/json' -H 'Origin: https://mnebyvpn.site' -d '{}' https://mnebyvpn.site/api/dns/personal/credentials)" = 401
+          test "$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://mnebyvpn.site/api/telegram-proxy-bonus)" = 401
+          echo 'external_https_verified=true'
+
+      - name: Clean temporary server scripts
+        if: always()
+        shell: bash
+        run: |
+          if [ -n "${PASS_188:-}" ] && [ -n "${{ steps.source.outputs.sha }}" ]; then
+            export SSHPASS="$PASS_188"
+            sha="${{ steps.source.outputs.sha }}"
+            sshpass -e ssh -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR \
+              "root@$HOST_188" "rm -f /tmp/mnebyvpn-web-dns-wsproxy-enable-$sha.sh /tmp/mnebyvpn-auto-promote-$sha.sh" || true
+          fi
