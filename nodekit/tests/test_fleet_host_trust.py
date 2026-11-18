@@ -32,6 +32,14 @@ class FleetHostTrustTests(unittest.TestCase):
         return m.ensure_pin("fi", "fi-test-01", address, root=self.root,
                             probe=lambda _: key or ssh_key(address))
 
+    def test_controller_rejects_other_hosts_and_nonroot(self):
+        with patch.object(m.os, "geteuid", return_value=1000):
+            with self.assertRaisesRegex(m.TrustError, "root"):
+                m.check_controller()
+        with patch.object(m.os, "geteuid", return_value=0), \
+             patch.object(m.socket, "if_nameindex", return_value=[]):
+            with self.assertRaisesRegex(m.TrustError, "RU188"):
+                m.check_controller()
     def test_first_contact_persists_and_repeat_does_not_probe(self):
         actual, new = self.ensure()
         self.assertTrue(new)
