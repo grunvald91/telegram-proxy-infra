@@ -55,15 +55,23 @@ fi
 # The site must accept unrestricted customer purchases once owner-approved
 # commercial verification is complete. Do not force checkout=no on each deploy.
 if grep -Fxq 'WEB_CHECKOUT_ENABLED=1' "$ENV_FILE"; then
-  for setting in WEB_EMAIL_LOGIN_ENABLED=yes WEB_PRODAMUS_WEBHOOK_ENABLED=yes \
+  for setting in WEB_EMAIL_LOGIN_ENABLED=yes \
     WEB_PAYMENT_PROVIDER_TESTED=yes WEB_NETWORK_PROVISIONING_VERIFIED=yes \
     WEB_LEGAL_PAGES_PUBLISHED=yes WEB_RELEASE_APPROVED=yes; do
     grep -Fxq "$setting" "$ENV_FILE" || {
       echo 'Live checkout requested without verified payment or VPN provisioning'; exit 2;
     }
   done
+  if ! grep -Fxq 'WEB_YOOKASSA_ENABLED=yes' "$ENV_FILE" &&
+     ! grep -Fxq 'WEB_PRODAMUS_WEBHOOK_ENABLED=yes' "$ENV_FILE"; then
+    echo 'Live checkout requires an enabled payment provider webhook'; exit 2;
+  fi
 elif ! grep -Fxq 'WEB_CHECKOUT_ENABLED=0' "$ENV_FILE"; then
   echo 'Invalid checkout flag'; exit 2
+fi
+if grep -Fxq 'WEB_YOOKASSA_ENABLED=yes' "$ENV_FILE"; then
+  grep -Fxq 'WEB_PAYMENT_PROVIDER_TESTED=yes' "$ENV_FILE" ||
+    { echo 'Untested YooKassa configuration cannot be exposed'; exit 2; }
 fi
 if grep -Fxq 'WEB_PRODAMUS_WEBHOOK_ENABLED=yes' "$ENV_FILE"; then
   grep -Fxq 'WEB_PAYMENT_PROVIDER_TESTED=yes' "$ENV_FILE" ||
@@ -122,7 +130,8 @@ run_web() {
   fi
   local merchant_env=()
   local billing_env=()
-  if grep -Fxq 'WEB_PRODAMUS_WEBHOOK_ENABLED=yes' "$ENV_FILE" ||
+  if grep -Fxq 'WEB_YOOKASSA_ENABLED=yes' "$ENV_FILE" ||
+     grep -Fxq 'WEB_PRODAMUS_WEBHOOK_ENABLED=yes' "$ENV_FILE" ||
      grep -Fxq 'WEB_CHECKOUT_ENABLED=1' "$ENV_FILE"; then
     test -s "$ROOT/public/billing-db.env" || {
       echo 'Canonical scoped merchant DB credential missing'; return 2;
@@ -131,10 +140,17 @@ run_web() {
       echo 'Billing DB credential cannot be proven canonical and scoped'; return 2;
     }
     billing_env=(--env-file "$ROOT/public/billing-db.env")
-    test -s "$ROOT/public/prodamus.env" || {
-      echo 'Approved payment webhook requires private Prodamus config'; return 2;
-    }
-    merchant_env=(--env-file "$ROOT/public/prodamus.env")
+    if [ -s "$ROOT/public/prodamus.env" ]; then
+      merchant_env+=(--env-file "$ROOT/public/prodamus.env")
+    elif grep -Fxq 'WEB_PRODAMUS_WEBHOOK_ENABLED=yes' "$ENV_FILE"; then
+      echo 'Approved Prodamus webhook requires private Prodamus config'; return 2;
+    fi
+    if grep -Fxq 'WEB_YOOKASSA_ENABLED=yes' "$ENV_FILE"; then
+      test -s "$ROOT/public/yookassa.env" || {
+        echo 'Approved YooKassa checkout requires private yookassa.env'; return 2;
+      }
+      merchant_env+=(--env-file "$ROOT/public/yookassa.env")
+    fi
   fi
   docker run -d "${policy_flags[@]}" --name "$name" \
     --network host --user 1000:1000 --read-only \
@@ -177,11 +193,14 @@ healthy() {
   fi
   curl -fsS --max-time 5 "http://127.0.0.1:$port/api/plans" |
     EXPECT_EMAIL="$expect_email" EXPECT_CHECKOUT="$(grep -Fxq 'WEB_CHECKOUT_ENABLED=1' "$ENV_FILE" && echo yes || echo no)" python3 -c 'import sys,json,os; x=json.load(sys.stdin); y=(os.environ.get("EXPECT_EMAIL")=="yes"); c=(os.environ.get("EXPECT_CHECKOUT")=="yes"); assert x["checkoutEnabled"] is c and x["loginEnabled"] is y and x["emailLoginEnabled"] is y' || return 1
-  if grep -Fxq 'WEB_CHECKOUT_ENABLED=1' "$ENV_FILE"; then
-    # Invalid unsigned callback must be rejected. Full valid capture is tested
-    # by the separate merchant readiness workflow before enabling this flag.
+  if grep -Fxq 'WEB_PRODAMUS_WEBHOOK_ENABLED=yes' "$ENV_FILE"; then
+    # Invalid unsigned callback must be rejected.
     [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -X POST \
       -H 'Sign: invalid' "http://127.0.0.1:$port/webhooks/prodamus")" = 401 ] || return 1
+  fi
+  if grep -Fxq 'WEB_YOOKASSA_ENABLED=yes' "$ENV_FILE"; then
+    [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -X POST \
+      -H 'Content-Type: text/plain' "http://127.0.0.1:$port/webhooks/yookassa")" = 415 ] || return 1
   fi
   [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:$port/readyz")" = 503 ] || return 1
   [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:$port/auth/login")" = 503 ] || return 1
