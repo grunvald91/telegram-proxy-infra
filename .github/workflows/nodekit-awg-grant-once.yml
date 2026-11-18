@@ -12,12 +12,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
-      - name: Run inventory-approved, idempotent staging on FI
+      - name: Inspect isolated FI AWG peer grant ledger after safe install
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -Eeuo pipefail
-          gh api --method POST repos/grunvald91/telegram-proxy-infra/dispatches \
-            -f event_type=nodekit-bootstrap-approved \
-            -f "client_payload[country]=fi"
+          gh api --method POST repos/grunvald91/telegram-proxy-infra/actions/workflows/nodekit-fleet-bootstrap.yml/dispatches \
+            -f ref=main \
+            -f "inputs[country]=fi" \
+            -f "inputs[phase]=inspect"
