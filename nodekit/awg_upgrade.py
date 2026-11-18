@@ -65,7 +65,8 @@ def prepare(node:Path,source_dir:Path):
         raise UpgradeError("This migration only approves isolated FI")
     validate_awg(node)
     services_idle(node.name)
-    if source_dir.is_symlink() or not source_dir.is_dir() or source_dir.stat().st_uid!=0:
+    if (source_dir.is_symlink() or not source_dir.is_dir() or
+        source_dir.stat().st_uid!=0 or source_dir.stat().st_mode & 0o077):
         raise UpgradeError("Untrusted source directory")
     if APP.is_symlink() or not APP.is_dir() or APP.stat().st_uid!=0:
         raise UpgradeError("Untrusted installed code directory")
@@ -73,7 +74,9 @@ def prepare(node:Path,source_dir:Path):
     for name,old_sha in BASELINE.items():
         installed=APP/name
         original=safe_bytes(installed)
-        desired=safe_bytes(source_dir/name)
+        # SCP may create mode 0644 files inside the root-only 0700 staging
+        # directory. Owner and non-writability are the relevant checks.
+        desired=safe_bytes(source_dir/name,require_private=False)
         # Refuse to replace a working service with syntactically invalid code.
         ast.parse(desired.decode("utf8"),filename=name)
         existing=blob_sha1(original)
