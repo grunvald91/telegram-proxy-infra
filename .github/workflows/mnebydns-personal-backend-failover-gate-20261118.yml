@@ -1,0 +1,27 @@
+name: Personal DoT backend fallback policy verification (offline)
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebydns-personal-backend-failover-gate-20261118.yml'
+      - 'scripts/mnebydns_personal_backend_failover_gate_20261118.py'
+      - 'scripts/tests/test_mnebydns_personal_backend_failover_gate_20261118.py'
+permissions:
+  contents: read
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile and check the full personal-policy and performance gate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebydns_personal_backend_failover_gate_20261118.py
+          python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_personal_backend_failover_gate_20261118.py' -v
+          ! grep -Eq 'subprocess|paramiko|socket\.connect|iptables|nft |systemctl|docker exec|requests\.' \
+            scripts/mnebydns_personal_backend_failover_gate_20261118.py
+          echo 'PERSONAL_DOT_BACKEND_FALLBACK_OFFLINE_ONLY=PASS'
