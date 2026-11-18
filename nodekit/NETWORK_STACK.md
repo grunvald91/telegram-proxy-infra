@@ -1,4 +1,4 @@
-# MNEBYVPN Nodekit: AmneziaWG 3.1 + Smart DNS/SNI (2026-11-17)
+# MNEBYVPN Nodekit: AWG 3.1 + Smart DNS/SNI transport + Telegram MTProxy (2026-11-18)
 
 **Scope: new test VPS only.** No production customer, DNS ingress, VPN peer or subscription is enabled by these stages.
 
@@ -43,3 +43,13 @@ Before any public release, controller must prove real IPv4 egress country, AWS/I
 4. A separate explicitly approved promotion workflow must later check public DNS/certificate, identity, controller, service startup and E2E. There is **no promotion of these candidates in this PR**.
 
 TOFU SSH host-key trust and a shared password remain acceptable only for the single isolated test VPS. Future automatic scale-out needs independently pinned SSH fingerprints, per-VPS scoped secrets, signed controller-issued deployment plans, budget authorizations and owner-approved irreversible actions.
+
+
+## Customer proxy is Telegram MTProxy, not DNS SNI
+
+The Nginx SNI route here is **only Smart DNS's internal transport**, not
+Telegram MTProxy. The user-facing proxy product means **Telemt MTProto**,
+with the existing control and user lifecycle on controller RU188 and existing
+Telemt DE89. FI Telemt is not staged or tested and must fail closed. See
+[CONTROLLER188_TELEGRAM_PROXY.md](CONTROLLER188_TELEGRAM_PROXY.md). The
+existing central authority is RU188; do not create a second controller.
