@@ -223,14 +223,14 @@ assert "745214444705" not in html, "INN still present on home page"
 '
 
 for page in /terms /privacy /agreement; do
-  curl -fsS --max-time 5 "http://127.0.0.1:8792$page" | python3 - "$page" <<'PY'
+  curl -fsS --max-time 5 "http://127.0.0.1:8792$page" | python3 -c '
 import re, sys
 page = sys.argv[1]
 html = sys.stdin.read()
-footer = re.search(r'<footer[\s\S]*?</footer>', html)
-assert footer and '745214444705' not in footer.group(0), f'INN leaked into footer on {page}'
-assert '745214444705' in html, f'Legal body seller details missing on {page}'
-PY
+footer = re.search(r"<footer[\s\S]*?</footer>", html)
+assert footer and "745214444705" not in footer.group(0), "INN leaked into footer on " + page
+assert "745214444705" in html, "Legal body seller details missing on " + page
+' "$page"
 done
 
 rm -f "$ENV_BACKUP" "$PROXY_BACKUP"
