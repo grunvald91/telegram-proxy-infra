@@ -1,0 +1,70 @@
+name: FI Nodekit three-service readiness live one-shot (read-only)
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/nodekit-fi-service-readiness-once.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: fi-nodekit-service-audit-one-shot
+  cancel-in-progress: false
+jobs:
+  inspect:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: node-fi
+    env:
+      SSHPASS: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_PASSWORD }}
+      SSH_USER: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_USER }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Inspect inventory-only FI Nodekit (no live service changes)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          [[ "$SSH_USER" == root && -n "$SSHPASS" ]] || {
+            echo '::error::Only FI root bootstrap credentials from node-fi are allowed'; exit 2;
+          }
+          python3 nodekit/fleet_plan.py --country fi > "$RUNNER_TEMP/fi-inventory-audit.json"
+          python3 - <<'PY'
+          import json,os,pathlib
+          x=json.loads((pathlib.Path(os.environ["RUNNER_TEMP"])/"fi-inventory-audit.json").read_text())
+          assert x["ssh_ipv4"]=="217.11.167.91"
+          assert x["node_id"]=="fi-test-01"
+          assert x["advertise_host"]=="fi.mnebyvpn.site"
+          assert x["expected_identity_public_sha256"]=="c3689b687e8888d15e3ece8e45cf7d01672b9dadb77b1963a7871ffd8e967ed9"
+          assert x["published"] is False
+          PY
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends sshpass > /dev/null
+          known="$RUNNER_TEMP/fi_nodekit_readonly_known_hosts"
+          touch "$known"; chmod 0600 "$known"
+          # Legacy FI testing exception. Pinned SSH identity is REQUIRED
+          # before controller enrollment or any customer release.
+          opts=(-T -o PubkeyAuthentication=no -o PreferredAuthentications=password,keyboard-interactive
+            -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$known"
+            -o HostKeyAlias=217.11.167.91 -o ConnectTimeout=12
+            -o NumberOfPasswordPrompts=1)
+          opts_scp=(-o PubkeyAuthentication=no -o PreferredAuthentications=password,keyboard-interactive
+            -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$known"
+            -o HostKeyAlias=217.11.167.91 -o ConnectTimeout=12
+            -o NumberOfPasswordPrompts=1)
+          remote(){ sshpass -e ssh ${opts[@]} "$SSH_USER@217.11.167.91" "$@"; }
+          remote_dir=$(remote 'umask 077; mktemp -d /tmp/mnebyvpn-fi-readiness.XXXXXXXX')
+          [[ "$remote_dir" =~ ^/tmp/mnebyvpn-fi-readiness\.[A-Za-z0-9]{8}$ ]] || exit 2
+          cleanup(){ remote "rm -rf -- '$remote_dir'" >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          files=(nodekit/service_readiness.py nodekit/awg_controller_readiness.py
+            nodekit/awg_lifecycle.py nodekit/awg_egress.py
+            nodekit/install_awg_watchdog.py nodekit/awg_peer_grants.py
+            nodekit/install_components.py)
+          sshpass -e scp ${opts_scp[@]} ${files[@]} "$SSH_USER@217.11.167.91:$remote_dir/"
+          remote "python3 '$remote_dir/service_readiness.py' --node-id fi-test-01 --host fi.mnebyvpn.site --expected-identity-sha256 c3689b687e8888d15e3ece8e45cf7d01672b9dadb77b1963a7871ffd8e967ed9"
+          echo 'CHECK_COMPLETED=read-only'
+          echo 'CONTROLLER_ENROLLED_NOT_ASSERTED=true'
+          echo 'CUSTOMER_RELEASE_UNCHANGED=true'
