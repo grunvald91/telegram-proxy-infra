@@ -160,6 +160,30 @@ class PrivateProbeTests(unittest.TestCase):
         self.assertNotIn('iptables',code)
         self.assertNotIn('nginx -s reload',code)
 
+    def test_state_rejects_untrusted_request_keys(self):
+        import json
+        with tempfile.TemporaryDirectory() as temp:
+            state=Path(temp)/'state.json'
+            data={'label':'monitorabc12',
+                  'id':'5bd8b96a-7549-42c7-ae21-123d9a0df12d',
+                  'request_key':"internal-monitor-123' OR 1=1 --"}
+            state.write_text(json.dumps(data))
+            with patch.object(mod,'STATE',state):
+                with self.assertRaises(RuntimeError):
+                    mod.read_state()
+            data['request_key']='internal-monitor-'+'a'*32
+            state.write_text(json.dumps(data))
+            with patch.object(mod,'STATE',state):
+                self.assertEqual(mod.read_state()['label'],data['label'])
+
+    def test_healthy_smart_dns_records_bounded_probe_latency(self):
+        obj={'label':'monitorabc12'}
+        with patch.object(mod,'status',return_value='ALLOWED_SMART_DNS'), \
+             patch.object(mod,'endpoints',return_value=(('10.0.0.2',8858),('dns.mnebyvpn.site',853),'198.51.100.21')), \
+             patch.object(mod,'dns_query',return_value=['198.51.100.21']) as query:
+            mod.verify_profile(obj)
+            self.assertEqual(query.call_count,6)
+
     def test_service_monitor_is_non_permanent_and_has_short_lease(self):
         code=SOURCE.read_text()
         self.assertIn("'smart_dns'",code)
