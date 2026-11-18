@@ -61,3 +61,16 @@ per-customer component. See [CONTROLLER188_TELEGRAM_PROXY.md](CONTROLLER188_TELE
 ## Ревью автоматизации: контроль fail-closed
 
 Если для FI задан независимо одобренный публичный host key, он валидируется **до** фиксации первого ключа на RU188; несовпадение не загрязняет хранилище доверия. Для тестового FI обязательны root-owned защищённые каталоги и файлы Nodekit, точный `fi-test-01` / `fi.mnebyvpn.site`, состояние `testing`, а также `registration_enabled=false` и `activation_enabled=false`. Любое отклонение завершает job ошибкой, а не успешным отчётом. Отсутствие `controller-access.spki` пока отражается как отдельная незавершённая стадия регистрации, не как доступ клиента.
+
+
+## Автоматическая подготовка публичных ключей, отдельно от клиентского соединения
+
+Новый изолированный workflow `.github/workflows/fi-public-enrollment-stage.yml` запускает `nodekit/fi_public_stage_runner.sh` после слияния в `main` (также поддерживается повторный `workflow_dispatch`). Это **один служебный этап установки**, никакой сетевой запрос к RU188 при VPN handshake, Telemt MTProto-сеансе или персональном DNS-запросе не создаётся.
+
+По ранее закреплённому SSH-пину RU188 получает **только** публичные `controller-public.spki` и `fi-enrollment-ssh.pub`, проверяет controller SPKI SHA256 `e4c862bd0171e5be4ae64770a555029e090d3a8fcfa5ef2a82ffb0b798552844`, а через pinned SSH FI подтверждает node public identity SHA256 `c3689b687e8888d15e3ece8e45cf7d01672b9dadb77b1963a7871ffd8e967ed9`.
+
+На FI устанавливается root-only `controller-access.spki`, неизменный проверенный `/opt/mnebyvpn-nodekit/fi_enrollment_ssh.py` и одна запись `authorized_keys` для **отдельного** enrollment SSH ключа с `restrict,command=...`. На RU188 автоматически создаются root-only `fi-known_hosts` и `fi-node-public.spki` только если они отсутствуют или совпадают с уже установленными. Конфликтный/небезопасный ключ вызывает отказ, но **не** автоматическую замену.
+
+Весь обмен идёт **до** выдачи клиентского доступа; закрытый Ed25519 controller signer остаётся на RU188, закрытый FI Nodekit identity — на FI. Файлы не являются клиентскими разрешениями. Шаг не делает enrollment в PostgreSQL, не разрешает транзит без действующей подписки, не включает AWG/DNS/Telemt, не публикует ссылки.
+
+**Важно:** первый SSH host key ранее был сохранён через TOFU по согласованной политике пользователя. Это не независимое подтверждение от провайдера и оставляет риск подмены на самом первом подключении. Блокирующийся/изменённый SSH pin система сама не заменяет. Дальнейшее машинное `planned → approved → enrolled` с одноразовым криптографическим доказательством и отдельный клиентский E2E остаются следующим этапом.
