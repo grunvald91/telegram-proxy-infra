@@ -27,6 +27,7 @@ TIMER=Path('/etc/systemd/system/mnebydns-personal-private-probe.timer')
 OWNER=9000000000000000000
 ALPHABET='abcdefghijklmnopqrstuvwxyz0123456789'
 BACKEND=('10.66.77.2',8858)
+PUBLIC=('89.125.90.101',853)
 DOMAIN='rr1---sn-4g5ednss.googlevideo.com'
 
 def db(sql):
@@ -64,13 +65,13 @@ def recvn(conn,n):
         out.extend(piece)
     return bytes(out)
 
-def dns_query(label,domain):
+def dns_query(label,domain,endpoint):
     name=label+'.dns.mnebyvpn.site'
     ident=secrets.randbelow(65535)+1
     qname=b''.join(bytes([len(p)])+p.encode('ascii') for p in domain.split('.'))+b'\0'
     wire=struct.pack('!HHHHHH',ident,256,1,0,0,0)+qname+struct.pack('!HH',1,1)
-    with socket.create_connection(BACKEND,timeout=6) as conn:
-        conn.settimeout(6)
+    with socket.create_connection(endpoint,timeout=5) as conn:
+        conn.settimeout(5)
         with ssl.create_default_context().wrap_socket(conn,server_hostname=name) as tls:
             tls.sendall(struct.pack('!H',len(wire))+wire)
             n=struct.unpack('!H',recvn(tls,2))[0]
@@ -91,8 +92,11 @@ def delete_own_row(data):
 def verify_profile(data):
     if status(data['label'])!='ALLOWED':
         raise RuntimeError('MONITOR_SUBSCRIPTION_NOT_ACTIVE')
-    for domain in ('youtube.com','youtubei.googleapis.com',DOMAIN):
-        dns_query(data['label'],domain)
+    # RU private service and the real public personal SNI entrance on DE.
+    # Identity remains on RU; it is never passed to GitHub Actions or DE.
+    for endpoint in (BACKEND,PUBLIC):
+        for domain in ('youtube.com','youtubei.googleapis.com',DOMAIN):
+            dns_query(data['label'],domain,endpoint)
 
 def stage():
     if os.geteuid()!=0:raise RuntimeError('ROOT_REQUIRED')
@@ -131,6 +135,10 @@ def stage():
 def install():
     stage()
     # Restricted to RU monitoring identity and units, no network rule changes.
+    if SERVICE.exists() and 'ExecStart=/usr/bin/python3 -B '+str(SELF)+' stage' not in SERVICE.read_text():
+        raise RuntimeError('SERVICE_NAME_CONFLICT')
+    if TIMER.exists() and 'Unit=mnebydns-personal-private-probe.service' not in TIMER.read_text():
+        raise RuntimeError('TIMER_NAME_CONFLICT')
     if not SERVICE.exists():
         SERVICE.write_text(
             '[Unit]\nDescription=MNEBYDNS private authenticated DoT health\n'
@@ -166,6 +174,13 @@ def report():
     print('PRIVATE_PERSONAL_MONITOR=ACTIVE_DOT_VERIFIED')
 
 def revoke():
+    if os.geteuid()!=0:raise RuntimeError('ROOT_REQUIRED')
+    if TIMER.exists() and 'Unit=mnebydns-personal-private-probe.service' in TIMER.read_text():
+        subprocess.run(['systemctl','disable','--now',TIMER.name],check=True,timeout=15,capture_output=True)
+        TIMER.unlink()
+    if SERVICE.exists() and str(SELF) in SERVICE.read_text():
+        SERVICE.unlink()
+    subprocess.run(['systemctl','daemon-reload'],check=True,timeout=10,capture_output=True)
     if not STATE.exists():
         print('PRIVATE_PERSONAL_MONITOR=ALREADY_ABSENT');return
     data=read_state()
