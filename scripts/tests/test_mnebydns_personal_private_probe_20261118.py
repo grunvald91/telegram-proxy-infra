@@ -39,7 +39,7 @@ class PrivateProbeTests(unittest.TestCase):
         obj={'label':'monitorabc12'}
         def bad(label,domain,endpoint):
             return ['173.194.188.102'] if domain==mod.DOMAIN else ['198.51.100.21']  # Wrong for smart_dns video
-        with patch.object(mod,'status',return_value='ALLOWED'), \
+        with patch.object(mod,'status',return_value='ALLOWED_SMART_DNS'), \
              patch.object(mod,'endpoints',return_value=(('10.0.0.2',8858),('dns.mnebyvpn.site',853),'198.51.100.21')), \
              patch.object(mod,'dns_query',side_effect=bad):
             with self.assertRaisesRegex(RuntimeError,'ROUTE_DRIFT'):
