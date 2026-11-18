@@ -5,6 +5,8 @@ import json
 import pathlib
 import sys
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 import awg_peer_grants as awg
@@ -111,6 +113,31 @@ class TestAWGAccess(unittest.TestCase):
         self.assertEqual(config.count("[Peer]"),1)
         with self.assertRaises(awg.GrantError):
             awg.render_runtime_config(base+"[Peer]\n",[])
+
+    def test_perpetual_grant_cannot_exceed_hour_without_fresh_controller(self):
+        with self.assertRaises(awg.GrantError):
+            awg.validate_command(command(
+                expiresAt="2026-11-18T05:00:01.000Z"),NODE,NOW)
+        awg.validate_command(command(expiresAt="2026-11-18T05:00:00.000Z"),NODE,NOW)
+
+    def test_same_live_key_with_widened_allowed_ips_is_rejected(self):
+        expected=[{"public_key": KEY1, "allowed_ips": "10.73.91.2/32"}]
+        good=SimpleNamespace(stdout=f"{KEY1}\t10.73.91.2/32\n")
+        bad=SimpleNamespace(stdout=f"{KEY1}\\t0.0.0.0/0\n")
+        def outcome(result):
+            return lambda *args,**kwargs:result
+        awg.assert_runtime_peers(expected,runner=outcome(good))
+        with self.assertRaises(awg.GrantError):
+            awg.assert_runtime_peers(expected,runner=outcome(bad))
+        with self.assertRaises(awg.GrantError):
+            awg.assert_runtime_peers(expected,runner=outcome(
+                SimpleNamespace(stdout=f"{KEY1}\\t10.73.91.2/32,10.73.91.3/32\\n")))
+
+    def test_controller_identity_cannot_be_supplied_as_cli_override(self):
+        import inspect
+        source=inspect.getsource(awg.main)
+        self.assertNotIn("--controller-public",source)
+        self.assertIn("verify_signature(req, pinned_controller_key(node))",source)
 
     def test_client_private_key_is_not_a_signed_or_stored_field(self):
         data=command()
