@@ -62,13 +62,12 @@ def route():
     return m.group(1),int(m.group(2))
 
 def candidate_names():
-    if PROFILE.exists():
-        val=PROFILE.read_text().strip()
-        return [val] if SNI_RE.fullmatch(val) else []
-    if not WATCH.exists():
+    # Never mine a real customer's bearer SNI out of the legacy watchdog.
+    # Only a separately provisioned service profile may be used for DNS tests.
+    if not PROFILE.exists():
         return []
-    return [n for n in set(SNI_RE.findall(WATCH.read_text()))
-            if n!='aaaaaaaaaaaa.dns.mnebyvpn.site']
+    val=PROFILE.read_text().strip()
+    return [val] if SNI_RE.fullmatch(val) else []
 
 def profile_name():
     host,port=route()
@@ -97,23 +96,41 @@ def write_counter(count):
     temp.write_text(str(count)+'\n')
     os.replace(temp,COUNT)
 
+def tls_reachable(ip, port, sni='aaaaaaaaaaaa.dns.mnebyvpn.site', timeout=4):
+    # A wildcard TLS certificate only verifies transport; NOT authorization.
+    with socket.create_connection((ip,port),timeout=timeout) as raw:
+        raw.settimeout(timeout)
+        with ssl.create_default_context().wrap_socket(raw,server_hostname=sni) as conn:
+            if not conn.getpeercert():
+                raise ValueError('missing TLS certificate')
+
+def reject_unknown_sni():
+    unknown=''.join(secrets.choice('abcdefghijklmnopqrstuvwxyz0123456789') for _ in range(12))+'.dns.mnebyvpn.site'
+    try:
+        status,answers=probe('127.0.0.1',8854,unknown,'youtube.com')
+    except (OSError,ValueError,ssl.SSLError):
+        return
+    if status==0 and answers>0:
+        raise RuntimeError('UNKNOWN_PERSONAL_SNI_RECEIVED_DNS_ANSWER')
+
 def check():
     host,port=route()
+    if not PROFILE.exists():
+        # No monitoring bearer stored: perform transport/denial checks only.
+        # Do NOT claim that real subscriber DNS works.
+        for ip,p in ((host,port),('127.0.0.1',8854)):
+            tls_reachable(ip,p)
+        reject_unknown_sni()
+        print('PERSONAL_DOT_TRANSPORT=PASS')
+        print('PERSONAL_DOT_AUTHENTICATED_QUERIES=UNVERIFIED_NO_SERVICE_PROFILE')
+        return
     name=profile_name()
-    # Check real authorised DoT answers on backend and ingress.
     for ip,p in ((host,port),('127.0.0.1',8854)):
         for domain in QUERY:
             status,answers=probe(ip,p,name,domain)
             if status!=0 or answers<1:
                 raise RuntimeError('AUTHENTICATED_DOT_DNS_ANSWER_INVALID')
-    unknown=''.join(secrets.choice('abcdefghijklmnopqrstuvwxyz0123456789') for _ in range(12))+'.dns.mnebyvpn.site'
-    try:
-        status,answers=probe('127.0.0.1',8854,unknown,'youtube.com')
-    except (OSError,ValueError,ssl.SSLError):
-        pass
-    else:
-        if status==0 and answers>0:
-            raise RuntimeError('UNKNOWN_PERSONAL_SNI_RECEIVED_DNS_ANSWER')
+    reject_unknown_sni()
     print('PERSONAL_DOT_INGRESS_AND_BACKEND=PASS')
 
 def preflight():
@@ -133,9 +150,7 @@ def install():
     if not BACKUP.exists():
         shutil.copy2(WATCH,BACKUP)
         os.chmod(BACKUP,0o600)
-    name=profile_name()
-    PROFILE.write_text(name+'\n')
-    os.chmod(PROFILE,0o600)
+    # Keep any existing service-only profile, but never copy a customer SNI.
     fd,temp=tempfile.mkstemp(prefix='.personal-watch-',dir=str(WATCH.parent))
     try:
         with os.fdopen(fd,'wb') as output, open(__file__,'rb') as source:
