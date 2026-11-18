@@ -6,6 +6,7 @@ Does not read bearer credentials, issue profiles, or touch DNS/proxy/VPN rules.
 """
 from __future__ import annotations
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -109,6 +110,10 @@ def check(name,endpoint):
             tcp,full,ver=do_handshake(address,port,sni)
             versions.add(ver)
             outcomes.append((tcp,full))
+        except ssl.SSLCertVerificationError as ex:
+            # Do not log certificate subject, host addresses, or client identity.
+            key="SSLCertVerificationError_code_"+str(ex.verify_code)
+            failures[key]=failures.get(key,0)+1
         except Exception as ex:
             key=type(ex).__name__
             failures[key]=failures.get(key,0)+1
@@ -119,6 +124,35 @@ def check(name,endpoint):
             "cold_attempts":N,"cold_failures":failures,
             "tls_versions":sorted(versions),"unknown_sni_denial":denied,
             "authenticated_dns_queries":"NOT_TESTED_NO_SERVICE_PROFILE"}
+
+def compare_public_cert_to_local_de():
+    # Diagnostic fingerprint comparison ONLY. The main probes still enforce
+    # CA verification. This never authenticates a client or changes TLS policy.
+    digests=[]
+    for endpoint in ((PUBLIC,853),("127.0.0.1",8854)):
+        sni="".join(secrets.choice("abcdefghijklmnopqrstuvwxyz0123456789")
+                    for _ in range(12))+".dns.mnebyvpn.site"
+        try:
+            with socket.create_connection(endpoint,timeout=TIMEOUT) as raw:
+                raw.settimeout(TIMEOUT)
+                with ssl._create_unverified_context().wrap_socket(
+                     raw,server_hostname=sni) as tls:
+                    der=tls.getpeercert(binary_form=True)
+                    if not der:return "certificate_absent"
+                    digests.append(hashlib.sha256(der).digest())
+        except Exception as ex:
+            return "compare_error_"+type(ex).__name__
+    return "same_leaf" if digests[0]==digests[1] else "different_leaf"
+
+def de_public_dns_route():
+    # Compare resolved hostname to the DE public eth0 address without logging IP.
+    try:
+        answer=socket.gethostbyname(PUBLIC)
+        routes=run(["ip","-o","-4","addr","show","dev","eth0"])
+        addrs=re.findall(r"\binet\s+([0-9.]+)/",routes)
+        return "eth0_public" if answer in addrs else "not_eth0_public"
+    except Exception as ex:
+        return "route_unknown_"+type(ex).__name__
 
 def node(role):
     endpoints=[("public_personal_ingress",(PUBLIC,853))]
@@ -134,6 +168,8 @@ def node(role):
     if role=="de":
         raw=run(["systemctl","is-active","mnebydns-personal-sni-watch.timer"])
         result["personal_watch_timer"]=raw or "unknown"
+        result["public_tls_cert_vs_local_sni"]=compare_public_cert_to_local_de()
+        result["public_dns_resolves_to"]=de_public_dns_route()
     print(json.dumps(result,separators=(",",":"),sort_keys=True))
     # Bad denial is an explicit security test failure; report not a silent pass.
     if any(c["unknown_sni_denial"]=="SECURITY_FAILURE_UNISSUED_SNI_ANSWERED"
