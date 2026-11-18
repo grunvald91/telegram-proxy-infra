@@ -151,6 +151,8 @@ jobs:
               print('fi_asset_'+name.replace('/','_').replace('.','_')+'_root_protected='+str(good).lower())
               if not good and name!='controller-access.spki':
                   raise SystemExit('Required FI identity file unsafe')
+              if name=='controller-access.spki' and (p.exists() or p.is_symlink()) and not good:
+                  raise SystemExit('Existing FI controller public key is unsafe')
           try:
               meta=json.loads((node/'manifest.json').read_text())
               print('fi_manifest_node_id='+str(meta.get('node_id')))
