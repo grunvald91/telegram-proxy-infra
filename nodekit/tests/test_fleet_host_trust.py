@@ -52,6 +52,25 @@ class FleetHostTrustTests(unittest.TestCase):
         self.assertEqual(got, actual)
         self.assertFalse(fresh)
 
+    def test_preapproved_key_mismatch_refuses_before_pinning(self):
+        original = ssh_key(self.ip).split()[2]
+        substitute = base64.b64encode(struct.pack('>I', 11) + b'ssh-ed25519' +
+                                      struct.pack('>I', 32) + b'\x43' * 32).decode()
+        self.assertNotEqual(substitute, original)
+        with self.assertRaisesRegex(m.TrustError, 'First contact'):
+            m.ensure_pin('fi', 'fi-test-01', self.ip, root=self.root,
+                         probe=lambda _: ssh_key(self.ip), expected_key_b64=substitute)
+        self.assertFalse((self.root / 'fi-fi-test-01.known_hosts').exists())
+        actual, created = m.ensure_pin('fi', 'fi-test-01', self.ip, root=self.root,
+                                       probe=lambda _: ssh_key(self.ip),
+                                       expected_key_b64=original)
+        self.assertTrue(created)
+        self.assertEqual(actual, ssh_key(self.ip))
+        with self.assertRaisesRegex(m.TrustError, 'Existing host pin'):
+            m.ensure_pin('fi', 'fi-test-01', self.ip, root=self.root,
+                         probe=lambda _: self.fail('must not probe existing'),
+                         expected_key_b64=substitute)
+        self.assertEqual((self.root / 'fi-fi-test-01.known_hosts').read_text(), actual)
     def test_pin_never_automatically_replaces_other_host_or_ip(self):
         self.ensure()
         with self.assertRaises(m.TrustError):
