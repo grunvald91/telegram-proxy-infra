@@ -75,8 +75,9 @@ jobs:
                       result=subprocess.run(args,capture_output=True,text=True,timeout=15)
                       for line in result.stdout.splitlines():
                           if "packet loss" in line or "min/avg/max" in line:o("WG_PING_DF_"+str(size),line.strip())
-                      err=result.stderr.lower()
+                      err=" ".join((result.stderr,result.stdout)).lower()
                       if result.returncode==0: status="ok"
+                      elif mtu and size+28>int(mtu.group(1)): status="exceeds_configured_tunnel_mtu"
                       elif "message too long" in err or "mtu=" in err: status="local_mtu_reject"
                       elif "network is unreachable" in err: status="no_route"
                       elif "permission denied" in err or "operation not permitted" in err: status="local_policy_reject"
