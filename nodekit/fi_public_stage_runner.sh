@@ -68,13 +68,13 @@ fi_opts=(-F /dev/null -o ConnectTimeout=12 -o BatchMode=no
   -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no
   -o ForwardAgent=no -o ClearAllForwardings=yes -o ControlMaster=no
   -o ProxyCommand=none -o HostKeyAlias=217.11.167.91 -o LogLevel=ERROR)
-fi() { SSHPASS="$FI_PASSWORD" sshpass -e ssh -T "${fi_opts[@]}" root@217.11.167.91 "$@"; }
+fi_remote() { SSHPASS="$FI_PASSWORD" sshpass -e ssh -T "${fi_opts[@]}" root@217.11.167.91 "$@"; }
 fiscp() { SSHPASS="$FI_PASSWORD" sshpass -e scp "${fi_opts[@]}" "$@"; }
 fi_dir=''
 ru_dir=''
 cleanup(){
   if [[ "$fi_dir" =~ ^/root/fi-public-stage\.[A-Za-z0-9]{8}$ ]]; then
-    fi "rm -rf -- '$fi_dir'" >/dev/null 2>&1 || true
+    fi_remote "rm -rf -- '$fi_dir'" >/dev/null 2>&1 || true
   fi
   if [[ "$ru_dir" =~ ^/root/fi-public-stage\.[A-Za-z0-9]{8}$ ]]; then
     ru "rm -rf -- '$ru_dir'" >/dev/null 2>&1 || true
@@ -83,19 +83,19 @@ cleanup(){
 }
 trap cleanup EXIT
 
-fi_dir="$(fi 'umask 077; mktemp -d /root/fi-public-stage.XXXXXXXX')"
+fi_dir="$(fi_remote 'umask 077; mktemp -d /root/fi-public-stage.XXXXXXXX')"
 [[ "$fi_dir" =~ ^/root/fi-public-stage\.[A-Za-z0-9]{8}$ ]] || exit 2
 handler_sha="$(sha256sum nodekit/fi_enrollment_ssh.py | cut -d' ' -f1)"
 fiscp nodekit/fi_public_enrollment_stage.py nodekit/fi_enrollment_ssh.py \
   "$work/controller.spki" "$work/fi-enrollment-ssh.pub" \
   "root@217.11.167.91:$fi_dir/"
-fi "chmod 600 '$fi_dir'/* && python3 '$fi_dir/fi_public_enrollment_stage.py' \
+fi_remote "chmod 600 '$fi_dir'/* && python3 '$fi_dir/fi_public_enrollment_stage.py' \
   --role fi --mode stage --controller-spki '$fi_dir/controller.spki' \
   --enrollment-ssh-public '$fi_dir/fi-enrollment-ssh.pub' \
   --handler-source '$fi_dir/fi_enrollment_ssh.py' --handler-sha256 '$handler_sha'"
 
 # Read FI identity ONLY as public DER, checked against previously reviewed SHA.
-fi 'python3 -' > "$work/fi-public-base64" <<'PY'
+fi_remote 'python3 -' > "$work/fi-public-base64" <<'PY'
 import base64,hashlib,pathlib,stat
 p=pathlib.Path('/var/lib/mnebyvpn-nodekit/fi-test-01/identity/node-public.spki')
 s=p.lstat()
@@ -127,7 +127,7 @@ ru "chmod 600 '$ru_dir'/* && python3 '$ru_dir/fi_public_enrollment_stage.py' \
   --fi-host-pin '$ru_dir/fi_host_known_hosts'"
 
 # End-to-end idempotent, PUBLIC-only postchecks on both real hosts.
-fi "python3 '$fi_dir/fi_public_enrollment_stage.py' --role fi --mode check \
+fi_remote "python3 '$fi_dir/fi_public_enrollment_stage.py' --role fi --mode check \
   --controller-spki '$fi_dir/controller.spki' \
   --enrollment-ssh-public '$fi_dir/fi-enrollment-ssh.pub' \
   --handler-source '$fi_dir/fi_enrollment_ssh.py' --handler-sha256 '$handler_sha'"
@@ -136,4 +136,4 @@ ru "python3 '$ru_dir/fi_public_enrollment_stage.py' --role controller --mode che
 echo 'FI_PUBLIC_TRUST_STAGED=true'
 echo 'FI_DB_ENROLLMENT_STARTED=false'
 echo 'FI_CLIENTS_PUBLISHED=false'
-echo 'FI_AWG_DNS_TELEMT_STILL_INACTIVE=true'
+echo 'FI_AWG_DNS_TELEMT_NOT_MODIFIED=true'
