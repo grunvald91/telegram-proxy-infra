@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
-      - name: Run FI public AWG canary from reviewed main
+      - name: Re-test FI AWG and HTTPS egress using fixed main workflow
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
