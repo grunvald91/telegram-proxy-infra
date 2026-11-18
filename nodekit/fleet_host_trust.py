@@ -185,7 +185,7 @@ def main() -> int:
     try:
         check_controller()
         value, created = ensure_pin(args.country, args.node_id, args.ip,
-                                    expected_key_b64=args.expected_key_b64)
+                                    expected_key_b64=args.expected_key_b64 or None)
         # stdout is a single known_hosts line; no private material.
         sys.stdout.write(value)
         print("fleet_ssh_first_contact=" + ("pinned" if created else "existing"),
