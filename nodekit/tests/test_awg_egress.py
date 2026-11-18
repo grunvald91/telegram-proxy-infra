@@ -57,6 +57,41 @@ class TestAwgEgress(unittest.TestCase):
                     m.state()
                 self.assertTrue(path.exists())
 
+    def test_corrupt_state_removes_duplicate_rules_before_failing_closed(self):
+        from unittest.mock import patch
+        # Every rule exists twice. A single delete per rule is insufficient.
+        live={tuple([table,chain,*args]):2 for table,chain,args in m.firewall()}
+        def fake_ipt(table,operation,chain,args,check=True):
+            key=tuple([table,chain,*(args[1:] if operation=="-I" else args)])
+            if operation=="-C":
+                return type("Result",(),{"returncode":0 if live.get(key,0)>0 else 1})()
+            if operation=="-D":
+                live[key]-=1
+                return type("Result",(),{"returncode":0})()
+            raise AssertionError(operation)
+        with patch.object(m,"state",side_effect=m.EgressError("corrupt")),\
+             patch.object(m,"ipt",side_effect=fake_ipt):
+            with self.assertRaisesRegex(m.EgressError,"Corrupt state"):
+                m._down()
+        self.assertTrue(all(count==0 for count in live.values()))
+
+    def test_orphan_rules_are_removed_even_without_state_file(self):
+        from unittest.mock import patch
+        live={tuple([table,chain,*args]):1 for table,chain,args in m.firewall()}
+        def fake_ipt(table,operation,chain,args,check=True):
+            key=tuple([table,chain,*args])
+            if operation=="-C":
+                return type("Result",(),{"returncode":0 if live[key] else 1})()
+            if operation=="-D":
+                live[key]=0
+                return type("Result",(),{"returncode":0})()
+            raise AssertionError(operation)
+        with patch.object(m,"state",return_value=None),\
+             patch.object(m,"ipt",side_effect=fake_ipt):
+            result=m._down()
+        self.assertEqual(result["network_enabled"],False)
+        self.assertTrue(all(count==0 for count in live.values()))
+
     def test_egress_network_state_restoration_config(self):
         with tempfile.TemporaryDirectory() as t:
             state=pathlib.Path(t)/"state"
