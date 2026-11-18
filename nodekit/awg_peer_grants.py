@@ -277,6 +277,55 @@ def persist_state(path: Path, state: dict) -> None:
         Path(temp).unlink(missing_ok=True)
 
 
+class OfflineClock:
+    """Local authorization clock survives RU188 outages and host time rollback.
+
+    Signed grants never require a network lookup. A monotonic baseline avoids
+    extending a paid lease when NTP steps backward during a running session;
+    persisted UTC high-watermark catches rollback after reboot.
+    """
+
+    def __init__(self, path: Path, *, wall=time.time, monotonic=time.monotonic,
+                 load=protected_file, save=persist_state):
+        self.path, self.wall, self.monotonic = path, wall, monotonic
+        self.save = save
+        wall_now = wall()
+        if not 0 < wall_now < 4102444800:
+            raise GrantError("Unsafe system UTC for offline entitlements")
+        last = 0.0
+        if path.exists() or path.is_symlink():
+            raw = json.loads(load(path, max_bytes=256))
+            if (not isinstance(raw, dict) or set(raw) != {"last_seen_ms"} or
+                    type(raw["last_seen_ms"]) is not int or
+                    not 0 <= raw["last_seen_ms"] < 4102444800000):
+                raise GrantError("Unsafe persisted offline clock")
+            last = raw["last_seen_ms"] / 1000
+        if wall_now + 5 < last:
+            raise GrantError("System UTC regressed beyond offline access tolerance")
+        self.baseline = max(wall_now, last)
+        self.baseline_tick = monotonic()
+        self.last_saved = self.baseline
+        self._save(self.baseline)
+
+    def _save(self, current: float) -> None:
+        self.save(self.path, {"last_seen_ms": int(current * 1000)})
+        self.last_saved = current
+
+    def now(self) -> float:
+        elapsed = self.monotonic() - self.baseline_tick
+        if not 0 <= elapsed < 10 * 365 * 86400:
+            raise GrantError("Invalid monotonic clock for offline access")
+        projected = self.baseline + elapsed
+        wall_now = self.wall()
+        if (not 0 < wall_now < 4102444800 or
+                wall_now + 5 < projected):
+            raise GrantError("System UTC rollback during offline access")
+        current = max(wall_now, projected)
+        if current - self.last_saved >= 15:
+            self._save(current)
+        return current
+
+
 def assert_runtime_peers(peers: list[dict], *, runner=subprocess.run) -> None:
     """Validate peer keys AND allowed IPs. A surviving /0 is a breach.
 
@@ -350,6 +399,7 @@ def watchdog(node: Path, *, sleeper=time.sleep) -> None:
     unit = unit_name(node.name)
     previous_view: str | None = None
     try:
+        clock = OfflineClock(node / "amneziawg" / "clock-highwater.json")
         while True:
             with LedgerLock(node):
                 if not active_unit(unit):
@@ -358,7 +408,7 @@ def watchdog(node: Path, *, sleeper=time.sleep) -> None:
                 table = (validate_state(json.loads(protected_file(path)), node.name)
                          if path.exists() or path.is_symlink()
                          else empty_state(node.name))
-                now = dt.datetime.now(dt.timezone.utc).timestamp()
+                now = clock.now()
                 peers = active_peers(table, now)
                 view = json.dumps(peers, sort_keys=True, separators=(",", ":"))
                 # Do not run full awg syncconf every 2 seconds on a 1-vCPU VPS.
