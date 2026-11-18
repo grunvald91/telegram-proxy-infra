@@ -46,3 +46,14 @@ test('rejects grants outside configured AWG subnet, expired or invalid keys',()=
 test('signer cannot operate with public key only',()=>{
   assert.throws(()=>signedAwgLease(base,publicKey,now));
 });
+
+test('signed offline grants stay within seven days, no per-session network approval',()=>{
+  const day=24*60*60*1000;
+  const ok=signedAwgLease({...base,expiresAt:new Date(now+7*day).toISOString()},
+    privateKey,now);
+  assert(verify(null,awgLeasePayload(ok),publicKey,
+    Buffer.from(ok.signature,'base64url')));
+  assert.throws(()=>signedAwgLease({
+    ...base,expiresAt:new Date(now+7*day+1).toISOString(),
+  },privateKey,now));
+});
