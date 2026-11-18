@@ -1,0 +1,23 @@
+name: Personal DoT service profile offline tests
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebydns-personal-private-probe-tests.yml'
+      - 'scripts/mnebydns_personal_private_probe_20261118.py'
+      - 'scripts/tests/test_mnebydns_personal_private_probe_20261118.py'
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Run offline personal DoT monitor tests
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/mnebydns_personal_private_probe_20261118.py
+          python3 -m unittest discover -s scripts/tests -p 'test_mnebydns_personal_private_probe_20261118.py' -v
