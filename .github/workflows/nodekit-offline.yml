@@ -5,6 +5,7 @@ on:
       - 'nodekit/**'
       - '.github/workflows/nodekit-offline.yml'
       - '.github/workflows/nodekit-prepare-new-vps.yml'
+      - '.github/workflows/nodekit-fi-awg-external-e2e.yml'
   workflow_dispatch:
 permissions:
   contents: read
