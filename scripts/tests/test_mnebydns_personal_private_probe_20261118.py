@@ -87,6 +87,13 @@ class PrivateProbeTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,'BIND_UNSAFE'):
                 mod.endpoints()
 
+    def test_unspecified_bind_rejected(self):
+        from unittest.mock import Mock
+        result=Mock(returncode=0,stdout='["MNEBYDNS_PERSONAL_DOT_BIND_IP=0.0.0.0","MNEBYDNS_PERSONAL_DOT_PORT=8858"]')
+        with patch.object(mod.subprocess,'run',return_value=result):
+            with self.assertRaisesRegex(RuntimeError,'BIND_UNSAFE'):
+                mod.endpoints()
+
     def test_service_monitor_is_non_permanent_and_has_short_lease(self):
         code=SOURCE.read_text()
         self.assertIn("'vpn_origin'",code)
