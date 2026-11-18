@@ -145,7 +145,7 @@ jobs:
             nodekit/awg_lifecycle.py nodekit/awg_upgrade.py nodekit/awg_netns_canary.py nodekit/awg_egress.py nodekit/awg_controller_readiness.py nodekit/service_readiness.py nodekit/awg_peer_grants.py nodekit/install_awg_watchdog.py nodekit/tls_stage.py nodekit/dot_local_canary.py)
           remote_scp "${scripts[@]}" "$RUNNER_TEMP/nodekit-spec.json" "${user}@${target}:$remote_dir/"
           # Filenames are fixed and node_id/ip/host all come from reviewed inventory.
-          if [[ "$NODE_PHASE" == bootstrap ]]; then
+          if [[ "$NODE_PHASE" == bootstrap || "$NODE_PHASE" == auto ]]; then
             remote_scp "$RUNNER_TEMP/awg-bin/awg" "$RUNNER_TEMP/awg-bin/awg-quick" "$RUNNER_TEMP/awg-bin/amneziawg-go" "${user}@${target}:$remote_dir/"
             remote_ssh "python3 '$remote_dir/provision_node.py' --source-dir '$remote_dir' --spec '$remote_dir/nodekit-spec.json'"
             if [[ -n "$EXPECTED_IDENTITY_SHA" ]]; then
@@ -160,6 +160,20 @@ jobs:
             remote_ssh "python3 '$remote_dir/install_awg_watchdog.py' --node-id '$NODE_ID'"
             remote_ssh "python3 '$remote_dir/awg_egress.py' --node-id '$NODE_ID' --mode install"
             remote_ssh "python3 '$remote_dir/dns_proxy_stage.py' --node-id '$NODE_ID' --external-ipv4 '$TARGET_IP' --dns-host '$NODE_HOST'"
+            if [[ "$NODE_PHASE" == auto ]]; then
+              # Single noninteractive build -> TLS -> empty canary -> inspection.
+              # Failure stops here; no database enrollment or paid subscriber release.
+              remote_ssh 'command -v certbot >/dev/null || (export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l; apt-get update -qq && apt-get install -y -qq --no-install-recommends certbot >/dev/null)'
+              remote_ssh "python3 '$remote_dir/tls_stage.py' --node-id '$NODE_ID' --host '$NODE_HOST' --expected-ipv4 '$TARGET_IP' --mode issue"
+              remote_ssh 'systemctl enable --now certbot.timer'
+              remote_ssh "python3 '$remote_dir/awg_lifecycle.py' --node-id '$NODE_ID' --mode canary"
+              remote_ssh "python3 '$remote_dir/dot_local_canary.py' --node-id '$NODE_ID' --host '$NODE_HOST' --expected-ipv4 '$TARGET_IP'"
+              remote_ssh "python3 '$remote_dir/awg_lifecycle.py' --node-id '$NODE_ID' --mode inspect"
+              remote_ssh "python3 '$remote_dir/awg_peer_grants.py' --node-id '$NODE_ID' --mode inspect"
+              remote_ssh "python3 '$remote_dir/awg_egress.py' --node-id '$NODE_ID' --mode inspect"
+              remote_ssh "python3 '$remote_dir/tls_stage.py' --node-id '$NODE_ID' --host '$NODE_HOST' --expected-ipv4 '$TARGET_IP' --mode verify"
+              echo 'FLEET_AUTO_STAGED_AND_CANARY_CHECKED=true'
+            fi
           elif [[ "$NODE_PHASE" == certificate ]]; then
             remote_ssh 'command -v certbot >/dev/null || (export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l; apt-get update -qq && apt-get install -y -qq --no-install-recommends certbot >/dev/null)'
             remote_ssh "python3 '$remote_dir/tls_stage.py' --node-id '$NODE_ID' --host '$NODE_HOST' --expected-ipv4 '$TARGET_IP' --mode issue"
