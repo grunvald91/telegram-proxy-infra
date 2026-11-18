@@ -9,30 +9,97 @@ on:
       phase:
         description: 'Idempotent bootstrap, certificate or isolated canary'
         required: true
-        default: bootstrap
+        default: auto
         type: choice
-        options: [bootstrap, certificate, canary, inspect, controller-audit, service-audit, awg-netns-canary]
+        options: [auto, bootstrap, certificate, canary, inspect, controller-audit, service-audit, awg-netns-canary]
   repository_dispatch:
     types: [nodekit-bootstrap-approved]
+  push:
+    branches: [main]
+    paths: ['nodekit/fleet/*.json']
 permissions:
   contents: read
 concurrency:
   group: mnebyvpn-fleet-${{ inputs.country || github.event.client_payload.country }}
   cancel-in-progress: false
 jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - id: plan
+        name: Select immutable inventory for automatic or diagnostic run
+        shell: bash
+        env:
+          INPUT_COUNTRY: ${{ inputs.country }}
+          INPUT_PHASE: ${{ inputs.phase }}
+          DISPATCH_COUNTRY: ${{ github.event.client_payload.country }}
+          EVENT_KIND: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import json,os,pathlib,re,subprocess
+          kind=os.environ["EVENT_KIND"]
+          selected=[]
+          if kind=="workflow_dispatch":
+              selected=[(os.environ["INPUT_COUNTRY"],os.environ["INPUT_PHASE"] or "auto")]
+          elif kind=="repository_dispatch":
+              selected=[(os.environ["DISPATCH_COUNTRY"],"auto")]
+          elif kind=="push":
+              before=os.environ["BEFORE_SHA"]
+              after=os.environ["HEAD_SHA"]
+              if not re.fullmatch(r"[a-f0-9]{40}",before) or before=="0"*40:
+                  raise SystemExit("Refuse ambiguous inventory push range")
+              found=subprocess.check_output(["git","diff","--name-only","--diff-filter=AM",
+                  before,after,"--","nodekit/fleet"],text=True).splitlines()
+              countries=sorted({pathlib.PurePosixPath(x).stem for x in found
+                  if re.fullmatch(r"nodekit/fleet/[a-z]{2}\.json",x)})
+              if len(countries)>8:
+                  raise SystemExit("Fleet batch too large")
+              selected=[(cc,"auto") for cc in countries]
+          else:
+              raise SystemExit("Unsupported fleet event")
+          planned=[]
+          for country,phase in selected:
+              if not re.fullmatch(r"[a-z]{2}",country or ""):
+                  raise SystemExit("Invalid immutable fleet country")
+              if phase not in ("auto","bootstrap","certificate","canary","inspect",
+                  "controller-audit","service-audit","awg-netns-canary"):
+                  raise SystemExit("Invalid fleet phase")
+              subprocess.run(["python3","nodekit/fleet_plan.py","--country",country],
+                  check=True,stdout=subprocess.DEVNULL)
+              planned.append({"country":country,"phase":phase})
+          value=json.dumps({"include":planned},separators=(",",":"))
+          with open(os.environ["GITHUB_OUTPUT"],"a") as output:
+              print("matrix="+value,file=output)
+          print("fleet_discovered_nodes="+str(len(planned)))
+          PY
   bootstrap:
+    needs: discover
     if: github.ref == 'refs/heads/main'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
     runs-on: ubuntu-latest
     timeout-minutes: 35
-    environment: node-${{ inputs.country || github.event.client_payload.country }}
+    environment: node-${{ matrix.country }}
     env:
-      NODE_COUNTRY: ${{ inputs.country || github.event.client_payload.country }}
-      NODE_PHASE: ${{ github.event_name == 'repository_dispatch' && 'bootstrap' || inputs.phase }}
+      NODE_COUNTRY: ${{ matrix.country }}
+      NODE_PHASE: ${{ matrix.phase }}
       LEGACY_FI_SSH_USER: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_USER }}
       LEGACY_FI_SSH_PASSWORD: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_PASSWORD }}
       NODEKIT_SSH_USER: ${{ secrets.NODEKIT_SSH_USER }}
       NODEKIT_SSH_PASSWORD: ${{ secrets.NODEKIT_SSH_PASSWORD }}
-      NODEKIT_SSH_KNOWN_HOSTS: ${{ secrets.NODEKIT_SSH_KNOWN_HOSTS }}
+      EXISTING_APPROVED_KNOWN_HOSTS: ${{ secrets.NODEKIT_SSH_KNOWN_HOSTS }}
+      RU188_SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
       NODEKIT_CONTROLLER_PUBLIC_SHA256: ${{ vars.NODEKIT_CONTROLLER_PUBLIC_SHA256 }}
     steps:
       - uses: actions/checkout@v4
@@ -44,7 +111,7 @@ jobs:
           set -Eeuo pipefail
           umask 077
           [[ "$NODE_COUNTRY" =~ ^[a-z]{2}$ ]] || exit 2
-          [[ "$NODE_PHASE" =~ ^(bootstrap|certificate|canary|inspect|controller-audit|service-audit|awg-netns-canary)$ ]] || exit 2
+          [[ "$NODE_PHASE" =~ ^(auto|bootstrap|certificate|canary|inspect|controller-audit|service-audit|awg-netns-canary)$ ]] || exit 2
           python3 nodekit/fleet_plan.py --country "$NODE_COUNTRY" --write-spec "$RUNNER_TEMP/nodekit-spec.json" > "$RUNNER_TEMP/nodekit-reviewed.json"
           python3 - <<'PY'
           import json,os,pathlib
@@ -55,13 +122,13 @@ jobs:
               print('EXPECTED_IDENTITY_SHA='+str(entry['expected_identity_public_sha256'] or ''),file=env)
           PY
       - name: Setup pinned compiler for official AWG 3.1 sources
-        if: env.NODE_PHASE == 'bootstrap'
+        if: env.NODE_PHASE == 'bootstrap' || env.NODE_PHASE == 'auto'
         uses: actions/setup-go@v6
         with:
           go-version: '1.25.4'
           check-latest: false
       - name: Build pinned AWG 3.1 artifacts for exact native CPU
-        if: env.NODE_PHASE == 'bootstrap'
+        if: env.NODE_PHASE == 'bootstrap' || env.NODE_PHASE == 'auto'
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -96,23 +163,56 @@ jobs:
           target="$TARGET_IP"
           known="$RUNNER_TEMP/nodekit_known_hosts"
           : > "$known"; chmod 0600 "$known"
-          strict=yes
-          if [[ "$NODE_COUNTRY" == fi && "$TARGET_IP" == '217.11.167.91' ]]; then
-            # Legacy password-only testing exception; not allowed for NEW countries.
-            export SSHPASS="$LEGACY_FI_SSH_PASSWORD"
-            user="$LEGACY_FI_SSH_USER"
-            strict=accept-new
-          else
+          # Persist the first SSH host key on existing RU188 before ANY node password is sent.
+          # First contact is TOFU (not independent attestation); every later run is strictly pinned.
+          [[ -n "$RU188_SSH_PASSWORD" ]] || { echo "::error::Missing RU188 transport secret"; exit 2; }
+          grep -q '^188\.120\.254\.223 ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts
+          export SSHPASS="$RU188_SSH_PASSWORD"
+          ru_opts=(-T -F /dev/null -o ConnectTimeout=12 -o BatchMode=no
+            -o PasswordAuthentication=yes -o PubkeyAuthentication=no
+            -o KbdInteractiveAuthentication=no -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no
+            -o ForwardAgent=no -o ClearAllForwardings=yes
+            -o ControlMaster=no -o ProxyCommand=none -o LogLevel=ERROR)
+          sshpass -e ssh "${ru_opts[@]}" root@188.120.254.223 \
+            "python3 - --country '$NODE_COUNTRY' --node-id '$NODE_ID' --ip '$TARGET_IP'" \
+            < nodekit/fleet_host_trust.py > "$known"
+          [[ "$(wc -l < "$known")" == 1 ]] || exit 2
+          grep -Eq "^$TARGET_IP ssh-ed25519 [A-Za-z0-9+/]+=*$" "$known" || exit 2
+          # Honor a stronger, pre-existing provider/owner pin when available.
+          # No manual pin is required for brand-new nodes.
+          if [[ -n "$EXISTING_APPROVED_KNOWN_HOSTS" ]]; then
+            python3 - "$known" <<'PY'
+          import os,sys
+          stored=open(sys.argv[1],encoding="ascii").read().strip().split()
+          expected=[x.split() for x in os.environ["EXISTING_APPROVED_KNOWN_HOSTS"].splitlines()
+                    if x.strip() and not x.lstrip().startswith("#")]
+          if (len(stored)!=3 or len(expected)!=1 or len(expected[0])<3 or
+              stored[0] not in expected[0][0].split(",") or
+              stored[1:]!=expected[0][1:3]):
+              raise SystemExit("Existing approved SSH host key conflicts with RU188 pin")
+          PY
+          fi
+          if [[ -n "$NODEKIT_SSH_PASSWORD" && "$NODEKIT_SSH_USER" == root ]]; then
             export SSHPASS="$NODEKIT_SSH_PASSWORD"
             user="$NODEKIT_SSH_USER"
-            [[ -n "$NODEKIT_SSH_KNOWN_HOSTS" ]] || { echo '::error::Pin SSH host key per environment'; exit 2; }
-            printf '%s\n' "$NODEKIT_SSH_KNOWN_HOSTS" > "$known"
-            [[ -s "$known" ]] || exit 2
+          elif [[ "$NODE_COUNTRY" == fi && "$TARGET_IP" == 217.11.167.91 &&
+                  "$LEGACY_FI_SSH_USER" == root && -n "$LEGACY_FI_SSH_PASSWORD" ]]; then
+            export SSHPASS="$LEGACY_FI_SSH_PASSWORD"
+            user="$LEGACY_FI_SSH_USER"
+          else
+            echo "::error::Missing machine-provisioned per-node SSH credentials"; exit 2
           fi
-          [[ "$user" == root && -n "$SSHPASS" ]] || exit 2
-          opts=(-o PubkeyAuthentication=no -o PreferredAuthentications=password,keyboard-interactive
-            -o NumberOfPasswordPrompts=1 -o StrictHostKeyChecking="$strict"
-            -o UserKnownHostsFile="$known" -o HostKeyAlias="$TARGET_IP"
+          opts=(-F /dev/null -o PubkeyAuthentication=no
+            -o PreferredAuthentications=password,keyboard-interactive
+            -o NumberOfPasswordPrompts=1 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o UserKnownHostsFile="$known" -o GlobalKnownHostsFile=/dev/null
+            -o UpdateHostKeys=no -o ForwardAgent=no -o ClearAllForwardings=yes
+            -o ControlMaster=no -o ProxyCommand=none
+            -o HostKeyAlias="$TARGET_IP"
             -o ConnectTimeout=12 -o ServerAliveInterval=20 -o ServerAliveCountMax=12)
           remote_ssh() { sshpass -e ssh "${opts[@]}" "${user}@${target}" "$@"; }
           remote_scp() { sshpass -e scp "${opts[@]}" "$@"; }
@@ -126,7 +226,7 @@ jobs:
             nodekit/awg_lifecycle.py nodekit/awg_upgrade.py nodekit/awg_netns_canary.py nodekit/awg_egress.py nodekit/awg_controller_readiness.py nodekit/service_readiness.py nodekit/awg_peer_grants.py nodekit/install_awg_watchdog.py nodekit/tls_stage.py nodekit/dot_local_canary.py)
           remote_scp "${scripts[@]}" "$RUNNER_TEMP/nodekit-spec.json" "${user}@${target}:$remote_dir/"
           # Filenames are fixed and node_id/ip/host all come from reviewed inventory.
-          if [[ "$NODE_PHASE" == bootstrap ]]; then
+          if [[ "$NODE_PHASE" == bootstrap || "$NODE_PHASE" == auto ]]; then
             remote_scp "$RUNNER_TEMP/awg-bin/awg" "$RUNNER_TEMP/awg-bin/awg-quick" "$RUNNER_TEMP/awg-bin/amneziawg-go" "${user}@${target}:$remote_dir/"
             remote_ssh "python3 '$remote_dir/provision_node.py' --source-dir '$remote_dir' --spec '$remote_dir/nodekit-spec.json'"
             if [[ -n "$EXPECTED_IDENTITY_SHA" ]]; then
@@ -141,6 +241,20 @@ jobs:
             remote_ssh "python3 '$remote_dir/install_awg_watchdog.py' --node-id '$NODE_ID'"
             remote_ssh "python3 '$remote_dir/awg_egress.py' --node-id '$NODE_ID' --mode install"
             remote_ssh "python3 '$remote_dir/dns_proxy_stage.py' --node-id '$NODE_ID' --external-ipv4 '$TARGET_IP' --dns-host '$NODE_HOST'"
+            if [[ "$NODE_PHASE" == auto ]]; then
+              # Single noninteractive build -> TLS -> empty canary -> inspection.
+              # Failure stops here; no database enrollment or paid subscriber release.
+              remote_ssh 'command -v certbot >/dev/null || (export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l; apt-get update -qq && apt-get install -y -qq --no-install-recommends certbot >/dev/null)'
+              remote_ssh "python3 '$remote_dir/tls_stage.py' --node-id '$NODE_ID' --host '$NODE_HOST' --expected-ipv4 '$TARGET_IP' --mode issue"
+              remote_ssh 'systemctl enable --now certbot.timer'
+              remote_ssh "python3 '$remote_dir/awg_lifecycle.py' --node-id '$NODE_ID' --mode canary"
+              remote_ssh "python3 '$remote_dir/dot_local_canary.py' --node-id '$NODE_ID' --host '$NODE_HOST' --expected-ipv4 '$TARGET_IP'"
+              remote_ssh "python3 '$remote_dir/awg_lifecycle.py' --node-id '$NODE_ID' --mode inspect"
+              remote_ssh "python3 '$remote_dir/awg_peer_grants.py' --node-id '$NODE_ID' --mode inspect"
+              remote_ssh "python3 '$remote_dir/awg_egress.py' --node-id '$NODE_ID' --mode inspect"
+              remote_ssh "python3 '$remote_dir/tls_stage.py' --node-id '$NODE_ID' --host '$NODE_HOST' --expected-ipv4 '$TARGET_IP' --mode verify"
+              echo 'FLEET_AUTO_STAGED_AND_CANARY_CHECKED=true'
+            fi
           elif [[ "$NODE_PHASE" == certificate ]]; then
             remote_ssh 'command -v certbot >/dev/null || (export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l; apt-get update -qq && apt-get install -y -qq --no-install-recommends certbot >/dev/null)'
             remote_ssh "python3 '$remote_dir/tls_stage.py' --node-id '$NODE_ID' --host '$NODE_HOST' --expected-ipv4 '$TARGET_IP' --mode issue"
