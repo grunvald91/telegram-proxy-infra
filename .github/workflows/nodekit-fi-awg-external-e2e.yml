@@ -150,4 +150,8 @@ jobs:
           echo "AWG_EXTERNAL_ICMP=PASS"
           echo "AWG_EXTERNAL_HTTPS_EGRESS=PASS"
           echo "AWG_EXTERNAL_EGRESS_EQUALS_FI_VPS=true"
+          echo "AWG_EXTERNAL_STEP=VERIFY_REMOTE_ROLLBACK"
+          remote "python3 '$remote_dir/awg_external_canary.py' --mode cleanup" > "$tmp/cleanup.json"
+          remote 'set -Eeuo pipefail; ! iptables-save | grep -q nodekit-fi-awg-canary; ! systemctl is-active --quiet mnebyvpn-nodekit-awg@fi-test-01.service; test "$(cat /proc/sys/net/ipv4/ip_forward)" = 0'
+          echo "AWG_EXTERNAL_ROLLBACK=PASS"
           echo "AWG_CLIENT_PROFILE_PUBLISHED=false"
