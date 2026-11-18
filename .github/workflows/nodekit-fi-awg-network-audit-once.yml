@@ -57,7 +57,11 @@ jobs:
           iptables=cmd('iptables','-S','INPUT')
           forward=cmd('iptables','-S','FORWARD')
           nat=cmd('iptables','-t','nat','-S','POSTROUTING')
+          rules_save=cmd('iptables-save')
           print(json.dumps({
+              'residual_awg_canary_rules':rules_save[1].count('nodekit-fi-awg-canary') if rules_save[0]==0 else None,
+              'canary_state_file_exists':pathlib.Path('/run/nodekit-fi-awg-external.json').exists(),
+              'canary_guard_timer_active':yes('nodekit-fi-awg-canary-expiry.timer'),
               'iptables_available':iptables[0]==0,
               'iptables_input_rule_count':len(iptables[1].splitlines()) if iptables[0]==0 else None,
               'iptables_forward_rule_count':len(forward[1].splitlines()) if forward[0]==0 else None,
