@@ -16,7 +16,7 @@ jobs:
     timeout-minutes: 15
     env:
       RU188_SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
-      MNEBYVPN_SOURCE_SHA: c017b6a4746f981a84e9aad30314281328b1706b
+      MNEBYVPN_SOURCE_SHA: 531ce525e20d1baf395ac3c4b6a699ac0bdc5a9d
     steps:
       - uses: actions/checkout@v4
         with:
@@ -25,7 +25,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: grunvald91/Mnebyvpn
-          ref: c017b6a4746f981a84e9aad30314281328b1706b
+          ref: 531ce525e20d1baf395ac3c4b6a699ac0bdc5a9d
           path: controller-source
           persist-credentials: false
       - name: Verify reviewed source and produce no-secrets release archive
