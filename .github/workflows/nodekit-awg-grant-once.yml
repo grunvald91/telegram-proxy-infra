@@ -1,0 +1,23 @@
+name: FI AWG lease install one-shot dispatch
+on:
+  push:
+    branches: [feat/nodekit-awg-signed-access-20261118]
+    paths: [.github/workflows/nodekit-awg-grant-once.yml]
+permissions:
+  contents: read
+  actions: write
+jobs:
+  dispatch:
+    if: github.repository == 'grunvald91/telegram-proxy-infra'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Run inventory-approved, idempotent staging on FI
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          gh api --method POST repos/grunvald91/telegram-proxy-infra/dispatches \
+            -f event_type=nodekit-bootstrap-approved \
+            -f "client_payload[country]=fi"
