@@ -42,6 +42,14 @@ jobs:
           for svc in ("nginx.service","wg-quick@tg-relay.service","mnebydns-dot.service","mneby-meta-v26-ru-window.service","mneby-meta-v26-ru-watchdog.timer"):
               code,data=cmd("systemctl","is-active",svc)
               o("SERVICE_"+svc,data if data else "unknown")
+          rc,link=cmd("ip","-o","link","show","dev","tg-relay")
+          mtu=re.search(r"\bmtu\s+(\d+)",link)
+          o("TUNNEL_LINK_EXISTS",rc==0)
+          o("TUNNEL_LINK_MTU",mtu.group(1) if mtu else "unknown")
+          rc,route=cmd("ip","-4","route","get","10.66.77.1" if role=="RU" else "10.66.77.2")
+          iface=re.search(r"\bdev\s+(\S+)",route)
+          o("TUNNEL_ROUTE_DEVICE",iface.group(1) if rc==0 and iface else "unknown")
+          o("AWG_SERVICE",cmd("systemctl","is-active","mneby-awg-tg-relay.service")[1] or "unknown")
           rc,hs=cmd("wg","show","tg-relay","latest-handshakes")
           times=[int(a.split()[1]) for a in hs.splitlines() if len(a.split())==2 and a.split()[1].isdigit()]
           o("WG_HANDSHAKE_AGE_SECONDS",min((int(time.time())-t for t in times if t>0),default=-1))
@@ -62,9 +70,20 @@ jobs:
                       o("META_TRIAL_RULE_COUNTS",counts)
                   except Exception:o("META_TRIAL_RULE_COUNTS","UNAVAILABLE")
               for size in (32,1200,1320):
-                  rc,data=cmd("ping","-n","-q","-M","do","-c","20","-i","0.25","-s",str(size),"-W","2","10.66.77.1",timeout=15)
-                  for line in data.splitlines():
-                      if "packet loss" in line or "min/avg/max" in line:o("WG_PING_DF_"+str(size),line.strip())
+                  args=["ping","-n","-q","-M","do","-c","20","-i","0.25","-s",str(size),"-W","2","10.66.77.1"]
+                  try:
+                      result=subprocess.run(args,capture_output=True,text=True,timeout=15)
+                      for line in result.stdout.splitlines():
+                          if "packet loss" in line or "min/avg/max" in line:o("WG_PING_DF_"+str(size),line.strip())
+                      err=result.stderr.lower()
+                      if result.returncode==0: status="ok"
+                      elif "message too long" in err or "mtu=" in err: status="local_mtu_reject"
+                      elif "network is unreachable" in err: status="no_route"
+                      elif "permission denied" in err or "operation not permitted" in err: status="local_policy_reject"
+                      else: status="nonzero_unclassified"
+                  except subprocess.TimeoutExpired:
+                      status="timeout"
+                  o("WG_PING_DF_"+str(size)+"_STATUS",status)
               rc,data=cmd("ping","-n","-q","-c","20","-i","0.25","-s","1200","-W","2","89.125.90.101",timeout=15)
               for line in data.splitlines():
                   if "packet loss" in line or "min/avg/max" in line:o("PUBLIC_PING_1200",line.strip())
