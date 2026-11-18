@@ -7,6 +7,7 @@ A single non-permanent internal owner row is renewed only after positive checks.
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -26,8 +27,8 @@ SERVICE=Path('/etc/systemd/system/mnebydns-personal-private-probe.service')
 TIMER=Path('/etc/systemd/system/mnebydns-personal-private-probe.timer')
 OWNER=9000000000000000000
 ALPHABET='abcdefghijklmnopqrstuvwxyz0123456789'
-BACKEND=('10.66.77.2',8858)
-PUBLIC=('89.125.90.101',853)
+PUBLIC_DOT_NAME='dns.mnebyvpn.site'
+PRIVATE_CONTAINER='mnebydns-personal-dot-private'
 DOMAIN='rr1---sn-4g5ednss.googlevideo.com'
 
 def db(sql):
@@ -38,6 +39,31 @@ def db(sql):
     if result.returncode:
         raise RuntimeError('DB_OPERATION_FAILED')
     return result.stdout.strip()
+
+def endpoints():
+    # Resolve topology only on RU188. Never commit runtime addresses.
+    p=subprocess.run(
+        ['docker','inspect','--format','{{json .Config.Env}}',PRIVATE_CONTAINER],
+        capture_output=True,text=True,timeout=10)
+    if p.returncode:raise RuntimeError('PRIVATE_DOT_CONTAINER_UNAVAILABLE')
+    entries=json.loads(p.stdout)
+    if not isinstance(entries,list):raise RuntimeError('PRIVATE_DOT_ENV_INVALID')
+    values=dict(item.split('=',1) for item in entries
+                if isinstance(item,str) and '=' in item)
+    host=values.get('MNEBYDNS_PERSONAL_DOT_BIND_IP','')
+    port_raw=values.get('MNEBYDNS_PERSONAL_DOT_PORT','')
+    try:
+        address=ipaddress.ip_address(host)
+        port=int(port_raw)
+    except ValueError:
+        raise RuntimeError('PRIVATE_DOT_BIND_INVALID') from None
+    if not (address.version==4 and address.is_private and 1<=port<=65535):
+        raise RuntimeError('PRIVATE_DOT_BIND_UNSAFE')
+    public_ip=socket.gethostbyname(PUBLIC_DOT_NAME)
+    public_address=ipaddress.ip_address(public_ip)
+    if public_address.version!=4 or not public_address.is_global:
+        raise RuntimeError('PUBLIC_DOT_DNS_INVALID')
+    return (host,port),(PUBLIC_DOT_NAME,853),public_ip
 
 def read_state():
     data=json.loads(STATE.read_text())
@@ -128,12 +154,13 @@ def verify_profile(data):
         raise RuntimeError('MONITOR_SUBSCRIPTION_NOT_ACTIVE')
     # RU private service and the real public personal SNI entrance on DE.
     # Identity remains on RU; it is never passed to GitHub Actions or DE.
-    for endpoint in (BACKEND,PUBLIC):
+    private,public,expected_mapped_ipv4=endpoints()
+    for endpoint in (private,public):
         for domain in ('youtube.com','youtubei.googleapis.com',DOMAIN):
             addresses=dns_query(data['label'],domain,endpoint)
-            if domain!=DOMAIN and '89.125.90.101' not in addresses:
+            if domain!=DOMAIN and expected_mapped_ipv4 not in addresses:
                 raise RuntimeError('MONITOR_DNS_API_ROUTE_DRIFT')
-            if domain==DOMAIN and '89.125.90.101' in addresses:
+            if domain==DOMAIN and expected_mapped_ipv4 in addresses:
                 raise RuntimeError('MONITOR_DNS_VPN_ORIGIN_ROUTE_DRIFT')
 
 def stage():
