@@ -91,6 +91,10 @@ grep -Eq '^VPN_WORKER_PROFILE_TOKEN=[a-f0-9]{64}$' "$BOT/worker.env"
 grep -Fxq 'VPN_WORKER_HEALTH_PORT=8794' "$BOT/worker.env"
 
 start_worker(){
+  local smart_dns_health=()
+  if curl --noproxy '*' -sf --max-time 3 http://127.0.0.1:8859/readyz >/dev/null; then
+    smart_dns_health+=(-e MNEBYDNS_PERSONAL_DOT_HEALTH_URL=http://127.0.0.1:8859/readyz)
+  fi
   docker run -d --name "$NAME" --restart unless-stopped \
     --network host --user 0:0 --read-only \
     --tmpfs /tmp:rw,nosuid,nodev,size=16m \
@@ -100,6 +104,8 @@ start_worker(){
     --env-file "$BOT/web.env" --env-file "$BOT/worker.env" \
     -e MNEBYVPN_PROVISIONING_WORKER=enabled \
     -e MNEBYVPN_NODE_WORKER=enabled \
+    -e MNEBYDNS_SMART_DNS_WORKER=enabled \
+    "${smart_dns_health[@]}" \
     -e VPN_NODE_KEY_FILE=/run/secrets/provisioner.key \
     --entrypoint node "$IMAGE" \
     --experimental-strip-types apps/service/src/vpn-provisioning-worker.ts >/dev/null
