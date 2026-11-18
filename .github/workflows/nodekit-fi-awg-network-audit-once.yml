@@ -1,0 +1,80 @@
+name: FI external AWG network readiness audit (read-only)
+on:
+  push:
+    branches: [feat/nodekit-awg-external-e2e-20261118]
+    paths: [.github/workflows/nodekit-fi-awg-network-audit-once.yml]
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      SSHPASS: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_PASSWORD }}
+      SSH_USER: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_USER }}
+    steps:
+      - name: Check local and external path prerequisites without changing network
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          [[ "$SSH_USER" == root && -n "$SSHPASS" ]] || exit 2
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends sshpass >/dev/null
+          known="$RUNNER_TEMP/known"; touch "$known"; chmod 600 "$known"
+          sshpass -e ssh -T -o PubkeyAuthentication=no \
+            -o PreferredAuthentications=password,keyboard-interactive \
+            -o NumberOfPasswordPrompts=1 -o StrictHostKeyChecking=accept-new \
+            -o UserKnownHostsFile="$known" -o ConnectTimeout=12 \
+            root@217.11.167.91 'python3 -' <<'PY'
+          import json,subprocess,socket,os,ipaddress,pathlib
+          def cmd(*parts):
+              try:
+                  r=subprocess.run(parts,capture_output=True,text=True,timeout=8)
+                  return (r.returncode,r.stdout.strip())
+              except Exception: return (99,'')
+          def yes(program):
+              return cmd('systemctl','is-active','--quiet',program)[0]==0
+          routes=cmd('ip','-j','route','get','1.1.1.1')[1]
+          try:
+              route=json.loads(routes)[0]
+              iface=route.get('dev')
+              source_ip=route.get('prefsrc') or route.get('src')
+          except Exception:
+              iface=None;source_ip=None
+          if iface and (not iface.replace('-','').replace('_','').isalnum() or len(iface)>15): iface=None
+          ipv4_forward=pathlib.Path('/proc/sys/net/ipv4/ip_forward').read_text().strip()
+          rp_filter=cmd('sysctl','-n','net.ipv4.conf.all.rp_filter')[1]
+          local_routes=cmd('ip','route','show','10.73.91.0/24')[1]
+          listeners=cmd('ss','-H','-lun','sport', '=', ':51821')[1]
+          nft=cmd('nft','-j','list','ruleset')
+          if nft[0]==0:
+              try:
+                  tables=json.loads(nft[1]).get('nftables',[])
+                  nft_chains=sum('chain' in r for r in tables)
+                  nft_nat=sum('rule' in r and r['rule'].get('expr') and any('masquerade' in e or 'snat' in e for e in r['rule']['expr']) for r in tables)
+              except: nft_chains=-1;nft_nat=-1
+          else: nft_chains=None;nft_nat=None
+          print(json.dumps({
+              'expected_host_ip':'217.11.167.91',
+              'egress_interface':iface,
+              'egress_private_source_ip':source_ip if source_ip and ipaddress.ip_address(source_ip).is_private else None,
+              'ip_forward':ipv4_forward,
+              'rp_filter_all':rp_filter,
+              'awg_test_route_present':bool(local_routes),
+              'udp_51821_listener_present':bool(listeners),
+              'nft_chains':nft_chains,
+              'nft_nat_rules':nft_nat,
+              'ufw_service_active':yes('ufw.service'),
+              'firewalld_service_active':yes('firewalld.service'),
+              'awg_server_service_active':yes('mnebyvpn-nodekit-awg@fi-test-01.service'),
+              'awg_watchdog_service_active':yes('mnebyvpn-nodekit-awg-watchdog@fi-test-01.service'),
+              'network_modified':False
+          },sort_keys=True))
+          PY
+          python3 - <<'PY'
+          import socket
+          host='fi.mnebyvpn.site'
+          try: ips=sorted({x[4][0] for x in socket.getaddrinfo(host,None,family=socket.AF_INET)})
+          except OSError: ips=[]
+          print('DNS_EXPECTED_IP_MATCH='+str(ips==['217.11.167.91']).lower())
+          PY
