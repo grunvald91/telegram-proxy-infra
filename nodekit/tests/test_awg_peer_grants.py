@@ -156,6 +156,18 @@ class TestAWGAccess(unittest.TestCase):
             recovered=awg.OfflineClock(path,wall=lambda:NOW+30,
                                         monotonic=lambda:0.0,load=load,save=save)
             self.assertEqual(recovered.now(),NOW+30)
+            # Large forward NTP jump must not permit later rollback to
+            # resurrect peers already expired during the jump.
+            wall[0]=NOW+3600
+            tick[0]=200.0
+            jumped=awg.OfflineClock(path,wall=lambda:wall[0],
+                                    monotonic=lambda:tick[0],
+                                    load=load,save=save)
+            self.assertEqual(jumped.now(),NOW+3600)
+            wall[0]=NOW+60
+            tick[0]+=5
+            with self.assertRaises(awg.GrantError):
+                jumped.now()
 
     def test_same_live_key_with_widened_allowed_ips_is_rejected(self):
         expected=[{"public_key": KEY1, "allowed_ips": "10.73.91.2/32"}]
