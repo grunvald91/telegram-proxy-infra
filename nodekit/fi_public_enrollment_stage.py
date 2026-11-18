@@ -194,7 +194,11 @@ def authorized_key(ssh_dir: Path, expected: bytes, key_b64: str,
                 out.flush()
                 os.fsync(out.fileno())
             os.replace(temp, path)
-            os.fsync(fd)
+            parent = os.open(ssh_dir, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(parent)
+            finally:
+                os.close(parent)
         finally:
             Path(temp).unlink(missing_ok=True)
     finally:
