@@ -97,3 +97,11 @@ jobs:
               ' || echo "SSH_SERVICE_STATUS=UNKNOWN_NODE_UNREACHABLE"
           done
           echo "PRODUCTION_MUTATIONS=NONE"
+
+      - name: Verify twelve live Antigravity domains via read-only DoT RR and RU-DE TLS
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          python3 -m py_compile scripts/mnebydns-antigravity-live-readonly-20261110.py
+          python3 scripts/mnebydns-antigravity-live-readonly-20261110.py
