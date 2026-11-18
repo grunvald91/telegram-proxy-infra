@@ -11,6 +11,7 @@ import fcntl
 import ipaddress
 import json
 import os
+import re
 from pathlib import Path
 import secrets
 import shutil
@@ -80,8 +81,9 @@ def read_state():
             and len(data['label'])==12
             and set(data['label'])<=set(ALPHABET)
             and str(uuid.UUID(data.get('id','')))==data['id']
+            and uuid.UUID(data['id']).version==4
             and isinstance(data.get('request_key'),str)
-            and data['request_key'].startswith('internal-monitor-')):
+            and re.fullmatch(r'internal-monitor-[0-9a-f]{32}',data['request_key']) is not None):
         raise RuntimeError('BAD_MONITOR_STATE')
     return data
 
@@ -148,6 +150,11 @@ def dns_query(label,domain,endpoint):
     if (len(answer)<12 or int.from_bytes(answer[:2],'big')!=ident
             or not answer[2]&0x80 or answer[3]&15):
         raise RuntimeError('DOT_INVALID_ANSWER')
+    # A valid transaction ID alone is not proof that the upstream answered
+    # the requested domain and record type.
+    expected_question=qname+struct.pack('!HH',1,1)
+    if answer[12:12+len(expected_question)]!=expected_question:
+        raise RuntimeError('DOT_QUESTION_MISMATCH')
     values=_answer_ipv4(answer)
     if not values:raise RuntimeError('DOT_NO_IPV4_ANSWER')
     return values
