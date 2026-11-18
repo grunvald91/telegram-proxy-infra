@@ -72,8 +72,10 @@ class TestFleetInventory(unittest.TestCase):
 
     def test_no_remote_plan_lookup_from_untrusted_path(self):
         for country in ("../fi", "Fi", "fi;cmd", "", "fii", "de/../../x"):
-            with self.subTest(country=country), self.assertRaises(m.FleetError):
-                self.check(country=country)
+            # Never construct a write path from an intentionally hostile name.
+            with tempfile.TemporaryDirectory() as temp:
+                with self.subTest(country=country), self.assertRaises(m.FleetError):
+                    m.inventory(Path(temp), country)
 
     def test_other_country_is_supported_with_reviewed_record(self):
         row = dict(
