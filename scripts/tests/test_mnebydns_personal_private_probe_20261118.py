@@ -94,6 +94,15 @@ class PrivateProbeTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,'BIND_UNSAFE'):
                 mod.endpoints()
 
+    def test_revocation_requires_confirmed_single_row(self):
+        obj={'id':'5bd8b96a-7549-42c7-ae21-123d9a0df12d',
+             'request_key':'internal-monitor-123'}
+        with patch.object(mod,'db',return_value='0'):
+            with self.assertRaisesRegex(RuntimeError,'REVOKE_ROW_COUNT_INVALID'):
+                mod.delete_own_row(obj)
+        with patch.object(mod,'db',return_value='1'):
+            mod.delete_own_row(obj)
+
     def test_service_monitor_is_non_permanent_and_has_short_lease(self):
         code=SOURCE.read_text()
         self.assertIn("'vpn_origin'",code)
