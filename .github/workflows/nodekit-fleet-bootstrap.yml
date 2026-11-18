@@ -14,20 +14,86 @@ on:
         options: [auto, bootstrap, certificate, canary, inspect, controller-audit, service-audit, awg-netns-canary]
   repository_dispatch:
     types: [nodekit-bootstrap-approved]
+  push:
+    branches: [main]
+    paths: ['nodekit/fleet/*.json']
 permissions:
   contents: read
 concurrency:
   group: mnebyvpn-fleet-${{ inputs.country || github.event.client_payload.country }}
   cancel-in-progress: false
 jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - id: plan
+        name: Select immutable inventory for automatic or diagnostic run
+        shell: bash
+        env:
+          INPUT_COUNTRY: ${{ inputs.country }}
+          INPUT_PHASE: ${{ inputs.phase }}
+          DISPATCH_COUNTRY: ${{ github.event.client_payload.country }}
+          EVENT_KIND: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import json,os,pathlib,re,subprocess
+          kind=os.environ["EVENT_KIND"]
+          selected=[]
+          if kind=="workflow_dispatch":
+              selected=[(os.environ["INPUT_COUNTRY"],os.environ["INPUT_PHASE"] or "auto")]
+          elif kind=="repository_dispatch":
+              selected=[(os.environ["DISPATCH_COUNTRY"],"auto")]
+          elif kind=="push":
+              before=os.environ["BEFORE_SHA"]
+              after=os.environ["HEAD_SHA"]
+              if not re.fullmatch(r"[a-f0-9]{40}",before) or before=="0"*40:
+                  raise SystemExit("Refuse ambiguous inventory push range")
+              found=subprocess.check_output(["git","diff","--name-only","--diff-filter=AM",
+                  before,after,"--","nodekit/fleet"],text=True).splitlines()
+              countries=sorted({pathlib.PurePosixPath(x).stem for x in found
+                  if re.fullmatch(r"nodekit/fleet/[a-z]{2}\.json",x)})
+              if len(countries)>8:
+                  raise SystemExit("Fleet batch too large")
+              selected=[(cc,"auto") for cc in countries]
+          else:
+              raise SystemExit("Unsupported fleet event")
+          planned=[]
+          for country,phase in selected:
+              if not re.fullmatch(r"[a-z]{2}",country or ""):
+                  raise SystemExit("Invalid immutable fleet country")
+              if phase not in ("auto","bootstrap","certificate","canary","inspect",
+                  "controller-audit","service-audit","awg-netns-canary"):
+                  raise SystemExit("Invalid fleet phase")
+              subprocess.run(["python3","nodekit/fleet_plan.py","--country",country],
+                  check=True,stdout=subprocess.DEVNULL)
+              planned.append({"country":country,"phase":phase})
+          value=json.dumps({"include":planned},separators=(",",":"))
+          with open(os.environ["GITHUB_OUTPUT"],"a") as output:
+              print("matrix="+value,file=output)
+          print("fleet_discovered_nodes="+str(len(planned)))
+          PY
   bootstrap:
+    needs: discover
     if: github.ref == 'refs/heads/main'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
     runs-on: ubuntu-latest
     timeout-minutes: 35
-    environment: node-${{ inputs.country || github.event.client_payload.country }}
+    environment: node-${{ matrix.country }}
     env:
-      NODE_COUNTRY: ${{ inputs.country || github.event.client_payload.country }}
-      NODE_PHASE: ${{ github.event_name == 'repository_dispatch' && 'auto' || inputs.phase }}
+      NODE_COUNTRY: ${{ matrix.country }}
+      NODE_PHASE: ${{ matrix.phase }}
       LEGACY_FI_SSH_USER: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_USER }}
       LEGACY_FI_SSH_PASSWORD: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_PASSWORD }}
       NODEKIT_SSH_USER: ${{ secrets.NODEKIT_SSH_USER }}
