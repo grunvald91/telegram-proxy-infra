@@ -15,14 +15,17 @@ class PrivateProbeTests(unittest.TestCase):
     def test_both_ru_backend_and_public_de_sni_receive_authorized_queries(self):
         obj={'label':'monitorabc12','id':'5bd8b96a-7549-42c7-ae21-123d9a0df12d',
              'request_key':'internal-monitor-123'}
+        private=('10.0.0.2',8858)
+        public=('dns.mnebyvpn.site',853)
         def answer(label,domain,endpoint):
-            return ['173.194.188.102'] if domain==mod.DOMAIN else ['89.125.90.101']
+            return ['173.194.188.102'] if domain==mod.DOMAIN else ['198.51.100.21']
         with patch.object(mod,'status',return_value='ALLOWED'), \
+             patch.object(mod,'endpoints',return_value=(private,public,'198.51.100.21')), \
              patch.object(mod,'dns_query',side_effect=answer) as q:
             mod.verify_profile(obj)
             self.assertEqual(q.call_count,6)
             sent=[call.args[2] for call in q.call_args_list]
-            self.assertEqual(sent,[mod.BACKEND]*3+[mod.PUBLIC]*3)
+            self.assertEqual(sent,[private]*3+[public]*3)
 
     def test_inactive_personal_profile_never_probed_or_renewed(self):
         obj={'label':'monitorabc12'}
@@ -35,8 +38,9 @@ class PrivateProbeTests(unittest.TestCase):
     def test_route_drift_is_rejected(self):
         obj={'label':'monitorabc12'}
         def bad(label,domain,endpoint):
-            return ['89.125.90.101']  # Wrong for vpn_origin googlevideo.com
+            return ['198.51.100.21']  # Wrong for vpn_origin googlevideo.com
         with patch.object(mod,'status',return_value='ALLOWED'), \
+             patch.object(mod,'endpoints',return_value=(('10.0.0.2',8858),('dns.mnebyvpn.site',853),'198.51.100.21')), \
              patch.object(mod,'dns_query',side_effect=bad):
             with self.assertRaisesRegex(RuntimeError,'ROUTE_DRIFT'):
                 mod.verify_profile(obj)
@@ -66,9 +70,28 @@ class PrivateProbeTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError,'ROW_COUNT_INVALID'):
                     mod.stage()
 
+    def test_topology_is_read_from_live_service_not_hardcoded(self):
+        from unittest.mock import Mock
+        env=['MNEBYDNS_PERSONAL_DOT_BIND_IP=10.0.0.2',
+             'MNEBYDNS_PERSONAL_DOT_PORT=8858']
+        result=Mock(returncode=0,stdout=__import__('json').dumps(env))
+        with patch.object(mod.subprocess,'run',return_value=result), \
+             patch.object(mod.socket,'gethostbyname',return_value='8.8.8.8'):
+            self.assertEqual(mod.endpoints(),(('10.0.0.2',8858),
+                             ('dns.mnebyvpn.site',853),'8.8.8.8'))
+
+    def test_topology_refuses_invalid_bind(self):
+        from unittest.mock import Mock
+        result=Mock(returncode=0,stdout='["MNEBYDNS_PERSONAL_DOT_BIND_IP=8.8.8.8","MNEBYDNS_PERSONAL_DOT_PORT=8858"]')
+        with patch.object(mod.subprocess,'run',return_value=result):
+            with self.assertRaisesRegex(RuntimeError,'BIND_UNSAFE'):
+                mod.endpoints()
+
     def test_service_monitor_is_non_permanent_and_has_short_lease(self):
         code=SOURCE.read_text()
         self.assertIn("'vpn_origin'",code)
+        self.assertNotIn('89.125.90.101',code)
+        self.assertNotIn('188.120.254.223',code)
         self.assertIn("permanent,expires_at,video_route",code)
         self.assertIn("clock_timestamp()+interval '30 days'",code)
         self.assertNotIn('print(data',code)
