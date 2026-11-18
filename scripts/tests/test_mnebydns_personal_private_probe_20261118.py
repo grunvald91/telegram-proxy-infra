@@ -65,7 +65,7 @@ class PrivateProbeTests(unittest.TestCase):
             with patch.object(mod,'STATE',state), \
                  patch.object(mod,'read_state',return_value=obj), \
                  patch.object(mod,'verify_profile'), \
-                 patch.object(mod,'db',return_value='0'), \
+                 patch.object(mod,'db',side_effect=['DUE','0']), \
                  patch.object(mod.os,'geteuid',return_value=0):
                 with self.assertRaisesRegex(RuntimeError,'ROW_COUNT_INVALID'):
                     mod.stage()
@@ -129,6 +129,36 @@ class PrivateProbeTests(unittest.TestCase):
                                  ['systemctl','disable','--now'])
                 self.assertEqual(command.call_args_list[1].args[0][:3],
                                  ['systemctl','enable','--now'])
+
+    def test_current_lease_avoids_unnecessary_database_update(self):
+        obj={'label':'monitorabc12','id':'5bd8b96a-7549-42c7-ae21-123d9a0df12d',
+             'request_key':'internal-monitor-123'}
+        with tempfile.TemporaryDirectory() as tmp:
+            state=Path(tmp)/'state.json'
+            state.write_text('{}')
+            with patch.object(mod,'STATE',state), \
+                 patch.object(mod,'read_state',return_value=obj), \
+                 patch.object(mod,'verify_profile'), \
+                 patch.object(mod,'db',return_value='CURRENT') as database, \
+                 patch.object(mod.os,'geteuid',return_value=0):
+                mod.stage()
+                self.assertEqual(database.call_count,1)
+                self.assertNotIn('UPDATE',database.call_args.args[0])
+
+    def test_encryption_refuses_runtime_without_real_key(self):
+        from unittest.mock import Mock
+        obj={'label':'monitorabc12','id':'5bd8b96a-7549-42c7-ae21-123d9a0df12d'}
+        bad=Mock(returncode=2,stdout='',stderr='sensitive internals')
+        with patch.object(mod.subprocess,'run',return_value=bad):
+            with self.assertRaisesRegex(RuntimeError,'ENCRYPTION_UNAVAILABLE'):
+                mod.encrypt_for_owner_link(obj)
+
+    def test_service_probe_timer_is_bounded_and_off_user_path(self):
+        code=SOURCE.read_text()
+        self.assertIn('OnUnitInactiveSec=5min',code)
+        self.assertIn('MONITOR_PRIVATE_MAX_DOT_MS',code.replace("MONITOR_'+name+'_MAX_DOT_MS",'MONITOR_PRIVATE_MAX_DOT_MS'))
+        self.assertNotIn('iptables',code)
+        self.assertNotIn('nginx -s reload',code)
 
     def test_service_monitor_is_non_permanent_and_has_short_lease(self):
         code=SOURCE.read_text()
