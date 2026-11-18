@@ -1,0 +1,116 @@
+name: RU188 native systemd controller postinstall security audit (read-only)
+"on":
+  push:
+    branches: [main]
+    paths: [".github/workflows/controller188-systemd-postinstall-readonly.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: controller188-systemd-postinstall-readonly
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      RU_SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate approved RU188 host key before SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$RU_SSH_PASSWORD"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          grep -q '^188\.120\.254\.223 ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass >/dev/null
+      - name: Observe deployed root-owned runtime, systemd gates and original containers
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$RU_SSH_PASSWORD"
+          sshpass -e ssh -T -F /dev/null -o ConnectTimeout=12 -o BatchMode=no \
+            -o PasswordAuthentication=yes -o PubkeyAuthentication=no \
+            -o KbdInteractiveAuthentication=no -o StrictHostKeyChecking=yes \
+            -o HostKeyAlgorithms=ssh-ed25519 \
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no \
+            -o ForwardAgent=no -o ClearAllForwardings=yes -o LogLevel=ERROR \
+            root@188.120.254.223 'python3 -' <<'PY'
+          from pathlib import Path
+          import os,stat,subprocess
+          def run(args,timeout=8):
+              try:
+                  p=subprocess.run(args,capture_output=True,text=True,timeout=timeout)
+                  return p.returncode,p.stdout.strip()
+              except Exception:return 255,''
+          base=Path('/opt/mnebyvpn-controller')
+          current=base/'current'
+          try:
+              link=current.lstat()
+              path=current.resolve(strict=True)
+              release=base/'releases'
+              check=(stat.S_ISLNK(link.st_mode) and link.st_uid==0 and
+                    path.parent==release and path.is_dir() and
+                    path.stat().st_uid==0 and path.stat().st_mode&0o077==0)
+          except Exception:check=False
+          print('controller_host=188.120.254.223')
+          print('controller_runtime_release_root_only='+str(check).lower())
+          if check:
+              rc,output=run([str(current/'bin/node'),'-v'])
+              print('controller_runtime_node_version='+(output if rc==0 and output.startswith('v') and len(output)<30 else 'unavailable'))
+          units=['mnebyvpn-controller-runtime-check.service',
+                 'mnebyvpn-fi-enrollment.service',
+                 'mnebyvpn-awg-delivery.service']
+          for unit in units:
+              prefix=unit.replace('.service','').replace('-','_')
+              path=Path('/etc/systemd/system')/unit
+              try:
+                  s=path.lstat()
+                  secure=stat.S_ISREG(s.st_mode) and s.st_uid==0 and s.st_mode&0o077==0
+              except OSError:secure=False
+              rc,output=run(['/usr/bin/systemctl','show',unit,
+                        '--property=LoadState,ActiveState,UnitFileState,Result,DropInPaths,ExecMainStatus'])
+              values={}
+              if rc==0:
+                  for line in output.splitlines():
+                      key,sep,val=line.partition('=')
+                      if sep:values[key]=val
+              print('unit_'+prefix+'_protected_file='+str(secure).lower())
+              for item in ('LoadState','ActiveState','UnitFileState','Result'):
+                  val=values.get(item,'unknown')
+                  print('unit_'+prefix+'_'+item.lower()+'='+
+                        (val if val in ('loaded','not-found','inactive','active',
+                                       'failed','static','disabled','enabled','success',
+                                       'condition','dead','unknown','') else 'other'))
+              print('unit_'+prefix+'_dropins_present='+str(bool(values.get('DropInPaths'))).lower())
+              if unit.endswith('runtime-check.service'):
+                  print('unit_'+prefix+'_last_exit_zero='+str(values.get('ExecMainStatus')=='0').lower())
+          keys=Path('/root/mnebyvpn-controller')
+          for name in ('controller-signing-key.pem','fi-enrollment-ssh',
+                       'fi-known_hosts','fi-node-public.spki',
+                       'config/fi-enrollment.env','config/awg-delivery.env',
+                       'approvals/fi-enrollment.enable',
+                       'approvals/awg-delivery.enable'):
+              p=keys/name
+              print('controller_asset_'+name.replace('/','_').replace('.','_')+'_exists='+
+                    str(p.exists() or p.is_symlink()).lower())
+          for name in ('mnebyvpn-public-web','mnebyvpn-stage-postgres',
+                       'mnebyvpn-vpn-worker','mnebyvpn-bot-info'):
+              rc,output=run(['docker','inspect','--format','{{.State.Running}}',name])
+              print('existing_container_'+name.replace('-','_')+'_running='+
+                    str(rc==0 and output=='true').lower())
+          rc,result=run(['docker','exec','mnebyvpn-stage-postgres','psql','-AtX',
+               '-v','ON_ERROR_STOP=1','-U','mnebyvpn_stage','-d','mnebyvpn_stage',
+               '-c',"SELECT COALESCE((SELECT status FROM vpn_node_enrollment_inventory WHERE node_id='fi-test-01'),'absent')"])
+          print('fi_inventory_status='+
+                (result if rc==0 and result in ('absent','planned','approved','enrolled','revoked') else 'unavailable'))
+          print('audit_read_only=true')
+          PY
