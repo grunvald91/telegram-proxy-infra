@@ -85,27 +85,36 @@ def proof_message(proof: dict) -> bytes:
 
 
 def openssl_verify(public_path: Path, signed: bytes, message: bytes) -> None:
-    # OpenSSL pkeyutl consumes a signature path; use a private transient file
-    # (not a persistent key cache). No shell and no log of cryptographic data.
-    with tempfile.TemporaryDirectory(prefix="nodekit-enrollment-",dir="/run") as tmp:
+    # Ed25519 is a one-shot OpenSSL operation and requires a sized input file.
+    # The temporary directory is private (0700), contains NO private keys,
+    # and is destroyed even when verification fails.
+    with tempfile.TemporaryDirectory(prefix="nodekit-enrollment-") as tmp:
         sig=Path(tmp)/"signature"
+        data=Path(tmp)/"message"
         sig.write_bytes(signed)
+        data.write_bytes(message)
         sig.chmod(0o600)
+        data.chmod(0o600)
         verified=subprocess.run([
             "/usr/bin/openssl","pkeyutl","-verify",
             "-pubin","-inkey",str(public_path),"-keyform","DER",
-            "-rawin","-sigfile",str(sig),
-        ],input=message,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
+            "-rawin","-in",str(data),"-sigfile",str(sig),
+        ],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
             timeout=7,check=False)
     if verified.returncode!=0:
         raise EnrollmentSshError("Controller challenge signature invalid")
 
 
 def openssl_sign(private_path: Path, message: bytes) -> bytes:
-    signed=subprocess.run([
-        "/usr/bin/openssl","pkeyutl","-sign",
-        "-inkey",str(private_path),"-keyform","DER","-rawin",
-    ],input=message,capture_output=True,timeout=7,check=True).stdout
+    with tempfile.TemporaryDirectory(prefix="nodekit-enrollment-") as tmp:
+        data=Path(tmp)/"message"
+        data.write_bytes(message)
+        data.chmod(0o600)
+        signed=subprocess.run([
+            "/usr/bin/openssl","pkeyutl","-sign",
+            "-inkey",str(private_path),"-keyform","DER","-rawin",
+            "-in",str(data),
+        ],capture_output=True,timeout=7,check=True).stdout
     if len(signed)!=64:
         raise EnrollmentSshError("Invalid node signing result")
     return signed
