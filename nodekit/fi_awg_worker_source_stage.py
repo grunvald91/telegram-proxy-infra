@@ -212,14 +212,24 @@ def install_sources(blobs: dict[str, bytes]) -> tuple[int, int]:
         # Reject ALL mismatched existing files before writing any missing ones.
         pending = []
         already = 0
+        drift = []
         current = current_directory()
         for relpath, payload in blobs.items():
             target = current / relpath
+            label = target.name.upper().replace("-", "_").replace(".", "_")
             if target.exists() or target.is_symlink():
-                if existing_matches(target, payload):
+                if read_file(target, 65536) == payload:
                     already += 1
+                    print("FI_AWG_WORKER_SOURCE_" + label + "=MATCHED")
+                else:
+                    drift.append(label)
+                    print("FI_AWG_WORKER_SOURCE_" + label + "=DRIFT")
             else:
                 pending.append((target, payload))
+                print("FI_AWG_WORKER_SOURCE_" + label + "=MISSING")
+        # One drift prevents ALL writes, while reporting the complete matrix.
+        if drift:
+            stop("unapproved_existing_source_mismatch")
         installed = 0
         for dest, payload in pending:
             folder = current
