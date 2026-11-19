@@ -64,7 +64,7 @@ ssh_delivery_ready() {
 }
 gateway_and_release_safe() {
   local actual
-  actual=$(/usr/bin/docker exec -i mnebyvpn-stage-postgres \
+  actual=$(/usr/bin/docker exec mnebyvpn-stage-postgres \
     psql -X -q -At -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage \
     -c "SELECT (SELECT status FROM public.vpn_node_enrollment_inventory WHERE node_id='fi-test-01'),(SELECT enabled::text FROM public.vpn_release_flags WHERE feature='vpn_awg_clients'),(to_regprocedure('public.awg_worker_lock_node(text)') IS NOT NULL)::text;" 2>/dev/null) || return 1
   [[ "$actual" == 'enrolled|false|true' ]]
