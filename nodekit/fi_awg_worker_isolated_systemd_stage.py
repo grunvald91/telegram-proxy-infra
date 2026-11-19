@@ -174,7 +174,7 @@ def stage() -> str:
 def main() -> int:
     status = stage()
     print("FI_AWG_ISOLATED_SYSTEMD=STAGED;DROPIN=" + status +
-          ";UNIT_DISABLED=true;WORKER_STARTED=false;CUSTOMER_RELEASE=false")
+          ";UNIT_ENABLED=false;WORKER_STARTED=false;CUSTOMER_RELEASE=false")
     return 0
 
 
