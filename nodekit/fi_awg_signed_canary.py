@@ -116,7 +116,8 @@ def message(command: dict) -> bytes:
 
 
 def sign(key: Path, command: dict) -> dict:
-    with tempfile.TemporaryDirectory(prefix="fi-awg-sign-", dir="/run") as temporary:
+    with tempfile.TemporaryDirectory(prefix="fi-awg-sign-",
+                                          dir="/run" if os.geteuid() == 0 else None) as temporary:
         data = Path(temporary) / "message"
         data.write_bytes(message(command))
         data.chmod(0o600)
