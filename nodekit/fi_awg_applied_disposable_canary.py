@@ -337,10 +337,16 @@ def safe_cleanup(expected:dict)->bool:
     for label,unit in (("WATCHDOG",WATCHDOG),("AWG",UNIT)):
         result=command(["/usr/bin/systemctl","stop",unit],35)
         phase("CLEANUP_STOP_"+label+("_OK" if result.returncode==0 else "_FAILED"))
+    observed={}
     for label,unit in (("WATCHDOG",WATCHDOG),("AWG",UNIT)):
         state=systemd_active_state(unit)
+        observed[label]=state
         phase("CLEANUP_"+label+"_STATE_"+state.upper())
-        if state != "inactive":
+        # systemd can mark the oneshot AWG unit FAILED if the watchdog
+        # already tore down its interface. Treat this as pending cleanup,
+        # never as success, until the interface and ledger are verified.
+        if (label=="WATCHDOG" and state!="inactive") or (
+            label=="AWG" and state not in ("inactive","failed")):
             return False
     if Path("/sys/class/net/awg0").exists():
         phase("CLEANUP_AWG_INTERFACE_PRESENT")
@@ -355,7 +361,9 @@ def safe_cleanup(expected:dict)->bool:
             if (set(rows)!={expected["entitlementId"]} or
                 rows[expected["entitlementId"]]["peerPublicKey"]!=expected["peerPublicKey"] or
                 rows[expected["entitlementId"]]["clientIpv4"]!=CLIENT_IP or
-                rows[expected["entitlementId"]]["revision"] not in (1,2)):
+                rows[expected["entitlementId"]]["revision"] != 2 or
+                rows[expected["entitlementId"]]["enabled"] is not False or
+                rows[expected["entitlementId"]]["expiresAt"] is not None):
                 phase("CLEANUP_LEDGER_NOT_EXACT_TEST_ENTITLEMENT")
                 return False
             LEDGER.unlink()
@@ -368,6 +376,14 @@ def safe_cleanup(expected:dict)->bool:
     if LEDGER.exists() or Path("/sys/class/net/awg0").exists():
         phase("CLEANUP_POSTCONDITION_CHANGED")
         return False
+    if observed["AWG"]=="failed":
+        if command(["/usr/bin/systemctl","reset-failed",UNIT],9).returncode:
+            phase("CLEANUP_AWG_RESET_FAILED")
+            return False
+        state=systemd_active_state(UNIT)
+        phase("CLEANUP_AWG_AFTER_RESET_"+state.upper())
+        if state!="inactive":
+            return False
     timer=command(["/usr/bin/systemctl","stop",TIMER+".timer"],9)
     phase("CLEANUP_TIMER_STOP_"+("OK" if timer.returncode==0 else "FAILED"))
     state=systemd_active_state(TIMER+".timer")
