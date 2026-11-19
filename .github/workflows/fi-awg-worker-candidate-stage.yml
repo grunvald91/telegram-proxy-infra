@@ -31,6 +31,27 @@ jobs:
           set -Eeuo pipefail
           python3 -m py_compile nodekit/fi_awg_worker_candidate_stage.py
           python3 -m unittest discover -s nodekit/tests -p 'test_fi_awg_worker_candidate_stage.py' -v
+      - uses: actions/checkout@v4
+        with:
+          repository: grunvald91/Mnebyvpn
+          ref: 6743387075102698ab23ec06de364d0d8efd1dca
+          persist-credentials: false
+          path: pinned-controller
+      - name: Verify all five reviewed Git objects before any live stage
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(git -C pinned-controller rev-parse HEAD)" = 6743387075102698ab23ec06de364d0d8efd1dca
+          python3 - <<'PY'
+          from pathlib import Path
+          import sys
+          sys.path.insert(0,'nodekit')
+          import fi_awg_worker_candidate_stage as candidate
+          for name,relative in candidate.trust.FILES.items():
+              candidate.verify_pinned_source_blob(
+                  name,(Path('pinned-controller')/relative).read_bytes())
+          print('FI_AWG_CANDIDATE_PINNED_SOURCE=PASS;LIVE_STAGE=false')
+          PY
   stage:
     needs: offline
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
