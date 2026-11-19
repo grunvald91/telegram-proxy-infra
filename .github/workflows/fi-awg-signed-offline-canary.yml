@@ -270,11 +270,14 @@ jobs:
             nodekit/fi_awg_node_pool_stage.py nodekit/fi_awg_signed_canary.py \
             nodekit/fi_awg_worker_source_stage.py "$work/fi-pool.json" \
             "ru-controller:$ru_pool_dir/"
-          sshpass -e ssh -T -F "$work/ru-ssh-config" ru-controller \
-            "chmod 0600 '$ru_pool_dir/'*; python3 '$ru_pool_dir/fi_awg_node_pool_stage.py' --mode stage-ru --material '$ru_pool_dir/fi-pool.json'"
+          first_pool=$(sshpass -e ssh -T -F "$work/ru-ssh-config" ru-controller \
+            "chmod 0600 '$ru_pool_dir/'*; python3 '$ru_pool_dir/fi_awg_node_pool_stage.py' --mode stage-ru --material '$ru_pool_dir/fi-pool.json'")
+          [[ "$first_pool" == 'FI_AWG_NODE_POOL=STAGED;PRODUCTION_E2E_VERIFIED=false;AWG_WORKER_STARTED=false;CUSTOMER_RELEASE=false' ]] || exit 2
           # Repeated installer action must not change previously verified rows
           # or silently widen release flags and subscriptions.
-          sshpass -e ssh -T -F "$work/ru-ssh-config" ru-controller \
-            "python3 '$ru_pool_dir/fi_awg_node_pool_stage.py' --mode stage-ru --material '$ru_pool_dir/fi-pool.json'"
+          second_pool=$(sshpass -e ssh -T -F "$work/ru-ssh-config" ru-controller \
+            "python3 '$ru_pool_dir/fi_awg_node_pool_stage.py' --mode stage-ru --material '$ru_pool_dir/fi-pool.json'")
+          [[ "$second_pool" == "$first_pool" ]] || exit 2
+          echo 'FI_AWG_NODE_POOL=STAGED;PRODUCTION_E2E_VERIFIED=false;AWG_WORKER_STARTED=false;CUSTOMER_RELEASE=false'
           export SSHPASS="$FI_SSH_PASSWORD"
           echo 'FI_AWG_CLIENT_RELEASE_UNCHANGED=true;CANARY_PEERS_INSTALLED=false'
