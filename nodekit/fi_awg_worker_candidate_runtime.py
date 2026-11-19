@@ -43,6 +43,7 @@ def verified_sources() -> None:
         if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
             trust.stop("candidate_source_hash_invalid")
         contents = trust.read_file(RELEASE / relative)
+        candidate.verify_pinned_source_blob(basename, contents)
         if hashlib.sha256(contents).hexdigest() != digest:
             trust.stop("candidate_source_changed")
         blobs[relative] = contents
@@ -62,6 +63,32 @@ def expected_runtime(payloads: dict[str, bytes], versions: dict[str, str]) -> by
     return value
 
 
+def verify_reviewed_runtime_baseline(record: dict) -> None:
+    """The candidate may use ONLY the complete already verified old pg graph.
+
+    A candidate manifest cannot approve itself by listing a subset of files,
+    replacing the pg source with unreviewed code, or omitting a package.
+    """
+    try:
+        old = json.loads(trust.read_file(pgstage.MARKER, 256000))
+    except (ValueError, TypeError, UnicodeError):
+        trust.stop("reviewed_runtime_baseline_invalid")
+    if (not isinstance(old, dict) or
+            set(old) != {"commit", "packages", "files"} or
+            old["commit"] != candidate.OLD_COMMIT or
+            not isinstance(old["packages"], dict) or
+            old["packages"].get("pg") != "8.16.3" or
+            not isinstance(old["files"], dict) or
+            "pg/package.json" not in old["files"] or
+            not 1 <= len(old["packages"]) <= pgstage.MAX_PACKAGES or
+            not 1 <= len(old["files"]) <= pgstage.MAX_FILES):
+        trust.stop("reviewed_runtime_baseline_untrusted")
+    expected = dict(old)
+    expected["commit"] = candidate.CANDIDATE_COMMIT
+    if record != expected:
+        trust.stop("candidate_runtime_differs_from_reviewed_pg_baseline")
+
+
 def verify_runtime_manifest() -> None:
     verified_sources()
     marker = json.loads(trust.read_file(MARKER, 256000))
@@ -72,6 +99,7 @@ def verify_runtime_manifest() -> None:
             not 1 <= len(marker["packages"]) <= pgstage.MAX_PACKAGES or
             not 1 <= len(marker["files"]) <= pgstage.MAX_FILES):
         trust.stop("candidate_runtime_manifest_invalid")
+    verify_reviewed_runtime_baseline(marker)
     for rel, digest in marker["files"].items():
         if (not isinstance(rel, str) or not isinstance(digest, str) or
                 not re.fullmatch(r"[0-9a-f]{64}", digest) or
@@ -111,6 +139,7 @@ def stage() -> tuple[int, int, int]:
     verified_sources()
     payloads, versions = pgstage.gather()
     manifest = expected_runtime(payloads, versions)
+    verify_reviewed_runtime_baseline(json.loads(manifest))
     lock = trust.ROOT / "awg-worker-source-stage.lock"
     fd = os.open(
         lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
@@ -121,6 +150,8 @@ def stage() -> tuple[int, int, int]:
             trust.stop("candidate_runtime_lock_unsafe")
         fcntl.flock(fd, fcntl.LOCK_EX)
         verified_sources()
+        # Re-check the reviewed old dependency identity under the same lock.
+        verify_reviewed_runtime_baseline(json.loads(manifest))
         if MODULES.exists() or MODULES.is_symlink():
             trust.safe_directory(MODULES)
         marker_exists = MARKER.exists() or MARKER.is_symlink()
