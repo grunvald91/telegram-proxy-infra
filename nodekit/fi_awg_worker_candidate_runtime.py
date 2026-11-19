@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import subprocess
 import sys
 
 import fi_awg_worker_candidate_stage as candidate
@@ -213,5 +214,5 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except (trust.StageBlocked, OSError, ValueError, TypeError, KeyError,
-            UnicodeError, RuntimeError):
+            UnicodeError, RuntimeError, subprocess.SubprocessError):
         raise SystemExit(2)
