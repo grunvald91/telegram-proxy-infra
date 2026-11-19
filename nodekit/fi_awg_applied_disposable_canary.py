@@ -19,6 +19,8 @@ import datetime as dt
 import hashlib
 import json
 import os
+import stat
+import tempfile
 from pathlib import Path
 import re
 import subprocess
@@ -36,6 +38,8 @@ LEDGER=canary.FI_NODE/"amneziawg/peer-grants.json"
 APP=Path("/opt/mnebyvpn-nodekit/awg_peer_grants.py")
 AWG=Path("/opt/mnebyvpn-amneziawg/awg")
 CLIENT_IP=canary.IP
+LEGACY_AUTHORIZER_SHA256="e22d603c73502cf91bf4d2a808aaaf55eda48675322354f74e0e39118dd00aac"
+CANDIDATE_AUTHORIZER_SHA256="ee320dde6828271e99fcdea5faa04f1f2e3395f61f268eba9550c2eb82c0e1d4"
 
 class CanaryBlocked(ValueError):
     pass
@@ -105,6 +109,77 @@ def watchdog_file_state(path: Path, expected: bytes) -> str:
         return "UNTRUSTED"
     return "MATCH" if path.read_bytes() == expected else "DRIFT"
 
+def migrate_pinned_authorizer(source: Path) -> None:
+    """One-off root-only, dormant FI217 migration of a precisely pinned file.
+
+    A backup is retained at the old pinned SHA. Unknown revisions and unsafe
+    ownership abort. This does NOT activate any AWG or subscription.
+    """
+    if not canary.is_host(canary.FI_IP):
+        block("authorizer_upgrade_wrong_host")
+    if not all(inactive(name) for name in (UNIT, WATCHDOG, TIMER + ".timer")):
+        block("authorizer_upgrade_service_active")
+    if Path("/sys/class/net/awg0").exists() or LEDGER.exists() or LEDGER.is_symlink():
+        block("authorizer_upgrade_runtime_not_empty")
+    home = APP.parent
+    parent_stat = home.lstat()
+    file_stat = APP.lstat()
+    if (not stat.S_ISDIR(parent_stat.st_mode) or parent_stat.st_uid != 0 or
+        parent_stat.st_mode & 0o022 or
+        not stat.S_ISREG(file_stat.st_mode) or file_stat.st_uid != 0 or
+        file_stat.st_mode & 0o077 or file_stat.st_nlink != 1):
+        block("authorizer_upgrade_untrusted_install")
+    before = APP.read_bytes()
+    candidate = source.read_bytes()
+    if (hashlib.sha256(before).hexdigest() != LEGACY_AUTHORIZER_SHA256 or
+        hashlib.sha256(candidate).hexdigest() != CANDIDATE_AUTHORIZER_SHA256):
+        block("authorizer_upgrade_digest_not_allowlisted")
+    # The old version stays available for explicit guarded rollback.
+    backup = home / (".awg_peer_grants.fi217-legacy-" +
+                     LEGACY_AUTHORIZER_SHA256[:16] + ".bak")
+    if backup.exists() or backup.is_symlink():
+        block("authorizer_upgrade_backup_already_exists")
+    try:
+        fd = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                     os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(before)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except OSError:
+        block("authorizer_upgrade_backup_write_failed")
+    fd, filename = tempfile.mkstemp(prefix=".fi-awg-authorizer-", dir=home)
+    swapped = False
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(candidate)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if (not all(inactive(name) for name in (UNIT, WATCHDOG)) or
+            Path("/sys/class/net/awg0").exists() or LEDGER.exists()):
+            block("authorizer_upgrade_runtime_changed")
+        os.replace(filename, APP)
+        swapped = True
+        directory_fd = os.open(home, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+        if (APP.is_symlink() or not APP.is_file() or
+            hashlib.sha256(APP.read_bytes()).hexdigest() != CANDIDATE_AUTHORIZER_SHA256):
+            block("authorizer_upgrade_postcheck_failed")
+    except BaseException:
+        if swapped and backup.is_file() and not backup.is_symlink() and (
+            not Path("/sys/class/net/awg0").exists() and
+            all(inactive(name) for name in (UNIT, WATCHDOG))):
+            # Restore the immutable old code if verification of swap fails.
+            os.replace(backup, APP)
+        raise
+    finally:
+        Path(filename).unlink(missing_ok=True)
+    phase("WATCHDOG_AUTHORIZER_PINNED_MIGRATION_APPLIED")
+
 def install_watchdog()->None:
     from install_awg_watchdog import install, unit, UNIT
     source = Path(__file__).with_name("awg_peer_grants.py")
@@ -124,7 +199,12 @@ def install_watchdog()->None:
         # This fingerprint will be pinned before an offline-only migration.
         phase("WATCHDOG_AUTHORIZER_OLD_SHA256_" + hashlib.sha256(APP.read_bytes()).hexdigest())
         phase("WATCHDOG_AUTHORIZER_NEW_SHA256_" + hashlib.sha256(source.read_bytes()).hexdigest())
-    if installed_authorizer not in ("MISSING", "MATCH"):
+    if installed_authorizer == "DRIFT":
+        migrate_pinned_authorizer(source)
+        installed_authorizer = watchdog_file_state(APP, source.read_bytes())
+        if installed_authorizer != "MATCH":
+            block("watchdog_authorizer_migration_not_verified")
+    elif installed_authorizer not in ("MISSING", "MATCH"):
         block("watchdog_authorizer_install_drift")
     if installed_unit not in ("MISSING", "MATCH"):
         block("watchdog_systemd_unit_install_drift")
