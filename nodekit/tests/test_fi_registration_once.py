@@ -103,14 +103,14 @@ class FiRegistrationGateTests(TestCase):
                 side_effect=[b"fi.mnebyvpn.site ssh-ed25519 abc\n", b"key", b"key"]
             ),
             mock.patch.object(registration, "require_runtime"),
-                mock.patch.object(registration, "await_expiration_once"),
+            mock.patch.object(registration, "await_expiration_once"),
             mock.patch.object(
-                registration, "db_state", side_effect=["approved", "approved", "approved"]
+                registration, "db_state", side_effect=["approved", "approved", "enrolled"]
             ) as database,
             mock.patch.object(registration, "execute", return_value="") as execute,
         ):
             self.assertEqual(registration.main(), 0)
-            self.assertEqual(database.call_count, 2)
+            self.assertEqual(database.call_count, 3)
             self.assertEqual(
                 [call.args[0] for call in execute.call_args_list],
                 [["systemctl","daemon-reload"],["systemctl","start",
@@ -142,11 +142,11 @@ class FiRegistrationGateTests(TestCase):
                     "/opt/mnebyvpn-controller/releases/reviewed-release")),
             mock.patch.object(registration.Path,"is_dir",return_value=True),
             mock.patch.object(registration,"db_state",
-                              side_effect=["approved", "approved", "approved", "approved"]) as db,
+                              side_effect=["approved", "approved", "approved", "enrolled"]) as db,
             mock.patch.object(registration,"execute",side_effect=cmd),
         ):
             self.assertEqual(registration.main(),0)
-        self.assertEqual(db.call_count,3)
+        self.assertEqual(db.call_count,4)
         checks=[c for c in commands if c[0]=="systemd-analyze"]
         self.assertEqual(len(checks),5)
         transient=[c for c in commands if c[0]=="systemd-run"]
