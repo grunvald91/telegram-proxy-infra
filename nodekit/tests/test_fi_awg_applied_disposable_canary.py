@@ -85,6 +85,8 @@ class AppliedCanaryTests(unittest.TestCase):
         target.unlink.assert_not_called()
         self.assertIn('block("watchdog_authorizer_install_drift")', self.src)
         self.assertIn('block("watchdog_systemd_unit_install_drift")', self.src)
+        self.assertIn("WATCHDOG_AUTHORIZER_OLD_SHA256_", self.src)
+        self.assertIn("WATCHDOG_AUTHORIZER_NEW_SHA256_", self.src)
 
     def test_verified_node_receipts_are_real_applied_domain(self):
         with tempfile.TemporaryDirectory() as folder:
