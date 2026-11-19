@@ -30,7 +30,7 @@ class FiAwgExternalE2ePinnedHostTests(unittest.TestCase):
         self.assertIn('base64.b64encode(decoded).decode()==key',self.text)
 
     def test_fi_pin_origin_is_existing_pinned_controller(self):
-        self.assertIn('RU_PASSWORD: \${{ secrets.SERVER188_SSH_PASSWORD }}',self.text)
+        self.assertIn('RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}',self.text)
         self.assertIn('ops/mnebydns-owner-ssh-known_hosts',self.text)
         self.assertIn('root@188.120.254.223',self.text)
         self.assertIn('/root/mnebyvpn-controller/fi-known_hosts',self.text)
