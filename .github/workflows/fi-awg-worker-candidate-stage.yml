@@ -1,0 +1,141 @@
+name: FI217 corrected AWG worker immutable candidate (no activation)
+"on":
+  pull_request:
+    paths:
+      - .github/workflows/fi-awg-worker-candidate-stage.yml
+      - nodekit/fi_awg_worker_candidate_stage.py
+      - nodekit/tests/test_fi_awg_worker_candidate_stage.py
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/fi-awg-worker-candidate-stage.yml
+      - nodekit/fi_awg_worker_candidate_stage.py
+      - nodekit/tests/test_fi_awg_worker_candidate_stage.py
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ru188-awg-gateway-schema-stage
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate candidate staging without connecting to RU188
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile nodekit/fi_awg_worker_candidate_stage.py
+          python3 -m unittest discover -s nodekit/tests -p 'test_fi_awg_worker_candidate_stage.py' -v
+  stage:
+    needs: offline
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: node-fi
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          path: infra
+      - uses: actions/checkout@v4
+        with:
+          repository: grunvald91/Mnebyvpn
+          ref: 6743387075102698ab23ec06de364d0d8efd1dca
+          persist-credentials: false
+          path: pinned-controller
+      - name: Assemble independently pinned corrected AWG source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(git -C pinned-controller rev-parse HEAD)" = 6743387075102698ab23ec06de364d0d8efd1dca
+          python3 - <<'PY'
+          import hashlib,json,sys,os
+          from pathlib import Path
+          sys.path.insert(0,"infra/nodekit")
+          import fi_awg_worker_candidate_stage as candidate
+          work=Path(os.environ["RUNNER_TEMP"])/"fi-awg-candidate-source"
+          work.mkdir(mode=0o700)
+          hashes={}
+          for name,rel in candidate.trust.FILES.items():
+              src=Path("pinned-controller")/rel
+              raw=src.read_bytes()
+              if not 1<len(raw)<=65536 or not raw.endswith(b"\n"):
+                  raise SystemExit(2)
+              (work/name).write_bytes(raw)
+              hashes[name]=hashlib.sha256(raw).hexdigest()
+          manifest={"commit":candidate.CANDIDATE_COMMIT,"files":hashes}
+          (work/"manifest.json").write_text(json.dumps(manifest,sort_keys=True)+"\n")
+          PY
+      - name: Install ephemeral SSH client
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y --no-install-recommends sshpass >/dev/null
+      - name: Stage immutable candidate on RU188; verify worker stays OFF
+        shell: bash
+        env:
+          RU_SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          [[ -n "$RU_SSH_PASSWORD" ]] || exit 2
+          grep -q '^188\.120\.254\.223 ssh-ed25519 ' infra/ops/mnebydns-owner-ssh-known_hosts
+          work="$RUNNER_TEMP/fi-awg-candidate-ssh"
+          mkdir -m 0700 "$work"
+          cat > "$work/config" <<CFG
+          Host ru-controller
+            HostName 188.120.254.223
+            User root
+            UserKnownHostsFile $PWD/infra/ops/mnebydns-owner-ssh-known_hosts
+            GlobalKnownHostsFile /dev/null
+            HostKeyAlgorithms ssh-ed25519
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+            BatchMode no
+            PasswordAuthentication yes
+            PubkeyAuthentication no
+            KbdInteractiveAuthentication no
+            ForwardAgent no
+            ClearAllForwardings yes
+            ControlMaster no
+            ProxyCommand none
+            ConnectTimeout 12
+            LogLevel ERROR
+          CFG
+          export SSHPASS="$RU_SSH_PASSWORD"
+          remote() { sshpass -e ssh -T -F "$work/config" ru-controller "$@"; }
+          remote_dir=""
+          cleanup() {
+            set +e
+            if [[ "$remote_dir" =~ ^/run/fi-awg-worker-upgrade\.[A-Za-z0-9]{8}$ ]]; then
+              remote "rm -rf -- '$remote_dir'" >/dev/null 2>&1
+            fi
+            rm -rf -- "$work"
+          }
+          trap cleanup EXIT
+          remote_dir=$(remote 'umask 077; mktemp -d /run/fi-awg-worker-upgrade.XXXXXXXX')
+          [[ "$remote_dir" =~ ^/run/fi-awg-worker-upgrade\.[A-Za-z0-9]{8}$ ]] || exit 2
+          sshpass -e scp -F "$work/config" \
+            infra/nodekit/fi_awg_worker_candidate_stage.py \
+            infra/nodekit/fi_awg_worker_source_stage.py \
+            infra/nodekit/fi_awg_worker_isolated_source_stage.py \
+            infra/nodekit/fi_awg_worker_isolated_systemd_stage.py \
+            infra/nodekit/fi_awg_worker_isolated_runtime_preflight.py \
+            infra/nodekit/fi_awg_worker_isolated_pg_stage.py \
+            "$RUNNER_TEMP/fi-awg-candidate-source/"* \
+            "ru-controller:$remote_dir/"
+          first=$(remote "chmod 0600 '$remote_dir/'*; python3 '$remote_dir/fi_awg_worker_candidate_stage.py' --stage '$remote_dir'")
+          case "$first" in
+            "FI_AWG_WORKER_CANDIDATE=STAGED;COMMIT=6743387075102698ab23ec06de364d0d8efd1dca;NEW=5;MATCHED=0;TOTAL=5;EFFECTIVE_RELEASE=LEGACY_DISABLED;CUSTOMER_RELEASE=false" | \
+            "FI_AWG_WORKER_CANDIDATE=STAGED;COMMIT=6743387075102698ab23ec06de364d0d8efd1dca;NEW=0;MATCHED=5;TOTAL=5;EFFECTIVE_RELEASE=LEGACY_DISABLED;CUSTOMER_RELEASE=false")
+              ;;
+            *) echo "FI_AWG_WORKER_CANDIDATE=UNVERIFIED"; exit 2;;
+          esac
+          second=$(remote "python3 '$remote_dir/fi_awg_worker_candidate_stage.py' --stage '$remote_dir'")
+          [[ "$second" == "FI_AWG_WORKER_CANDIDATE=STAGED;COMMIT=6743387075102698ab23ec06de364d0d8efd1dca;NEW=0;MATCHED=5;TOTAL=5;EFFECTIVE_RELEASE=LEGACY_DISABLED;CUSTOMER_RELEASE=false" ]] || exit 2
+          echo 'FI_AWG_WORKER_CANDIDATE=STAGED;REPEATABLE=true;WORKER_ACTIVE=false;CLIENTS_PUBLISHED=false'
