@@ -22,6 +22,23 @@ class FiDbBootstrapTests(TestCase):
         self.assertTrue(fields["FI_ENROLL_NODE_PUBLIC_SPKI_FILE"].endswith("fi-node-public.spki"))
         self.assertTrue(fields["AWG_CONTROLLER_SIGNING_KEY_FILE"].startswith("/root/"))
 
+    def test_existing_protected_env_with_numeric_sha256_key_is_idempotent(self):
+        import tempfile
+        password="b"*64
+        serialized="".join(k+"="+v+"\n" for k,v in
+                           module.env_fields(password).items()).encode()
+        with tempfile.TemporaryDirectory() as temporary:
+            location=Path(temporary)/"fi-enrollment.env"
+            location.write_bytes(serialized)
+            with (
+                mock.patch.object(module,"ENV",location),
+                mock.patch.object(module,"root_directory"),
+                mock.patch.object(module,"protected",return_value=serialized),
+            ):
+                found,created=module.environment()
+                self.assertEqual(found,password)
+                self.assertFalse(created)
+
     def test_refuse_wrong_or_public_database_port(self):
         sample=[{"State":{"Running":True},"HostConfig":{"PortBindings":{
             "5432/tcp":[{"HostIp":"0.0.0.0","HostPort":"55433"}]}}}]
