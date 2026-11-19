@@ -23,8 +23,8 @@ FI_IP = "217.11.167.91"
 ROOT = Path("/var/lib/mnebyvpn-nodekit/fi-test-01")
 AWG = Path("/opt/mnebyvpn-amneziawg/awg")
 NODE = "fi-test-01"
-PUB = re.compile(r"[A-Za-z0-9+/]{43}=\\Z")
-DIGEST = re.compile(r"[a-f0-9]{64}\\Z")
+PUB = re.compile(r"[A-Za-z0-9+/]{43}=")
+DIGEST = re.compile(r"[a-f0-9]{64}")
 
 
 class Blocked(ValueError):
@@ -81,7 +81,7 @@ def stopped(unit: str) -> None:
     result = subprocess.run(
         ["/usr/bin/systemctl", "is-active", "--quiet", unit],
         capture_output=True, timeout=8, check=False)
-    if result.returncode == 0:
+    if result.returncode != 3:
         fail()
 
 
