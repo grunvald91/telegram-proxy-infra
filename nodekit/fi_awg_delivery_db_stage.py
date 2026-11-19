@@ -230,8 +230,8 @@ FROM pg_roles r WHERE rolname='{ROLE}';
                   "vpn_awg_node_pools", "vpn_release_flags"):
         permissions = sql(f"""
 SELECT has_table_privilege('{ROLE}','public.{table}','SELECT')::text,
-  has_table_privilege('{ROLE}','public.{table}','INSERT')::text,
-  has_table_privilege('{ROLE}','public.{table}','UPDATE')::text,
+  has_any_column_privilege('{ROLE}','public.{table}','INSERT')::text,
+  has_any_column_privilege('{ROLE}','public.{table}','UPDATE')::text,
   has_table_privilege('{ROLE}','public.{table}','DELETE')::text;
 """)
         if permissions != "true|false|false|false":
