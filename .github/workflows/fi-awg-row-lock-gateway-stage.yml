@@ -8,6 +8,7 @@ name: FI217 AWG transactional billing row-lock gateway stage (clients off)
       - 'nodekit/fi_awg_worker_preflight.sh'
       - 'nodekit/fi_awg_worker_source_stage.py'
       - 'nodekit/fi_awg_worker_isolated_source_stage.py'
+      - 'nodekit/fi_awg_worker_isolated_runtime_preflight.py'
   workflow_dispatch:
 permissions:
   contents: read
@@ -41,6 +42,8 @@ jobs:
           bash -n infra/nodekit/fi_awg_worker_preflight.sh
           python3 -m py_compile infra/nodekit/fi_awg_worker_source_stage.py
           python3 -m py_compile infra/nodekit/fi_awg_worker_isolated_source_stage.py
+          python3 -m py_compile infra/nodekit/fi_awg_worker_isolated_runtime_preflight.py
+          python3 -m unittest discover -s infra/nodekit/tests -p 'test_fi_awg_worker_isolated_runtime_preflight.py' -v
           python3 -m unittest discover -s infra/nodekit/tests -p 'test_fi_awg_worker_isolated_source_stage.py' -v
           # Validate that the five pinned controller modules form a complete
           # import graph before uploading a single byte to RU188.
@@ -157,7 +160,8 @@ jobs:
           PY
           sshpass -e scp -F "$work/ssh.conf" \
             infra/nodekit/fi_awg_worker_source_stage.py \
-            infra/nodekit/fi_awg_worker_isolated_source_stage.py "$work/manifest.json" \
+            infra/nodekit/fi_awg_worker_isolated_source_stage.py \
+            infra/nodekit/fi_awg_worker_isolated_runtime_preflight.py "$work/manifest.json" \
             pinned-controller/apps/service/src/awg-controller-delivery-worker.ts \
             pinned-controller/packages/provisioning/src/awg-trusted-ssh-delivery.ts \
             pinned-controller/packages/provisioning/src/awg-offline-maintenance.ts \
@@ -165,6 +169,28 @@ jobs:
             pinned-controller/packages/provisioning/src/awg-controller-outbox.ts \
             "ru188:$remote/"
           ru "chmod 0600 '$remote/'*; python3 '$remote/fi_awg_worker_isolated_source_stage.py' --stage '$remote'"
+          # Second invocation must be idempotent and return exact 0 new / 5 matched.
+          second=$(ru "python3 '$remote/fi_awg_worker_isolated_source_stage.py' --stage '$remote'")
+          [[ "$second" == 'FI_AWG_ISOLATED_SOURCE=STAGED;NEW=0;MATCHED=5;MODULES=5;WORKER_STARTED=false;CUSTOMER_RELEASE=false;RUNTIME_ATTACHED=false' ]] || {
+            echo 'FI_AWG_ISOLATED_SOURCE_IDEMPOTENCY=BLOCKED'; exit 2;
+          }
+          echo 'FI_AWG_ISOLATED_SOURCE_IDEMPOTENCY=OK'
+          # Inventory only. No module links, service override, or worker start.
+          runtime_output=''
+          runtime_rc=0
+          runtime_output=$(ru "python3 '$remote/fi_awg_worker_isolated_runtime_preflight.py'") || runtime_rc=$?
+          printf '%s\n' "$runtime_output" | grep -E '^FI_AWG_ISOLATED_RUNTIME_' || true
+          runtime_complete=true
+          [[ "$runtime_rc" == 0 && ${#runtime_output} -le 2048 ]] || runtime_complete=false
+          for label in CONTROLLER_GATES SOURCE_MANIFEST NODE_VERSION TYPESCRIPT_SYNTAX SHARED_PG_RESOLUTION; do
+            [[ $(grep -Fxc "FI_AWG_ISOLATED_RUNTIME_${label}=OK" <<< "$runtime_output" || true) == 1 ]] || runtime_complete=false
+          done
+          grep -Fxq 'FI_AWG_ISOLATED_RUNTIME_PREFLIGHT=READONLY_READY;WORKER_STARTED=false;CUSTOMER_RELEASE=false;RUNTIME_ATTACHED=false' <<< "$runtime_output" || runtime_complete=false
+          if [[ "$runtime_complete" == true ]]; then
+            echo 'FI_AWG_ISOLATED_RUNTIME_STATUS=READONLY_READY;WORKER_STARTED=false'
+          else
+            echo 'FI_AWG_ISOLATED_RUNTIME_STATUS=BLOCKED;WORKER_STARTED=false'
+          fi
           ru 'set -eu; ! systemctl is-active --quiet mnebyvpn-awg-delivery.service'
           # Read-only diagnostics may find missing worker components; do not
           # treat these as a failed SQL migration or open customer access.
