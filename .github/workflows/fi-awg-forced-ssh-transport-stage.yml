@@ -28,6 +28,23 @@ jobs:
           set -Eeuo pipefail
           python3 -m py_compile nodekit/fi_awg_delivery_ssh.py nodekit/fi_awg_ssh_stage.py
           python3 -m unittest discover -s nodekit/tests -p 'test_fi_awg_ssh_stage.py' -v
+          # Extract the live bash run block from YAML without relying on a YAML package.
+          # A reserved shell keyword used as a function name must fail BEFORE SSH.
+          python3 - <<'PY'
+          from pathlib import Path
+          source=Path('.github/workflows/fi-awg-forced-ssh-transport-stage.yml').read_text().splitlines()
+          index=next(i for i,line in enumerate(source) if line.startswith('      - name: Generate RU-only key'))
+          begin=next(i for i in range(index+1,len(source)) if source[i]=='        run: |')+1
+          script=[]
+          for line in source[begin:]:
+              if line and not line.startswith('          '):
+                  break
+              script.append(line[10:] if line else '')
+          assert script and script[-1].startswith("echo 'FI_AWG_TRANSPORT_STAGED=")
+          Path('/tmp/fi-awg-transport-live-parse.sh').write_text('\n'.join(script)+'\n')
+          PY
+          bash -n /tmp/fi-awg-transport-live-parse.sh
+          rm -f /tmp/fi-awg-transport-live-parse.sh
       - name: Prepare ephemeral SSH client
         shell: bash
         run: |
@@ -117,7 +134,7 @@ jobs:
             ServerAliveCountMax 3
             LogLevel ERROR
           CFG
-          fi(){ SSHPASS="$FI_PASSWORD" sshpass -e ssh -T -F "$fi_cfg" fi-node "$@"; }
+          fi_remote(){ SSHPASS="$FI_PASSWORD" sshpass -e ssh -T -F "$fi_cfg" fi-node "$@"; }
           fi_scp(){ SSHPASS="$FI_PASSWORD" sshpass -e scp -F "$fi_cfg" "$@"; }
           ru_tmp=$(ru 'umask 077; mktemp -d /run/fi-awg-ssh-stage.XXXXXXXX')
           [[ "$ru_tmp" =~ ^/run/fi-awg-ssh-stage\.[A-Za-z0-9]{8}$ ]] || exit 2
@@ -127,11 +144,11 @@ jobs:
           chmod 0600 "$pub"
           [[ "$(wc -l < "$pub")" == 1 ]]
           grep -Eq '^ssh-ed25519 [A-Za-z0-9+/]+={0,2} mnebyvpn-fi217-awg-delivery$' "$pub"
-          fi_tmp=$(fi 'umask 077; mktemp -d /run/fi-awg-ssh-stage.XXXXXXXX')
+          fi_tmp=$(fi_remote 'umask 077; mktemp -d /run/fi-awg-ssh-stage.XXXXXXXX')
           [[ "$fi_tmp" =~ ^/run/fi-awg-ssh-stage\.[A-Za-z0-9]{8}$ ]] || exit 2
           fi_scp nodekit/fi_awg_ssh_stage.py nodekit/fi_awg_delivery_ssh.py "$pub" \
             "fi-node:$fi_tmp/"
-          fi "chmod 0600 '$fi_tmp/fi_awg_ssh_stage.py' '$fi_tmp/fi_awg_delivery_ssh.py' '$fi_tmp/awg-delivery.pub'; python3 '$fi_tmp/fi_awg_ssh_stage.py' --mode node-stage --public-file '$fi_tmp/awg-delivery.pub' --handler-source '$fi_tmp/fi_awg_delivery_ssh.py' --handler-sha256 '$handler_sha'"
+          fi_remote "chmod 0600 '$fi_tmp/fi_awg_ssh_stage.py' '$fi_tmp/fi_awg_delivery_ssh.py' '$fi_tmp/awg-delivery.pub'; python3 '$fi_tmp/fi_awg_ssh_stage.py' --mode node-stage --public-file '$fi_tmp/awg-delivery.pub' --handler-source '$fi_tmp/fi_awg_delivery_ssh.py' --handler-sha256 '$handler_sha'"
           ru "python3 '$ru_tmp/fi_awg_ssh_stage.py' --mode probe"
-          fi 'set -eu; ! systemctl is-active --quiet mnebyvpn-nodekit-awg@fi-test-01.service; ! systemctl is-active --quiet mnebyvpn-nodekit-awg-watchdog@fi-test-01.service'
+          fi_remote 'set -eu; ! systemctl is-active --quiet mnebyvpn-nodekit-awg@fi-test-01.service; ! systemctl is-active --quiet mnebyvpn-nodekit-awg-watchdog@fi-test-01.service'
           echo 'FI_AWG_TRANSPORT_STAGED=true;AWG_GRANTS_APPLIED=false;SUBSCRIPTIONS_PUBLISHED=false'
