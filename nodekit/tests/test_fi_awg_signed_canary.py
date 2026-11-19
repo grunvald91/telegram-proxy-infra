@@ -105,14 +105,14 @@ class SignedAwgCanaryTests(TestCase):
         self.assertEqual(workflow.count("secrets.SERVER188_SSH_PASSWORD"),1)
         self.assertEqual(workflow.count("secrets.MNEBYVPN_NEW_NODE_SSH_PASSWORD"),1)
         self.assertEqual(workflow.count("secrets.MNEBYVPN_NEW_NODE_SSH_USER"),1)
-        self.assertIn("        env:\\n          RU_SSH_PASSWORD:", workflow)
+        self.assertIn("        env:\n          RU_SSH_PASSWORD:", workflow)
 
     def test_fi_cleanup_always_resets_credentials_even_if_ru_readiness_fails(self):
         workflow=(path.parents[1] / ".github/workflows/fi-awg-signed-offline-canary.yml").read_text()
         cleanup=workflow.split("          cleanup() {",1)[1].split("          trap cleanup EXIT",1)[0]
         self.assertIn('export SSHPASS="$FI_SSH_PASSWORD"',cleanup)
         self.assertLess(cleanup.find('export SSHPASS="$FI_SSH_PASSWORD"'),
-                        cleanup.find("remote \\"rm -rf"))
+                        cleanup.find('remote "rm -rf'))
         self.assertIn('export SSHPASS="$RU_SSH_PASSWORD"',workflow)
         self.assertIn("FI_AWG_CTRL_CANONICAL_DB_URI_STATUS=",workflow)
         self.assertNotIn("FI_AWG_CTRL_SAME_CANONICAL_DB=",workflow)
