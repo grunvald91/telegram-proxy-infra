@@ -77,7 +77,9 @@ class NodeTestProofTests(unittest.TestCase):
                 subprocess.run(args,check=True,capture_output=True,timeout=8)
             bundle=self.fixture()
             challenge=p.make_challenge(bundle)
-            proof={**challenge,"witnessedAt":c.iso(dt.datetime.now(dt.timezone.utc))}
+            # FI and hosted runner clocks may differ by several seconds.
+            proof={**challenge,"witnessedAt":c.iso(
+                dt.datetime.now(dt.timezone.utc)-dt.timedelta(seconds=20))}
             msg.write_bytes(p.test_payload(proof))
             subprocess.run(["openssl","pkeyutl","-sign","-inkey",str(private),
                             "-keyform","DER","-rawin","-in",str(msg),
@@ -100,6 +102,10 @@ class NodeTestProofTests(unittest.TestCase):
                 with self.assertRaises(c.CanaryError):
                     p.verify(signed,challenged,received,public)
                 received.write_text(json.dumps({**proof,"signature":"A"*86}))
+                with self.assertRaises(c.CanaryError):
+                    p.verify(signed,challenged,received,public)
+                received.write_text(json.dumps({**proof,"witnessedAt":c.iso(
+                    dt.datetime.now(dt.timezone.utc)-dt.timedelta(seconds=45))}))
                 with self.assertRaises(c.CanaryError):
                     p.verify(signed,challenged,received,public)
 
