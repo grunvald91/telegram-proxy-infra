@@ -20,6 +20,8 @@ import {readFileSync,lstatSync,existsSync} from 'node:fs';
 import {networkInterfaces} from 'node:os';
 
 const fail = ()=>{throw Error('readonly probe blocked')};
+const mark=(name)=>process.stderr.write('FI_AWG_DB_CHECKPOINT='+name+'\n');
+mark('HOST');
 const root='/root/mnebyvpn-controller';
 const release='/opt/mnebyvpn-controller/awg-worker-releases/c73ddaa237543d91dc81fb09eb3f371389dc618d';
 const envfile=root+'/config/awg-delivery.env';
@@ -30,6 +32,7 @@ if(process.getuid?.()!==0||!addresses.some(x=>x.address==='188.120.254.223')||
 const st=lstatSync(envfile);
 if(!st.isFile()||st.isSymbolicLink()||st.uid!==0||(st.mode&0o077)!==0||
    st.size<1||st.size>8192)fail();
+mark('ENV');
 const env=readFileSync(envfile,'utf8');
 const single=(key)=>[...env.matchAll(new RegExp('^'+key+'=(\\S+)$','gm'))];
 if(single('MNEBYVPN_ENV').length!==1||
@@ -39,6 +42,7 @@ if(single('MNEBYVPN_ENV').length!==1||
 const urls=single('DATABASE_URL');
 if(urls.length!==1 ||
    !/^postgresql:\/\/mnebyvpn_awg_delivery:[a-f0-9]{64}@127\.0\.0\.1:55433\/mnebyvpn_stage$/.test(urls[0][1]))fail();
+mark('MODULE');
 const require=createRequire(release+'/apps/service/src/awg-controller-delivery-worker.ts');
 const {Pool}=require('pg');
 const pool=new Pool({
@@ -47,22 +51,29 @@ const pool=new Pool({
 });
 let client;
 try{
+  mark('CONNECT');
   client=await pool.connect();
+  mark('TRANSACTION');
   await client.query('BEGIN READ ONLY');
+  mark('ROLE');
   const identity=await client.query('SELECT current_user AS role,current_database() AS db');
   if(identity.rows.length!==1||
      identity.rows[0].role!=='mnebyvpn_awg_delivery'||
      identity.rows[0].db!=='mnebyvpn_stage')fail();
+  mark('RELEASE');
   const flag=await client.query(
     "SELECT enabled FROM public.vpn_release_flags WHERE feature='vpn_awg_clients'");
   if(flag.rows.length!==1||flag.rows[0].enabled!==false)fail();
+  mark('ENROLLED');
   const node=await client.query(
     "SELECT status FROM public.vpn_node_enrollment_inventory WHERE node_id='fi-test-01'");
   if(node.rows.length!==1||node.rows[0].status!=='enrolled')fail();
+  mark('OUTBOX');
   const outbox=await client.query(
     "SELECT count(*)::int AS n FROM public.vpn_awg_command_outbox "+
     "WHERE state IN ('queued','claimed')");
   if(outbox.rows.length!==1||!Number.isSafeInteger(outbox.rows[0].n))fail();
+  mark('GATEWAYS');
   const funcs=await client.query(
     "SELECT "+
     "has_function_privilege(current_user,'public.awg_worker_lock_entitlement(uuid)','EXECUTE') AS e,"+
@@ -70,6 +81,7 @@ try{
     "has_function_privilege(current_user,'public.awg_worker_lock_pool(text)','EXECUTE') AS p,"+
     "has_function_privilege(current_user,'public.awg_worker_lock_pool_node(text)','EXECUTE') AS j");
   if(funcs.rows.length!==1||Object.values(funcs.rows[0]).some(x=>x!==true))fail();
+  mark('POOL');
   const poolState=await client.query(
     "SELECT state,verified_at FROM public.vpn_awg_node_pools WHERE node_id='fi-test-01'");
   if(poolState.rows.length!==1)fail();
@@ -77,6 +89,7 @@ try{
   const fresh=health.state==='verified'&&health.verified_at instanceof Date&&
     Date.now()-health.verified_at.getTime()<=3600000&&
     health.verified_at.getTime()<=Date.now()+30000;
+  mark('ROLLBACK');
   await client.query('ROLLBACK');
   client.release();
   client=undefined;
@@ -108,6 +121,13 @@ def main() -> int:
         capture_output=True, text=True, timeout=18, check=False,
         stdin=subprocess.DEVNULL)
     if result.returncode or len(result.stdout) > 1024:
+        import re
+        steps=re.findall(
+            r"^FI_AWG_DB_CHECKPOINT=(HOST|ENV|MODULE|CONNECT|TRANSACTION|ROLE|"
+            r"RELEASE|ENROLLED|OUTBOX|GATEWAYS|POOL|ROLLBACK)$",
+            result.stderr,re.MULTILINE)
+        if steps:
+            print("FI_AWG_DB_BLOCKED_AT="+steps[-1])
         print("FI_AWG_DB_PROBE=BLOCKED;WORKER_STARTED=false;CUSTOMER_RELEASE=false")
         return 2
     lines = result.stdout.splitlines()
