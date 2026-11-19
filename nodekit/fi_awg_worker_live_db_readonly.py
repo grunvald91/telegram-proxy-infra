@@ -84,11 +84,15 @@ try{
   mark('POOL');
   const poolState=await client.query(
     "SELECT state,verified_at FROM public.vpn_awg_node_pools WHERE node_id='fi-test-01'");
-  if(poolState.rows.length!==1)fail();
+  if(poolState.rows.length>1)fail();
+  // A missing or stale FI pool is a real **client release blocker**, but not
+  // a failed DB login. Never repair or invent E2E country proof here.
   const health=poolState.rows[0];
-  const fresh=health.state==='verified'&&health.verified_at instanceof Date&&
+  const fresh=!!health&&health.state==='verified'&&
+    health.verified_at instanceof Date&&
     Date.now()-health.verified_at.getTime()<=3600000&&
     health.verified_at.getTime()<=Date.now()+30000;
+  const proof=health?(fresh?'FRESH':'STALE'):'MISSING';
   mark('ROLLBACK');
   await client.query('ROLLBACK');
   client.release();
@@ -99,10 +103,14 @@ try{
   console.log('FI_AWG_DB_FI_ENROLLED=PASS');
   console.log('FI_AWG_DB_OUTBOX_READ=PASS');
   console.log('FI_AWG_DB_LOCK_GATEWAYS=PASS');
-  console.log('FI_AWG_DB_NODE_PROOF='+(fresh?'FRESH':'STALE'));
+  console.log('FI_AWG_DB_NODE_PROOF='+proof);
   console.log('FI_AWG_DB_PROBE=READONLY_READY;PRODUCTION_NODE_PROOF_FRESH='+
     String(fresh)+';WORKER_STARTED=false;CUSTOMER_RELEASE=false');
-}catch{
+}catch(error){
+  // Only a five-character SQLSTATE may escape; credentials or SQL never do.
+  const code=typeof error?.code==='string'&&/^[A-Z0-9]{5}$/.test(error.code)
+    ?error.code:'NONE';
+  process.stderr.write('FI_AWG_DB_CHECK_SQLSTATE='+code+'\n');
   if(client)await client.query('ROLLBACK').catch(()=>{});
   throw Error('readonly probe blocked');
 }finally{if(client)client.release();await pool.end();}
@@ -128,6 +136,10 @@ def main() -> int:
             result.stderr,re.MULTILINE)
         if steps:
             print("FI_AWG_DB_BLOCKED_AT="+steps[-1])
+        code=re.search(r"^FI_AWG_DB_CHECK_SQLSTATE=([A-Z0-9]{5}|NONE)$",
+                       result.stderr,re.MULTILINE)
+        if code:
+            print("FI_AWG_DB_SQLSTATE="+code.group(1))
         print("FI_AWG_DB_PROBE=BLOCKED;WORKER_STARTED=false;CUSTOMER_RELEASE=false")
         return 2
     lines = result.stdout.splitlines()
@@ -138,7 +150,8 @@ def main() -> int:
     ]
     if (len(lines) != 8 or any(lines.count(item) != 1 for item in required) or
             lines[6] not in ("FI_AWG_DB_NODE_PROOF=FRESH",
-                             "FI_AWG_DB_NODE_PROOF=STALE") or
+                             "FI_AWG_DB_NODE_PROOF=STALE",
+                             "FI_AWG_DB_NODE_PROOF=MISSING") or
             lines[7] != (
                 "FI_AWG_DB_PROBE=READONLY_READY;PRODUCTION_NODE_PROOF_FRESH=" +
                 ("true" if lines[6].endswith("FRESH") else "false") +
