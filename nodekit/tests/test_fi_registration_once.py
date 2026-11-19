@@ -133,6 +133,10 @@ class FiRegistrationGateTests(TestCase):
                 side_effect=[b"fi.mnebyvpn.site ssh-ed25519 abc\n",b"key",b"key"]
             ),
             mock.patch.object(registration,"require_runtime"),
+            mock.patch.object(registration.Path,"resolve",
+                return_value=registration.Path(
+                    "/opt/mnebyvpn-controller/releases/reviewed-release")),
+            mock.patch.object(registration.Path,"is_dir",return_value=True),
             mock.patch.object(registration,"db_state",
                               side_effect=["approved","approved","enrolled"]) as db,
             mock.patch.object(registration,"execute",side_effect=cmd),
@@ -147,6 +151,10 @@ class FiRegistrationGateTests(TestCase):
         self.assertIn("--property=IPAddressAllow=217.11.167.91/32",transient[0])
         self.assertIn("--property=NoNewPrivileges=yes",transient[0])
         self.assertIn("--unit=mnebyvpn-fi-controller-transient",transient[0])
+        self.assertIn(
+            "/opt/mnebyvpn-controller/releases/reviewed-release/apps/service/src/fi-enrollment-controller.ts",
+            transient[0]
+        )
         self.assertIn(
             "--property=EnvironmentFile=/root/mnebyvpn-controller/config/fi-enrollment.env",
             transient[0]
@@ -170,6 +178,10 @@ class FiRegistrationGateTests(TestCase):
                 side_effect=[b"fi.mnebyvpn.site ssh-ed25519 abc\n",b"key",b"key"]
             ),
             mock.patch.object(registration,"require_runtime"),
+            mock.patch.object(registration.Path,"resolve",
+                return_value=registration.Path(
+                    "/opt/mnebyvpn-controller/releases/reviewed-release")),
+            mock.patch.object(registration.Path,"is_dir",return_value=True),
             mock.patch.object(registration,"db_state",
                               side_effect=["approved","approved"]),
             mock.patch.object(registration,"execute",side_effect=cmd),
@@ -193,6 +205,10 @@ class FiRegistrationGateTests(TestCase):
                 side_effect=[b"fi.mnebyvpn.site ssh-ed25519 abc\n",b"key",b"key"]
             ),
             mock.patch.object(registration,"require_runtime"),
+            mock.patch.object(registration.Path,"resolve",
+                return_value=registration.Path(
+                    "/opt/mnebyvpn-controller/releases/reviewed-release")),
+            mock.patch.object(registration.Path,"is_dir",return_value=True),
             mock.patch.object(registration,"db_state",
                               side_effect=["approved","approved"]),
             mock.patch.object(registration,"execute",side_effect=cmd),
@@ -216,6 +232,10 @@ class FiRegistrationGateTests(TestCase):
                 side_effect=[b"fi.mnebyvpn.site ssh-ed25519 abc\n",b"key",b"key"]
             ),
             mock.patch.object(registration,"require_runtime"),
+            mock.patch.object(registration.Path,"resolve",
+                return_value=registration.Path(
+                    "/opt/mnebyvpn-controller/releases/reviewed-release")),
+            mock.patch.object(registration.Path,"is_dir",return_value=True),
             mock.patch.object(registration,"db_state",
                               side_effect=["approved","approved","approved"]),
             mock.patch.object(registration,"execute",side_effect=cmd),
