@@ -345,24 +345,30 @@ def verify_login(password: str) -> None:
     if not runtime.is_file() or not package.is_file():
         stop("existing_controller_node_pg_runtime_missing")
     js = """
-import pg from '/opt/mnebyvpn-controller/current/node_modules/pg/lib/index.js';
-const client = new pg.Client({connectionString:process.env.DATABASE_URL,connectionTimeoutMillis:3500});
+let phase='import',client=null;
 try {
+  const {default:pg}=await import('/opt/mnebyvpn-controller/current/node_modules/pg/lib/index.js');
+  client=new pg.Client({connectionString:process.env.DATABASE_URL,connectionTimeoutMillis:3500});
+  phase='connect';
   await client.connect();
-  const result=await client.query('SELECT current_user AS user,current_database() AS db');
-  if(result.rows.length!==1||result.rows[0].user!=='mnebyvpn_awg_delivery'||
-     result.rows[0].db!=='mnebyvpn_stage')
+  phase='identity';
+  const result=await client.query('SELECT current_user AS role_name,current_database() AS db_name');
+  if(result.rows.length!==1||result.rows[0].role_name!=='mnebyvpn_awg_delivery'||
+     result.rows[0].db_name!=='mnebyvpn_stage')
     throw Error('Unexpected authenticated database role');
-  // The next deployed controller worker uses FOR SHARE, not FOR UPDATE, on
-  // billing and inventory rows. Confirm the scoped role can use those locks.
+  phase='row_share';
+  // Plain transaction required: PostgreSQL forbids row locks in READ ONLY mode.
+  // No mutation is performed; the transaction is always rolled back.
   await client.query('BEGIN');
   for(const table of ['entitlements','vpn_node_enrollment_inventory','vpn_awg_node_pools'])
     await client.query('SELECT * FROM public.'+table+' LIMIT 0 FOR SHARE');
   await client.query('ROLLBACK');
-} catch {
+} catch (e) {
+  const code=typeof e?.code==='string'&&/^[0-9A-Z]{5}$/.test(e.code)?e.code:'unclassified';
+  process.stderr.write('FI_AWG_DB_LOGIN_CHECK_PHASE='+phase+';PG_CODE='+code+'\\n');
   process.exitCode=2;
 } finally {
-  await client.end().catch(()=>{process.exitCode=2;});
+  if(client)await client.end().catch(()=>{process.exitCode=2;});
 }
 """
     env = dict(os.environ)
@@ -375,7 +381,13 @@ try {
     except (OSError, subprocess.TimeoutExpired):
         stop("dedicated_awg_db_role_login_unavailable")
     if result.returncode != 0:
-        # Never print stderr which might include connection credentials.
+        # Never forward stderr verbatim: pg may echo SQL, connection options,
+        # or secrets. Only the exact bounded phase + SQLSTATE allowlist.
+        for line in result.stderr.decode("ascii",errors="replace").splitlines():
+            if re.fullmatch(
+                r"FI_AWG_DB_LOGIN_CHECK_PHASE=(import|connect|identity|row_share);"
+                r"PG_CODE=([0-9A-Z]{5}|unclassified)",line):
+                print(line, file=sys.stderr)
         stop("dedicated_awg_db_role_login_or_share_lock_failed")
 
 
