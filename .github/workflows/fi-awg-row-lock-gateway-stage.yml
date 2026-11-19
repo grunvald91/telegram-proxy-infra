@@ -119,9 +119,7 @@ jobs:
           audit_rc=0
           preflight=$(ru 'bash -se' < infra/nodekit/fi_awg_worker_preflight.sh) || audit_rc=$?
           # Only bounded, fixed-format status fields from the root-only audit.
-          printf '%s\n' "$preflight" | grep -E '^FI_AWG_PREFLIGHT(_[A-Z_]+)?=(OK|BLOCKED|PREACTIVATION_READY.*)
-          echo 'FI_AWG_ROW_LOCK_STAGE=complete;AWG_WORKER_STARTED=false;SUBSCRIPTIONS_PUBLISHED=false'
- || true
+          printf '%s\n' "$preflight" | grep -E '^FI_AWG_PREFLIGHT' || true
           audit_complete=true
           [[ "$audit_rc" == 0 && ${#preflight} -le 4096 ]] || audit_complete=false
           for label in HOST CONTROLLER_IDENTITY FI_NODE_IDENTITY CANONICAL_WORKER_ENV SIGNER_PRIVATE_KEY FORCED_SSH_TRANSPORT POSTGRES_GATEWAY_AND_RELEASE SERVICE_UNIT WORKER_SOURCE WORKER_RUNTIME APPROVAL_NOT_PRESENT WORKER_INACTIVE WORKER_NOT_ENABLED; do
