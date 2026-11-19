@@ -1,0 +1,143 @@
+name: FI217 AWG staged IPAM pool (clients off)
+on:
+  push:
+    branches: [main]
+    paths:
+      - nodekit/fi_awg_pool_staged.py
+      - nodekit/tests/test_fi_awg_pool_staged.py
+      - .github/workflows/fi-awg-pool-staged.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebyvpn-fleet-fi
+  cancel-in-progress: false
+jobs:
+  stage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: node-fi
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      FI_PASS: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_PASSWORD }}
+      FI_USER: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_USER }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate staging contract offline
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile nodekit/fi_awg_pool_staged.py
+          python3 -m unittest discover -s nodekit/tests -p 'test_fi_awg_pool_staged.py' -v
+          grep -q '^188\.120\.254\.223 ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts
+      - name: Install ephemeral SSH password tool
+        run: |
+          set -Eeuo pipefail
+          if ! command -v sshpass >/dev/null; then
+            sudo apt-get update -qq -o Acquire::Retries=1
+            sudo apt-get install -qq -y --no-install-recommends sshpass >/dev/null
+          fi
+      - name: Derive public FI AWG identity and register staged-only RU188 pool
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          [[ "$FI_USER" == root && -n "$FI_PASS" && -n "$RU_PASS" ]] || exit 2
+          work="$RUNNER_TEMP/fi-awg-pool-register"
+          mkdir -m 0700 "$work"
+          ru_remote=''
+          fi_remote=''
+          cleanup() {
+            set +e
+            if [[ "$fi_remote" =~ ^/run/fi-awg-pool\.[A-Za-z0-9]{8}$ ]]; then
+              fi "rm -rf -- '$fi_remote'" >/dev/null 2>&1
+            fi
+            if [[ "$ru_remote" =~ ^/run/fi-awg-pool\.[A-Za-z0-9]{8}$ ]]; then
+              ru "rm -rf -- '$ru_remote'" >/dev/null 2>&1
+            fi
+            rm -rf -- "$work"
+          }
+          trap cleanup EXIT
+          cat > "$work/ru.conf" <<CFG
+          Host ru188
+            HostName 188.120.254.223
+            User root
+            UserKnownHostsFile $GITHUB_WORKSPACE/ops/mnebydns-owner-ssh-known_hosts
+            GlobalKnownHostsFile /dev/null
+            HostKeyAlgorithms ssh-ed25519
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+            PasswordAuthentication yes
+            PubkeyAuthentication no
+            KbdInteractiveAuthentication no
+            BatchMode no
+            ForwardAgent no
+            ClearAllForwardings yes
+            ConnectTimeout 12
+            LogLevel ERROR
+          CFG
+          ru() { SSHPASS="$RU_PASS" sshpass -e ssh -T -F "$work/ru.conf" ru188 "$@"; }
+          ru 'set -eu; p=/root/mnebyvpn-controller/fi-known_hosts; test -f "$p"; test ! -L "$p"; test "$(stat -c "%u:%a" "$p")" = 0:600; cat "$p"' > "$work/fi-known"
+          chmod 0600 "$work/fi-known"
+          python3 - "$work/fi-known" <<'PY'
+          import base64,pathlib,sys
+          b=pathlib.Path(sys.argv[1]).read_bytes()
+          assert 45<len(b)<512 and b.endswith(b'\n') and b.count(b'\n')==1
+          hostname,algorithm,encoded=b.decode('ascii').strip().split()
+          assert (hostname,algorithm)==('fi.mnebyvpn.site','ssh-ed25519')
+          d=base64.b64decode(encoded,validate=True)
+          assert len(d)==51 and d.startswith(b'\x00\x00\x00\x0bssh-ed25519\x00\x00\x00\x20')
+          assert base64.b64encode(d).decode()==encoded
+          PY
+          cat > "$work/fi.conf" <<CFG
+          Host fi217
+            HostName 217.11.167.91
+            HostKeyAlias fi.mnebyvpn.site
+            User root
+            UserKnownHostsFile $work/fi-known
+            GlobalKnownHostsFile /dev/null
+            HostKeyAlgorithms ssh-ed25519
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+            PasswordAuthentication yes
+            PubkeyAuthentication no
+            KbdInteractiveAuthentication no
+            BatchMode no
+            ForwardAgent no
+            ClearAllForwardings yes
+            ConnectTimeout 12
+            LogLevel ERROR
+          CFG
+          fi() { SSHPASS="$FI_PASS" sshpass -e ssh -T -F "$work/fi.conf" fi217 "$@"; }
+          fi_remote=$(fi 'umask 077; mktemp -d /run/fi-awg-pool.XXXXXXXX')
+          ru_remote=$(ru 'umask 077; mktemp -d /run/fi-awg-pool.XXXXXXXX')
+          [[ "$fi_remote" =~ ^/run/fi-awg-pool\.[A-Za-z0-9]{8}$ &&
+             "$ru_remote" =~ ^/run/fi-awg-pool\.[A-Za-z0-9]{8}$ ]] || exit 2
+          SSHPASS="$FI_PASS" sshpass -e scp -F "$work/fi.conf" \
+            nodekit/fi_awg_pool_staged.py nodekit/awg_external_canary.py \
+            nodekit/awg_lifecycle.py nodekit/install_components.py "fi217:$fi_remote/"
+          fi "chmod 0600 '$fi_remote/'*.py; python3 '$fi_remote/fi_awg_pool_staged.py' --mode fi-material" > "$work/material.json"
+          chmod 0600 "$work/material.json"
+          python3 - "$work/material.json" <<'PY'
+          import json,pathlib,sys
+          sys.path.insert(0,'nodekit')
+          import fi_awg_pool_staged as pool
+          p=pathlib.Path(sys.argv[1])
+          assert 2<p.stat().st_size<=2048
+          pool.validate_public(json.loads(p.read_bytes()))
+          print('FI_AWG_POOL_MATERIAL=PINNED_FI_VERIFIED;NO_SECRET_EXPORTED=true')
+          PY
+          SSHPASS="$RU_PASS" sshpass -e scp -F "$work/ru.conf" \
+            nodekit/fi_awg_pool_staged.py nodekit/fi_awg_row_lock_gateway_stage.py \
+            "$work/material.json" "ru188:$ru_remote/"
+          ru "chmod 0600 '$ru_remote/'*.py '$ru_remote/material.json'; python3 '$ru_remote/fi_awg_pool_staged.py' --mode ru-stage --material '$ru_remote/material.json'"
+          repeated=$(ru "python3 '$ru_remote/fi_awg_pool_staged.py' --mode ru-stage --material '$ru_remote/material.json'")
+          [[ "$repeated" == 'FI_AWG_POOL_STAGE=STAGED;POOL_PRESENT=true;POOL_STATE=staged;CLIENT_RELEASE=false;WORKER_STARTED=false' ]] || {
+            echo 'FI_AWG_POOL_STAGE_IDEMPOTENCY=BLOCKED'; exit 2;
+          }
+          echo 'FI_AWG_POOL_STAGE_IDEMPOTENCY=OK'
+          ru 'set -eu; ! systemctl is-active --quiet mnebyvpn-awg-delivery.service'
+          fi 'set -eu; ! systemctl is-active --quiet mnebyvpn-nodekit-awg@fi-test-01.service'
+          echo 'FI_AWG_POOL_STAGED=COMPLETE;WORKER_STARTED=false;CUSTOMER_RELEASE=false'
