@@ -73,7 +73,8 @@ class FiRegistrationGateTests(TestCase):
     def test_absent_or_nonapproved_does_not_start_systemd_enroller(self):
         node = bytes.fromhex("302a300506032b6570032100") + bytes(32)
         for state in ("absent", "planned", "revoked"):
-            with self.subTest(state=state), (
+            with (
+                self.subTest(state=state),
                 mock.patch.object(registration.os, "geteuid", return_value=0),
                 mock.patch.object(registration, "assigned_ip", return_value=True),
                 mock.patch.object(registration, "spki", return_value=node),
