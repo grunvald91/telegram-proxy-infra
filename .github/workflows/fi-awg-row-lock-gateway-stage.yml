@@ -10,6 +10,7 @@ name: FI217 AWG transactional billing row-lock gateway stage (clients off)
       - 'nodekit/fi_awg_worker_isolated_source_stage.py'
       - 'nodekit/fi_awg_worker_isolated_runtime_preflight.py'
       - 'nodekit/fi_awg_worker_isolated_pg_stage.py'
+      - 'nodekit/fi_awg_worker_isolated_systemd_stage.py'
   workflow_dispatch:
 permissions:
   contents: read
@@ -45,6 +46,8 @@ jobs:
           python3 -m py_compile infra/nodekit/fi_awg_worker_isolated_source_stage.py
           python3 -m py_compile infra/nodekit/fi_awg_worker_isolated_runtime_preflight.py
           python3 -m py_compile infra/nodekit/fi_awg_worker_isolated_pg_stage.py
+          python3 -m py_compile infra/nodekit/fi_awg_worker_isolated_systemd_stage.py
+          python3 -m unittest discover -s infra/nodekit/tests -p 'test_fi_awg_worker_isolated_systemd_stage.py' -v
           python3 -m unittest discover -s infra/nodekit/tests -p 'test_fi_awg_worker_isolated_pg_stage.py' -v
           python3 -m unittest discover -s infra/nodekit/tests -p 'test_fi_awg_worker_isolated_runtime_preflight.py' -v
           python3 -m unittest discover -s infra/nodekit/tests -p 'test_fi_awg_worker_isolated_source_stage.py' -v
@@ -165,7 +168,8 @@ jobs:
             infra/nodekit/fi_awg_worker_source_stage.py \
             infra/nodekit/fi_awg_worker_isolated_source_stage.py \
             infra/nodekit/fi_awg_worker_isolated_runtime_preflight.py \
-            infra/nodekit/fi_awg_worker_isolated_pg_stage.py "$work/manifest.json" \
+            infra/nodekit/fi_awg_worker_isolated_pg_stage.py \
+            infra/nodekit/fi_awg_worker_isolated_systemd_stage.py "$work/manifest.json" \
             pinned-controller/apps/service/src/awg-controller-delivery-worker.ts \
             pinned-controller/packages/provisioning/src/awg-trusted-ssh-delivery.ts \
             pinned-controller/packages/provisioning/src/awg-offline-maintenance.ts \
@@ -202,11 +206,22 @@ jobs:
             [[ $(grep -Fxc "FI_AWG_ISOLATED_RUNTIME_${label}=OK" <<< "$runtime_output" || true) == 1 ]] || runtime_complete=false
           done
           grep -Fxq 'FI_AWG_ISOLATED_RUNTIME_PREFLIGHT=READONLY_READY;WORKER_STARTED=false;CUSTOMER_RELEASE=false;RUNTIME_ATTACHED=false' <<< "$runtime_output" || runtime_complete=false
+          grep -Fxq 'FI_AWG_ISOLATED_RUNTIME_ISOLATED_ESM_IMPORT=OK' <<< "$runtime_output" || runtime_complete=false
           if [[ "$runtime_complete" == true ]]; then
             echo 'FI_AWG_ISOLATED_RUNTIME_STATUS=READONLY_READY;WORKER_STARTED=false'
           else
             echo 'FI_AWG_ISOLATED_RUNTIME_STATUS=BLOCKED;WORKER_STARTED=false'
+            exit 2
           fi
+          # Attach only the already-reviewed, immutable source to the existing
+          # stopped and disabled systemd unit. Approval marker must be absent.
+          # Repeated CI installs are expected to be strictly idempotent.
+          ru "python3 '$remote/fi_awg_worker_isolated_systemd_stage.py'"
+          systemd_second=$(ru "python3 '$remote/fi_awg_worker_isolated_systemd_stage.py'")
+          [[ "$systemd_second" == 'FI_AWG_ISOLATED_SYSTEMD=STAGED;DROPIN=UNCHANGED;UNIT_DISABLED=true;WORKER_STARTED=false;CUSTOMER_RELEASE=false' ]] || {
+            echo 'FI_AWG_ISOLATED_SYSTEMD_IDEMPOTENCY=BLOCKED'; exit 2;
+          }
+          echo 'FI_AWG_ISOLATED_SYSTEMD_IDEMPOTENCY=OK'
           ru 'set -eu; ! systemctl is-active --quiet mnebyvpn-awg-delivery.service'
           # Read-only diagnostics may find missing worker components; do not
           # treat these as a failed SQL migration or open customer access.
@@ -225,5 +240,6 @@ jobs:
             echo 'FI_AWG_WORKER_PREFLIGHT_STATUS=ready;AWG_WORKER_STARTED=false'
           else
             echo 'FI_AWG_WORKER_PREFLIGHT_STATUS=blocked;AWG_WORKER_STARTED=false'
+            exit 2
           fi
           echo 'FI_AWG_ROW_LOCK_STAGE=complete;AWG_WORKER_STARTED=false;SUBSCRIPTIONS_PUBLISHED=false'
