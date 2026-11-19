@@ -9,6 +9,7 @@ name: FI217 AWG transactional billing row-lock gateway stage (clients off)
       - 'nodekit/fi_awg_worker_source_stage.py'
       - 'nodekit/fi_awg_worker_isolated_source_stage.py'
       - 'nodekit/fi_awg_worker_isolated_runtime_preflight.py'
+      - 'nodekit/fi_awg_worker_isolated_pg_stage.py'
   workflow_dispatch:
 permissions:
   contents: read
@@ -43,6 +44,8 @@ jobs:
           python3 -m py_compile infra/nodekit/fi_awg_worker_source_stage.py
           python3 -m py_compile infra/nodekit/fi_awg_worker_isolated_source_stage.py
           python3 -m py_compile infra/nodekit/fi_awg_worker_isolated_runtime_preflight.py
+          python3 -m py_compile infra/nodekit/fi_awg_worker_isolated_pg_stage.py
+          python3 -m unittest discover -s infra/nodekit/tests -p 'test_fi_awg_worker_isolated_pg_stage.py' -v
           python3 -m unittest discover -s infra/nodekit/tests -p 'test_fi_awg_worker_isolated_runtime_preflight.py' -v
           python3 -m unittest discover -s infra/nodekit/tests -p 'test_fi_awg_worker_isolated_source_stage.py' -v
           # Validate that the five pinned controller modules form a complete
@@ -161,7 +164,8 @@ jobs:
           sshpass -e scp -F "$work/ssh.conf" \
             infra/nodekit/fi_awg_worker_source_stage.py \
             infra/nodekit/fi_awg_worker_isolated_source_stage.py \
-            infra/nodekit/fi_awg_worker_isolated_runtime_preflight.py "$work/manifest.json" \
+            infra/nodekit/fi_awg_worker_isolated_runtime_preflight.py \
+            infra/nodekit/fi_awg_worker_isolated_pg_stage.py "$work/manifest.json" \
             pinned-controller/apps/service/src/awg-controller-delivery-worker.ts \
             pinned-controller/packages/provisioning/src/awg-trusted-ssh-delivery.ts \
             pinned-controller/packages/provisioning/src/awg-offline-maintenance.ts \
@@ -175,6 +179,18 @@ jobs:
             echo 'FI_AWG_ISOLATED_SOURCE_IDEMPOTENCY=BLOCKED'; exit 2;
           }
           echo 'FI_AWG_ISOLATED_SOURCE_IDEMPOTENCY=OK'
+
+          # Copy only the reviewed pg@8.16.3 dependency closure from the
+          # installed root-owned controller into the isolated release. The
+          # existing /current runtime and all client profiles remain untouched.
+          ru "python3 '$remote/fi_awg_worker_isolated_pg_stage.py' --stage '$remote'"
+          deps_second=$(ru "python3 '$remote/fi_awg_worker_isolated_pg_stage.py' --stage '$remote'")
+          if [[ "$deps_second" =~ ^FI_AWG_ISOLATED_PG=STAGED\;NEW=0\;MATCHED=[1-9][0-9]*\;PACKAGES=[1-9][0-9]*\;WORKER_STARTED=false\;CUSTOMER_RELEASE=false$ ]]; then
+            echo 'FI_AWG_ISOLATED_PG_IDEMPOTENCY=OK'
+          else
+            echo 'FI_AWG_ISOLATED_PG_IDEMPOTENCY=BLOCKED'
+            exit 2
+          fi
           # Inventory only. No module links, service override, or worker start.
           runtime_output=''
           runtime_rc=0
