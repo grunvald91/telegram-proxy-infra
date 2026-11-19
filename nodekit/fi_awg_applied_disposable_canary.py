@@ -52,7 +52,8 @@ def command(args:list[str],timeout:int=20)->subprocess.CompletedProcess:
         block("local_service_command_unavailable")
 
 def inactive(unit:str)->bool:
-    return command(["/usr/bin/systemctl","is-active","--quiet",unit],9).returncode!=0
+    check=command(["/usr/bin/systemctl","show","-p","ActiveState","--value",unit],9)
+    return check.returncode==0 and check.stdout.strip()=="inactive"
 
 def call_or_block(args:list[str],reason:str,timeout:int=20)->str:
     result=command(args,timeout)
@@ -137,8 +138,8 @@ def safe_cleanup(expected:dict)->bool:
             return False
     if LEDGER.exists() or Path("/sys/class/net/awg0").exists():
         return False
-    command(["/usr/bin/systemctl","stop",TIMER+".timer"],9)
-    return True
+    timer=command(["/usr/bin/systemctl","stop",TIMER+".timer"],9)
+    return timer.returncode==0 and inactive(TIMER+".timer")
 
 def real_roundtrip(bundle:Path)->dict:
     data=preflight(bundle)
