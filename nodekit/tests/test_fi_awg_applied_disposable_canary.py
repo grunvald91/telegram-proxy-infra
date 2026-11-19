@@ -112,14 +112,14 @@ class AppliedCanaryTests(unittest.TestCase):
             runner.return_value = subprocess.CompletedProcess([], 2, "inactive\n", "")
             self.assertEqual(mod.systemd_active_state("example"), "unknown")
         for marker in (
-            "CLEANUP_WATCHDOG_STATE_",
-            "CLEANUP_AWG_STATE_",
+            "CLEANUP_STOP_",
             "CLEANUP_AWG_INTERFACE_PRESENT",
             "CLEANUP_PEER_LEDGER_PRESENT",
             "CLEANUP_LEDGER_NOT_EXACT_TEST_ENTITLEMENT",
             "CLEANUP_TIMER_STATE_",
         ):
             self.assertIn(marker, self.src)
+        self.assertIn('phase("CLEANUP_"+label+"_STATE_"+state.upper())', self.src)
         self.assertIn('return timer.returncode==0 and state=="inactive"', self.src)
 
     def test_verified_node_receipts_are_real_applied_domain(self):
