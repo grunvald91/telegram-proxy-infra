@@ -53,11 +53,17 @@ def assigned_ip(ip: str) -> bool:
 
 def protected(path: Path, max_size: int = 16384) -> bytes:
     for parent in path.parents:
-        st = parent.lstat()
+        try:
+            st = parent.lstat()
+        except OSError:
+            fail("required_root_directory_missing")
         if (not stat.S_ISDIR(st.st_mode) or st.st_uid != 0 or
                 st.st_mode & 0o022):
             fail("untrusted_parent_directory")
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        fail("required_protected_file_unavailable:" + path.name)
     try:
         st = os.fstat(fd)
         if (not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or
