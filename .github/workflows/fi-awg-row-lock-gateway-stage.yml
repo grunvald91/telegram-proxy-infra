@@ -5,6 +5,7 @@ name: FI217 AWG transactional billing row-lock gateway stage (clients off)
     paths:
       - '.github/workflows/fi-awg-row-lock-gateway-stage.yml'
       - 'nodekit/fi_awg_row_lock_gateway_stage.py'
+      - 'nodekit/fi_awg_worker_preflight.sh'
   workflow_dispatch:
 permissions:
   contents: read
@@ -35,6 +36,8 @@ jobs:
           test "$(git -C pinned-controller rev-parse HEAD)" = c73ddaa237543d91dc81fb09eb3f371389dc618d
           test -s pinned-controller/db/migrations/0135_awg_worker_row_lock_gateway.sql
           python3 -m py_compile infra/nodekit/fi_awg_row_lock_gateway_stage.py
+          bash -n infra/nodekit/fi_awg_worker_preflight.sh
+          python3 -m unittest discover -s infra/nodekit/tests -p 'test_fi_awg_worker_preflight_contract.py' -v
           python3 -m unittest discover -s infra/nodekit/tests -p 'test_fi_awg_row_lock_gateway_stage.py' -v
           # Syntax check the entire live run block before connecting to RU188.
           python3 - <<'PY'
@@ -110,4 +113,11 @@ jobs:
             "ru188:$remote/"
           ru "chmod 0600 '$remote/fi_awg_row_lock_gateway_stage.py' '$remote/0135_awg_worker_row_lock_gateway.sql'; python3 '$remote/fi_awg_row_lock_gateway_stage.py' --sql-file '$remote/0135_awg_worker_row_lock_gateway.sql' --sha256 '$sha'"
           ru 'set -eu; ! systemctl is-active --quiet mnebyvpn-awg-delivery.service'
+          # Read-only diagnostics may find missing worker components; do not
+          # treat these as a failed SQL migration or open customer access.
+          if ru 'bash -se' < infra/nodekit/fi_awg_worker_preflight.sh; then
+            echo 'FI_AWG_WORKER_PREFLIGHT_STATUS=ready;AWG_WORKER_STARTED=false'
+          else
+            echo 'FI_AWG_WORKER_PREFLIGHT_STATUS=blocked;AWG_WORKER_STARTED=false'
+          fi
           echo 'FI_AWG_ROW_LOCK_STAGE=complete;AWG_WORKER_STARTED=false;SUBSCRIPTIONS_PUBLISHED=false'
