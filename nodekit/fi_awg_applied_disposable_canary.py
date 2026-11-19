@@ -164,7 +164,7 @@ def real_roundtrip(bundle:Path)->dict:
             grant=run_apply(data["grant"],root)
             peer_state=live_peers()
             want=data["grant"]["peerPublicKey"]+"\t"+CLIENT_IP+"/32"
-            if peer_state!=want:
+            if peer_state.split()!=want.split():
                 block("grant_not_present_in_real_awg_table")
             revoke=run_apply(data["revoke"],root)
             if live_peers():
@@ -199,7 +199,12 @@ def verify_output(bundle:Path,reply:Path,pub:Path)->None:
         record["realGrantApplied"] is not True or
         record["realRevokeApplied"] is not True or record["peersLeft"]!=0):
         block("unexpected_real_canary_result")
-    expected_pub=canary.pinned_spki(pub,canary.NODE_SHA)
+    if pub.is_symlink() or not pub.is_file():
+        block("missing_pinned_node_public_key")
+    data=pub.read_bytes()
+    if (len(data)!=44 or not data.startswith(canary.SPKI_HEADER) or
+        hashlib.sha256(data).hexdigest()!=canary.NODE_SHA):
+        block("unexpected_fi_node_public_identity")
     for op in ("grant","revoke"):
         cmd=signed[op]
         receipt=record[op+"Receipt"]
@@ -216,7 +221,17 @@ def verify_output(bundle:Path,reply:Path,pub:Path)->None:
             not isinstance(receipt["signature"],str) or
             not re.fullmatch("[A-Za-z0-9_-]{86}",receipt["signature"])):
             block("node_receipt_does_not_bind_signed_command")
-        when=canary.utc_seconds(receipt["appliedAt"])
+        try:
+            stamp=receipt["appliedAt"]
+            if (not isinstance(stamp,str) or
+                not re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z",stamp)):
+                block("noncanonical_node_receipt_time")
+            parsed=dt.datetime.fromisoformat(stamp.replace("Z","+00:00"))
+            if canary.iso(parsed)!=stamp:
+                block("noncanonical_node_receipt_time")
+            when=parsed.timestamp()
+        except (ValueError,TypeError):
+            block("invalid_node_receipt_time")
         if abs(time.time()-when)>180:
             block("node_applied_receipt_expired")
         sig=base64.urlsafe_b64decode(receipt["signature"]+"==")
