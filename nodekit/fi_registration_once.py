@@ -187,6 +187,18 @@ def require_runtime() -> None:
     )
     if any(s not in unit for s in required):
         fail("enrollment_systemd_unit_untrusted")
+    exact_condition_paths = (
+        "/root/mnebyvpn-controller/approvals/fi-enrollment.enable",
+        "/root/mnebyvpn-controller/config/fi-enrollment.env",
+        "/root/mnebyvpn-controller/fi-known_hosts",
+        "/root/mnebyvpn-controller/fi-node-public.spki",
+        "/root/mnebyvpn-controller/controller-signing-key.pem",
+    )
+    expected_conditions = {"ConditionPathExists=" + name for name in exact_condition_paths}
+    actual_conditions = {line.strip() for line in unit.splitlines()
+                         if line.startswith(("Condition", "Assert"))}
+    if actual_conditions != expected_conditions:
+        fail("installed_systemd_unit_has_unreviewed_conditions")
     for root in ("/etc/systemd/system", "/run/systemd/system",
                  "/usr/local/lib/systemd/system", "/usr/lib/systemd/system",
                  "/lib/systemd/system"):
@@ -220,8 +232,59 @@ def main() -> int:
     # No existing customer service is restarted or modified.
     execute(["systemctl", "daemon-reload"], timeout=20)
     execute(["systemctl", "start", UNIT_NAME], timeout=85)
-    # systemd ConditionPathExists skips can exit 0: DB readback is mandatory.
-    if db_state(expected) != "enrolled":
+    # A skipped systemd oneshot can return success. Accept ONLY the canonical DB
+    # transition, not systemctl's exit code.
+    applied = db_state(expected)
+    if applied == "approved":
+        if execute(["systemctl", "show", UNIT_NAME,
+                    "--property=ConditionResult", "--value"]) != "no":
+            fail("registar_did_not_enroll_after_non_skipped_unit")
+        # Defense in depth: the on-host systemd evaluator MUST now independently
+        # accept the same exact reviewed five condition paths. Do not bypass a
+        # failed security condition or unreviewed installed unit.
+        paths = (
+            "/root/mnebyvpn-controller/approvals/fi-enrollment.enable",
+            "/root/mnebyvpn-controller/config/fi-enrollment.env",
+            "/root/mnebyvpn-controller/fi-known_hosts",
+            "/root/mnebyvpn-controller/fi-node-public.spki",
+            "/root/mnebyvpn-controller/controller-signing-key.pem",
+        )
+        for path in paths:
+            execute(["systemd-analyze", "condition",
+                     "ConditionPathExists=" + path], timeout=12)
+        # Use identical application and EnvironmentFile, with the same network,
+        # host FS and capability restrictions as the reviewed static service.
+        # This is a one-use privileged CONTROL operation, never client dataplane.
+        command = [
+            "systemd-run", "--wait", "--pipe", "--collect", "--quiet",
+            "--service-type=exec",
+            "--property=User=root", "--property=Group=root",
+            "--property=WorkingDirectory=/opt/mnebyvpn-controller/current",
+            "--property=EnvironmentFile=/root/mnebyvpn-controller/config/fi-enrollment.env",
+            "--property=ProtectHome=read-only", "--property=ProtectSystem=strict",
+            "--property=PrivateTmp=yes", "--property=PrivateDevices=yes",
+            "--property=NoNewPrivileges=yes", "--property=CapabilityBoundingSet=",
+            "--property=AmbientCapabilities=", "--property=RestrictSUIDSGID=yes",
+            "--property=RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6",
+            "--property=IPAddressDeny=any",
+            "--property=IPAddressAllow=127.0.0.0/8",
+            "--property=IPAddressAllow=::1/128",
+            "--property=IPAddressAllow=217.11.167.91/32",
+            "--property=ProtectKernelTunables=yes",
+            "--property=ProtectKernelModules=yes",
+            "--property=ProtectControlGroups=yes",
+            "--property=LockPersonality=yes",
+            "--property=UMask=0077",
+            "--property=TasksMax=64", "--property=MemoryMax=256M",
+            "--property=TimeoutStartSec=75s",
+            "/opt/mnebyvpn-controller/current/bin/node", "--experimental-strip-types",
+            "/opt/mnebyvpn-controller/current/apps/service/src/fi-enrollment-controller.ts",
+        ]
+        output = execute(command, timeout=90)
+        if output != "FI_ENROLLMENT=testing;SUBSCRIBER_PUBLICATION=false":
+            fail("trusted_transient_registrar_output_unverified")
+        applied = db_state(expected)
+    if applied != "enrolled":
         fail("registration_service_did_not_enroll_fi")
     print("FI_REGISTRATION=enrolled;SUBSCRIBER_PUBLICATION=false;IDEMPOTENT=false")
     return 0
