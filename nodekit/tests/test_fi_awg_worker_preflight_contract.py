@@ -27,10 +27,19 @@ class FiAwgWorkerPreflightContractTests(unittest.TestCase):
             "systemctl start ", "systemctl enable ", "ALTER ROLE ",
             "UPDATE public.", "INSERT INTO ", "DROP ", "chmod ",
             "chown ", "iptables ", "wg set ", "awg set ",
-            "docker run ", "docker exec -it ", "rm -rf ",
+            "docker run ", "docker exec -i ", "docker exec -it ", "rm -rf ",
         ):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden,self.source)
+
+    def test_workflow_requires_complete_markers_not_ssh_exit_alone(self):
+        workflow=(Path(__file__).resolve().parents[2]/
+                  ".github/workflows/fi-awg-row-lock-gateway-stage.yml").read_text()
+        self.assertIn('preflight=$(ru \'bash -se\' < infra/nodekit/fi_awg_worker_preflight.sh)',workflow)
+        self.assertIn("FI_AWG_PREFLIGHT=PREACTIVATION_READY;WORKER_STARTED=false;CUSTOMER_RELEASE=false",workflow)
+        self.assertIn("audit_complete=false",workflow)
+        self.assertIn("WORKER_RUNTIME APPROVAL_NOT_PRESENT WORKER_INACTIVE WORKER_NOT_ENABLED",workflow)
+        self.assertIn("FI_AWG_WORKER_PREFLIGHT_STATUS=blocked",workflow)
 
     def test_expected_scoped_worker_dependencies(self):
         for expected in (
