@@ -11,6 +11,7 @@ on:
       - '.github/workflows/fi-registration-once.yml'
       - '.github/workflows/fi-awg-signed-offline-canary.yml'
       - '.github/workflows/fi-awg-forced-ssh-transport-stage.yml'
+      - '.github/workflows/fi-awg-worker-db-stage.yml'
       - '.github/workflows/fi-awg-delivery-db-role-stage.yml'
       - '.github/workflows/nodekit-fi-awg-external-e2e.yml'
       - '.github/workflows/nodekit-fi-service-readiness-once.yml'
