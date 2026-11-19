@@ -40,6 +40,10 @@ CLIENT_IP=canary.IP
 class CanaryBlocked(ValueError):
     pass
 
+def phase(value: str) -> None:
+    """Emit only fixed non-secret phase markers, even for unexpected failures."""
+    print("FI_AWG_APPLY_PHASE=" + value, file=sys.stderr, flush=True)
+
 def block(code:str)->None:
     # Only fixed enum reason; do not echo commands, keys or receipts.
     print("FI_AWG_APPLY_CANARY_BLOCKED="+code,file=sys.stderr)
@@ -67,11 +71,14 @@ def preflight(bundle:Path)->dict:
     # The real FI-only local state machine verifies the two RU signatures
     # against the pinned controller public SPKI BEFORE any AWG start.
     canary.node_verify(bundle,announce=False)
+    phase("SIGNED_COMMANDS_VERIFIED")
     from awg_lifecycle import validate
     validate(canary.FI_NODE)
+    phase("STAGED_AWG_INTEGRITY_VERIFIED")
     for unit in (UNIT,WATCHDOG,TIMER+".timer"):
         if not inactive(unit):
             block("existing_awg_or_expiry_timer")
+    phase("SYSTEMD_DORMANT_VERIFIED")
     if LEDGER.exists() or LEDGER.is_symlink():
         block("existing_awg_peer_ledger")
     if Path("/sys/class/net/awg0").exists():
@@ -82,6 +89,7 @@ def preflight(bundle:Path)->dict:
         data["grant"]["expiresAt"] is None or
         data["revoke"]["expiresAt"] is not None):
         block("unexpected_signed_disposable_peer")
+    phase("DISPOSABLE_PREFLIGHT_PASSED")
     return data
 
 def install_watchdog()->None:
@@ -143,7 +151,9 @@ def safe_cleanup(expected:dict)->bool:
 
 def real_roundtrip(bundle:Path)->dict:
     data=preflight(bundle)
+    phase("WATCHDOG_INSTALL_BEGIN")
     install_watchdog()
+    phase("WATCHDOG_INSTALLED")
     # One-shot systemd timer independent of GitHub, SSH, Python and RU188.
     # If a process dies mid-apply, the node is forcibly disconnected.
     call_or_block([
@@ -151,23 +161,28 @@ def real_roundtrip(bundle:Path)->dict:
       "--unit="+TIMER,"--on-active=95s",
       "/usr/bin/systemctl","stop",WATCHDOG,UNIT
     ],"disposable_timeout_not_armed",12)
+    phase("INDEPENDENT_KILL_TIMER_ARMED")
     cleaned=False
     output=None
     try:
         call_or_block(["/usr/bin/systemctl","start",UNIT],
                       "temporary_awg_start_failed",48)
+        phase("AWG_STARTED")
         call_or_block(["/usr/bin/systemctl","start",WATCHDOG],
                       "offline_expiry_watchdog_start_failed",22)
         if any(inactive(unit) for unit in (UNIT,WATCHDOG)):
             block("watchdog_or_awg_did_not_stay_active")
+        phase("WATCHDOG_STARTED")
         with tempfile.TemporaryDirectory(prefix="fi-awg-applied-",dir="/run") as folder:
             root=Path(folder)
             grant=run_apply(data["grant"],root)
+            phase("SIGNED_GRANT_APPLIED")
             peer_state=live_peers()
             want=data["grant"]["peerPublicKey"]+"\t"+CLIENT_IP+"/32"
             if peer_state.split()!=want.split():
                 block("grant_not_present_in_real_awg_table")
             revoke=run_apply(data["revoke"],root)
+            phase("SIGNED_REVOKE_APPLIED")
             if live_peers():
                 block("revoked_peer_survived_in_awg_table")
             # The exact signed revision 1 must never resurrect a revoked peer.
@@ -184,6 +199,7 @@ def real_roundtrip(bundle:Path)->dict:
         cleaned=safe_cleanup(data["grant"])
     if not cleaned:
         block("cleanup_unverified_systemd_timer_remains_armed")
+    phase("DISPOSABLE_CLEANUP_VERIFIED")
     if output is None:
         block("signed_node_receipts_incomplete")
     return output
@@ -275,5 +291,9 @@ if __name__=="__main__":
     try:
         main()
     except (CanaryBlocked,canary.CanaryError,ValueError,TypeError,
-            KeyError,OSError,UnicodeError,subprocess.SubprocessError):
+            KeyError,OSError,UnicodeError,subprocess.SubprocessError) as exc:
+        # Never expose exception messages: they could contain protected paths,
+        # subprocess arguments, or command material. Only the type is public.
+        print("FI_AWG_APPLY_FAILURE_CLASS=" + type(exc).__name__,
+              file=sys.stderr, flush=True)
         raise SystemExit(2)
