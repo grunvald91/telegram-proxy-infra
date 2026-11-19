@@ -68,14 +68,14 @@ def assigned(ip: str) -> bool:
     return False
 
 
-def trusted_dir(path: Path) -> None:
+def trusted_dir(path: Path, *, private: bool = True) -> None:
     for folder in (path, *path.parents):
         try:
             s = folder.lstat()
         except OSError:
             block("missing_protected_directory")
         if (not stat.S_ISDIR(s.st_mode) or s.st_uid != 0 or
-                s.st_mode & 0o022 or (folder == path and s.st_mode & 0o077)):
+                s.st_mode & 0o022 or (private and folder == path and s.st_mode & 0o077)):
             block("unsafe_protected_directory")
 
 
@@ -142,7 +142,7 @@ def exact_pin() -> bytes:
 
 
 def atomic_new(path: Path, content: bytes) -> None:
-    trusted_dir(path.parent)
+    trusted_dir(path.parent, private=path.parent != HANDLER_PATH.parent)
     if path.exists() or path.is_symlink():
         if protected(path, max(1024, len(content) + 128)) != content:
             block("unapproved_existing_asset_change")
@@ -277,7 +277,7 @@ def node_stage(public_file: Path, handler_source: Path, sha: str) -> None:
     source = protected(handler_source, 16000)
     if hashlib.sha256(source).hexdigest() != sha:
         block("handler_source_sha256_mismatch")
-    trusted_dir(HANDLER_PATH.parent)
+    trusted_dir(HANDLER_PATH.parent, private=False)
     lock = AUTH_KEYS.parent / ".fi-awg-delivery-stage.lock"
     trusted_dir(AUTH_KEYS.parent)
     fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
