@@ -98,7 +98,7 @@ class SignedAwgCanaryTests(TestCase):
     def test_live_secrets_are_not_in_offline_job_environment(self):
         workflow=(path.parents[1] / ".github/workflows/fi-awg-signed-offline-canary.yml").read_text()
         before_live=workflow.split(
-            "      - name: Sign on RU188 and verify grant revoke expiry on FI217 without installing peers", 1)[0]
+            "      - name: Verify real Ed25519 grants, then apply and revoke one unconnectable test peer on FI217", 1)[0]
         self.assertNotIn("secrets.SERVER188_SSH_PASSWORD", before_live)
         self.assertNotIn("secrets.MNEBYVPN_NEW_NODE_SSH_PASSWORD", before_live)
         self.assertNotIn("secrets.MNEBYVPN_NEW_NODE_SSH_USER", before_live)
