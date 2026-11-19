@@ -19,10 +19,9 @@ import datetime as dt
 import hashlib
 import json
 import os
-import stat
-import tempfile
 from pathlib import Path
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -109,6 +108,10 @@ def watchdog_file_state(path: Path, expected: bytes) -> str:
         return "UNTRUSTED"
     return "MATCH" if path.read_bytes() == expected else "DRIFT"
 
+def authorizer_upgrade_allowed(old_code: bytes, new_code: bytes) -> bool:
+    return (hashlib.sha256(old_code).hexdigest() == LEGACY_AUTHORIZER_SHA256 and
+            hashlib.sha256(new_code).hexdigest() == CANDIDATE_AUTHORIZER_SHA256)
+
 def migrate_pinned_authorizer(source: Path) -> None:
     """One-off root-only, dormant FI217 migration of a precisely pinned file.
 
@@ -119,6 +122,10 @@ def migrate_pinned_authorizer(source: Path) -> None:
         block("authorizer_upgrade_wrong_host")
     if not all(inactive(name) for name in (UNIT, WATCHDOG, TIMER + ".timer")):
         block("authorizer_upgrade_service_active")
+    for name in (UNIT, WATCHDOG):
+        enabled = command(["/usr/bin/systemctl", "is-enabled", "--quiet", name], 8)
+        if enabled.returncode == 0:
+            block("authorizer_upgrade_service_enabled")
     if Path("/sys/class/net/awg0").exists() or LEDGER.exists() or LEDGER.is_symlink():
         block("authorizer_upgrade_runtime_not_empty")
     home = APP.parent
@@ -131,8 +138,7 @@ def migrate_pinned_authorizer(source: Path) -> None:
         block("authorizer_upgrade_untrusted_install")
     before = APP.read_bytes()
     candidate = source.read_bytes()
-    if (hashlib.sha256(before).hexdigest() != LEGACY_AUTHORIZER_SHA256 or
-        hashlib.sha256(candidate).hexdigest() != CANDIDATE_AUTHORIZER_SHA256):
+    if not authorizer_upgrade_allowed(before, candidate):
         block("authorizer_upgrade_digest_not_allowlisted")
     # The old version stays available for explicit guarded rollback.
     backup = home / (".awg_peer_grants.fi217-legacy-" +
@@ -148,7 +154,13 @@ def migrate_pinned_authorizer(source: Path) -> None:
             os.fsync(handle.fileno())
     except OSError:
         block("authorizer_upgrade_backup_write_failed")
-    fd, filename = tempfile.mkstemp(prefix=".fi-awg-authorizer-", dir=home)
+    if hashlib.sha256(backup.read_bytes()).hexdigest() != LEGACY_AUTHORIZER_SHA256:
+        block("authorizer_upgrade_backup_verification_failed")
+    try:
+        fd, filename = tempfile.mkstemp(prefix=".fi-awg-authorizer-", dir=home)
+    except OSError:
+        backup.unlink(missing_ok=True)
+        block("authorizer_upgrade_temp_write_failed")
     swapped = False
     try:
         os.fchmod(fd, 0o600)
