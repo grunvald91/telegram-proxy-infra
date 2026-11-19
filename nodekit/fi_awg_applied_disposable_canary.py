@@ -93,6 +93,51 @@ def residual_ledger_status() -> str:
     except (OSError,ValueError,TypeError,KeyError):
         return "UNVERIFIED"
 
+def recover_revoked_previous_canary(states:dict,interface_present:bool,
+                                   ledger_status:str)->bool:
+    """Safely archive only the known inactive, revoked FI test residue.
+
+    Never touch a running interface, enabled grant, arbitrary ledger, or the
+    independent kill timer. No rollback into a client's live data path.
+    """
+    if not (states == {"AWG":"failed","WATCHDOG":"inactive","TIMER":"inactive"} and
+            not interface_present and ledger_status=="ONLY_REVOKED_DISPOSABLE"):
+        return False
+    if not canary.is_host(canary.FI_IP):
+        block("prior_canary_recovery_wrong_host")
+    old=canary.protected(LEDGER,50000)
+    digest=hashlib.sha256(old).hexdigest()
+    archive=LEDGER.with_name(".peer-grants.fi217-revoked-"+digest[:20]+".bak")
+    if archive.exists() or archive.is_symlink():
+        block("prior_canary_archive_already_exists")
+    if systemd_active_state(UNIT)!="failed" or systemd_active_state(WATCHDOG)!="inactive":
+        block("prior_canary_status_changed")
+    if Path("/sys/class/net/awg0").exists() or residual_ledger_status()!="ONLY_REVOKED_DISPOSABLE":
+        block("prior_canary_data_changed")
+    phase("PRIOR_REVOKED_CANARY_ARCHIVE_BEGIN")
+    os.rename(LEDGER,archive)
+    try:
+        # Durable atomic archive before clearing the stale systemd failure flag.
+        fd=os.open(LEDGER.parent,os.O_RDONLY|os.O_DIRECTORY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        if command(["/usr/bin/systemctl","reset-failed",UNIT],9).returncode:
+            block("prior_canary_reset_failed_failed")
+        if (systemd_active_state(UNIT)!="inactive" or
+            systemd_active_state(WATCHDOG)!="inactive" or
+            systemd_active_state(TIMER+".timer")!="inactive" or
+            LEDGER.exists() or Path("/sys/class/net/awg0").exists()):
+            block("prior_canary_reset_postcheck_failed")
+    except BaseException:
+        # Preserve prior proof if reset-failed did not establish safe readiness.
+        if not LEDGER.exists() and archive.exists():
+            os.rename(archive,LEDGER)
+        raise
+    phase("PRIOR_REVOKED_CANARY_ARCHIVED_AND_UNIT_RESET")
+    return True
+
 def preflight(bundle:Path)->dict:
     if not canary.is_host(canary.FI_IP):
         block("not_pinned_fi217_root")
@@ -113,6 +158,9 @@ def preflight(bundle:Path)->dict:
     ledger_status=residual_ledger_status()
     phase("PREFLIGHT_INTERFACE_"+("PRESENT" if interface_present else "ABSENT"))
     phase("PREFLIGHT_LEDGER_"+ledger_status)
+    if recover_revoked_previous_canary(states,interface_present,ledger_status):
+        states["AWG"]="inactive"
+        ledger_status="ABSENT"
     if any(state != "inactive" for state in states.values()):
         block("existing_awg_or_expiry_timer")
     phase("SYSTEMD_DORMANT_VERIFIED")
@@ -289,10 +337,16 @@ def safe_cleanup(expected:dict)->bool:
     for label,unit in (("WATCHDOG",WATCHDOG),("AWG",UNIT)):
         result=command(["/usr/bin/systemctl","stop",unit],35)
         phase("CLEANUP_STOP_"+label+("_OK" if result.returncode==0 else "_FAILED"))
+    observed={}
     for label,unit in (("WATCHDOG",WATCHDOG),("AWG",UNIT)):
         state=systemd_active_state(unit)
+        observed[label]=state
         phase("CLEANUP_"+label+"_STATE_"+state.upper())
-        if state != "inactive":
+        # systemd can mark the oneshot AWG unit FAILED if the watchdog
+        # already tore down its interface. Treat this as pending cleanup,
+        # never as success, until the interface and ledger are verified.
+        if (label=="WATCHDOG" and state!="inactive") or (
+            label=="AWG" and state not in ("inactive","failed")):
             return False
     if Path("/sys/class/net/awg0").exists():
         phase("CLEANUP_AWG_INTERFACE_PRESENT")
@@ -307,7 +361,9 @@ def safe_cleanup(expected:dict)->bool:
             if (set(rows)!={expected["entitlementId"]} or
                 rows[expected["entitlementId"]]["peerPublicKey"]!=expected["peerPublicKey"] or
                 rows[expected["entitlementId"]]["clientIpv4"]!=CLIENT_IP or
-                rows[expected["entitlementId"]]["revision"] not in (1,2)):
+                rows[expected["entitlementId"]]["revision"] != 2 or
+                rows[expected["entitlementId"]]["enabled"] is not False or
+                rows[expected["entitlementId"]]["expiresAt"] is not None):
                 phase("CLEANUP_LEDGER_NOT_EXACT_TEST_ENTITLEMENT")
                 return False
             LEDGER.unlink()
@@ -320,6 +376,14 @@ def safe_cleanup(expected:dict)->bool:
     if LEDGER.exists() or Path("/sys/class/net/awg0").exists():
         phase("CLEANUP_POSTCONDITION_CHANGED")
         return False
+    if observed["AWG"]=="failed":
+        if command(["/usr/bin/systemctl","reset-failed",UNIT],9).returncode:
+            phase("CLEANUP_AWG_RESET_FAILED")
+            return False
+        state=systemd_active_state(UNIT)
+        phase("CLEANUP_AWG_AFTER_RESET_"+state.upper())
+        if state!="inactive":
+            return False
     timer=command(["/usr/bin/systemctl","stop",TIMER+".timer"],9)
     phase("CLEANUP_TIMER_STOP_"+("OK" if timer.returncode==0 else "FAILED"))
     state=systemd_active_state(TIMER+".timer")
