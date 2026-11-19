@@ -222,3 +222,20 @@ class FiRegistrationGateTests(TestCase):
         ):
             with self.assertRaises(registration.GateError):
                 registration.main()
+
+    def test_transient_stderr_classification_does_not_expose_raw_diagnostic(self):
+        from io import StringIO
+        from contextlib import redirect_stdout
+        proc = mock.Mock(returncode=0,stdout="Running as unit: transient\n",
+                         stderr="FI_ENROLLMENT_STOPPED confidential-canary\n")
+        with mock.patch.object(registration.subprocess,"run",return_value=proc):
+            out=StringIO()
+            with redirect_stdout(out):
+                registration.execute(
+                    ["systemd-run","--unit=mnebyvpn-fi-controller-transient"],
+                    timeout=4
+                )
+            safe=out.getvalue()
+            self.assertIn("FI_TRANSIENT_APP_STOPPED_MARKER=true",safe)
+            self.assertIn("FI_TRANSIENT_APP_SUCCESS_MARKER=false",safe)
+            self.assertNotIn("confidential-canary",safe)

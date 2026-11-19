@@ -92,6 +92,18 @@ def execute(args: list[str], timeout: int = 12) -> str:
                            timeout=timeout, check=False)
     except (OSError, subprocess.TimeoutExpired):
         fail("local_command_unavailable")
+    # Safe invariant-only diagnostics of the trusted FI transient process.
+    # Never print stdout/stderr or credentials, only bounded classifications.
+    if args and args[0] == "systemd-run" and any(
+        item == "--unit=mnebyvpn-fi-controller-transient" for item in args
+    ):
+        print("FI_TRANSIENT_EXIT_SUCCESS=" + str(p.returncode == 0).lower())
+        print("FI_TRANSIENT_APP_STOPPED_MARKER=" +
+              str("FI_ENROLLMENT_STOPPED" in p.stderr).lower())
+        print("FI_TRANSIENT_APP_SUCCESS_MARKER=" +
+              str("FI_ENROLLMENT=testing;SUBSCRIBER_PUBLICATION=false" in p.stdout).lower())
+        print("FI_TRANSIENT_STDOUT_PRESENT=" + str(bool(p.stdout.strip())).lower())
+        print("FI_TRANSIENT_STDERR_PRESENT=" + str(bool(p.stderr.strip())).lower())
     if p.returncode != 0:
         fail("local_command_failed")
     return p.stdout.strip()
