@@ -1,0 +1,113 @@
+name: FI217 AWG transactional billing row-lock gateway stage (clients off)
+"on":
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/fi-awg-row-lock-gateway-stage.yml'
+      - 'nodekit/fi_awg_row_lock_gateway_stage.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ru188-awg-gateway-schema-stage
+  cancel-in-progress: false
+jobs:
+  stage:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: node-fi
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          path: infra
+      - uses: actions/checkout@v4
+        with:
+          repository: grunvald91/Mnebyvpn
+          ref: c73ddaa237543d91dc81fb09eb3f371389dc618d
+          persist-credentials: false
+          path: pinned-controller
+      - name: Verify pinned AWG gateway source and run offline regression
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(git -C pinned-controller rev-parse HEAD)" = c73ddaa237543d91dc81fb09eb3f371389dc618d
+          test -s pinned-controller/db/migrations/0135_awg_worker_row_lock_gateway.sql
+          python3 -m py_compile infra/nodekit/fi_awg_row_lock_gateway_stage.py
+          python3 -m unittest discover -s infra/nodekit/tests -p 'test_fi_awg_row_lock_gateway_stage.py' -v
+          # Syntax check the entire live run block before connecting to RU188.
+          python3 - <<'PY'
+          from pathlib import Path
+          lines=Path('infra/.github/workflows/fi-awg-row-lock-gateway-stage.yml').read_text().splitlines()
+          i=next(i for i,s in enumerate(lines) if s=='      - name: Stage approved row-lock SQL using existing pinned RU188 SSH')
+          i=next(i for i in range(i+1,len(lines)) if lines[i]=='        run: |')+1
+          script=[s[10:] for s in lines[i:] if s.startswith('          ')]
+          assert script and script[-1].startswith("echo 'FI_AWG_ROW_LOCK_STAGE=")
+          Path('/tmp/fi-awg-gateway-stage-parse.sh').write_text('\n'.join(script)+'\n')
+          PY
+          bash -n /tmp/fi-awg-gateway-stage-parse.sh
+          rm -f /tmp/fi-awg-gateway-stage-parse.sh
+      - name: Install temporary SSH password client
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if ! command -v sshpass >/dev/null; then
+            sudo apt-get update -qq -o Acquire::Retries=1
+            sudo apt-get install -qq -y --no-install-recommends sshpass >/dev/null
+          fi
+      - name: Stage approved row-lock SQL using existing pinned RU188 SSH
+        shell: bash
+        env:
+          RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          [[ -n "$RU_PASSWORD" ]] || exit 2
+          grep -q '^188\.120\.254\.223 ssh-ed25519 ' infra/ops/mnebydns-owner-ssh-known_hosts
+          work="$RUNNER_TEMP/fi-awg-lock-stage"
+          mkdir -m 0700 "$work"
+          remote=""
+          cat > "$work/ssh.conf" <<CFG
+          Host ru188
+            HostName 188.120.254.223
+            User root
+            UserKnownHostsFile $GITHUB_WORKSPACE/infra/ops/mnebydns-owner-ssh-known_hosts
+            GlobalKnownHostsFile /dev/null
+            HostKeyAlgorithms ssh-ed25519
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+            BatchMode no
+            PasswordAuthentication yes
+            PubkeyAuthentication no
+            KbdInteractiveAuthentication no
+            ForwardAgent no
+            ClearAllForwardings yes
+            ControlMaster no
+            ProxyCommand none
+            ConnectTimeout 12
+            ServerAliveInterval 10
+            ServerAliveCountMax 3
+            LogLevel ERROR
+          CFG
+          export SSHPASS="$RU_PASSWORD"
+          ru(){ sshpass -e ssh -T -F "$work/ssh.conf" ru188 "$@"; }
+          cleanup(){
+            set +e
+            if [[ "$remote" =~ ^/run/fi-awg-row-lock\.[A-Za-z0-9]{8}$ ]]; then
+              ru "rm -rf -- '$remote'" >/dev/null 2>&1
+            fi
+            rm -rf -- "$work"
+          }
+          trap cleanup EXIT
+          sqlfile=pinned-controller/db/migrations/0135_awg_worker_row_lock_gateway.sql
+          sha=$(sha256sum "$sqlfile" | cut -d' ' -f1)
+          [[ "$sha" =~ ^[a-f0-9]{64}$ ]] || exit 2
+          remote=$(ru 'umask 077; mktemp -d /run/fi-awg-row-lock.XXXXXXXX')
+          [[ "$remote" =~ ^/run/fi-awg-row-lock\.[A-Za-z0-9]{8}$ ]] || exit 2
+          sshpass -e scp -F "$work/ssh.conf" \
+            infra/nodekit/fi_awg_row_lock_gateway_stage.py "$sqlfile" \
+            "ru188:$remote/"
+          ru "chmod 0600 '$remote/fi_awg_row_lock_gateway_stage.py' '$remote/0135_awg_worker_row_lock_gateway.sql'; python3 '$remote/fi_awg_row_lock_gateway_stage.py' --sql-file '$remote/0135_awg_worker_row_lock_gateway.sql' --sha256 '$sha'"
+          ru 'set -eu; ! systemctl is-active --quiet mnebyvpn-awg-delivery.service'
+          echo 'FI_AWG_ROW_LOCK_STAGE=complete;AWG_WORKER_STARTED=false;SUBSCRIPTIONS_PUBLISHED=false'
