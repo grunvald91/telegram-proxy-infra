@@ -58,9 +58,14 @@ def command(args:list[str],timeout:int=20)->subprocess.CompletedProcess:
     except (OSError,subprocess.TimeoutExpired):
         block("local_service_command_unavailable")
 
-def inactive(unit:str)->bool:
+def systemd_active_state(unit:str)->str:
     check=command(["/usr/bin/systemctl","show","-p","ActiveState","--value",unit],9)
-    return check.returncode==0 and check.stdout.strip()=="inactive"
+    value=check.stdout.strip()
+    return value if (check.returncode==0 and value in
+                     {"inactive","active","failed","activating","deactivating","reloading"}) else "unknown"
+
+def inactive(unit:str)->bool:
+    return systemd_active_state(unit)=="inactive"
 
 def call_or_block(args:list[str],reason:str,timeout:int=20)->str:
     result=command(args,timeout)
@@ -78,8 +83,10 @@ def preflight(bundle:Path)->dict:
     from awg_lifecycle import validate
     validate(canary.FI_NODE)
     phase("STAGED_AWG_INTEGRITY_VERIFIED")
-    for unit in (UNIT,WATCHDOG,TIMER+".timer"):
-        if not inactive(unit):
+    for label,unit in (("AWG",UNIT),("WATCHDOG",WATCHDOG),("TIMER",TIMER+".timer")):
+        state=systemd_active_state(unit)
+        phase("PREFLIGHT_"+label+"_STATE_"+state.upper())
+        if state != "inactive":
             block("existing_awg_or_expiry_timer")
     phase("SYSTEMD_DORMANT_VERIFIED")
     if LEDGER.exists() or LEDGER.is_symlink():
@@ -249,15 +256,23 @@ def live_peers()->str:
                          "cannot_read_live_awg_peers",8).strip()
 
 def safe_cleanup(expected:dict)->bool:
-    # Always stop the watchdog first, then the associated AWG service.
-    # Never disable the rollback timer unless every safety postcondition holds.
-    for unit in (WATCHDOG,UNIT):
-        command(["/usr/bin/systemctl","stop",unit],35)
-    if not all(inactive(unit) for unit in (WATCHDOG,UNIT)):
-        return False
+    # Keep the independent 95-second kill timer armed on ANY unproven cleanup.
+    # Never display a peer identifier, user key, signed grant, file content,
+    # or untrusted journal line; only fixed state-category markers.
+    for label,unit in (("WATCHDOG",WATCHDOG),("AWG",UNIT)):
+        result=command(["/usr/bin/systemctl","stop",unit],35)
+        phase("CLEANUP_STOP_"+label+("_OK" if result.returncode==0 else "_FAILED"))
+    for label,unit in (("WATCHDOG",WATCHDOG),("AWG",UNIT)):
+        state=systemd_active_state(unit)
+        phase("CLEANUP_"+label+"_STATE_"+state.upper())
+        if state != "inactive":
+            return False
     if Path("/sys/class/net/awg0").exists():
+        phase("CLEANUP_AWG_INTERFACE_PRESENT")
         return False
+    phase("CLEANUP_AWG_INTERFACE_ABSENT")
     if LEDGER.exists() or LEDGER.is_symlink():
+        phase("CLEANUP_PEER_LEDGER_PRESENT")
         try:
             from awg_peer_grants import validate_state
             data=validate_state(json.loads(canary.protected(LEDGER,50000)),NODE)
@@ -266,14 +281,23 @@ def safe_cleanup(expected:dict)->bool:
                 rows[expected["entitlementId"]]["peerPublicKey"]!=expected["peerPublicKey"] or
                 rows[expected["entitlementId"]]["clientIpv4"]!=CLIENT_IP or
                 rows[expected["entitlementId"]]["revision"] not in (1,2)):
+                phase("CLEANUP_LEDGER_NOT_EXACT_TEST_ENTITLEMENT")
                 return False
             LEDGER.unlink()
-        except (OSError,ValueError,TypeError,KeyError):
+            phase("CLEANUP_TEST_LEDGER_REMOVED")
+        except (OSError,ValueError,TypeError,KeyError) as exc:
+            phase("CLEANUP_LEDGER_ERROR_"+type(exc).__name__.upper())
             return False
+    else:
+        phase("CLEANUP_PEER_LEDGER_ABSENT")
     if LEDGER.exists() or Path("/sys/class/net/awg0").exists():
+        phase("CLEANUP_POSTCONDITION_CHANGED")
         return False
     timer=command(["/usr/bin/systemctl","stop",TIMER+".timer"],9)
-    return timer.returncode==0 and inactive(TIMER+".timer")
+    phase("CLEANUP_TIMER_STOP_"+("OK" if timer.returncode==0 else "FAILED"))
+    state=systemd_active_state(TIMER+".timer")
+    phase("CLEANUP_TIMER_STATE_"+state.upper())
+    return timer.returncode==0 and state=="inactive"
 
 def real_roundtrip(bundle:Path)->dict:
     data=preflight(bundle)
