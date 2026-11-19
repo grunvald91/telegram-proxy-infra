@@ -87,9 +87,10 @@ class SignedAwgCanaryTests(TestCase):
         for forbidden in (
             "systemctl start", "systemctl stop", "wg set", "awg syncconf",
             "iptables", "nft add", "INSERT INTO", "UPDATE entitlements",
-            "peer-grants.json", "--mode apply", "vpn_release_flags",
+            "peer-grants.json", "vpn_release_flags",
         ):
             self.assertNotIn(forbidden,code)
         self.assertIn("active_peers(active, utc_seconds(grant[\"expiresAt\"]) + 1)",code)
+        self.assertIn('choices=("issue", "verify")', code)
         self.assertIn("transition(revoked, grant, now)",code)
         self.assertIn("REAL_PEERS_MODIFIED=false",code)
