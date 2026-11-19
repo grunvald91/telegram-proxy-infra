@@ -1,4 +1,4 @@
-name: FI217 signed AWG grant revoke offline canary (no clients)
+name: FI217 signed AWG & disposable live applied receipt (no customers)
 "on":
   push:
     branches: [main]
@@ -43,7 +43,7 @@ jobs:
           set -Eeuo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends sshpass >/dev/null
-      - name: Sign on RU188 and verify grant revoke expiry on FI217 without installing peers
+      - name: Verify real Ed25519 grants, then apply and revoke one unconnectable test peer on FI217
         # Secrets are unavailable to checkout, package installation and all offline tests.
         env:
           RU_SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
