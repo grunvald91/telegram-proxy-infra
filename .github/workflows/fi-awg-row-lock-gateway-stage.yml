@@ -218,7 +218,7 @@ jobs:
           # Repeated CI installs are expected to be strictly idempotent.
           ru "python3 '$remote/fi_awg_worker_isolated_systemd_stage.py'"
           systemd_second=$(ru "python3 '$remote/fi_awg_worker_isolated_systemd_stage.py'")
-          [[ "$systemd_second" == 'FI_AWG_ISOLATED_SYSTEMD=STAGED;DROPIN=UNCHANGED;UNIT_DISABLED=true;WORKER_STARTED=false;CUSTOMER_RELEASE=false' ]] || {
+          [[ "$systemd_second" == 'FI_AWG_ISOLATED_SYSTEMD=STAGED;DROPIN=UNCHANGED;UNIT_ENABLED=false;WORKER_STARTED=false;CUSTOMER_RELEASE=false' ]] || {
             echo 'FI_AWG_ISOLATED_SYSTEMD_IDEMPOTENCY=BLOCKED'; exit 2;
           }
           echo 'FI_AWG_ISOLATED_SYSTEMD_IDEMPOTENCY=OK'
