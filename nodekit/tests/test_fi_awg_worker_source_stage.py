@@ -29,6 +29,18 @@ class FiAwgWorkerSourceStageTests(unittest.TestCase):
         self.assertIn("worker_is_not_inactive",source)
         self.assertIn("not_unpublished_enrolled_fi",source)
 
+    def test_drift_inventory_completes_before_any_source_write(self):
+        source=PATH.read_text(encoding="utf-8")
+        begin=source.index("        pending = []")
+        guard=source.index("        if drift:",begin)
+        write=source.index("                outfd = os.open(dest",guard)
+        self.assertLess(begin,guard)
+        self.assertLess(guard,write)
+        self.assertIn('FI_AWG_WORKER_SOURCE_" + label + "=DRIFT',source)
+        self.assertIn('FI_AWG_WORKER_SOURCE_" + label + "=MISSING',source)
+        self.assertIn('FI_AWG_WORKER_SOURCE_" + label + "=MATCHED',source)
+        self.assertIn('stop("unapproved_existing_source_mismatch")',source)
+
     def test_current_release_link_requires_root_ownership_and_tree_confinement(self):
         source=PATH.read_text(encoding="utf-8")
         self.assertIn("def current_directory()",source)
