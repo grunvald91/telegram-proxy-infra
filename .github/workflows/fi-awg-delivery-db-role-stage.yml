@@ -71,5 +71,5 @@ jobs:
             LogLevel ERROR
           CFG
           SSHPASS="$RU_PASSWORD" sshpass -e ssh -T -F "$cfg" ru-controller \
-            'python3 - --inspect' < nodekit/fi_awg_delivery_db_stage.py
-          echo 'FI_AWG_DATABASE_INSPECT_COMPLETED=true;WORKER_STARTED=false;CUSTOMERS_PUBLISHED=false'
+            'python3 -' < nodekit/fi_awg_delivery_db_stage.py
+          echo 'FI_AWG_DATABASE_STAGE_COMPLETED=true;WORKER_STARTED=false;CUSTOMERS_PUBLISHED=false'
