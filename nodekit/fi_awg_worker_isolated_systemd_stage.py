@@ -39,7 +39,7 @@ def show(prop: str) -> str:
 
 def dormant_and_disabled() -> None:
     trust.require_safe_dormant()
-    if show("ActiveState") != "inactive" or show("UnitFileState") != "disabled":
+    if show("ActiveState") != "inactive" or show("UnitFileState") not in ("disabled", "static"):
         trust.stop("systemd_worker_not_dormant_disabled")
     if show("SubState") not in ("dead", "failed"):
         trust.stop("systemd_worker_substate_unexpected")
