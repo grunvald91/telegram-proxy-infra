@@ -119,6 +119,11 @@ def install_watchdog()->None:
     installed_unit = watchdog_file_state(UNIT, unit().encode())
     phase("WATCHDOG_AUTHORIZER_" + installed_authorizer)
     phase("WATCHDOG_SYSTEMD_UNIT_" + installed_unit)
+    if installed_authorizer == "DRIFT":
+        # Public code digest only, never source text, certificates or keys.
+        # This fingerprint will be pinned before an offline-only migration.
+        phase("WATCHDOG_AUTHORIZER_OLD_SHA256_" + hashlib.sha256(APP.read_bytes()).hexdigest())
+        phase("WATCHDOG_AUTHORIZER_NEW_SHA256_" + hashlib.sha256(source.read_bytes()).hexdigest())
     if installed_authorizer not in ("MISSING", "MATCH"):
         block("watchdog_authorizer_install_drift")
     if installed_unit not in ("MISSING", "MATCH"):
