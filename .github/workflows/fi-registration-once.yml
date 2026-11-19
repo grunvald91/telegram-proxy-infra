@@ -4,6 +4,8 @@ name: FI217 one-shot enrollment via canonical RU188 PostgreSQL
     branches: [main]
     paths:
       - .github/workflows/fi-registration-once.yml
+      - nodekit/fi_registration_once.py
+      - nodekit/fi_controller_db_bootstrap.py
   workflow_dispatch:
 permissions:
   contents: read
