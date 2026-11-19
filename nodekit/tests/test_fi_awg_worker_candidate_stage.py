@@ -23,6 +23,12 @@ class CandidateStagingTests(unittest.TestCase):
             manifest["files"][name] = hashlib.sha256(body).hexdigest()
         (folder / "manifest.json").write_text(
             json.dumps(manifest, separators=(",", ":")) + "\n")
+        self.pinned = {}
+        for name in candidate.trust.FILES:
+            body = (folder / name).read_bytes()
+            self.pinned[name] = hashlib.sha1(
+                b"blob " + str(len(body)).encode() + b"\0" + body
+            ).hexdigest()
         return manifest
 
     def loaded(self, folder: Path):
@@ -34,7 +40,7 @@ class CandidateStagingTests(unittest.TestCase):
             return path.read_bytes()
         with mock.patch.object(candidate.trust, "safe_directory"), mock.patch.object(
             candidate.trust, "read_file", side_effect=readonly_test_reader
-        ):
+        ), mock.patch.dict(candidate.PINNED_SOURCE_BLOBS, self.pinned, clear=True):
             return candidate.candidate_blobs(folder)
 
     def test_exact_pinned_source_graph(self):
@@ -71,6 +77,25 @@ class CandidateStagingTests(unittest.TestCase):
             (root / "manifest.json").write_text(json.dumps(manifest) + "\n")
             with self.assertRaises(candidate.trust.StageBlocked):
                 self.loaded(root)
+
+    def test_changed_code_and_recomputed_sha256_manifest_still_denied(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = self.prepare(root)
+            name = "awg-controller-grants.ts"
+            content = (root / name).read_bytes() + b"// malicious replacement\n"
+            (root / name).write_bytes(content)
+            manifest["files"][name] = hashlib.sha256(content).hexdigest()
+            (root / "manifest.json").write_text(json.dumps(manifest) + "\n")
+            # A self-consistent manifest is insufficient: old reviewed blob pin wins.
+            with self.assertRaises(candidate.trust.StageBlocked):
+                self.loaded(root)
+
+    def test_exact_git_blob_identity_for_pinned_release(self):
+        self.assertEqual(set(candidate.PINNED_SOURCE_BLOBS),
+                         set(candidate.trust.FILES))
+        for digest in candidate.PINNED_SOURCE_BLOBS.values():
+            self.assertRegex(digest, r"^[a-f0-9]{40}$")
 
     def test_requires_old_verified_worker_dormant_and_no_cutover(self):
         with mock.patch.object(candidate.systemd, "dormant_and_disabled") as a, \

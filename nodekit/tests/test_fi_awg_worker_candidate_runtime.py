@@ -42,11 +42,16 @@ class CorrectedWorkerRuntimeTests(unittest.TestCase):
                 "files":{"pg/package.json":hashlib.sha256(blob).hexdigest()},
             }
             path = root/"awg-pg-runtime-manifest.json"
+            old_path = root/"reviewed-old-awg-pg-runtime-manifest.json"
+            old_path.write_text(json.dumps({
+                **marker, "commit": candidate.OLD_COMMIT,
+            }))
             def reader(p, *args):
                 if not p.exists() or p.is_symlink():
                     raise runtime.trust.StageBlocked("missing")
                 return p.read_bytes()
             with mock.patch.object(runtime, "MARKER", path), \
+                 mock.patch.object(runtime.pgstage, "MARKER", old_path), \
                  mock.patch.object(runtime, "MODULES", root/"node_modules"), \
                  mock.patch.object(runtime, "verified_sources"), \
                  mock.patch.object(runtime.trust, "read_file", side_effect=reader):
@@ -61,6 +66,53 @@ class CorrectedWorkerRuntimeTests(unittest.TestCase):
                 (root/"node_modules"/"pg"/"package.json").write_bytes(b"tampered")
                 with self.assertRaises(runtime.trust.StageBlocked):
                     runtime.verify_runtime_manifest()
+
+    def test_self_signed_or_incomplete_dependency_manifest_is_denied(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old = {
+                "commit": candidate.OLD_COMMIT,
+                "packages": {"pg": "8.16.3", "pg-protocol": "1.8.0"},
+                "files": {
+                    "pg/package.json": "a"*64,
+                    "pg/lib/index.js": "b"*64,
+                    "pg-protocol/package.json": "c"*64,
+                },
+            }
+            base = root / "old-runtime-manifest.json"
+            base.write_text(json.dumps(old))
+            def readonly_reader(path, limit):
+                return path.read_bytes()
+            with mock.patch.object(runtime.pgstage, "MARKER", base), \
+                 mock.patch.object(runtime.trust, "read_file", side_effect=readonly_reader):
+                approved = dict(old, commit=candidate.CANDIDATE_COMMIT)
+                runtime.verify_reviewed_runtime_baseline(approved)
+                for changed in (
+                    {**approved, "files": {"pg/package.json": "a"*64}},
+                    {**approved, "packages": {"pg": "8.16.3"}},
+                    {**approved, "files": {**approved["files"],
+                                          "pg/lib/index.js": "f"*64}},
+                    {**approved, "files": {}},
+                ):
+                    with self.subTest(changed=changed):
+                        with self.assertRaises(runtime.trust.StageBlocked):
+                            runtime.verify_reviewed_runtime_baseline(changed)
+
+    def test_reviewed_baseline_must_be_old_pinned_release(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            source = folder / "old.json"
+            data = {
+                "commit": "unreviewed-new-release",
+                "packages": {"pg": "8.16.3"},
+                "files": {"pg/package.json": "f"*64},
+            }
+            source.write_text(json.dumps(data))
+            with mock.patch.object(runtime.pgstage, "MARKER", source), \
+                 mock.patch.object(runtime.trust, "read_file", side_effect=lambda p, limit: p.read_bytes()):
+                with self.assertRaises(runtime.trust.StageBlocked):
+                    runtime.verify_reviewed_runtime_baseline(
+                        {**data, "commit": candidate.CANDIDATE_COMMIT})
 
     def test_version_check_and_import_do_not_start_worker(self):
         with mock.patch.object(runtime, "verify_runtime_manifest") as manifest, \
