@@ -331,7 +331,7 @@ has_table_privilege('{ROLE}','public.{table}','UPDATE')::text,
 has_any_column_privilege('{ROLE}','public.{table}','UPDATE')::text,
 has_table_privilege('{ROLE}','public.{table}','DELETE')::text;
 """)
-        if not re.fullmatch(r"(?:true|false)(?:\\|(?:true|false)){5}",mask):
+        if len(mask.split("|")) != 6 or any(v not in ("true","false") for v in mask.split("|")):
             stop("unrecognized_scoped_role_permission_matrix")
         print("FI_AWG_DB_INSPECT_"+table.upper()+"="+mask)
     print("FI_AWG_DB_INSPECT_CONFIG_PRESENT="+str(ENV.exists()).lower())
