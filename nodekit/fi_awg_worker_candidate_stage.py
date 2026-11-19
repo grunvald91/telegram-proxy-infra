@@ -64,6 +64,33 @@ def verify_nonstandard_imports(blobs: dict[str, bytes]) -> None:
                 trust.stop("candidate_import_module_missing")
 
 
+# Independently reviewed Git object IDs from the immutable Mnebyvpn commit.
+# The checked-in source manifest additionally uses SHA-256 to catch corruption,
+# but it must not itself decide which code is approved.
+PINNED_SOURCE_BLOBS = {
+    "awg-controller-delivery-worker.ts": "dbbacac3798bd13cb4f4f624936e7afe67ce3cf3",
+    "awg-trusted-ssh-delivery.ts": "516706e898f6e59599172ce3c65d9f2295a4876e",
+    "awg-offline-maintenance.ts": "e8829944ca4d27e1d8b8679efa681f6bb3abe373",
+    "awg-controller-grants.ts": "9b37bb3e9528e6bab4144d36b4558ca61d544b41",
+    "awg-controller-outbox.ts": "0b1c1f0906a0a11be8a1c466fa5eb173bd39906b",
+}
+
+
+def verify_pinned_source_blob(name: str, body: bytes) -> None:
+    """Check reviewed Git blob identity, independent of supplied manifest."""
+    expected = PINNED_SOURCE_BLOBS.get(name)
+    if (set(PINNED_SOURCE_BLOBS) != set(trust.FILES) or
+            not isinstance(expected, str) or
+            not re.fullmatch(r"[a-f0-9]{40}", expected) or
+            not isinstance(body, bytes)):
+        trust.stop("candidate_source_pin_table_invalid")
+    actual = hashlib.sha1(
+        b"blob " + str(len(body)).encode("ascii") + b"\0" + body
+    ).hexdigest()
+    if actual != expected:
+        trust.stop("candidate_source_not_independently_pinned")
+
+
 def candidate_blobs(stage: Path) -> tuple[bytes, dict[str, bytes]]:
     trust.safe_directory(stage)
     raw = trust.read_file(stage / "manifest.json", 4096)
@@ -82,6 +109,7 @@ def candidate_blobs(stage: Path) -> tuple[bytes, dict[str, bytes]]:
         if not isinstance(sha, str) or not re.fullmatch(r"[a-f0-9]{64}", sha):
             trust.stop("candidate_hash_invalid")
         body = trust.read_file(stage / name)
+        verify_pinned_source_blob(name, body)
         if hashlib.sha256(body).hexdigest() != sha or not body.endswith(b"\n"):
             trust.stop("candidate_source_digest_mismatch")
         blobs[rel] = body
