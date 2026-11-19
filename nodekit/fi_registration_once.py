@@ -91,25 +91,77 @@ def execute(args: list[str], timeout: int = 12) -> str:
     return p.stdout.strip()
 
 
+DB_CHECK_JS = r"""
+import pg from '/opt/mnebyvpn-controller/current/node_modules/pg/lib/index.js';
+import {createHash} from 'node:crypto';
+
+if (process.env.MNEBYVPN_ENV !== 'production' ||
+    process.env.MNEBYVPN_FI_ENROLLMENT !== 'enabled' ||
+    !/^postgres(?:ql)?:\/\//.test(process.env.DATABASE_URL || ''))
+  throw Error('Canonical FI enrollment environment not enabled');
+
+const expected = process.argv[1];
+const publicKey = Buffer.from(expected || '', 'base64url');
+if (publicKey.length !== 44 ||
+    createHash('sha256').update(publicKey).digest('hex') !==
+    'c3689b687e8888d15e3ece8e45cf7d01672b9dadb77b1963a7871ffd8e967ed9')
+  throw Error('FI identity mismatch');
+
+const db = new pg.Client({connectionString:process.env.DATABASE_URL,
+  connectionTimeoutMillis:3000,query_timeout:4000});
+try {
+  await db.connect();
+  const result = await db.query(
+    "SELECT status, endpoint_host, identity_public_spki,"+
+    " (approved_at IS NOT NULL) AS approved,"+
+    " (enrolled_at IS NOT NULL) AS enrolled"+
+    " FROM public.vpn_node_enrollment_inventory WHERE node_id=$1",
+    ['fi-test-01']
+  );
+  if (result.rowCount === 0) {
+    process.stdout.write('FI_CANONICAL_DB_STATE=absent\n');
+  } else if (result.rowCount === 1) {
+    const row=result.rows[0];
+    if (row.endpoint_host !== 'fi.mnebyvpn.site' ||
+        row.identity_public_spki !== expected ||
+        row.approved !== true ||
+        (row.status === 'enrolled') !== (row.enrolled === true) ||
+        !['approved','enrolled'].includes(row.status))
+      throw Error('Unapproved or mismatched FI inventory');
+    process.stdout.write('FI_CANONICAL_DB_STATE='+row.status+'\n');
+  } else throw Error('Unexpected FI row cardinality');
+} finally {
+  await db.end();
+}
+"""
+
+
 def db_state(expected_spki: str) -> str:
-    # Read-only query. This deployment must already contain the approved row.
-    query = ("SELECT status || '|' || endpoint_host || '|' || "
-             "identity_public_spki || '|' || "
-             "(approved_at IS NOT NULL)::text || '|' || "
-             "(enrolled_at IS NOT NULL)::text "
-             "FROM public.vpn_node_enrollment_inventory "
-             "WHERE node_id='fi-test-01';")
-    raw = execute(["docker", "exec", "mnebyvpn-stage-postgres", "psql",
-                   "-AtX", "-v", "ON_ERROR_STOP=1", "-U", "mnebyvpn_stage",
-                   "-d", "mnebyvpn_stage", "-c", query])
-    parts = raw.split("|")
-    if len(parts) != 5 or parts[0] not in ("approved", "enrolled"):
-        fail("fi_inventory_absent_or_not_approved")
-    status, host, public, approved, enrolled = parts
-    if (host != HOST or public != expected_spki or approved != "true" or
-            (status == "enrolled") != (enrolled == "true")):
-        fail("fi_inventory_identity_or_state_mismatch")
-    return status
+    """Read the same PostgreSQL used by the installed systemd registrar."""
+    if (not expected_spki or len(expected_spki) != 59 or
+            not all(x.isalnum() or x in "-_" for x in expected_spki)):
+        fail("invalid_expected_fi_public_identity")
+    cmd = [
+        "systemd-run", "--wait", "--pipe", "--collect", "--quiet",
+        "--service-type=exec",
+        "--property=User=root", "--property=Group=root",
+        "--property=EnvironmentFile=/root/mnebyvpn-controller/config/fi-enrollment.env",
+        "--property=ProtectHome=read-only",
+        "--property=ProtectSystem=strict", "--property=PrivateTmp=yes",
+        "--property=NoNewPrivileges=yes", "--property=CapabilityBoundingSet=",
+        "--property=IPAddressDeny=any",
+        "--property=IPAddressAllow=127.0.0.0/8",
+        "--property=IPAddressAllow=::1/128",
+        "--property=MemoryMax=256M", "--property=TimeoutStartSec=20s",
+        "/opt/mnebyvpn-controller/current/bin/node",
+        "--input-type=module", "--eval", DB_CHECK_JS, expected_spki,
+    ]
+    output = execute(cmd, timeout=40)
+    matches = [line.split("=", 1)[1] for line in output.splitlines()
+               if line.startswith("FI_CANONICAL_DB_STATE=")]
+    if len(matches) != 1 or matches[0] not in ("absent", "approved", "enrolled"):
+        fail("canonical_database_status_unverified")
+    return matches[0]
 
 
 def require_runtime() -> None:
@@ -150,11 +202,13 @@ def main() -> int:
         fail("fi_ssh_host_key_unpinned")
     protected(ROOT / "controller-signing-key.pem", 8192)
     protected(ROOT / "fi-enrollment-ssh", 8192)
+    require_runtime()
     before = db_state(expected)
     if before == "enrolled":
         print("FI_REGISTRATION=enrolled;SUBSCRIBER_PUBLICATION=false;IDEMPOTENT=true")
         return 0
-    require_runtime()
+    if before != "approved":
+        fail("fi_inventory_not_preapproved_in_canonical_db")
     execute(["systemctl", "start", UNIT_NAME], timeout=85)
     # systemd ConditionPathExists skips can exit 0: DB readback is mandatory.
     if db_state(expected) != "enrolled":
