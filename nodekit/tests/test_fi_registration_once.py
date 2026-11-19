@@ -89,3 +89,27 @@ class FiRegistrationGateTests(TestCase):
                 with self.assertRaises(registration.GateError):
                     registration.main()
                 cmd.assert_not_called()
+
+    def test_approved_refreshes_conditions_then_checks_enrolled_in_same_db(self):
+        node = bytes.fromhex("302a300506032b6570032100") + bytes(32)
+        with (
+            mock.patch.object(registration.os, "geteuid", return_value=0),
+            mock.patch.object(registration, "assigned_ip", return_value=True),
+            mock.patch.object(registration, "spki", return_value=node),
+            mock.patch.object(
+                registration, "protected",
+                side_effect=[b"fi.mnebyvpn.site ssh-ed25519 abc\n", b"key", b"key"]
+            ),
+            mock.patch.object(registration, "require_runtime"),
+            mock.patch.object(
+                registration, "db_state", side_effect=["approved", "enrolled"]
+            ) as database,
+            mock.patch.object(registration, "execute", return_value="") as execute,
+        ):
+            self.assertEqual(registration.main(), 0)
+            self.assertEqual(database.call_count, 2)
+            self.assertEqual(
+                [call.args[0] for call in execute.call_args_list],
+                [["systemctl","daemon-reload"],["systemctl","start",
+                   "mnebyvpn-fi-enrollment.service"]]
+            )
