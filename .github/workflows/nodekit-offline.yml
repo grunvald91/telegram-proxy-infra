@@ -8,6 +8,7 @@ on:
       - '.github/workflows/nodekit-fleet-bootstrap.yml'
       - '.github/workflows/fi-enrollment-trust-preflight-readonly.yml'
       - '.github/workflows/fi-public-enrollment-stage.yml'
+      - '.github/workflows/fi-registration-once.yml'
       - '.github/workflows/nodekit-fi-awg-external-e2e.yml'
       - '.github/workflows/nodekit-fi-service-readiness-once.yml'
   workflow_dispatch:
