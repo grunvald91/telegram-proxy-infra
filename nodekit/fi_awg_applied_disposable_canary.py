@@ -93,6 +93,51 @@ def residual_ledger_status() -> str:
     except (OSError,ValueError,TypeError,KeyError):
         return "UNVERIFIED"
 
+def recover_revoked_previous_canary(states:dict,interface_present:bool,
+                                   ledger_status:str)->bool:
+    """Safely archive only the known inactive, revoked FI test residue.
+
+    Never touch a running interface, enabled grant, arbitrary ledger, or the
+    independent kill timer. No rollback into a client's live data path.
+    """
+    if not (states == {"AWG":"failed","WATCHDOG":"inactive","TIMER":"inactive"} and
+            not interface_present and ledger_status=="ONLY_REVOKED_DISPOSABLE"):
+        return False
+    if not canary.is_host(canary.FI_IP):
+        block("prior_canary_recovery_wrong_host")
+    old=canary.protected(LEDGER,50000)
+    digest=hashlib.sha256(old).hexdigest()
+    archive=LEDGER.with_name(".peer-grants.fi217-revoked-"+digest[:20]+".bak")
+    if archive.exists() or archive.is_symlink():
+        block("prior_canary_archive_already_exists")
+    if systemd_active_state(UNIT)!="failed" or systemd_active_state(WATCHDOG)!="inactive":
+        block("prior_canary_status_changed")
+    if Path("/sys/class/net/awg0").exists() or residual_ledger_status()!="ONLY_REVOKED_DISPOSABLE":
+        block("prior_canary_data_changed")
+    phase("PRIOR_REVOKED_CANARY_ARCHIVE_BEGIN")
+    os.rename(LEDGER,archive)
+    try:
+        # Durable atomic archive before clearing the stale systemd failure flag.
+        fd=os.open(LEDGER.parent,os.O_RDONLY|os.O_DIRECTORY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        if command(["/usr/bin/systemctl","reset-failed",UNIT],9).returncode:
+            block("prior_canary_reset_failed_failed")
+        if (systemd_active_state(UNIT)!="inactive" or
+            systemd_active_state(WATCHDOG)!="inactive" or
+            systemd_active_state(TIMER+".timer")!="inactive" or
+            LEDGER.exists() or Path("/sys/class/net/awg0").exists()):
+            block("prior_canary_reset_postcheck_failed")
+    except BaseException:
+        # Preserve prior proof if reset-failed did not establish safe readiness.
+        if not LEDGER.exists() and archive.exists():
+            os.rename(archive,LEDGER)
+        raise
+    phase("PRIOR_REVOKED_CANARY_ARCHIVED_AND_UNIT_RESET")
+    return True
+
 def preflight(bundle:Path)->dict:
     if not canary.is_host(canary.FI_IP):
         block("not_pinned_fi217_root")
@@ -113,6 +158,9 @@ def preflight(bundle:Path)->dict:
     ledger_status=residual_ledger_status()
     phase("PREFLIGHT_INTERFACE_"+("PRESENT" if interface_present else "ABSENT"))
     phase("PREFLIGHT_LEDGER_"+ledger_status)
+    if recover_revoked_previous_canary(states,interface_present,ledger_status):
+        states["AWG"]="inactive"
+        ledger_status="ABSENT"
     if any(state != "inactive" for state in states.values()):
         block("existing_awg_or_expiry_timer")
     phase("SYSTEMD_DORMANT_VERIFIED")
