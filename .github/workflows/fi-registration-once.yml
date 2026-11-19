@@ -25,13 +25,30 @@ jobs:
       - name: Offline syntax and security regression tests
         run: |
           set -euo pipefail
-          python3 -m py_compile nodekit/fi_registration_once.py
+          python3 -m py_compile nodekit/fi_registration_once.py nodekit/fi_controller_db_bootstrap.py
           python3 -m unittest discover -s nodekit/tests -p 'test_fi_registration_once.py' -v
+          python3 -m unittest discover -s nodekit/tests -p 'test_fi_controller_db_bootstrap.py' -v
       - name: Prepare ephemeral SSH client
         run: |
           set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends sshpass >/dev/null
+      - name: Create scoped FI DB role, exact approved inventory and protected registrar config on RU188
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASSWORD"
+          grep -q '^188\.120\.254\.223 ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts
+          export SSHPASS="$RU_PASSWORD"
+          sshpass -e ssh -T -F /dev/null -o ConnectTimeout=12 \
+            -o BatchMode=no -o PasswordAuthentication=yes -o PubkeyAuthentication=no \
+            -o KbdInteractiveAuthentication=no -o StrictHostKeyChecking=yes \
+            -o HostKeyAlgorithms=ssh-ed25519 \
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no \
+            -o ForwardAgent=no -o ClearAllForwardings=yes \
+            -o ControlMaster=no -o ProxyCommand=none -o LogLevel=ERROR \
+            root@188.120.254.223 'python3 -' < nodekit/fi_controller_db_bootstrap.py
       - name: Check canonical registration gate on existing RU188
         shell: bash
         run: |
