@@ -156,7 +156,7 @@ jobs:
           out.chmod(0o600)
           PY
           sshpass -e scp -F "$work/ssh.conf" \
-            infra/nodekit/fi_awg_worker_source_stage.py \ 
+            infra/nodekit/fi_awg_worker_source_stage.py \
             infra/nodekit/fi_awg_worker_isolated_source_stage.py "$work/manifest.json" \
             pinned-controller/apps/service/src/awg-controller-delivery-worker.ts \
             pinned-controller/packages/provisioning/src/awg-trusted-ssh-delivery.ts \
