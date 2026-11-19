@@ -27,6 +27,18 @@ class FiPositiveProbeTests(TestCase):
             b'["MNEBYVPN_ENROLL_CHALLENGE_V1","fi-test-01"'
         ))
 
+    def test_full_five_minute_boundary_is_exact_and_optional(self):
+        now=dt.datetime(2026,11,19,8,0,0,tzinfo=dt.timezone.utc)
+        key=probe.SPKI_PREFIX+bytes(32)
+        self.assertEqual(
+            probe.make_challenge(key,now,300)["expiresAt"],
+            "2026-11-19T08:05:00.000Z"
+        )
+        with mock.patch.object(probe,"block",side_effect=probe.ProbeError) as refused:
+            with self.assertRaises(probe.ProbeError):
+                probe.make_challenge(key,now,301)
+            refused.assert_called_once_with("unreviewed_probe_ttl")
+
     def test_proof_message_matches_existing_node_contract(self):
         fields={"nodeId":"fi-test-01","endpointHost":"fi.mnebyvpn.site",
                 "publicSpki":"Z","challengeId":"uuid","nonce":"nonce"}
