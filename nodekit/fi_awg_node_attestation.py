@@ -200,7 +200,11 @@ def verify(bundle_file: Path, challenge_file: Path, proof_file: Path,
             proof.get(k) != v for k, v in challenge.items()):
         fail("fi_test_proof_not_bound")
     time_fresh(proof["witnessedAt"])
-    if parse_iso(proof["witnessedAt"]) < parse_iso(challenge["issuedAt"]) - dt.timedelta(seconds=5):
+    # The runner and FI217 may have a small NTP offset. Signature validity
+    # comes from the pinned FI key, fresh unguessable nonce and the 160s
+    # issuance/witness TTLs, not strict ordering of two different wall clocks.
+    # Still reject a large backwards step instead of masking a broken clock.
+    if parse_iso(proof["witnessedAt"]) < parse_iso(challenge["issuedAt"]) - dt.timedelta(seconds=30):
         fail("fi_witness_precedes_challenge")
     sig = proof["signature"]
     if not isinstance(sig, str) or not SIG.fullmatch(sig):
