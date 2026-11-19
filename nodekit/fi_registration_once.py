@@ -62,7 +62,7 @@ def protected(path: Path, max_size: int = 16384) -> bytes:
         st = os.fstat(fd)
         if (not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or
                 st.st_mode & 0o077 or st.st_nlink != 1 or
-                not 1 <= st.st_size <= max_size):
+                not (0 if path.name == 'fi-enrollment.enable' else 1) <= st.st_size <= max_size):
             fail("unsafe_protected_file")
         data = os.read(fd, max_size + 1)
         if len(data) != st.st_size:
