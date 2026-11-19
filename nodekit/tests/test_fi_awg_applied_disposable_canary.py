@@ -88,6 +88,21 @@ class AppliedCanaryTests(unittest.TestCase):
         self.assertIn("WATCHDOG_AUTHORIZER_OLD_SHA256_", self.src)
         self.assertIn("WATCHDOG_AUTHORIZER_NEW_SHA256_", self.src)
 
+    def test_pinned_authorizer_migration_rejects_unrecognized_code(self):
+        old, new = b"approved-legacy-sample", b"candidate-sample"
+        sha_old, sha_new = hashlib.sha256(old).hexdigest(), hashlib.sha256(new).hexdigest()
+        self.assertFalse(mod.authorizer_upgrade_allowed(old, new))
+        with mock.patch.object(mod, "LEGACY_AUTHORIZER_SHA256", sha_old):
+            with mock.patch.object(mod, "CANDIDATE_AUTHORIZER_SHA256", sha_new):
+                self.assertTrue(mod.authorizer_upgrade_allowed(old, new))
+                self.assertFalse(mod.authorizer_upgrade_allowed(b"unknown", new))
+                self.assertFalse(mod.authorizer_upgrade_allowed(old, b"unknown"))
+        for required in ("os.O_EXCL", "os.O_NOFOLLOW", "os.fsync(",
+                         "os.replace(", "authorizer_upgrade_backup_already_exists",
+                         "authorizer_upgrade_service_enabled",
+                         "WATCHDOG_AUTHORIZER_PINNED_MIGRATION_APPLIED"):
+            self.assertIn(required, self.src)
+
     def test_verified_node_receipts_are_real_applied_domain(self):
         with tempfile.TemporaryDirectory() as folder:
             tmp=Path(folder)
