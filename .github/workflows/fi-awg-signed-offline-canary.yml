@@ -6,6 +6,8 @@ name: FI217 signed AWG grant revoke offline canary (no clients)
       - .github/workflows/fi-awg-signed-offline-canary.yml
       - nodekit/fi_awg_signed_canary.py
       - nodekit/fi_awg_node_attestation.py
+      - nodekit/fi_awg_node_pool_stage.py
+      - nodekit/tests/test_fi_awg_node_pool_stage.py
       - nodekit/tests/test_fi_awg_node_attestation.py
   workflow_dispatch:
 permissions:
@@ -26,7 +28,8 @@ jobs:
       - name: Test disposable Ed25519 commands offline
         run: |
           set -Eeuo pipefail
-          python3 -m py_compile nodekit/fi_awg_signed_canary.py nodekit/fi_awg_node_attestation.py
+          python3 -m py_compile nodekit/fi_awg_signed_canary.py nodekit/fi_awg_node_attestation.py nodekit/fi_awg_node_pool_stage.py
+          python3 -m unittest discover -s nodekit/tests -p 'test_fi_awg_node_pool_stage.py' -v
           python3 -m unittest discover -s nodekit/tests -p 'test_fi_awg_signed_canary.py' -v
           python3 -m unittest discover -s nodekit/tests -p 'test_fi_awg_node_attestation.py' -v
       - name: Install ephemeral SSH client
@@ -114,12 +117,18 @@ jobs:
           export SSHPASS="$FI_SSH_PASSWORD"
           remote() { sshpass -e ssh -T -F "$work/fi-ssh-config" fi-node "$@"; }
           remote_dir=""
+          ru_pool_dir=""
           cleanup() {
             set +e
             # RU188 audit may have switched SSHPASS; always clean FI with FI credentials.
             export SSHPASS="$FI_SSH_PASSWORD"
             if [[ "$remote_dir" =~ ^/run/fi-awg-signed-canary\.[A-Za-z0-9]{8}$ ]]; then
               remote "rm -rf -- '$remote_dir'" >/dev/null 2>&1
+            fi
+            if [[ "$ru_pool_dir" =~ ^/run/fi-awg-pool.[A-Za-z0-9]{8}$ ]]; then
+              export SSHPASS="$RU_SSH_PASSWORD"
+              sshpass -e ssh -T -F "$work/ru-ssh-config" ru-controller \
+                "rm -rf -- '$ru_pool_dir'" >/dev/null 2>&1 || true
             fi
             rm -rf -- "$work"
           }
@@ -232,5 +241,43 @@ jobs:
           print('FI_AWG_CTRL_APPROVAL_READY='+str(secure(approval)).lower())
           print('FI_AWG_CTRL_CANONICAL_DB_URI_STATUS='+db_status)
           PY
+          # Register FI217's immutable staged AWG server identity after
+          # successful real RU->FI signed roundtrip. This is deliberately
+          # NOT a verification of current external egress: no clients.
+          export SSHPASS="$FI_SSH_PASSWORD"
+          sshpass -e scp -F "$work/fi-ssh-config" \
+            nodekit/fi_awg_node_pool_stage.py "fi-node:$remote_dir/"
+          remote "python3 '$remote_dir/fi_awg_node_pool_stage.py' --mode export-fi" > "$work/fi-pool.json"
+          chmod 0600 "$work/fi-pool.json"
+          python3 - "$work/fi-pool.json" <<'PYPOOL'
+          import base64,json,pathlib,re,sys
+          p=pathlib.Path(sys.argv[1])
+          x=json.loads(p.read_text())
+          assert set(x)=={'node_id','endpoint_host','server_public_key','subnet_cidr','listen_port','state'}
+          assert (x['node_id'],x['endpoint_host'],x['subnet_cidr'],x['listen_port'],x['state'])==(
+              'fi-test-01','fi.mnebyvpn.site','10.73.91.0/24',51821,'staged')
+          value=x['server_public_key']
+          assert re.fullmatch(r'[A-Za-z0-9+/]{43}=',value)
+          raw=base64.b64decode(value,validate=True)
+          assert len(raw)==32 and base64.b64encode(raw).decode()==value
+          print('FI_AWG_STAGED_PUBLIC_IDENTITY=VERIFIED;CLIENTS=false')
+          PYPOOL
+          export SSHPASS="$RU_SSH_PASSWORD"
+          ru_pool_dir=$(sshpass -e ssh -T -F "$work/ru-ssh-config" ru-controller \
+            'umask 077; mktemp -d /run/fi-awg-pool.XXXXXXXX')
+          [[ "$ru_pool_dir" =~ ^/run/fi-awg-pool\.[A-Za-z0-9]{8}$ ]] || exit 2
+          sshpass -e scp -F "$work/ru-ssh-config" \
+            nodekit/fi_awg_node_pool_stage.py nodekit/fi_awg_signed_canary.py \
+            nodekit/fi_awg_worker_source_stage.py "$work/fi-pool.json" \
+            "ru-controller:$ru_pool_dir/"
+          first_pool=$(sshpass -e ssh -T -F "$work/ru-ssh-config" ru-controller \
+            "chmod 0600 '$ru_pool_dir/'*; python3 '$ru_pool_dir/fi_awg_node_pool_stage.py' --mode stage-ru --material '$ru_pool_dir/fi-pool.json'")
+          [[ "$first_pool" == 'FI_AWG_NODE_POOL=STAGED;PRODUCTION_E2E_VERIFIED=false;AWG_WORKER_STARTED=false;CUSTOMER_RELEASE=false' ]] || exit 2
+          # Repeated installer action must not change previously verified rows
+          # or silently widen release flags and subscriptions.
+          second_pool=$(sshpass -e ssh -T -F "$work/ru-ssh-config" ru-controller \
+            "python3 '$ru_pool_dir/fi_awg_node_pool_stage.py' --mode stage-ru --material '$ru_pool_dir/fi-pool.json'")
+          [[ "$second_pool" == "$first_pool" ]] || exit 2
+          echo 'FI_AWG_NODE_POOL=STAGED;PRODUCTION_E2E_VERIFIED=false;AWG_WORKER_STARTED=false;CUSTOMER_RELEASE=false'
           export SSHPASS="$FI_SSH_PASSWORD"
           echo 'FI_AWG_CLIENT_RELEASE_UNCHANGED=true;CANARY_PEERS_INSTALLED=false'
