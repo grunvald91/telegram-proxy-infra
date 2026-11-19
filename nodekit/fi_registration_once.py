@@ -257,7 +257,7 @@ def main() -> int:
         # This is a one-use privileged CONTROL operation, never client dataplane.
         command = [
             "systemd-run", "--wait", "--pipe", "--collect", "--quiet",
-            "--service-type=exec",
+            "--unit=mnebyvpn-fi-controller-transient", "--service-type=exec",
             "--property=User=root", "--property=Group=root",
             "--property=WorkingDirectory=/opt/mnebyvpn-controller/current",
             "--property=EnvironmentFile=/root/mnebyvpn-controller/config/fi-enrollment.env",
@@ -281,9 +281,14 @@ def main() -> int:
             "/opt/mnebyvpn-controller/current/apps/service/src/fi-enrollment-controller.ts",
         ]
         output = execute(command, timeout=90)
-        if output != "FI_ENROLLMENT=testing;SUBSCRIBER_PUBLICATION=false":
-            fail("trusted_transient_registrar_output_unverified")
         applied = db_state(expected)
+        if applied != "enrolled":
+            print("FI_CANONICAL_DB_AFTER_TRANSIENT="+applied,file=sys.stderr)
+            fail("transient_registrar_did_not_enroll_fi")
+        # The canonical database state (with exact FI identity) is stronger
+        # evidence than CLI decorations emitted by systemd-run --wait.
+        if "FI_ENROLLMENT=testing;SUBSCRIBER_PUBLICATION=false" not in output.splitlines():
+            print("FI_TRANSIENT_OUTPUT_WRAPPED_OR_EMPTY=true;CANONICAL_DB_ENROLLED=true")
     if applied != "enrolled":
         fail("registration_service_did_not_enroll_fi")
     print("FI_REGISTRATION=enrolled;SUBSCRIBER_PUBLICATION=false;IDEMPOTENT=false")

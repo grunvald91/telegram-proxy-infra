@@ -149,4 +149,16 @@ jobs:
               for message in journal.stdout.splitlines()[-30:]:
                   if any(marker in message for marker in allowed):
                       print("fi_systemd_event="+message[:200])
+          transient=subprocess.run(
+              ["journalctl","--no-pager","-q","-u",
+               "mnebyvpn-fi-controller-transient.service",
+               "-n","35","-o","cat"],
+              capture_output=True,text=True,timeout=8)
+          if transient.returncode==0:
+              allowed=("FI_ENROLLMENT_STOPPED","FI_ENROLLMENT=testing",
+                       "Failed with result","Main process exited",
+                       "Failed to start")
+              for line in transient.stdout.splitlines()[-35:]:
+                  if any(token in line for token in allowed):
+                      print("fi_transient_event="+line.strip()[:220])
           PY

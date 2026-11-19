@@ -146,6 +146,7 @@ class FiRegistrationGateTests(TestCase):
         self.assertIn("--property=IPAddressDeny=any",transient[0])
         self.assertIn("--property=IPAddressAllow=217.11.167.91/32",transient[0])
         self.assertIn("--property=NoNewPrivileges=yes",transient[0])
+        self.assertIn("--unit=mnebyvpn-fi-controller-transient",transient[0])
         self.assertIn(
             "--property=EnvironmentFile=/root/mnebyvpn-controller/config/fi-enrollment.env",
             transient[0]
@@ -199,3 +200,25 @@ class FiRegistrationGateTests(TestCase):
             with self.assertRaises(registration.GateError):
                 registration.main()
         self.assertFalse(any(c[0]=="systemd-run" for c in commands))
+
+    def test_transient_stdout_decoration_not_a_substitute_for_db_readback(self):
+        node=bytes.fromhex("302a300506032b6570032100")+bytes(32)
+        def cmd(args,timeout=12):
+            if args[:2]==["systemctl","show"]:return "no"
+            if args[0]=="systemd-run":return "Finished with result: success"
+            return ""
+        with (
+            mock.patch.object(registration.os,"geteuid",return_value=0),
+            mock.patch.object(registration,"assigned_ip",return_value=True),
+            mock.patch.object(registration,"spki",return_value=node),
+            mock.patch.object(
+                registration,"protected",
+                side_effect=[b"fi.mnebyvpn.site ssh-ed25519 abc\n",b"key",b"key"]
+            ),
+            mock.patch.object(registration,"require_runtime"),
+            mock.patch.object(registration,"db_state",
+                              side_effect=["approved","approved","approved"]),
+            mock.patch.object(registration,"execute",side_effect=cmd),
+        ):
+            with self.assertRaises(registration.GateError):
+                registration.main()
