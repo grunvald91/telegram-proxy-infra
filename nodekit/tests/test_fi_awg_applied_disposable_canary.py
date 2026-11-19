@@ -70,6 +70,22 @@ class AppliedCanaryTests(unittest.TestCase):
             mod.phase("SIGNED_COMMANDS_VERIFIED")
         self.assertEqual(output.getvalue(), "FI_AWG_APPLY_PHASE=SIGNED_COMMANDS_VERIFIED" + chr(10))
 
+    def test_watchdog_installer_drift_is_readonly_and_fail_closed(self):
+        target = mock.Mock()
+        target.is_symlink.return_value = False
+        target.exists.return_value = True
+        target.is_file.return_value = True
+        target.stat.return_value = mock.Mock(st_uid=0, st_mode=0o644)
+        target.read_bytes.return_value = b"old"
+        self.assertEqual(mod.watchdog_file_state(target, b"new"), "DRIFT")
+        self.assertEqual(mod.watchdog_file_state(target, b"old"), "MATCH")
+        target.is_symlink.return_value = True
+        self.assertEqual(mod.watchdog_file_state(target, b"old"), "SYMLINK")
+        target.write_bytes.assert_not_called()
+        target.unlink.assert_not_called()
+        self.assertIn('block("watchdog_authorizer_install_drift")', self.src)
+        self.assertIn('block("watchdog_systemd_unit_install_drift")', self.src)
+
     def test_verified_node_receipts_are_real_applied_domain(self):
         with tempfile.TemporaryDirectory() as folder:
             tmp=Path(folder)
