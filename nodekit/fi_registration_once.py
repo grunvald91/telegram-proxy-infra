@@ -215,6 +215,10 @@ def main() -> int:
         return 0
     if before != "approved":
         fail("fi_inventory_not_preapproved_in_canonical_db")
+    # The FI service was staged while its approval paths did not yet exist.
+    # Reload only unit metadata after guarded on-host DB/config provisioning.
+    # No existing customer service is restarted or modified.
+    execute(["systemctl", "daemon-reload"], timeout=20)
     execute(["systemctl", "start", UNIT_NAME], timeout=85)
     # systemd ConditionPathExists skips can exit 0: DB readback is mandatory.
     if db_state(expected) != "enrolled":
