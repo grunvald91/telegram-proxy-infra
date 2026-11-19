@@ -116,5 +116,5 @@ class SignedAwgCanaryTests(TestCase):
         self.assertIn('export SSHPASS="$RU_SSH_PASSWORD"',workflow)
         self.assertIn("FI_AWG_CTRL_CANONICAL_DB_URI_STATUS=",workflow)
         self.assertNotIn("FI_AWG_CTRL_SAME_CANONICAL_DB=",workflow)
-        self.assertIn("CANARY_PEERS_INSTALLED=false",workflow)
+        self.assertIn("TEST_ONLY_PEER_ROLLED_BACK=true",workflow)
         self.assertNotIn("NO_PEERS_INSTALLED=true",workflow)
