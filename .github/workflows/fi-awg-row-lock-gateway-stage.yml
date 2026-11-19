@@ -115,7 +115,20 @@ jobs:
           ru 'set -eu; ! systemctl is-active --quiet mnebyvpn-awg-delivery.service'
           # Read-only diagnostics may find missing worker components; do not
           # treat these as a failed SQL migration or open customer access.
-          if ru 'bash -se' < infra/nodekit/fi_awg_worker_preflight.sh; then
+          preflight=''
+          audit_rc=0
+          preflight=$(ru 'bash -se' < infra/nodekit/fi_awg_worker_preflight.sh) || audit_rc=$?
+          # Only bounded, fixed-format status fields from the root-only audit.
+          printf '%s\n' "$preflight" | grep -E '^FI_AWG_PREFLIGHT(_[A-Z_]+)?=(OK|BLOCKED|PREACTIVATION_READY.*)
+          echo 'FI_AWG_ROW_LOCK_STAGE=complete;AWG_WORKER_STARTED=false;SUBSCRIPTIONS_PUBLISHED=false'
+ || true
+          audit_complete=true
+          [[ "$audit_rc" == 0 && ${#preflight} -le 4096 ]] || audit_complete=false
+          for label in HOST CONTROLLER_IDENTITY FI_NODE_IDENTITY CANONICAL_WORKER_ENV SIGNER_PRIVATE_KEY FORCED_SSH_TRANSPORT POSTGRES_GATEWAY_AND_RELEASE SERVICE_UNIT WORKER_SOURCE WORKER_RUNTIME APPROVAL_NOT_PRESENT WORKER_INACTIVE WORKER_NOT_ENABLED; do
+            [[ $(grep -Fxc "FI_AWG_PREFLIGHT_${label}=OK" <<< "$preflight" || true) == 1 ]] || audit_complete=false
+          done
+          grep -Fxq 'FI_AWG_PREFLIGHT=PREACTIVATION_READY;WORKER_STARTED=false;CUSTOMER_RELEASE=false' <<< "$preflight" || audit_complete=false
+          if [[ "$audit_complete" == true ]]; then
             echo 'FI_AWG_WORKER_PREFLIGHT_STATUS=ready;AWG_WORKER_STARTED=false'
           else
             echo 'FI_AWG_WORKER_PREFLIGHT_STATUS=blocked;AWG_WORKER_STARTED=false'
