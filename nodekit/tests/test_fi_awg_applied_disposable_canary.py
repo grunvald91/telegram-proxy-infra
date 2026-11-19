@@ -68,7 +68,7 @@ class AppliedCanaryTests(unittest.TestCase):
         self.assertNotIn('traceback.print_exc(', self.src)
         with contextlib.redirect_stderr(io.StringIO()) as output:
             mod.phase("SIGNED_COMMANDS_VERIFIED")
-        self.assertEqual(output.getvalue(), "FI_AWG_APPLY_PHASE=SIGNED_COMMANDS_VERIFIED\\n")
+        self.assertEqual(output.getvalue(), "FI_AWG_APPLY_PHASE=SIGNED_COMMANDS_VERIFIED" + chr(10))
 
     def test_verified_node_receipts_are_real_applied_domain(self):
         with tempfile.TemporaryDirectory() as folder:
