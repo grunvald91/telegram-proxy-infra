@@ -174,7 +174,7 @@ def issue() -> None:
     sys.stdout.write(json.dumps(bundle, separators=(",", ":")) + "\n")
 
 
-def node_verify(bundle_file: Path) -> None:
+def node_verify(bundle_file: Path, *, announce: bool = True) -> None:
     if not is_host(FI_IP):
         stop("not_existing_fi217")
     pinned_spki(FI_NODE / "controller-access.spki", CONTROLLER_SHA)
@@ -226,9 +226,10 @@ def node_verify(bundle_file: Path) -> None:
         pass
     else:
         stop("old_signed_grant_replay_reactivated_peer")
-    print("FI_AWG_SIGNED_CANARY=grant_revoke_expiry_replay_verified;"
-          "REAL_PEERS_MODIFIED=false;ENTITLEMENTS_MODIFIED=false;"
-          "SUBSCRIPTIONS_PUBLISHED=false")
+    if announce:
+        print("FI_AWG_SIGNED_CANARY=grant_revoke_expiry_replay_verified;"
+              "REAL_PEERS_MODIFIED=false;ENTITLEMENTS_MODIFIED=false;"
+              "SUBSCRIPTIONS_PUBLISHED=false")
 
 
 def main() -> None:
