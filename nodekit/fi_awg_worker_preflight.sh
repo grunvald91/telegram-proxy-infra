@@ -70,10 +70,17 @@ gateway_and_release_safe() {
   [[ "$actual" == 'enrolled|false|true' ]]
 }
 worker_stopped() {
-  ! systemctl is-active --quiet mnebyvpn-awg-delivery.service
+  local state
+  state=$(systemctl show -p ActiveState --value mnebyvpn-awg-delivery.service) || return 1
+  [[ "$state" == inactive ]]
 }
 worker_disabled() {
-  ! systemctl is-enabled --quiet mnebyvpn-awg-delivery.service
+  local state
+  state=$(systemctl is-enabled mnebyvpn-awg-delivery.service 2>/dev/null) || {
+    [[ "$state" == disabled ]] && return 0
+    return 1
+  }
+  [[ "$state" == disabled || "$state" == static ]]
 }
 approval_absent() {
   [[ ! -e "$ROOT/approvals/awg-delivery.enable" &&
