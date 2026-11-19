@@ -7,6 +7,7 @@ name: FI217 AWG transactional billing row-lock gateway stage (clients off)
       - 'nodekit/fi_awg_row_lock_gateway_stage.py'
       - 'nodekit/fi_awg_worker_preflight.sh'
       - 'nodekit/fi_awg_worker_source_stage.py'
+      - 'nodekit/fi_awg_worker_isolated_source_stage.py'
   workflow_dispatch:
 permissions:
   contents: read
@@ -39,6 +40,19 @@ jobs:
           python3 -m py_compile infra/nodekit/fi_awg_row_lock_gateway_stage.py
           bash -n infra/nodekit/fi_awg_worker_preflight.sh
           python3 -m py_compile infra/nodekit/fi_awg_worker_source_stage.py
+          python3 -m py_compile infra/nodekit/fi_awg_worker_isolated_source_stage.py
+          python3 -m unittest discover -s infra/nodekit/tests -p 'test_fi_awg_worker_isolated_source_stage.py' -v
+          # Validate that the five pinned controller modules form a complete
+          # import graph before uploading a single byte to RU188.
+          PYTHONPATH=infra/nodekit python3 - <<'PY'
+          import pathlib
+          import fi_awg_worker_isolated_source_stage as stage
+          import fi_awg_worker_source_stage as trust
+          root=pathlib.Path("pinned-controller")
+          blobs={rel:(root/rel).read_bytes() for rel in trust.FILES.values()}
+          stage.require_source_closure(blobs)
+          print("FI_AWG_PINNED_SOURCE_GRAPH=complete;MODULES=5")
+          PY
           python3 -m unittest discover -s infra/nodekit/tests -p 'test_fi_awg_worker_source_stage.py' -v
           python3 -m unittest discover -s infra/nodekit/tests -p 'test_fi_awg_worker_preflight_contract.py' -v
           python3 -m unittest discover -s infra/nodekit/tests -p 'test_fi_awg_row_lock_gateway_stage.py' -v
@@ -115,8 +129,8 @@ jobs:
             infra/nodekit/fi_awg_row_lock_gateway_stage.py "$sqlfile" \
             "ru188:$remote/"
           ru "chmod 0600 '$remote/fi_awg_row_lock_gateway_stage.py' '$remote/0135_awg_worker_row_lock_gateway.sql'; python3 '$remote/fi_awg_row_lock_gateway_stage.py' --sql-file '$remote/0135_awg_worker_row_lock_gateway.sql' --sha256 '$sha'"
-          # Install only missing sources from the EXACT pinned controller commit.
-          # No service activation or customer-facing access is authorized here.
+          # Stage a separate immutable source-only AWG release. The existing
+          # /opt/mnebyvpn-controller/current application is never overwritten.
           export FI_STAGE_WORK="$work"
           python3 - <<'PY'
           import hashlib,json,os,pathlib,subprocess
@@ -142,14 +156,15 @@ jobs:
           out.chmod(0o600)
           PY
           sshpass -e scp -F "$work/ssh.conf" \
-            infra/nodekit/fi_awg_worker_source_stage.py "$work/manifest.json" \
+            infra/nodekit/fi_awg_worker_source_stage.py \ 
+            infra/nodekit/fi_awg_worker_isolated_source_stage.py "$work/manifest.json" \
             pinned-controller/apps/service/src/awg-controller-delivery-worker.ts \
             pinned-controller/packages/provisioning/src/awg-trusted-ssh-delivery.ts \
             pinned-controller/packages/provisioning/src/awg-offline-maintenance.ts \
             pinned-controller/packages/provisioning/src/awg-controller-grants.ts \
             pinned-controller/packages/provisioning/src/awg-controller-outbox.ts \
             "ru188:$remote/"
-          ru "chmod 0600 '$remote/'*; python3 '$remote/fi_awg_worker_source_stage.py' --stage '$remote'"
+          ru "chmod 0600 '$remote/'*; python3 '$remote/fi_awg_worker_isolated_source_stage.py' --stage '$remote'"
           ru 'set -eu; ! systemctl is-active --quiet mnebyvpn-awg-delivery.service'
           # Read-only diagnostics may find missing worker components; do not
           # treat these as a failed SQL migration or open customer access.
