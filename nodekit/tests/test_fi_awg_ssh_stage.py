@@ -102,3 +102,22 @@ class FiAwgForcedSshTests(unittest.TestCase):
         self.assertIn('"--mode", "apply"', checker)
         self.assertIn('if sys.argv[1:]:', checker)
         self.assertIn('PREFIX', "PREFIX")  # explicit sentinel for test structure
+
+    def test_existing_handler_is_readable_on_root_owned_nonprivate_opt_directory(self):
+        # On real FI, /opt/mnebyvpn-nodekit is 0755. The handler is owned by
+        # root and 0600, but an idempotent rerun must not demand a 0700 parent.
+        import os
+        import stat
+        import tempfile
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as temporary:
+            path=Path(temporary)/"fi_awg_delivery_ssh.py"
+            path.write_bytes(b"safe-handler")
+            mode=stat.S_IFREG|0o600
+            rootfile=SimpleNamespace(st_mode=mode,st_uid=0,
+                                     st_size=len(b"safe-handler"),st_nlink=1)
+            with (mock.patch.object(stage,"HANDLER_PATH",path),
+                  mock.patch.object(stage,"trusted_dir") as checked,
+                  mock.patch.object(stage.os,"fstat",return_value=rootfile)):
+                self.assertEqual(stage.protected(path),b"safe-handler")
+                checked.assert_called_once_with(path.parent,private=False)
