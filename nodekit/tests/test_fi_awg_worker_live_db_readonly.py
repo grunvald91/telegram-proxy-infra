@@ -50,6 +50,10 @@ class ReadonlyDbProbeTests(unittest.TestCase):
         self.assertIn("if result.returncode or len(result.stdout) > 1024:",self.source)
         self.assertIn("len(lines) != 8",self.source)
         self.assertIn("FI_AWG_DB_NODE_PROOF=STALE",self.source)
+        self.assertIn("FI_AWG_DB_NODE_PROOF=MISSING",self.source)
+        self.assertIn("if(poolState.rows.length>1)fail();",self.source)
+        self.assertIn("FI_AWG_DB_SQLSTATE=",self.source)
+        self.assertIn("PRODUCTION_NODE_PROOF_FRESH=",self.source)
         self.assertIn("PRODUCTION_NODE_PROOF_FRESH=",self.source)
         self.assertIn("CUSTOMER_RELEASE=false",self.source)
 
