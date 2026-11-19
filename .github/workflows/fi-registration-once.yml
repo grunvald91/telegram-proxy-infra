@@ -103,6 +103,19 @@ jobs:
                        "fi-known_hosts","fi-node-public.spki","controller-signing-key.pem"):
               print("fi_systemd_condition_"+name.replace("/","_").replace(".","_")+
                     "_exists="+str((root/name).is_file()).lower())
+          actual=Path("/etc/systemd/system")/unit
+          if actual.is_file():
+              for line in actual.read_text().splitlines():
+                  if line.startswith("ConditionPathExists="):
+                      required=line.split("=",1)[1].strip()
+                      if required.startswith("/root/mnebyvpn-controller/"):
+                          print("fi_actual_unit_condition_"+
+                                Path(required).name.replace(".","_")+
+                                "_exists="+str(Path(required).is_file()).lower())
+                      else:
+                          print("fi_actual_unit_condition_unexpected=true")
+          else:
+              print("fi_actual_unit_unavailable=true")
           journal=subprocess.run(
               ["journalctl","--no-pager","-q","-u",unit,"-n","30","-o","cat"],
               capture_output=True,text=True,timeout=8)
