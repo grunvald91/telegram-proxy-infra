@@ -63,6 +63,7 @@ class FiRegistrationGateTests(TestCase):
                 side_effect=[b"fi.mnebyvpn.site ssh-ed25519 abc\n", b"key", b"key"]
             ),
             mock.patch.object(registration, "require_runtime") as require,
+            mock.patch.object(registration, "await_expiration_once"),
             mock.patch.object(registration, "db_state", return_value="enrolled"),
             mock.patch.object(registration, "execute") as cmd,
         ):
@@ -83,6 +84,7 @@ class FiRegistrationGateTests(TestCase):
                     side_effect=[b"fi.mnebyvpn.site ssh-ed25519 abc\n", b"key", b"key"]
                 ),
                 mock.patch.object(registration, "require_runtime"),
+                mock.patch.object(registration, "await_expiration_once"),
                 mock.patch.object(registration, "db_state", return_value=state),
                 mock.patch.object(registration, "execute") as cmd,
             ):
@@ -101,13 +103,14 @@ class FiRegistrationGateTests(TestCase):
                 side_effect=[b"fi.mnebyvpn.site ssh-ed25519 abc\n", b"key", b"key"]
             ),
             mock.patch.object(registration, "require_runtime"),
+            mock.patch.object(registration, "await_expiration_once"),
             mock.patch.object(
-                registration, "db_state", side_effect=["approved", "enrolled"]
+                registration, "db_state", side_effect=["approved", "approved", "enrolled"]
             ) as database,
             mock.patch.object(registration, "execute", return_value="") as execute,
         ):
             self.assertEqual(registration.main(), 0)
-            self.assertEqual(database.call_count, 2)
+            self.assertEqual(database.call_count, 3)
             self.assertEqual(
                 [call.args[0] for call in execute.call_args_list],
                 [["systemctl","daemon-reload"],["systemctl","start",
@@ -133,16 +136,17 @@ class FiRegistrationGateTests(TestCase):
                 side_effect=[b"fi.mnebyvpn.site ssh-ed25519 abc\n",b"key",b"key"]
             ),
             mock.patch.object(registration,"require_runtime"),
+            mock.patch.object(registration,"await_expiration_once"),
             mock.patch.object(registration.Path,"resolve",
                 return_value=registration.Path(
                     "/opt/mnebyvpn-controller/releases/reviewed-release")),
             mock.patch.object(registration.Path,"is_dir",return_value=True),
             mock.patch.object(registration,"db_state",
-                              side_effect=["approved","approved","enrolled"]) as db,
+                              side_effect=["approved", "approved", "approved", "enrolled"]) as db,
             mock.patch.object(registration,"execute",side_effect=cmd),
         ):
             self.assertEqual(registration.main(),0)
-        self.assertEqual(db.call_count,3)
+        self.assertEqual(db.call_count,4)
         checks=[c for c in commands if c[0]=="systemd-analyze"]
         self.assertEqual(len(checks),5)
         transient=[c for c in commands if c[0]=="systemd-run"]
@@ -177,12 +181,13 @@ class FiRegistrationGateTests(TestCase):
                 side_effect=[b"fi.mnebyvpn.site ssh-ed25519 abc\n",b"key",b"key"]
             ),
             mock.patch.object(registration,"require_runtime"),
+            mock.patch.object(registration,"await_expiration_once"),
             mock.patch.object(registration.Path,"resolve",
                 return_value=registration.Path(
                     "/opt/mnebyvpn-controller/releases/reviewed-release")),
             mock.patch.object(registration.Path,"is_dir",return_value=True),
             mock.patch.object(registration,"db_state",
-                              side_effect=["approved","approved"]),
+                              side_effect=["approved", "approved", "approved"]),
             mock.patch.object(registration,"execute",side_effect=cmd),
         ):
             with self.assertRaises(registration.GateError):
@@ -204,12 +209,13 @@ class FiRegistrationGateTests(TestCase):
                 side_effect=[b"fi.mnebyvpn.site ssh-ed25519 abc\n",b"key",b"key"]
             ),
             mock.patch.object(registration,"require_runtime"),
+            mock.patch.object(registration,"await_expiration_once"),
             mock.patch.object(registration.Path,"resolve",
                 return_value=registration.Path(
                     "/opt/mnebyvpn-controller/releases/reviewed-release")),
             mock.patch.object(registration.Path,"is_dir",return_value=True),
             mock.patch.object(registration,"db_state",
-                              side_effect=["approved","approved"]),
+                              side_effect=["approved", "approved", "approved"]),
             mock.patch.object(registration,"execute",side_effect=cmd),
         ):
             with self.assertRaises(registration.GateError):
@@ -231,12 +237,13 @@ class FiRegistrationGateTests(TestCase):
                 side_effect=[b"fi.mnebyvpn.site ssh-ed25519 abc\n",b"key",b"key"]
             ),
             mock.patch.object(registration,"require_runtime"),
+            mock.patch.object(registration,"await_expiration_once"),
             mock.patch.object(registration.Path,"resolve",
                 return_value=registration.Path(
                     "/opt/mnebyvpn-controller/releases/reviewed-release")),
             mock.patch.object(registration.Path,"is_dir",return_value=True),
             mock.patch.object(registration,"db_state",
-                              side_effect=["approved","approved","approved"]),
+                              side_effect=["approved", "approved", "approved", "approved"]),
             mock.patch.object(registration,"execute",side_effect=cmd),
         ):
             with self.assertRaises(registration.GateError):
@@ -273,3 +280,47 @@ class FiRegistrationGateTests(TestCase):
                 capture_output=True,text=True,timeout=10
             )
             self.assertEqual(result.returncode,0,"JS parser rejected signed enrollment script")
+
+    def test_pending_challenge_query_uses_canonical_registrar_database(self):
+        with mock.patch.object(
+            registration,"execute",return_value="FI_PENDING_CHALLENGE_SECONDS=275"
+        ) as cmd:
+            self.assertEqual(registration.pending_challenge_seconds(),275)
+            args=cmd.call_args.args[0]
+            self.assertEqual(args[0],"systemd-run")
+            self.assertIn("--property=IPAddressDeny=any",args)
+            self.assertIn(
+                "--property=EnvironmentFile=/root/mnebyvpn-controller/config/fi-enrollment.env",
+                args
+            )
+            self.assertIn("vpn_node_enrollment_challenges",registration.PENDING_CHALLENGE_JS)
+
+    def test_malformed_or_long_pending_challenge_wait_is_rejected(self):
+        for raw in ("", "FI_PENDING_CHALLENGE_SECONDS=-1",
+                    "FI_PENDING_CHALLENGE_SECONDS=301",
+                    "FI_PENDING_CHALLENGE_SECONDS=bad",
+                    "FI_PENDING_CHALLENGE_SECONDS=3\nFI_PENDING_CHALLENGE_SECONDS=3"):
+            with self.subTest(raw=raw), mock.patch.object(
+                registration,"execute",return_value=raw
+            ):
+                with self.assertRaises(registration.GateError):
+                    registration.pending_challenge_seconds()
+
+    def test_waits_for_original_expiry_and_never_mutates_challenge(self):
+        with (
+            mock.patch.object(registration,"pending_challenge_seconds",
+                              side_effect=[87,0]) as pending,
+            mock.patch("time.sleep") as sleep,
+        ):
+            registration.await_expiration_once()
+            sleep.assert_called_once_with(89)
+            self.assertEqual(pending.call_count,2)
+
+    def test_fails_closed_if_challenge_remains_after_original_expiry(self):
+        with (
+            mock.patch.object(registration,"pending_challenge_seconds",
+                              side_effect=[300,1]),
+            mock.patch("time.sleep"),
+        ):
+            with self.assertRaises(registration.GateError):
+                registration.await_expiration_once()

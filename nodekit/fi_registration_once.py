@@ -254,6 +254,75 @@ def db_state(expected_spki: str) -> str:
     return matches[0]
 
 
+# No replay, deletion or revocation: a failed one-use challenge remains pending
+# until PostgreSQL's original five-minute expiry. We only read that expiry.
+PENDING_CHALLENGE_JS = r"""
+import pg from '/opt/mnebyvpn-controller/current/node_modules/pg/lib/index.js';
+
+if (process.env.MNEBYVPN_ENV !== 'production' ||
+    process.env.MNEBYVPN_FI_ENROLLMENT !== 'enabled' ||
+    !/^postgres(?:ql)?:\/\//.test(process.env.DATABASE_URL || ''))
+  throw Error('Canonical FI enrollment environment unavailable');
+
+const db = new pg.Client({connectionString:process.env.DATABASE_URL,
+  connectionTimeoutMillis:3000,query_timeout:4000});
+try {
+  await db.connect();
+  const result = await db.query(
+    "SELECT COALESCE(CEIL(EXTRACT(EPOCH FROM "+
+    "MAX(expires_at) - clock_timestamp())),0)::int AS seconds "+
+    "FROM public.vpn_node_enrollment_challenges "+
+    "WHERE node_id=$1 AND consumed_at IS NULL "+
+    "AND expires_at>clock_timestamp()",
+    ['fi-test-01']
+  );
+  const seconds = result.rows[0]?.seconds;
+  if (!Number.isInteger(seconds) || seconds < 0 || seconds > 300)
+    throw Error('Invalid canonical FI challenge expiry');
+  process.stdout.write('FI_PENDING_CHALLENGE_SECONDS='+seconds+'\n');
+} finally {
+  await db.end();
+}
+"""
+
+
+def pending_challenge_seconds() -> int:
+    """Only report the remaining database-controlled one-use TTL."""
+    cmd = [
+        "systemd-run", "--wait", "--pipe", "--collect", "--quiet",
+        "--service-type=exec", "--property=User=root", "--property=Group=root",
+        "--property=EnvironmentFile=/root/mnebyvpn-controller/config/fi-enrollment.env",
+        "--property=ProtectHome=read-only", "--property=ProtectSystem=strict",
+        "--property=PrivateTmp=yes", "--property=NoNewPrivileges=yes",
+        "--property=CapabilityBoundingSet=", "--property=IPAddressDeny=any",
+        "--property=IPAddressAllow=127.0.0.0/8",
+        "--property=IPAddressAllow=::1/128",
+        "--property=MemoryMax=256M", "--property=TimeoutStartSec=20s",
+        "/opt/mnebyvpn-controller/current/bin/node",
+        "--input-type=module", "--eval", PENDING_CHALLENGE_JS,
+    ]
+    result = execute(cmd, timeout=40)
+    lines = [line.partition("=")[2] for line in result.splitlines()
+             if line.startswith("FI_PENDING_CHALLENGE_SECONDS=")]
+    if len(lines) != 1 or not lines[0].isdigit():
+        fail("fi_pending_challenge_status_unverified")
+    wait = int(lines[0])
+    if not 0 <= wait <= 300:
+        fail("fi_pending_challenge_ttl_invalid")
+    return wait
+
+
+def await_expiration_once():
+    """Wait at most five minutes for the DB's ORIGINAL expiry, never modify it."""
+    seconds = pending_challenge_seconds()
+    if seconds:
+        print("FI_PENDING_CHALLENGE_WAITING_FOR_ORIGINAL_EXPIRY=true")
+        # PostgreSQL uses its own clock; add two seconds only for timestamp
+        # rounding and cross-host scheduling. Never start a new challenge early.
+        __import__("time").sleep(seconds + 2)
+        if pending_challenge_seconds():
+            fail("fi_pending_challenge_still_active_after_wait")
+
 def require_runtime() -> None:
     current = Path("/opt/mnebyvpn-controller/current")
     if not current.is_symlink() or not current.resolve(strict=True).is_dir():
@@ -311,6 +380,14 @@ def main() -> int:
         return 0
     if before != "approved":
         fail("fi_inventory_not_preapproved_in_canonical_db")
+    await_expiration_once()
+    # Another trusted actor could have enrolled FI while we waited.
+    after_wait = db_state(expected)
+    if after_wait == "enrolled":
+        print("FI_REGISTRATION=enrolled;SUBSCRIBER_PUBLICATION=false;IDEMPOTENT=true")
+        return 0
+    if after_wait != "approved":
+        fail("fi_inventory_changed_during_pending_challenge_wait")
     # The FI service was staged while its approval paths did not yet exist.
     # Reload only unit metadata after guarded on-host DB/config provisioning.
     # No existing customer service is restarted or modified.
