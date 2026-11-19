@@ -162,9 +162,14 @@ def canonical_db() -> None:
         "SELECT enabled::text FROM public.vpn_release_flags "
         "WHERE feature='vpn_awg_clients';") != "false":
         fail("awg_client_release_is_not_disabled")
-    running = run(["/usr/bin/systemctl", "is-active",
-                   "mnebyvpn-awg-delivery.service"], timeout=8)
-    if running != "inactive":
+    try:
+        service = subprocess.run(
+            ["/usr/bin/systemctl", "is-active",
+             "mnebyvpn-awg-delivery.service"],
+            capture_output=True, text=True, timeout=8, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        fail("awg_worker_service_status_unavailable")
+    if service.returncode == 0 or service.stdout.strip() not in ("inactive", "failed"):
         fail("awg_worker_is_not_inactive")
 
 
@@ -297,9 +302,20 @@ def main() -> None:
     if (ROOT / "approvals/awg-delivery.enable").exists():
         fail("unexpected_existing_awg_worker_approval")
     canonical_db()
-    pw, new = existing_or_new_password()
-    database_role(pw, new)
-    install_env(pw, new)
+    # Lock across role creation and root-only environment installation.
+    lock = ROOT / "awg-worker-db-stage.lock"
+    fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077:
+            fail("untrusted_stage_lock")
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        pw, new = existing_or_new_password()
+        database_role(pw, new)
+        install_env(pw, new)
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
     print("FI_AWG_WORKER_DB_ROLE=scoped;CANONICAL_DB=verified;"
           "WORKER_ENV=staged_disabled;WORKER_STARTED=false;"
           "CUSTOMER_RELEASE=false;SUBSCRIPTIONS_PUBLISHED=false")
