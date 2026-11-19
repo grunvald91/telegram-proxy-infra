@@ -99,8 +99,11 @@ def preflight() -> None:
         hashlib.sha256(identity).hexdigest()!=CONTROLLER_SHA):
         stop("controller_identity_untrusted")
     env=read_protected(ROOT/"config/awg-delivery.env").decode("ascii")
-    if not re.search(r"^MNEBYVPN_AWG_DELIVERY_WORKER=disabled$",env,re.M):
-        stop("awg_worker_environment_not_disabled")
+    # Existing canonical role bootstrap deliberately writes enabled in env,
+    # but activation requires a separate root-only systemd approval marker.
+    # Verify that independent gate and service inactivity below.
+    if not re.search(r"^MNEBYVPN_AWG_DELIVERY_WORKER=enabled$",env,re.M):
+        stop("canonical_awg_worker_environment_mismatch")
     if not re.search(r"^DATABASE_URL=postgresql://mnebyvpn_awg_delivery:[a-f0-9]{64}@127\.0\.0\.1:55433/mnebyvpn_stage$",env,re.M):
         stop("unknown_canonical_worker_database")
     if (ROOT/"approvals/awg-delivery.enable").exists():

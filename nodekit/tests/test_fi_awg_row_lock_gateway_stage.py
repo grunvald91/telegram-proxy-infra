@@ -44,5 +44,7 @@ class AwgGatewayStageTests(unittest.TestCase):
             "INSERT INTO vpn_awg_peer_allocations", "client-private-key",
         ):
             self.assertNotIn(prohibited,body)
-        self.assertIn("MNEBYVPN_AWG_DELIVERY_WORKER=disabled",body)
+        self.assertIn("MNEBYVPN_AWG_DELIVERY_WORKER=enabled",body)
+        self.assertIn("awg_worker_approval_already_enabled",body)
+        self.assertIn("refuse_gateway_stage_on_active_worker",body)
         self.assertIn("FI_AWG_ROW_LOCK_GATEWAY_READY=true",body)
