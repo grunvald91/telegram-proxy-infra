@@ -5,6 +5,8 @@ name: FI217 signed AWG grant revoke offline canary (no clients)
     paths:
       - .github/workflows/fi-awg-signed-offline-canary.yml
       - nodekit/fi_awg_signed_canary.py
+      - nodekit/fi_awg_node_attestation.py
+      - nodekit/tests/test_fi_awg_node_attestation.py
   workflow_dispatch:
 permissions:
   contents: read
@@ -24,8 +26,9 @@ jobs:
       - name: Test disposable Ed25519 commands offline
         run: |
           set -Eeuo pipefail
-          python3 -m py_compile nodekit/fi_awg_signed_canary.py
+          python3 -m py_compile nodekit/fi_awg_signed_canary.py nodekit/fi_awg_node_attestation.py
           python3 -m unittest discover -s nodekit/tests -p 'test_fi_awg_signed_canary.py' -v
+          python3 -m unittest discover -s nodekit/tests -p 'test_fi_awg_node_attestation.py' -v
       - name: Install ephemeral SSH client
         run: |
           set -Eeuo pipefail
@@ -129,7 +132,31 @@ jobs:
             nodekit/awg_lifecycle.py nodekit/install_components.py "$signed" \
             "fi-node:$remote_dir/"
           remote "python3 '$remote_dir/fi_awg_signed_canary.py' --mode verify --signed '$remote_dir/signed.json'"
+          # The FI node now proves it checked both real signed controller
+          # commands with its *actual enrolled* private key. This signature
+          # uses a separate TEST_PROOF_V1 domain and must never count as an
+          # APPLIED_V1 ACK or alter the real node AWG ledger.
+          python3 nodekit/fi_awg_node_attestation.py --mode issue --signed "$signed" > "$work/challenge.json"
+          chmod 0600 "$work/challenge.json"
+          sshpass -e scp -F "$work/fi-ssh-config" \
+            nodekit/fi_awg_node_attestation.py "$work/challenge.json" \
+            "fi-node:$remote_dir/"
+          remote "chmod 0600 '$remote_dir/fi_awg_node_attestation.py' '$remote_dir/challenge.json'; python3 '$remote_dir/fi_awg_node_attestation.py' --mode respond --signed '$remote_dir/signed.json' --challenge '$remote_dir/challenge.json'" > "$work/proof.json"
+          chmod 0600 "$work/proof.json"
+          export SSHPASS="$RU_SSH_PASSWORD"
+          sshpass -e ssh -T -F "$work/ru-ssh-config" ru-controller \
+            'cat /root/mnebyvpn-controller/fi-node-public.spki' > "$work/fi-node-public.spki"
+          chmod 0600 "$work/fi-node-public.spki"
+          python3 nodekit/fi_awg_node_attestation.py --mode verify \
+            --signed "$signed" --challenge "$work/challenge.json" \
+            --proof "$work/proof.json" --node-public "$work/fi-node-public.spki"
+          # The dedicated RU188 SSH transport is independently verified.
+          # Invalid payload must fail even when AWG is not running.
+          sshpass -e ssh -T -F "$work/ru-ssh-config" ru-controller \
+            'python3 - --mode probe' < nodekit/fi_awg_ssh_stage.py
+          export SSHPASS="$FI_SSH_PASSWORD"
           remote 'set -eu; ! systemctl is-active --quiet mnebyvpn-nodekit-awg@fi-test-01.service; ! systemctl is-active --quiet mnebyvpn-nodekit-awg-watchdog@fi-test-01.service'
+          echo 'FI_AWG_REAL_RU_FI_KEY_ATTESTATION=PASS;APPLIED_ACK=false;CUSTOMER_RELEASE=false'
           export SSHPASS="$RU_SSH_PASSWORD"
           sshpass -e ssh -T -F "$work/ru-ssh-config" ru-controller 'python3 -' <<'PY'
           from pathlib import Path
