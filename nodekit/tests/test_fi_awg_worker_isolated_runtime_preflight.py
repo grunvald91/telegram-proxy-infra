@@ -27,6 +27,18 @@ class IsolatedAwgRuntimePreflightTests(unittest.TestCase):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment,self.source)
 
+    def test_isolated_esm_import_not_shared_pg_shortcut(self):
+        # The preflight must exercise the real imported worker graph while
+        # deliberately not satisfying its direct-execution main() guard.
+        self.assertIn("def isolated_module_import()",self.source)
+        self.assertIn("__AWG_IMPORT_ONLY__",self.source)
+        self.assertIn("await import(pathToFileURL(process.argv[2]).href)",self.source)
+        self.assertIn('check("ISOLATED_ESM_IMPORT", isolated_module_import)',self.source)
+        self.assertIn("process.argv[1]",self.source)
+        workflow=(Path(__file__).resolve().parents[2]/
+                  ".github/workflows/fi-awg-row-lock-gateway-stage.yml").read_text()
+        self.assertIn("SHARED_PG_RESOLUTION ISOLATED_ESM_IMPORT",workflow)
+
     def test_never_starts_service_or_modifies_customer_state(self):
         for fragment in ("systemctl start","systemctl restart","systemctl enable",
                          "ALTER ROLE","UPDATE public.","INSERT INTO ",
