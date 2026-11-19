@@ -6,6 +6,8 @@ name: FI217 signed AWG grant revoke offline canary (no clients)
       - .github/workflows/fi-awg-signed-offline-canary.yml
       - nodekit/fi_awg_signed_canary.py
       - nodekit/fi_awg_node_attestation.py
+      - nodekit/fi_awg_pool_readonly_inventory.py
+      - nodekit/tests/test_fi_awg_pool_readonly_inventory.py
       - nodekit/tests/test_fi_awg_node_attestation.py
   workflow_dispatch:
 permissions:
@@ -26,7 +28,8 @@ jobs:
       - name: Test disposable Ed25519 commands offline
         run: |
           set -Eeuo pipefail
-          python3 -m py_compile nodekit/fi_awg_signed_canary.py nodekit/fi_awg_node_attestation.py
+          python3 -m py_compile nodekit/fi_awg_signed_canary.py nodekit/fi_awg_node_attestation.py nodekit/fi_awg_pool_readonly_inventory.py
+          python3 -m unittest discover -s nodekit/tests -p 'test_fi_awg_pool_readonly_inventory.py' -v
           python3 -m unittest discover -s nodekit/tests -p 'test_fi_awg_signed_canary.py' -v
           python3 -m unittest discover -s nodekit/tests -p 'test_fi_awg_node_attestation.py' -v
       - name: Install ephemeral SSH client
@@ -128,10 +131,15 @@ jobs:
           remote_dir=$(remote 'umask 077; mktemp -d /run/fi-awg-signed-canary.XXXXXXXX')
           [[ "$remote_dir" =~ ^/run/fi-awg-signed-canary\.[A-Za-z0-9]{8}$ ]] || exit 2
           sshpass -e scp -F "$work/fi-ssh-config" \
-            nodekit/fi_awg_signed_canary.py nodekit/awg_peer_grants.py \
+            nodekit/fi_awg_signed_canary.py nodekit/fi_awg_pool_readonly_inventory.py nodekit/awg_peer_grants.py \
             nodekit/awg_lifecycle.py nodekit/install_components.py "$signed" \
             "fi-node:$remote_dir/"
           remote "python3 '$remote_dir/fi_awg_signed_canary.py' --mode verify --signed '$remote_dir/signed.json'"
+          # Verify FI's existing staged AWG public key against its protected
+          # interface private key and immutable binary hash. READ ONLY.
+          pool_inventory=$(remote "python3 '$remote_dir/fi_awg_pool_readonly_inventory.py'")
+          [[ "$pool_inventory" =~ ^FI_AWG_POOL_PERSISTENT_MANIFEST=PASS\;NODE=fi-test-01\;SUBNET=10\\.73\\.91\\.0/24\;PUBLIC_KEY_SHA256=[a-f0-9]{64}\;PRODUCTION_PROOF=false\;AWG_STARTED=false\;CUSTOMER_RELEASE=false$ ]] || exit 2
+          echo "$pool_inventory"
           # The FI node now proves it checked both real signed controller
           # commands with its *actual enrolled* private key. This signature
           # uses a separate TEST_PROOF_V1 domain and must never count as an
