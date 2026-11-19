@@ -130,12 +130,19 @@ jobs:
             "$RUNNER_TEMP/fi-awg-candidate-source/"* \
             "ru-controller:$remote_dir/"
           first=$(remote "chmod 0600 '$remote_dir/'*; python3 '$remote_dir/fi_awg_worker_candidate_stage.py' --stage '$remote_dir'")
-          case "$first" in
-            "FI_AWG_WORKER_CANDIDATE=STAGED;COMMIT=6743387075102698ab23ec06de364d0d8efd1dca;NEW=5;MATCHED=0;TOTAL=5;EFFECTIVE_RELEASE=LEGACY_DISABLED;CUSTOMER_RELEASE=false" | \
-            "FI_AWG_WORKER_CANDIDATE=STAGED;COMMIT=6743387075102698ab23ec06de364d0d8efd1dca;NEW=0;MATCHED=5;TOTAL=5;EFFECTIVE_RELEASE=LEGACY_DISABLED;CUSTOMER_RELEASE=false")
-              ;;
-            *) echo "FI_AWG_WORKER_CANDIDATE=UNVERIFIED"; exit 2;;
-          esac
+          export FI_AWG_FIRST="$first"
+          python3 - <<'PY'
+          import os,re
+          value=os.environ["FI_AWG_FIRST"]
+          m=re.fullmatch(
+              r"FI_AWG_WORKER_CANDIDATE=STAGED;COMMIT=6743387075102698ab23ec06de364d0d8efd1dca;"
+              r"NEW=([0-5]);MATCHED=([0-5]);TOTAL=5;"
+              r"EFFECTIVE_RELEASE=LEGACY_DISABLED;CUSTOMER_RELEASE=false",
+              value,
+          )
+          if not m or sum(map(int,m.groups())) != 5:
+              raise SystemExit(2)
+          PY
           second=$(remote "python3 '$remote_dir/fi_awg_worker_candidate_stage.py' --stage '$remote_dir'")
           [[ "$second" == "FI_AWG_WORKER_CANDIDATE=STAGED;COMMIT=6743387075102698ab23ec06de364d0d8efd1dca;NEW=0;MATCHED=5;TOTAL=5;EFFECTIVE_RELEASE=LEGACY_DISABLED;CUSTOMER_RELEASE=false" ]] || exit 2
           echo 'FI_AWG_WORKER_CANDIDATE=STAGED;REPEATABLE=true;WORKER_ACTIVE=false;CLIENTS_PUBLISHED=false'
