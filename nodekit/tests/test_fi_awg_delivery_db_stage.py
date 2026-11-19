@@ -52,15 +52,56 @@ class FiAwgDbRoleStageTests(unittest.TestCase):
         assert "GRANT UPDATE ON public.entitlements" not in text
         assert "GRANT UPDATE ON public.vpn_node_enrollment_inventory" not in text
 
-    def test_existing_role_without_env_must_refuse_takeover(self):
+    def test_orphan_role_repair_fails_closed_if_privileges_not_exact(self):
         with tempfile.TemporaryDirectory() as temp, \
              mock.patch.object(stage,"ENV",Path(temp)/"missing.env"), \
              mock.patch.object(stage,"preflight"), \
              mock.patch.object(stage,"role_exists",return_value=True), \
+             mock.patch.object(stage,"verify_privileges",side_effect=stage.StageError("unsafe")), \
+             mock.patch.object(stage,"environment") as env, \
              mock.patch.object(stage,"sql") as sql:
             with self.assertRaises(stage.StageError):
                 stage.main()
+            env.assert_not_called()
             sql.assert_not_called()
+
+    def test_known_safe_orphan_role_is_recovered_without_broad_grants(self):
+        with tempfile.TemporaryDirectory() as temp, \
+             mock.patch.object(stage,"ENV",Path(temp)/"missing.env"), \
+             mock.patch.object(stage,"preflight"), \
+             mock.patch.object(stage,"role_exists",return_value=True), \
+             mock.patch.object(stage,"verify_privileges") as validate, \
+             mock.patch.object(stage,"environment",return_value=("f"*64,True)), \
+             mock.patch.object(stage,"verify_login") as login, \
+             mock.patch.object(stage,"sql") as sql:
+            stage.main()
+            self.assertEqual(validate.call_count,2)
+            sql.assert_called_once()
+            self.assertEqual(sql.call_args.args[0],
+                             "ALTER ROLE mnebyvpn_awg_delivery PASSWORD '"+("f"*64)+"';")
+            login.assert_called_once_with("f"*64)
+
+    def test_acl_probe_uses_any_column_not_table_wide_permission(self):
+        source=SOURCE.read_text()
+        self.assertGreaterEqual(source.count("has_any_column_privilege"),4)
+        def permissions(statement):
+            if "FROM pg_roles r" in statement:
+                return "true|false|false|false|false|false|false|0"
+            if "has_sequence_privilege" in statement:
+                return "true"
+            if "has_column_privilege" in statement:
+                return "false"
+            if "has_table_privilege" in statement:
+                if any("public."+name in statement for name in
+                       ("entitlements","vpn_node_enrollment_inventory",
+                        "vpn_awg_node_pools","vpn_release_flags")):
+                    return "true|false|false|false"
+                return "true|true|true|false"
+            raise AssertionError("unexpected SQL")
+        with mock.patch.object(stage,"sql",side_effect=permissions):
+            stage.verify_privileges()
+        self.assertNotIn("BEGIN READ ONLY",source)
+
 
     def test_run_state_has_no_automatic_subscription_activation(self):
         code=SOURCE.read_text()
