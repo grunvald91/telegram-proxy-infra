@@ -28,8 +28,12 @@ class CandidateStagingTests(unittest.TestCase):
     def loaded(self, folder: Path):
         # Unprivileged test only: actual installation uses pinned RU188
         # root-owned file checks, never the mocked test reader.
+        def readonly_test_reader(path, *args):
+            if not path.exists() or path.is_symlink():
+                candidate.trust.stop("source_file_missing_or_symlink")
+            return path.read_bytes()
         with mock.patch.object(candidate.trust, "safe_directory"), mock.patch.object(
-            candidate.trust, "read_file", side_effect=lambda p, *a: p.read_bytes()
+            candidate.trust, "read_file", side_effect=readonly_test_reader
         ):
             return candidate.candidate_blobs(folder)
 
