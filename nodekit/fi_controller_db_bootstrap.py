@@ -151,7 +151,7 @@ def environment():
         for line in content.decode("ascii").splitlines():
             if line.count("=")<1:halt("unexpected_registrar_environment")
             key,val=line.split("=",1)
-            if not re.fullmatch(r"[A-Z_]+",key) or key in values:
+            if not re.fullmatch(r"[A-Z0-9_]+",key) or key in values:
                 halt("unexpected_registrar_environment")
             values[key]=val
         url=values.get("DATABASE_URL","")
