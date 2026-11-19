@@ -6,6 +6,8 @@ name: FI217 signed AWG grant revoke offline canary (no clients)
       - .github/workflows/fi-awg-signed-offline-canary.yml
       - nodekit/fi_awg_signed_canary.py
       - nodekit/fi_awg_node_attestation.py
+      - nodekit/fi_awg_applied_disposable_canary.py
+      - nodekit/tests/test_fi_awg_applied_disposable_canary.py
       - nodekit/fi_awg_node_pool_stage.py
       - nodekit/tests/test_fi_awg_node_pool_stage.py
       - nodekit/fi_awg_pool_readonly_inventory.py
@@ -15,7 +17,7 @@ name: FI217 signed AWG grant revoke offline canary (no clients)
 permissions:
   contents: read
 concurrency:
-  group: fi217-awg-offline-nonpublishing-canary
+  group: mnebyvpn-fleet-fi
   cancel-in-progress: false
 jobs:
   check:
@@ -30,7 +32,8 @@ jobs:
       - name: Test disposable Ed25519 commands offline
         run: |
           set -Eeuo pipefail
-          python3 -m py_compile nodekit/fi_awg_signed_canary.py nodekit/fi_awg_node_attestation.py nodekit/fi_awg_node_pool_stage.py nodekit/fi_awg_pool_readonly_inventory.py
+          python3 -m py_compile nodekit/fi_awg_signed_canary.py nodekit/fi_awg_node_attestation.py nodekit/fi_awg_node_pool_stage.py nodekit/fi_awg_pool_readonly_inventory.py nodekit/fi_awg_applied_disposable_canary.py
+          python3 -m unittest discover -s nodekit/tests -p 'test_fi_awg_applied_disposable_canary.py' -v
           python3 -m unittest discover -s nodekit/tests -p 'test_fi_awg_pool_readonly_inventory.py' -v
           python3 -m unittest discover -s nodekit/tests -p 'test_fi_awg_node_pool_stage.py' -v
           python3 -m unittest discover -s nodekit/tests -p 'test_fi_awg_signed_canary.py' -v
@@ -287,4 +290,22 @@ jobs:
           [[ "$second_pool" == "$first_pool" ]] || exit 2
           echo 'FI_AWG_NODE_POOL=STAGED;PRODUCTION_E2E_VERIFIED=false;AWG_WORKER_STARTED=false;CUSTOMER_RELEASE=false'
           export SSHPASS="$FI_SSH_PASSWORD"
-          echo 'FI_AWG_CLIENT_RELEASE_UNCHANGED=true;CANARY_PEERS_INSTALLED=false'
+          # Final, deliberately synthetic *live apply* canary. Obtain a FRESH
+          # 120-second RU signature; the disposable peer has no private key.
+          # FI must arm an independent TTL kill timer before starting AWG and
+          # offline expiry watchdog, and must revoke/clean the peer itself.
+          export SSHPASS="$RU_SSH_PASSWORD"
+          sshpass -e ssh -T -F "$work/ru-ssh-config" ru-controller \
+            'python3 - --mode issue' < nodekit/fi_awg_signed_canary.py > "$work/apply-signed.json"
+          chmod 0600 "$work/apply-signed.json"
+          export SSHPASS="$FI_SSH_PASSWORD"
+          sshpass -e scp -F "$work/fi-ssh-config" \
+            nodekit/fi_awg_applied_disposable_canary.py nodekit/install_awg_watchdog.py \
+            "$work/apply-signed.json" "fi-node:$remote_dir/"
+          remote "chmod 0600 '$remote_dir/fi_awg_applied_disposable_canary.py' '$remote_dir/install_awg_watchdog.py' '$remote_dir/apply-signed.json'; python3 '$remote_dir/fi_awg_applied_disposable_canary.py' --mode run-fi --signed '$remote_dir/apply-signed.json'" > "$work/applied.json"
+          chmod 0600 "$work/applied.json"
+          python3 nodekit/fi_awg_applied_disposable_canary.py --mode verify-runner \
+            --signed "$work/apply-signed.json" --reply "$work/applied.json" \
+            --node-public "$work/fi-node-public.spki"
+          remote 'set -eu; ! systemctl is-active --quiet mnebyvpn-nodekit-awg@fi-test-01.service; ! systemctl is-active --quiet mnebyvpn-nodekit-awg-watchdog@fi-test-01.service; test ! -e /sys/class/net/awg0'
+          echo 'FI_AWG_CLIENT_RELEASE_UNCHANGED=true;CANARY_PEERS_REMAINING=false;TEST_ONLY_PEER_ROLLED_BACK=true'
