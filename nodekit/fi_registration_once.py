@@ -267,6 +267,14 @@ def main() -> int:
         # Use identical application and EnvironmentFile, with the same network,
         # host FS and capability restrictions as the reviewed static service.
         # This is a one-use privileged CONTROL operation, never client dataplane.
+        # Node resolves the TypeScript main module against its REAL release
+        # directory. Use that real path in argv[1], otherwise the controller's
+        # import.meta.url === pathToFileURL(process.argv[1]) guard silently
+        # returns false through /opt/.../current and exits 0 without enrolling.
+        release = Path("/opt/mnebyvpn-controller/current").resolve(strict=True)
+        if (not release.is_dir() or release.parent !=
+                Path("/opt/mnebyvpn-controller/releases")):
+            fail("trusted_controller_release_path_invalid")
         command = [
             "systemd-run", "--wait", "--pipe", "--collect", "--quiet",
             "--unit=mnebyvpn-fi-controller-transient", "--service-type=exec",
@@ -289,8 +297,8 @@ def main() -> int:
             "--property=UMask=0077",
             "--property=TasksMax=64", "--property=MemoryMax=256M",
             "--property=TimeoutStartSec=75s",
-            "/opt/mnebyvpn-controller/current/bin/node", "--experimental-strip-types",
-            "/opt/mnebyvpn-controller/current/apps/service/src/fi-enrollment-controller.ts",
+            str(release / "bin/node"), "--experimental-strip-types",
+            str(release / "apps/service/src/fi-enrollment-controller.ts"),
         ]
         output = execute(command, timeout=90)
         applied = db_state(expected)
