@@ -339,7 +339,7 @@ has_table_privilege('{ROLE}','public.{table}','DELETE')::text;
 
 
 def verify_login(password: str) -> None:
-    """Proof that the protected env actually authenticates as this one role."""
+    """Prove scoped role login and SELECT; do NOT grant row-lock permissions."""
     runtime = Path("/opt/mnebyvpn-controller/current/bin/node")
     package = Path("/opt/mnebyvpn-controller/current/node_modules/pg/lib/index.js")
     if not runtime.is_file() or not package.is_file():
@@ -356,12 +356,14 @@ try {
   if(result.rows.length!==1||result.rows[0].role_name!=='mnebyvpn_awg_delivery'||
      result.rows[0].db_name!=='mnebyvpn_stage')
     throw Error('Unexpected authenticated database role');
-  phase='row_share';
-  // Plain transaction required: PostgreSQL forbids row locks in READ ONLY mode.
-  // No mutation is performed; the transaction is always rolled back.
+  phase='read_permissions';
+  // PostgreSQL FOR SHARE needs UPDATE privilege on at least one column.
+  // Never grant that privilege to this worker on billing or inventory.
+  // This stage verifies SELECT only; trusted row locking will require a
+  // separately reviewed SECURITY DEFINER gateway before worker activation.
   await client.query('BEGIN');
   for(const table of ['entitlements','vpn_node_enrollment_inventory','vpn_awg_node_pools'])
-    await client.query('SELECT * FROM public.'+table+' LIMIT 0 FOR SHARE');
+    await client.query('SELECT * FROM public.'+table+' LIMIT 0');
   await client.query('ROLLBACK');
 } catch (e) {
   const code=typeof e?.code==='string'&&/^[0-9A-Z]{5}$/.test(e.code)?e.code:'unclassified';
@@ -385,7 +387,7 @@ try {
         # or secrets. Only the exact bounded phase + SQLSTATE allowlist.
         for line in result.stderr.decode("ascii",errors="replace").splitlines():
             if re.fullmatch(
-                r"FI_AWG_DB_LOGIN_CHECK_PHASE=(import|connect|identity|row_share);"
+                r"FI_AWG_DB_LOGIN_CHECK_PHASE=(import|connect|identity|read_permissions);"
                 r"PG_CODE=([0-9A-Z]{5}|unclassified)",line):
                 print(line, file=sys.stderr)
         stop("dedicated_awg_db_role_login_or_share_lock_failed")
@@ -421,7 +423,7 @@ def main() -> None:
     verify_login(password)
     print("FI_AWG_DB_ROLE=scoped;BILLING_WRITES=denied;"
           "NODE_INVENTORY_WRITES=denied;AWG_WORKER=disabled;"
-          "SUBSCRIBERS_PUBLISHED=false;RECOVERED=" + str(recovered).lower() +
+          "ROW_LOCK_GATEWAY_READY=false;SUBSCRIBERS_PUBLISHED=false;RECOVERED=" + str(recovered).lower() +
           ";IDEMPOTENT=" + str(already and not recovered).lower())
 
 

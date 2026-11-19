@@ -101,6 +101,11 @@ class FiAwgDbRoleStageTests(unittest.TestCase):
         with mock.patch.object(stage,"sql",side_effect=permissions):
             stage.verify_privileges()
         self.assertNotIn("BEGIN READ ONLY",source)
+        self.assertIn("ROW_LOCK_GATEWAY_READY=false",source)
+        self.assertIn("phase='read_permissions'",source)
+        self.assertNotIn("LIMIT 0 FOR SHARE",source)
+        self.assertIn("SELECT * FROM public.'+table+' LIMIT 0",source)
+        self.assertNotIn("GRANT UPDATE ON public.entitlements",source)
 
 
     def test_run_state_has_no_automatic_subscription_activation(self):
