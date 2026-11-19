@@ -122,6 +122,20 @@ class AppliedCanaryTests(unittest.TestCase):
         self.assertIn('phase("CLEANUP_"+label+"_STATE_"+state.upper())', self.src)
         self.assertIn('return timer.returncode==0 and state=="inactive"', self.src)
 
+    def test_postcanary_residual_inventory_remains_read_only(self):
+        with mock.patch.object(mod, "LEDGER") as ledger:
+            ledger.is_symlink.return_value = False
+            ledger.exists.return_value = False
+            self.assertEqual(mod.residual_ledger_status(), "ABSENT")
+            ledger.read_bytes.assert_not_called()
+            ledger.unlink.assert_not_called()
+        self.assertIn('phase("PREFLIGHT_LEDGER_"+ledger_status)', self.src)
+        self.assertIn('phase("PREFLIGHT_INTERFACE_"+', self.src)
+        self.assertIn('states[label]=systemd_active_state(unit)', self.src)
+        self.assertIn('return "ONLY_REVOKED_DISPOSABLE"', self.src)
+        self.assertIn('return "OTHER_ENTITLEMENTS_PRESENT"', self.src)
+        self.assertIn('block("existing_awg_or_expiry_timer")', self.src)
+
     def test_verified_node_receipts_are_real_applied_domain(self):
         with tempfile.TemporaryDirectory() as folder:
             tmp=Path(folder)

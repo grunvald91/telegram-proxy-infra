@@ -73,6 +73,26 @@ def call_or_block(args:list[str],reason:str,timeout:int=20)->str:
         block(reason)
     return result.stdout
 
+def residual_ledger_status() -> str:
+    """Read-only summary: never print entitlement IDs or public peer keys."""
+    if LEDGER.is_symlink():
+        return "SYMLINK_UNTRUSTED"
+    if not LEDGER.exists():
+        return "ABSENT"
+    try:
+        from awg_peer_grants import validate_state
+        state = validate_state(json.loads(canary.protected(LEDGER, 50000)), NODE)
+        rows = list(state["grants"].values())
+        if not rows:
+            return "VALID_EMPTY"
+        if (len(rows) == 1 and rows[0]["clientIpv4"] == CLIENT_IP and
+            rows[0]["enabled"] is False and rows[0]["expiresAt"] is None and
+            rows[0]["revision"] == 2):
+            return "ONLY_REVOKED_DISPOSABLE"
+        return "OTHER_ENTITLEMENTS_PRESENT"
+    except (OSError,ValueError,TypeError,KeyError):
+        return "UNVERIFIED"
+
 def preflight(bundle:Path)->dict:
     if not canary.is_host(canary.FI_IP):
         block("not_pinned_fi217_root")
@@ -83,15 +103,22 @@ def preflight(bundle:Path)->dict:
     from awg_lifecycle import validate
     validate(canary.FI_NODE)
     phase("STAGED_AWG_INTEGRITY_VERIFIED")
+    states={}
     for label,unit in (("AWG",UNIT),("WATCHDOG",WATCHDOG),("TIMER",TIMER+".timer")):
-        state=systemd_active_state(unit)
-        phase("PREFLIGHT_"+label+"_STATE_"+state.upper())
-        if state != "inactive":
-            block("existing_awg_or_expiry_timer")
+        states[label]=systemd_active_state(unit)
+        phase("PREFLIGHT_"+label+"_STATE_"+states[label].upper())
+    # Report ALL residual categories before blocking: a failed systemd unit
+    # must never hide whether the previous disposable ledger survived.
+    interface_present=Path("/sys/class/net/awg0").exists()
+    ledger_status=residual_ledger_status()
+    phase("PREFLIGHT_INTERFACE_"+("PRESENT" if interface_present else "ABSENT"))
+    phase("PREFLIGHT_LEDGER_"+ledger_status)
+    if any(state != "inactive" for state in states.values()):
+        block("existing_awg_or_expiry_timer")
     phase("SYSTEMD_DORMANT_VERIFIED")
-    if LEDGER.exists() or LEDGER.is_symlink():
+    if ledger_status != "ABSENT":
         block("existing_awg_peer_ledger")
-    if Path("/sys/class/net/awg0").exists():
+    if interface_present:
         block("unexpected_live_awg_interface")
     data=json.loads(canary.protected(bundle,6000))
     if (data["grant"]["peerPublicKey"] != data["revoke"]["peerPublicKey"] or
