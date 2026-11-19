@@ -324,3 +324,68 @@ class FiRegistrationGateTests(TestCase):
         ):
             with self.assertRaises(registration.GateError):
                 registration.await_expiration_once()
+
+    def test_shortened_signed_db_challenge_preserves_one_use_proof_fields(self):
+        """Exercise the exact embedded JS transport adapter with disposable keys."""
+        import shutil
+        import subprocess
+        if not shutil.which("node"):
+            self.skipTest("Node.js unavailable")
+        source=registration.FI_SIGNED_ENROLL_JS
+        start=source.index("function shortenSignedChallenge(")
+        end=source.index("\nlet db;",start)
+        function=source[start:end]
+        harness=r"""
+import assert from 'node:assert/strict';
+import {generateKeyPairSync,createPublicKey,sign,verify} from 'node:crypto';
+const spawnSync=(bin,args,options)=>({status:0,stdout:options.input,stderr:''});
+const enrollmentControllerChallengeMessage=(c)=>Buffer.from(JSON.stringify([
+  'MNEBYVPN_ENROLL_CHALLENGE_V1',
+  c.nodeId,c.endpointHost,c.publicSpki,c.challengeId,c.nonce,
+  c.expiresAt.toISOString()
+]));
+"""
+        harness += function
+        harness += r"""
+const keys=generateKeyPairSync('ed25519');
+const challenge={
+  challengeId:'a73995b5-3b77-4cb4-8048-4f35d369b283',
+  nodeId:'fi-test-01',
+  endpointHost:'fi.mnebyvpn.site',
+  publicSpki:'A'.repeat(59),
+  nonce:'B'.repeat(43),
+  expiresAt:new Date(Date.now()+299000).toISOString()
+};
+challenge.controllerSignature=sign(null,enrollmentControllerChallengeMessage({
+  ...challenge,expiresAt:new Date(challenge.expiresAt)
+}),keys.privateKey).toString('base64url');
+const original=JSON.stringify(challenge)+'\n';
+const result=shortenSignedChallenge('/usr/bin/ssh',['-F','/dev/null'],{
+  input:original,encoding:'utf8',timeout:20000,maxBuffer:2048
+},keys.privateKey);
+const revised=JSON.parse(result.stdout);
+assert.equal(revised.challengeId,challenge.challengeId);
+assert.equal(revised.nonce,challenge.nonce);
+assert.equal(revised.nodeId,challenge.nodeId);
+assert.equal(revised.publicSpki,challenge.publicSpki);
+assert.ok(Date.parse(revised.expiresAt)<=Date.now()+150000);
+assert.ok(Date.parse(revised.expiresAt)>Date.now()+140000);
+assert.ok(verify(null,enrollmentControllerChallengeMessage({
+  ...revised,expiresAt:new Date(revised.expiresAt)
+}),createPublicKey(keys.privateKey),Buffer.from(revised.controllerSignature,'base64url')));
+assert.notEqual(revised.controllerSignature,challenge.controllerSignature);
+assert.equal(challenge.expiresAt,JSON.parse(original).expiresAt);
+const tampered={...challenge,nonce:'C'.repeat(43)};
+assert.throws(()=>shortenSignedChallenge('/usr/bin/ssh',[],{
+  input:JSON.stringify(tampered),encoding:'utf8'
+},keys.privateKey),/untrusted/);
+assert.throws(()=>shortenSignedChallenge('/usr/bin/bash',[],{
+  input:original,encoding:'utf8'
+},keys.privateKey),/transport/);
+console.log('FI_SIGNED_TTL_TEST=passed');
+"""
+        result=subprocess.run(["node","--input-type=module"],
+                              input=harness,capture_output=True,text=True,timeout=15)
+        self.assertEqual(result.returncode,0,
+                         "Synthetic Ed25519 shortened challenge verification failed")
+        self.assertIn("FI_SIGNED_TTL_TEST=passed",result.stdout)

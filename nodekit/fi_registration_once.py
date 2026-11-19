@@ -118,6 +118,8 @@ def execute(args: list[str], timeout: int = 12) -> str:
 FI_SIGNED_ENROLL_JS = r"""
 import {realpathSync} from 'node:fs';
 import {pathToFileURL} from 'node:url';
+import {createPublicKey,sign,verify} from 'node:crypto';
+import {spawnSync} from 'node:child_process';
 
 const RELEASE=realpathSync('/opt/mnebyvpn-controller/current');
 if (!/^\/opt\/mnebyvpn-controller\/releases\/[a-f0-9]{40}$/.test(RELEASE))
@@ -128,6 +130,8 @@ const {trustedControllerKey}=await import(moduleAt(
     'apps/service/src/awg-controller-delivery-worker.ts'));
 const {enrollApprovedFiNode}=await import(moduleAt(
     'packages/provisioning/src/fi-enrollment-ssh.ts'));
+const {enrollmentControllerChallengeMessage}=await import(moduleAt(
+    'packages/provisioning/src/node-enrollment.ts'));
 if (process.env.MNEBYVPN_ENV!=='production' ||
     process.env.MNEBYVPN_FI_ENROLLMENT!=='enabled' ||
     !/^postgres(?:ql)?:\/\//.test(process.env.DATABASE_URL||''))
@@ -151,6 +155,56 @@ const recognized = new Map([
   ['Untrusted controller signing-key ancestry','controller_signer_unavailable'],
   ['FI node public identity differs from approved inventory','fi_identity_untrusted'],
 ]);
+
+// The DB's five-minute one-use lifetime remains unchanged. The signed SSH
+// challenge sent to FI gets a SHORTER lifetime already proven by a live signed
+// canary. This prevents small RU/DB/FI clock differences from breaching FI's
+// strict "expiresAt <= now+5 min" bound. Only the trusted RU188 signer can
+// change the expiry: verify the ORIGINAL controller signature before resigning.
+function shortenSignedChallenge(binary,args,options,controllerKey) {
+  if (binary!=='/usr/bin/ssh' || !Array.isArray(args) ||
+      options?.encoding!=='utf8' || typeof options.input!=='string' ||
+      Buffer.byteLength(options.input)>2048)
+    throw Error('Unexpected FI SSH challenge transport');
+  let source;
+  try {source=JSON.parse(options.input);} catch {
+    throw Error('Invalid controller challenge transport');
+  }
+  const keys=['challengeId','controllerSignature','endpointHost','expiresAt',
+              'nodeId','nonce','publicSpki'];
+  if (!source || typeof source!=='object' || Array.isArray(source) ||
+      Object.keys(source).length!==keys.length ||
+      keys.some(k=>!Object.hasOwn(source,k)) ||
+      source.nodeId!=='fi-test-01' ||
+      source.endpointHost!=='fi.mnebyvpn.site' ||
+      typeof source.expiresAt!=='string' ||
+      !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(source.expiresAt))
+    throw Error('Unexpected controller signed challenge identity');
+  const now=Date.now();
+  const originalExpiry=new Date(source.expiresAt);
+  if (!Number.isFinite(originalExpiry.getTime()) ||
+      originalExpiry.getTime()<=now+30_000 ||
+      originalExpiry.getTime()>now+330_000)
+    throw Error('Controller challenge expiry outside bounded five-minute window');
+  const oldSignature=Buffer.from(source.controllerSignature||'','base64url');
+  const canonicalOld=enrollmentControllerChallengeMessage({
+    ...source,expiresAt:originalExpiry
+  });
+  if (oldSignature.length!==64 ||
+      !verify(null,canonicalOld,createPublicKey(controllerKey),oldSignature))
+    throw Error('Original controller-signed DB challenge untrusted');
+  const revisedExpiry=new Date(Math.min(originalExpiry.getTime(),now+150_000));
+  if (revisedExpiry.getTime()<=now+30_000)
+    throw Error('Refusing expired or short-lived FI signed challenge');
+  const revised={...source,expiresAt:revisedExpiry.toISOString()};
+  revised.controllerSignature=sign(null,enrollmentControllerChallengeMessage({
+    ...revised,expiresAt:revisedExpiry
+  }),controllerKey).toString('base64url');
+  // Never include the signed challenge or proof in stdout, diagnostics or
+  // subscriber-facing paths. A valid proof still requires DB one-use consume.
+  return spawnSync(binary,args,{...options,input:JSON.stringify(revised)+'\n'});
+}
+
 let db;
 try {
   const signer=trustedControllerKey(
@@ -162,7 +216,7 @@ try {
     sshIdentityFile:process.env.FI_ENROLL_SSH_KEY_FILE||'',
     pinnedKnownHostsFile:process.env.FI_ENROLL_KNOWN_HOSTS_FILE||'',
     approvedNodePublicSpkiFile:process.env.FI_ENROLL_NODE_PUBLIC_SPKI_FILE||'',
-  });
+  },(binary,args,options)=>shortenSignedChallenge(binary,args,options,signer));
   if (result.state!=='testing'||result.published!==false)
     throw Error('Unexpected FI enrollment state');
   process.stdout.write('FI_ENROLLMENT=testing;SUBSCRIBER_PUBLICATION=false\n');
