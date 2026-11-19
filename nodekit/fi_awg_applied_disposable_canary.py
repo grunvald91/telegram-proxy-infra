@@ -92,9 +92,38 @@ def preflight(bundle:Path)->dict:
     phase("DISPOSABLE_PREFLIGHT_PASSED")
     return data
 
+def watchdog_file_state(path: Path, expected: bytes) -> str:
+    """Read-only, non-secret diagnostic for an immutable installation target."""
+    if path.is_symlink():
+        return "SYMLINK"
+    if not path.exists():
+        return "MISSING"
+    if not path.is_file():
+        return "NOT_FILE"
+    info = path.stat()
+    if info.st_uid != 0 or info.st_mode & 0o022:
+        return "UNTRUSTED"
+    return "MATCH" if path.read_bytes() == expected else "DRIFT"
+
 def install_watchdog()->None:
-    from install_awg_watchdog import install
-    install(canary.FI_NODE,Path(__file__).with_name("awg_peer_grants.py"))
+    from install_awg_watchdog import install, unit, UNIT
+    source = Path(__file__).with_name("awg_peer_grants.py")
+    # Check existing on-disk assets *without* rewriting either one.
+    # Only bounded fixed enum names are printed: no source, paths or hashes.
+    source_ready = (source.is_file() and not source.is_symlink() and
+                    source.stat().st_uid == 0)
+    phase("WATCHDOG_SOURCE_" + ("TRUSTED" if source_ready else "UNTRUSTED"))
+    if not source_ready:
+        block("watchdog_source_untrusted")
+    installed_authorizer = watchdog_file_state(APP, source.read_bytes())
+    installed_unit = watchdog_file_state(UNIT, unit().encode())
+    phase("WATCHDOG_AUTHORIZER_" + installed_authorizer)
+    phase("WATCHDOG_SYSTEMD_UNIT_" + installed_unit)
+    if installed_authorizer not in ("MISSING", "MATCH"):
+        block("watchdog_authorizer_install_drift")
+    if installed_unit not in ("MISSING", "MATCH"):
+        block("watchdog_systemd_unit_install_drift")
+    install(canary.FI_NODE, source)
     if not APP.is_file() or APP.is_symlink():
         block("missing_installed_awg_authorizer")
 
