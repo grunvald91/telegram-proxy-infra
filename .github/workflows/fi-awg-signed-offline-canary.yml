@@ -8,6 +8,8 @@ name: FI217 signed AWG grant revoke offline canary (no clients)
       - nodekit/fi_awg_node_attestation.py
       - nodekit/fi_awg_node_pool_stage.py
       - nodekit/tests/test_fi_awg_node_pool_stage.py
+      - nodekit/fi_awg_pool_readonly_inventory.py
+      - nodekit/tests/test_fi_awg_pool_readonly_inventory.py
       - nodekit/tests/test_fi_awg_node_attestation.py
   workflow_dispatch:
 permissions:
@@ -28,7 +30,8 @@ jobs:
       - name: Test disposable Ed25519 commands offline
         run: |
           set -Eeuo pipefail
-          python3 -m py_compile nodekit/fi_awg_signed_canary.py nodekit/fi_awg_node_attestation.py nodekit/fi_awg_node_pool_stage.py
+          python3 -m py_compile nodekit/fi_awg_signed_canary.py nodekit/fi_awg_node_attestation.py nodekit/fi_awg_node_pool_stage.py nodekit/fi_awg_pool_readonly_inventory.py
+          python3 -m unittest discover -s nodekit/tests -p 'test_fi_awg_pool_readonly_inventory.py' -v
           python3 -m unittest discover -s nodekit/tests -p 'test_fi_awg_node_pool_stage.py' -v
           python3 -m unittest discover -s nodekit/tests -p 'test_fi_awg_signed_canary.py' -v
           python3 -m unittest discover -s nodekit/tests -p 'test_fi_awg_node_attestation.py' -v
@@ -246,7 +249,11 @@ jobs:
           # NOT a verification of current external egress: no clients.
           export SSHPASS="$FI_SSH_PASSWORD"
           sshpass -e scp -F "$work/fi-ssh-config" \
-            nodekit/fi_awg_node_pool_stage.py "fi-node:$remote_dir/"
+            nodekit/fi_awg_node_pool_stage.py nodekit/fi_awg_pool_readonly_inventory.py \
+            "fi-node:$remote_dir/"
+          pool_inventory=$(remote "python3 '$remote_dir/fi_awg_pool_readonly_inventory.py'")
+          [[ "$pool_inventory" =~ ^FI_AWG_POOL_PERSISTENT_MANIFEST=PASS\;NODE=fi-test-01\;SUBNET=10[.]73[.]91[.]0/24\;PUBLIC_KEY_SHA256=[a-f0-9]{64}\;PRODUCTION_PROOF=false\;AWG_STARTED=false\;CUSTOMER_RELEASE=false$ ]] || exit 2
+          echo "$pool_inventory"
           remote "python3 '$remote_dir/fi_awg_node_pool_stage.py' --mode export-fi" > "$work/fi-pool.json"
           chmod 0600 "$work/fi-pool.json"
           python3 - "$work/fi-pool.json" <<'PYPOOL'
