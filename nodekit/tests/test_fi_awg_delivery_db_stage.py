@@ -2,6 +2,7 @@
 import importlib.util
 from pathlib import Path
 import re
+import tempfile
 import unittest
 from unittest import mock
 
@@ -52,10 +53,10 @@ class FiAwgDbRoleStageTests(unittest.TestCase):
         assert "GRANT UPDATE ON public.vpn_node_enrollment_inventory" not in text
 
     def test_existing_role_without_env_must_refuse_takeover(self):
-        with mock.patch.object(stage,"preflight"), \
+        with tempfile.TemporaryDirectory() as temp, \
+             mock.patch.object(stage,"ENV",Path(temp)/"missing.env"), \
+             mock.patch.object(stage,"preflight"), \
              mock.patch.object(stage,"role_exists",return_value=True), \
-             mock.patch.object(stage.ENV,"exists",return_value=False), \
-             mock.patch.object(stage.ENV,"is_symlink",return_value=False), \
              mock.patch.object(stage,"sql") as sql:
             with self.assertRaises(stage.StageError):
                 stage.main()
