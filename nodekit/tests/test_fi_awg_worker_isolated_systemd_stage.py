@@ -36,7 +36,7 @@ class FiIsolatedSystemdStageTests(unittest.TestCase):
             "os.O_EXCL", "os.O_NOFOLLOW",
             '"daemon-reload"',
             "FI_AWG_ISOLATED_SYSTEMD=STAGED",
-            "UNIT_DISABLED=true;WORKER_STARTED=false;CUSTOMER_RELEASE=false",
+            "UNIT_ENABLED=false;WORKER_STARTED=false;CUSTOMER_RELEASE=false",
         ):
             with self.subTest(expected=expected):
                 self.assertIn(expected, self.text)
