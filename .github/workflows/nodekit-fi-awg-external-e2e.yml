@@ -53,7 +53,7 @@ jobs:
           mkdir -m 0700 "$tmp"
           known="$tmp/known"
           [[ -n "$RU_PASSWORD" ]] || { echo "::error::Controller trust transport not configured"; exit 2; }
-          grep -q '^188\\.120\\.254\\.223 ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts
+          grep -q '^188\.120\.254\.223 ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts
           # FI host trust was previously pinned on RU188. Retrieve only its
           # public key over independently pinned RU188 SSH; never keyscan FI.
           SSHPASS="$RU_PASSWORD" sshpass -e ssh -T -F /dev/null \
@@ -69,12 +69,12 @@ jobs:
           python3 - "$known" <<'PY'
           import base64,pathlib,sys
           raw=pathlib.Path(sys.argv[1]).read_bytes()
-          assert len(raw)<512 and raw.endswith(b"\\n") and raw.count(b"\\n")==1
+          assert len(raw)<512 and raw.endswith(b"\n") and raw.count(b"\n")==1
           name,kind,key=raw.decode("ascii").strip().split()
           assert (name,kind)==("fi.mnebyvpn.site","ssh-ed25519")
           decoded=base64.b64decode(key,validate=True)
           assert (len(decoded)==51 and
-                  decoded.startswith(b"\\x00\\x00\\x00\\x0bssh-ed25519\\x00\\x00\\x00\\x20") and
+                  decoded.startswith(b"\x00\x00\x00\x0bssh-ed25519\x00\x00\x00\x20") and
                   base64.b64encode(decoded).decode()==key)
           PY
           ssh_opts=(-T -F /dev/null -o PubkeyAuthentication=no
