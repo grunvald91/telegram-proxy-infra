@@ -66,6 +66,9 @@ jobs:
               raw=src.read_bytes()
               if not 1<len(raw)<=65536 or not raw.endswith(b"\n"):
                   raise SystemExit(2)
+              # Verify the source against the independently pinned reviewed
+              # Git object, not just a self-consistent generated manifest.
+              candidate.verify_pinned_source_blob(name, raw)
               (work/name).write_bytes(raw)
               hashes[name]=hashlib.sha256(raw).hexdigest()
           manifest={"commit":candidate.CANDIDATE_COMMIT,"files":hashes}
