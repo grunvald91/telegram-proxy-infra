@@ -136,6 +136,70 @@ class AppliedCanaryTests(unittest.TestCase):
         self.assertIn('return "OTHER_ENTITLEMENTS_PRESENT"', self.src)
         self.assertIn('block("existing_awg_or_expiry_timer")', self.src)
 
+    def test_previous_revoked_disposable_is_archived_before_systemd_reset(self):
+        grant = self.build("grant", 1)
+        state = {"schema_version": 1, "node_id": issuer.NODE_ID,
+                 "grants": {grant["entitlementId"]: {
+                     "revision": 2, "peerPublicKey": grant["peerPublicKey"],
+                     "clientIpv4": issuer.IP, "enabled": False, "expiresAt": None}}}
+        with tempfile.TemporaryDirectory() as folder:
+            ledger = Path(folder) / "peer-grants.json"
+            ledger.write_text(json.dumps(state))
+            original = ledger.read_bytes()
+            reset = {"done": False}
+            def state_of(unit):
+                return ("inactive" if reset["done"] else "failed") if unit == mod.UNIT else "inactive"
+            def run(args, timeout=9):
+                if "reset-failed" in args:
+                    reset["done"] = True
+                return subprocess.CompletedProcess(args, 0, "", "")
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(mock.patch.object(mod, "LEDGER", ledger))
+                stack.enter_context(mock.patch.object(issuer, "is_host", return_value=True))
+                stack.enter_context(mock.patch.object(issuer, "protected",
+                    side_effect=lambda path, maximum=50000: path.read_bytes()))
+                stack.enter_context(mock.patch.object(mod, "systemd_active_state",
+                    side_effect=state_of))
+                stack.enter_context(mock.patch.object(mod, "command", side_effect=run))
+                stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
+                self.assertFalse(mod.recover_revoked_previous_canary(
+                    {"AWG":"active","WATCHDOG":"inactive","TIMER":"inactive"},
+                    False, "ONLY_REVOKED_DISPOSABLE"))
+                self.assertTrue(ledger.exists())
+                self.assertTrue(mod.recover_revoked_previous_canary(
+                    {"AWG":"failed","WATCHDOG":"inactive","TIMER":"inactive"},
+                    False, "ONLY_REVOKED_DISPOSABLE"))
+                self.assertFalse(ledger.exists())
+                backups=list(Path(folder).glob(".peer-grants.fi217-revoked-*.bak"))
+                self.assertEqual(len(backups), 1)
+                self.assertEqual(backups[0].read_bytes(), original)
+
+    def test_safe_cleanup_resets_failed_unit_only_after_exact_revoked_ledger(self):
+        grant = self.build("grant", 1)
+        state = {"schema_version": 1, "node_id": issuer.NODE_ID,
+                 "grants": {grant["entitlementId"]: {
+                     "revision": 2, "peerPublicKey": grant["peerPublicKey"],
+                     "clientIpv4": issuer.IP, "enabled": False, "expiresAt": None}}}
+        with tempfile.TemporaryDirectory() as folder:
+            ledger = Path(folder) / "peer-grants.json"
+            ledger.write_text(json.dumps(state))
+            command_args=[]
+            def run(args, timeout=20):
+                command_args.append(args)
+                return subprocess.CompletedProcess(args,0,"","")
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(mock.patch.object(mod,"LEDGER",ledger))
+                stack.enter_context(mock.patch.object(issuer,"protected",
+                    side_effect=lambda path, maximum=50000: path.read_bytes()))
+                stack.enter_context(mock.patch.object(mod,"systemd_active_state",
+                    side_effect=["inactive","failed","inactive","inactive"]))
+                stack.enter_context(mock.patch.object(mod,"command",side_effect=run))
+                stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
+                self.assertTrue(mod.safe_cleanup(grant))
+            self.assertFalse(ledger.exists())
+            self.assertTrue(any("reset-failed" in cmd for cmd in command_args))
+            self.assertTrue(any(mod.TIMER+".timer" in cmd for cmd in command_args))
+
     def test_verified_node_receipts_are_real_applied_domain(self):
         with tempfile.TemporaryDirectory() as folder:
             tmp=Path(folder)
