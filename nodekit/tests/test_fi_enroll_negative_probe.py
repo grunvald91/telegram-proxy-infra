@@ -40,7 +40,7 @@ class NegativeProbe(TestCase):
                   "fi.mnebyvpn.site ssh-ed25519 QQ==\n", "key"
               ]),
               mock.patch.object(m.subprocess,"run",return_value=result)):
-            with self.assertRaises(m.ValueError):
+            with self.assertRaises(ValueError):
                 m.run()
 
     def test_invalid_challenge_must_not_be_accepted(self):
@@ -50,5 +50,5 @@ class NegativeProbe(TestCase):
                   "fi.mnebyvpn.site ssh-ed25519 QQ==\n", "key"
               ]),
               mock.patch.object(m.subprocess,"run",return_value=result)):
-            with self.assertRaises(m.ValueError):
+            with self.assertRaises(ValueError):
                 m.run()
