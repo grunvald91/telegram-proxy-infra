@@ -80,7 +80,9 @@ def trusted_dir(path: Path, *, private: bool = True) -> None:
 
 
 def protected(path: Path, bound: int = 8192) -> bytes:
-    trusted_dir(path.parent)
+    # The root-owned application directory may be 0755; unlike secrets, its
+    # reviewed executable must not require a private (0700) parent on rerun.
+    trusted_dir(path.parent, private=path.parent != HANDLER_PATH.parent)
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
     except OSError:
