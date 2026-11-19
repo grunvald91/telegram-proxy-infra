@@ -110,3 +110,12 @@ class FiAwgDbRoleStageTests(unittest.TestCase):
         assert "vpn_release_flags" in code  # SELECT-only grant
         assert "APPROVAL.exists()" in code
         assert "APPROVAL.unlink" not in code
+
+    def test_role_login_audit_exposes_only_phase_and_code(self):
+        source=SOURCE.read_text()
+        self.assertIn("current_user AS role_name",source)
+        self.assertNotIn("current_user AS user",source)
+        self.assertIn("FI_AWG_DB_LOGIN_CHECK_PHASE=",source)
+        self.assertIn("PG_CODE=",source)
+        self.assertIn('re.fullmatch(',source)
+        self.assertNotIn('print(result.stderr',source)
