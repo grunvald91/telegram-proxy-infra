@@ -92,11 +92,11 @@ class AppliedCanaryTests(unittest.TestCase):
         old, new = b"approved-legacy-sample", b"candidate-sample"
         sha_old, sha_new = hashlib.sha256(old).hexdigest(), hashlib.sha256(new).hexdigest()
         self.assertFalse(mod.authorizer_upgrade_allowed(old, new))
-        with mock.patch.object(mod, "LEGACY_AUTHORIZER_SHA256", sha_old), \\
-             mock.patch.object(mod, "CANDIDATE_AUTHORIZER_SHA256", sha_new):
-            self.assertTrue(mod.authorizer_upgrade_allowed(old, new))
-            self.assertFalse(mod.authorizer_upgrade_allowed(b"unknown", new))
-            self.assertFalse(mod.authorizer_upgrade_allowed(old, b"unknown"))
+        with mock.patch.object(mod, "LEGACY_AUTHORIZER_SHA256", sha_old):
+            with mock.patch.object(mod, "CANDIDATE_AUTHORIZER_SHA256", sha_new):
+                self.assertTrue(mod.authorizer_upgrade_allowed(old, new))
+                self.assertFalse(mod.authorizer_upgrade_allowed(b"unknown", new))
+                self.assertFalse(mod.authorizer_upgrade_allowed(old, b"unknown"))
         for required in ("os.O_EXCL", "os.O_NOFOLLOW", "os.fsync(",
                          "os.replace(", "authorizer_upgrade_backup_already_exists",
                          "authorizer_upgrade_service_enabled",
