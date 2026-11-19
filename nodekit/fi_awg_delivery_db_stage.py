@@ -240,8 +240,8 @@ SELECT has_table_privilege('{ROLE}','public.{table}','SELECT')::text,
     for table in ("vpn_awg_peer_allocations", "vpn_awg_command_outbox"):
         permissions = sql(f"""
 SELECT has_table_privilege('{ROLE}','public.{table}','SELECT')::text,
-  has_table_privilege('{ROLE}','public.{table}','INSERT')::text,
-  has_table_privilege('{ROLE}','public.{table}','UPDATE')::text,
+  has_any_column_privilege('{ROLE}','public.{table}','INSERT')::text,
+  has_any_column_privilege('{ROLE}','public.{table}','UPDATE')::text,
   has_table_privilege('{ROLE}','public.{table}','DELETE')::text;
 """)
         if permissions != "true|true|true|false":
@@ -338,23 +338,79 @@ has_table_privilege('{ROLE}','public.{table}','DELETE')::text;
     print("FI_AWG_DB_INSPECT_WORKER=off;SUBSCRIBERS_PUBLISHED=false")
 
 
+def verify_login(password: str) -> None:
+    """Proof that the protected env actually authenticates as this one role."""
+    runtime = Path("/opt/mnebyvpn-controller/current/bin/node")
+    package = Path("/opt/mnebyvpn-controller/current/node_modules/pg/lib/index.js")
+    if not runtime.is_file() or not package.is_file():
+        stop("existing_controller_node_pg_runtime_missing")
+    js = """
+import pg from '/opt/mnebyvpn-controller/current/node_modules/pg/lib/index.js';
+const client = new pg.Client({connectionString:process.env.DATABASE_URL,connectionTimeoutMillis:3500});
+try {
+  await client.connect();
+  const result=await client.query('SELECT current_user AS user,current_database() AS db');
+  if(result.rows.length!==1||result.rows[0].user!=='mnebyvpn_awg_delivery'||
+     result.rows[0].db!=='mnebyvpn_stage')
+    throw Error('Unexpected authenticated database role');
+  // The next deployed controller worker uses FOR SHARE, not FOR UPDATE, on
+  // billing and inventory rows. Confirm the scoped role can use those locks.
+  await client.query('BEGIN READ ONLY');
+  for(const table of ['entitlements','vpn_node_enrollment_inventory','vpn_awg_node_pools'])
+    await client.query('SELECT * FROM public.'+table+' LIMIT 0 FOR SHARE');
+  await client.query('ROLLBACK');
+} catch {
+  process.exitCode=2;
+} finally {
+  await client.end().catch(()=>{process.exitCode=2;});
+}
+"""
+    env = dict(os.environ)
+    env["DATABASE_URL"] = CANONICAL_URL_PREFIX + password + CANONICAL_URL_SUFFIX
+    try:
+        result = subprocess.run(
+            [str(runtime), "--input-type=module", "-e", js],
+            capture_output=True, timeout=16, check=False, env=env,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        stop("dedicated_awg_db_role_login_unavailable")
+    if result.returncode != 0:
+        # Never print stderr which might include connection credentials.
+        stop("dedicated_awg_db_role_login_or_share_lock_failed")
+
+
 def main() -> None:
     preflight()
-    if role_exists() and not (ENV.exists() or ENV.is_symlink()):
-        stop("existing_awg_role_without_protected_config")
-    password, created_env = environment()
-    try:
-        sql(grant_sql(password, not role_exists()))
+    already = role_exists()
+    missing_env = not (ENV.exists() or ENV.is_symlink())
+    if already and missing_env:
+        # Recovery ONLY for the exact known scoped role with no memberships,
+        # no billing/node writes and precisely the expected AWG column ACLs.
+        # This repairs the previous partially committed bootstrap, not an
+        # arbitrary existing PostgreSQL role. Never escalate this role.
         verify_privileges()
-    except BaseException:
-        # On SQL failure the transaction rolls back. Never orphan a fresh
-        # environment file with credentials that have not been verified.
-        if created_env:
+        password, created_env = environment()
+        try:
+            sql(f"ALTER ROLE {ROLE} PASSWORD '{password}';")
+        except BaseException:
+            # No release marker exists and worker remains disabled.
+            # Future retries may safely perform the same guarded recovery.
             ENV.unlink(missing_ok=True)
-        raise
+            raise
+        recovered = True
+    else:
+        password, created_env = environment()
+        # Keep the root-only env on post-commit errors. If PostgreSQL committed
+        # before the final check, deleting it leaves an unrecoverable role.
+        # If SQL rolled back, a retry creates the role using the same env.
+        sql(grant_sql(password, not already))
+        recovered = False
+    verify_privileges()
+    verify_login(password)
     print("FI_AWG_DB_ROLE=scoped;BILLING_WRITES=denied;"
           "NODE_INVENTORY_WRITES=denied;AWG_WORKER=disabled;"
-          "SUBSCRIBERS_PUBLISHED=false;IDEMPOTENT=" + str(not created_env).lower())
+          "SUBSCRIBERS_PUBLISHED=false;RECOVERED=" + str(recovered).lower() +
+          ";IDEMPOTENT=" + str(already and not recovered).lower())
 
 
 if __name__ == "__main__":
