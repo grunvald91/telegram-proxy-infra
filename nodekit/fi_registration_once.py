@@ -104,9 +104,81 @@ def execute(args: list[str], timeout: int = 12) -> str:
               str("FI_ENROLLMENT=testing;SUBSCRIBER_PUBLICATION=false" in p.stdout).lower())
         print("FI_TRANSIENT_STDOUT_PRESENT=" + str(bool(p.stdout.strip())).lower())
         print("FI_TRANSIENT_STDERR_PRESENT=" + str(bool(p.stderr.strip())).lower())
+        # Only classification names from the in-process reviewed allowlist.
+        match = __import__("re").search(
+            r"FI_ENROLLMENT_FAILURE_CLASS=([a-z_]{3,60})", p.stderr
+        )
+        if match:
+            print("FI_SIGNED_ENROLLMENT_FAILURE_CLASS=" + match.group(1))
     if p.returncode != 0:
         fail("local_command_failed")
     return p.stdout.strip()
+
+
+FI_SIGNED_ENROLL_JS = r"""
+import {realpathSync} from 'node:fs';
+import {pathToFileURL} from 'node:url';
+
+const RELEASE=realpathSync('/opt/mnebyvpn-controller/current');
+if (!/^\/opt\/mnebyvpn-controller\/releases\/[a-f0-9]{40}$/.test(RELEASE))
+  throw Error('Unapproved canonical controller runtime');
+const moduleAt=(path)=>pathToFileURL(RELEASE+'/'+path).href;
+const {default:pg}=await import(moduleAt('node_modules/pg/lib/index.js'));
+const {trustedControllerKey}=await import(moduleAt(
+    'apps/service/src/awg-controller-delivery-worker.ts'));
+const {enrollApprovedFiNode}=await import(moduleAt(
+    'packages/provisioning/src/fi-enrollment-ssh.ts'));
+if (process.env.MNEBYVPN_ENV!=='production' ||
+    process.env.MNEBYVPN_FI_ENROLLMENT!=='enabled' ||
+    !/^postgres(?:ql)?:\/\//.test(process.env.DATABASE_URL||''))
+  throw Error('FI enrollment must use canonical approved controller');
+const recognized = new Map([
+  ['Node was not independently approved','db_inventory_not_approved'],
+  ['Enrollment challenge already active','db_challenge_already_active'],
+  ['FI enrollment challenge was not accepted','ssh_signed_challenge_not_accepted'],
+  ['Pinned FI enrollment transport unavailable','ssh_transport_unavailable'],
+  ['FI possession proof mismatches approved challenge','signed_proof_mismatch'],
+  ['FI node did not sign approved enrollment challenge','signed_proof_invalid'],
+  ['FI node did not return a JSON possession proof','signed_proof_invalid'],
+  ['FI node returned a non-object proof','signed_proof_invalid'],
+  ['Noncanonical or duplicate FI node proof fields','signed_proof_invalid'],
+  ['Unexpected FI enrollment state','db_post_enrollment_unexpected'],
+  ['Challenge reuse','db_challenge_replay'],
+  ['Node enrollment conflict','db_enrollment_conflict'],
+  ['Unknown, expired, changed or reused challenge','db_challenge_expired_or_changed'],
+  ['Untrusted controller identity or host pin','controller_trust_unavailable'],
+  ['Unsafe controller trust directory','controller_trust_unavailable'],
+  ['Untrusted controller signing-key ancestry','controller_signer_unavailable'],
+  ['FI node public identity differs from approved inventory','fi_identity_untrusted'],
+]);
+let db;
+try {
+  const signer=trustedControllerKey(
+    process.env.AWG_CONTROLLER_SIGNING_KEY_FILE||'',
+    process.env.AWG_CONTROLLER_PUBLIC_SHA256||'');
+  db=new pg.Pool({connectionString:process.env.DATABASE_URL,max:1,
+                  connectionTimeoutMillis:3000,idleTimeoutMillis:10000});
+  const result=await enrollApprovedFiNode(db,signer,{
+    sshIdentityFile:process.env.FI_ENROLL_SSH_KEY_FILE||'',
+    pinnedKnownHostsFile:process.env.FI_ENROLL_KNOWN_HOSTS_FILE||'',
+    approvedNodePublicSpkiFile:process.env.FI_ENROLL_NODE_PUBLIC_SPKI_FILE||'',
+  });
+  if (result.state!=='testing'||result.published!==false)
+    throw Error('Unexpected FI enrollment state');
+  process.stdout.write('FI_ENROLLMENT=testing;SUBSCRIBER_PUBLICATION=false\n');
+} catch(error) {
+  const kind=recognized.get(String(error?.message||'')) ||
+      (error?.code==='42501' ? 'db_role_privilege_denied' :
+       error?.code==='28P01' ? 'db_auth_failed' :
+       error?.code==='ECONNREFUSED' ? 'db_connection_refused' :
+       error?.code==='23505' ? 'db_unique_constraint' :
+       'unclassified_failure');
+  process.stderr.write('FI_ENROLLMENT_FAILURE_CLASS='+kind+'\n');
+  process.exitCode=1;
+} finally {
+  if (db) await db.end();
+}
+"""
 
 
 DB_CHECK_JS = r"""
@@ -298,7 +370,7 @@ def main() -> int:
             "--property=TasksMax=64", "--property=MemoryMax=256M",
             "--property=TimeoutStartSec=75s",
             str(release / "bin/node"), "--experimental-strip-types",
-            str(release / "apps/service/src/fi-enrollment-controller.ts"),
+            "--input-type=module", "--eval", FI_SIGNED_ENROLL_JS,
         ]
         output = execute(command, timeout=90)
         applied = db_state(expected)

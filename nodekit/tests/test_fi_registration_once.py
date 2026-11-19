@@ -151,10 +151,9 @@ class FiRegistrationGateTests(TestCase):
         self.assertIn("--property=IPAddressAllow=217.11.167.91/32",transient[0])
         self.assertIn("--property=NoNewPrivileges=yes",transient[0])
         self.assertIn("--unit=mnebyvpn-fi-controller-transient",transient[0])
-        self.assertIn(
-            "/opt/mnebyvpn-controller/releases/reviewed-release/apps/service/src/fi-enrollment-controller.ts",
-            transient[0]
-        )
+        self.assertIn("--eval", transient[0])
+        self.assertIn("enrollApprovedFiNode", transient[0][-1])
+        self.assertIn("FI_ENROLLMENT_FAILURE_CLASS", transient[0][-1])
         self.assertIn(
             "--property=EnvironmentFile=/root/mnebyvpn-controller/config/fi-enrollment.env",
             transient[0]
@@ -259,3 +258,18 @@ class FiRegistrationGateTests(TestCase):
             self.assertIn("FI_TRANSIENT_APP_STOPPED_MARKER=true",safe)
             self.assertIn("FI_TRANSIENT_APP_SUCCESS_MARKER=false",safe)
             self.assertNotIn("confidential-canary",safe)
+
+    def test_embedded_signed_enrollment_js_has_valid_module_syntax(self):
+        import shutil
+        import subprocess
+        self.assertIn("enrollApprovedFiNode",registration.FI_SIGNED_ENROLL_JS)
+        self.assertIn("process.env.DATABASE_URL",registration.FI_SIGNED_ENROLL_JS)
+        self.assertIn("SUBSCRIBER_PUBLICATION=false",registration.FI_SIGNED_ENROLL_JS)
+        self.assertNotIn("console.log(error)",registration.FI_SIGNED_ENROLL_JS)
+        if shutil.which("node"):
+            result=subprocess.run(
+                ["node","--input-type=module","--check"],
+                input=registration.FI_SIGNED_ENROLL_JS,
+                capture_output=True,text=True,timeout=10
+            )
+            self.assertEqual(result.returncode,0,"JS parser rejected signed enrollment script")
