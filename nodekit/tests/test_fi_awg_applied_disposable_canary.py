@@ -42,6 +42,34 @@ class AppliedCanaryTests(unittest.TestCase):
         self.assertNotIn("vpn_release_flags SET",src)
         self.assertNotIn("UPDATE entitlements",src)
 
+    def test_redacted_live_failure_diagnostics(self):
+        # A production failure previously surfaced only as exit code 2;
+        # diagnostics must never echo a signed bundle or subprocess output.
+        import ast
+        ast.parse(self.src)
+        expected = (
+            "SIGNED_COMMANDS_VERIFIED",
+            "STAGED_AWG_INTEGRITY_VERIFIED",
+            "SYSTEMD_DORMANT_VERIFIED",
+            "DISPOSABLE_PREFLIGHT_PASSED",
+            "WATCHDOG_INSTALL_BEGIN",
+            "WATCHDOG_INSTALLED",
+            "INDEPENDENT_KILL_TIMER_ARMED",
+            "AWG_STARTED",
+            "WATCHDOG_STARTED",
+            "SIGNED_GRANT_APPLIED",
+            "SIGNED_REVOKE_APPLIED",
+            "DISPOSABLE_CLEANUP_VERIFIED",
+        )
+        for phase in expected:
+            self.assertIn('phase("' + phase + '")', self.src)
+        self.assertIn('FI_AWG_APPLY_FAILURE_CLASS=', self.src)
+        self.assertNotIn('print(str(exc)', self.src)
+        self.assertNotIn('traceback.print_exc(', self.src)
+        with contextlib.redirect_stderr(io.StringIO()) as output:
+            mod.phase("SIGNED_COMMANDS_VERIFIED")
+        self.assertEqual(output.getvalue(), "FI_AWG_APPLY_PHASE=SIGNED_COMMANDS_VERIFIED\\n")
+
     def test_verified_node_receipts_are_real_applied_domain(self):
         with tempfile.TemporaryDirectory() as folder:
             tmp=Path(folder)
