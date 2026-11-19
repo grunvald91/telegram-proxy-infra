@@ -13,7 +13,7 @@ import fcntl
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import stat
 import sys
@@ -28,6 +28,40 @@ RELEASES = Path("/opt/mnebyvpn-controller/awg-worker-releases")
 CANDIDATE = RELEASES / CANDIDATE_COMMIT
 MARKER = "awg-source-manifest.json"
 STAGING = re.compile(r"/run/fi-awg-worker-upgrade\.[A-Za-z0-9]{8}\Z")
+
+
+SIDE_EFFECT_IMPORT = re.compile(rb"\bimport\s*['\"]([^'\"]+)['\"]")
+DYNAMIC_IMPORT = re.compile(rb"\bimport\s*\(\s*['\"]([^'\"]+)['\"]\s*\)")
+ANY_DYNAMIC_IMPORT = re.compile(rb"\bimport\s*\(")
+
+
+def verify_nonstandard_imports(blobs: dict[str, bytes]) -> None:
+    """Reject side-effect and computed imports omitted by legacy closure check."""
+    allowed = set(blobs)
+    for relative, body in blobs.items():
+        dynamic = DYNAMIC_IMPORT.findall(body)
+        if len(ANY_DYNAMIC_IMPORT.findall(body)) != len(dynamic):
+            trust.stop("candidate_computed_dynamic_import")
+        for source in SIDE_EFFECT_IMPORT.findall(body) + dynamic:
+            try:
+                name = source.decode("ascii")
+            except UnicodeError:
+                trust.stop("candidate_non_ascii_import")
+            if name.startswith("node:") or name == "pg":
+                continue
+            if not name.startswith("."):
+                trust.stop("candidate_unapproved_import")
+            path = PurePosixPath(relative).parent.joinpath(name)
+            parts = []
+            for component in path.parts:
+                if component == "..":
+                    if not parts:
+                        trust.stop("candidate_import_outside_release")
+                    parts.pop()
+                elif component not in (".", ""):
+                    parts.append(component)
+            if "/".join(parts) not in allowed:
+                trust.stop("candidate_import_module_missing")
 
 
 def candidate_blobs(stage: Path) -> tuple[bytes, dict[str, bytes]]:
@@ -52,6 +86,7 @@ def candidate_blobs(stage: Path) -> tuple[bytes, dict[str, bytes]]:
             trust.stop("candidate_source_digest_mismatch")
         blobs[rel] = body
     isolated.require_source_closure(blobs)
+    verify_nonstandard_imports(blobs)
     return raw, blobs
 
 
