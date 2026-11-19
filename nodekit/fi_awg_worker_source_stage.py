@@ -148,9 +148,9 @@ def approved_sources(stage: Path) -> dict[str, bytes]:
         data = read_file(stage / name)
         if hashlib.sha256(data).hexdigest() != digest:
             stop("pinned_source_hash_mismatch")
-        if not (data.endswith(b"\n") and b"\0" not in data and
-                b"from 'node:" in data or b"import type" in data or
-                b"from './" in data or b"from '../../../" in data):
+        if (not data.endswith(b"\n") or b"\0" in data or not any(
+                marker in data for marker in
+                (b"from 'node:", b"import type", b"from './", b"from '../../../"))):
             stop("unrecognized_typescript_source")
         blobs[relpath] = data
     return blobs
@@ -198,8 +198,10 @@ def install_sources(blobs: dict[str, bytes]) -> tuple[int, int]:
                 pending.append((target, payload))
         installed = 0
         for dest, payload in pending:
-            make_directory(dest.parent.parent)
-            make_directory(dest.parent)
+            folder = CURRENT
+            for part in dest.parent.relative_to(CURRENT).parts:
+                folder = folder / part
+                make_directory(folder)
             try:
                 outfd = os.open(dest, os.O_WRONLY | os.O_CREAT |
                                 os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o644)
