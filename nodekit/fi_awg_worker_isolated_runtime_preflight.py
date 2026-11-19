@@ -79,6 +79,27 @@ def pg_resolution_from_current() -> None:
     command_ok([str(binary), "-e", check, str(current / "apps/service/src")])
 
 
+def isolated_module_import() -> None:
+    """Verify the *actual* ESM import graph without executing worker main().
+
+    The reviewed entrypoint runs main only when process.argv[1] equals its
+    module URL. A deliberately different argv[1] prevents all delivery logic.
+    Node's ESM resolver (not require.resolve from /current) must find pg and
+    every imported module relative to this exact isolated source file.
+    """
+    binary = trusted_node_binary()
+    entry = RELEASE / "apps/service/src/awg-controller-delivery-worker.ts"
+    code = (
+        "import {pathToFileURL} from 'node:url';"
+        "if(process.argv[1]!=='__AWG_IMPORT_ONLY__'||"
+        "!process.argv[2])process.exit(9);"
+        "await import(pathToFileURL(process.argv[2]).href);"
+    )
+    command_ok([str(binary), "--experimental-strip-types",
+                "--input-type=module", "-e", code,
+                "__AWG_IMPORT_ONLY__", str(entry)])
+
+
 def check(label: str, action) -> bool:
     try:
         action()
@@ -101,6 +122,7 @@ def main() -> int:
         check("NODE_VERSION", version_compatible),
         check("TYPESCRIPT_SYNTAX", module_parsing),
         check("SHARED_PG_RESOLUTION", pg_resolution_from_current),
+        check("ISOLATED_ESM_IMPORT", isolated_module_import),
     ]
     # Intentionally no runtime symlink here. No service may start at this stage.
     if not all(outcome):

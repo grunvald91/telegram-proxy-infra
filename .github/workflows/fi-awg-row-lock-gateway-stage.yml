@@ -182,7 +182,7 @@ jobs:
           printf '%s\n' "$runtime_output" | grep -E '^FI_AWG_ISOLATED_RUNTIME_' || true
           runtime_complete=true
           [[ "$runtime_rc" == 0 && ${#runtime_output} -le 2048 ]] || runtime_complete=false
-          for label in CONTROLLER_GATES SOURCE_MANIFEST NODE_VERSION TYPESCRIPT_SYNTAX SHARED_PG_RESOLUTION; do
+          for label in CONTROLLER_GATES SOURCE_MANIFEST NODE_VERSION TYPESCRIPT_SYNTAX SHARED_PG_RESOLUTION ISOLATED_ESM_IMPORT; do
             [[ $(grep -Fxc "FI_AWG_ISOLATED_RUNTIME_${label}=OK" <<< "$runtime_output" || true) == 1 ]] || runtime_complete=false
           done
           grep -Fxq 'FI_AWG_ISOLATED_RUNTIME_PREFLIGHT=READONLY_READY;WORKER_STARTED=false;CUSTOMER_RELEASE=false;RUNTIME_ATTACHED=false' <<< "$runtime_output" || runtime_complete=false
