@@ -108,9 +108,10 @@ class NodeTestProofTests(unittest.TestCase):
             "systemctl start", "systemctl enable", "systemctl restart",
             "wg set", "awg syncconf", "UPDATE entitlements", "INSERT INTO",
             "vpn_awg_command_outbox", "peer-grants.json", "controller-signing-key.pem",
-            "MNEBYVPN_AWG_APPLIED_V1",
         ):
             self.assertNotIn(forbidden,self.text)
+        self.assertEqual(p.DOMAIN, "MNEBYVPN_AWG_TEST_PROOF_V1")
+        self.assertNotEqual(p.DOMAIN, "MNEBYVPN_AWG_APPLIED_V1")
         self.assertIn("canary.node_verify(bundle_file, announce=False)",self.text)
         self.assertIn("NODE_APPLIED_RECEIPT=false",self.text)
         self.assertIn("if cmd.returncode == 0:",self.text)
