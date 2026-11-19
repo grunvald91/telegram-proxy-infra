@@ -271,7 +271,7 @@ jobs:
             nodekit/fi_awg_worker_source_stage.py "$work/fi-pool.json" \
             "ru-controller:$ru_pool_dir/"
           sshpass -e ssh -T -F "$work/ru-ssh-config" ru-controller \
-            "python3 '$ru_pool_dir/fi_awg_node_pool_stage.py' --mode stage-ru --material '$ru_pool_dir/fi-pool.json'"
+            "chmod 0600 '$ru_pool_dir/'*; python3 '$ru_pool_dir/fi_awg_node_pool_stage.py' --mode stage-ru --material '$ru_pool_dir/fi-pool.json'"
           # Repeated installer action must not change previously verified rows
           # or silently widen release flags and subscriptions.
           sshpass -e ssh -T -F "$work/ru-ssh-config" ru-controller \
