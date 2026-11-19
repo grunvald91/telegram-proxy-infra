@@ -113,3 +113,89 @@ class FiRegistrationGateTests(TestCase):
                 [["systemctl","daemon-reload"],["systemctl","start",
                    "mnebyvpn-fi-enrollment.service"]]
             )
+
+    def test_skipped_unit_requires_all_five_native_systemd_conditions_before_transient(self):
+        node=bytes.fromhex("302a300506032b6570032100")+bytes(32)
+        commands=[]
+        def cmd(args,timeout=12):
+            commands.append(args)
+            if args[:2]==["systemctl","show"]:
+                return "no"
+            if args[0]=="systemd-run":
+                return "FI_ENROLLMENT=testing;SUBSCRIBER_PUBLICATION=false"
+            return ""
+        with (
+            mock.patch.object(registration.os,"geteuid",return_value=0),
+            mock.patch.object(registration,"assigned_ip",return_value=True),
+            mock.patch.object(registration,"spki",return_value=node),
+            mock.patch.object(
+                registration,"protected",
+                side_effect=[b"fi.mnebyvpn.site ssh-ed25519 abc\n",b"key",b"key"]
+            ),
+            mock.patch.object(registration,"require_runtime"),
+            mock.patch.object(registration,"db_state",
+                              side_effect=["approved","approved","enrolled"]) as db,
+            mock.patch.object(registration,"execute",side_effect=cmd),
+        ):
+            self.assertEqual(registration.main(),0)
+        self.assertEqual(db.call_count,3)
+        checks=[c for c in commands if c[0]=="systemd-analyze"]
+        self.assertEqual(len(checks),5)
+        transient=[c for c in commands if c[0]=="systemd-run"]
+        self.assertEqual(len(transient),1)
+        self.assertIn("--property=IPAddressDeny=any",transient[0])
+        self.assertIn("--property=IPAddressAllow=217.11.167.91/32",transient[0])
+        self.assertIn("--property=NoNewPrivileges=yes",transient[0])
+        self.assertIn(
+            "--property=EnvironmentFile=/root/mnebyvpn-controller/config/fi-enrollment.env",
+            transient[0]
+        )
+
+    def test_fallback_cannot_run_after_failed_native_condition(self):
+        node=bytes.fromhex("302a300506032b6570032100")+bytes(32)
+        calls=[]
+        def cmd(args,timeout=12):
+            calls.append(args)
+            if args[:2]==["systemctl","show"]:return "no"
+            if args[0]=="systemd-analyze":
+                raise registration.GateError("security condition denied")
+            return ""
+        with (
+            mock.patch.object(registration.os,"geteuid",return_value=0),
+            mock.patch.object(registration,"assigned_ip",return_value=True),
+            mock.patch.object(registration,"spki",return_value=node),
+            mock.patch.object(
+                registration,"protected",
+                side_effect=[b"fi.mnebyvpn.site ssh-ed25519 abc\n",b"key",b"key"]
+            ),
+            mock.patch.object(registration,"require_runtime"),
+            mock.patch.object(registration,"db_state",
+                              side_effect=["approved","approved"]),
+            mock.patch.object(registration,"execute",side_effect=cmd),
+        ):
+            with self.assertRaises(registration.GateError):
+                registration.main()
+        self.assertFalse(any(c[0]=="systemd-run" for c in calls))
+
+    def test_fallback_cannot_run_if_static_unit_condition_is_not_skipped(self):
+        node=bytes.fromhex("302a300506032b6570032100")+bytes(32)
+        commands=[]
+        def cmd(args,timeout=12):
+            commands.append(args)
+            return "yes" if args[:2]==["systemctl","show"] else ""
+        with (
+            mock.patch.object(registration.os,"geteuid",return_value=0),
+            mock.patch.object(registration,"assigned_ip",return_value=True),
+            mock.patch.object(registration,"spki",return_value=node),
+            mock.patch.object(
+                registration,"protected",
+                side_effect=[b"fi.mnebyvpn.site ssh-ed25519 abc\n",b"key",b"key"]
+            ),
+            mock.patch.object(registration,"require_runtime"),
+            mock.patch.object(registration,"db_state",
+                              side_effect=["approved","approved"]),
+            mock.patch.object(registration,"execute",side_effect=cmd),
+        ):
+            with self.assertRaises(registration.GateError):
+                registration.main()
+        self.assertFalse(any(c[0]=="systemd-run" for c in commands))
