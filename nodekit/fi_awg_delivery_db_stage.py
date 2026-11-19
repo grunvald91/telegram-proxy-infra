@@ -355,7 +355,7 @@ try {
     throw Error('Unexpected authenticated database role');
   // The next deployed controller worker uses FOR SHARE, not FOR UPDATE, on
   // billing and inventory rows. Confirm the scoped role can use those locks.
-  await client.query('BEGIN READ ONLY');
+  await client.query('BEGIN');
   for(const table of ['entitlements','vpn_node_enrollment_inventory','vpn_awg_node_pools'])
     await client.query('SELECT * FROM public.'+table+' LIMIT 0 FOR SHARE');
   await client.query('ROLLBACK');
