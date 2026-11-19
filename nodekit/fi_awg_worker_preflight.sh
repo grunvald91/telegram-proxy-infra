@@ -6,7 +6,9 @@ set -Eeuo pipefail
 
 ROOT=/root/mnebyvpn-controller
 CURRENT=/opt/mnebyvpn-controller/current
+RELEASE=/opt/mnebyvpn-controller/awg-worker-releases/c73ddaa237543d91dc81fb09eb3f371389dc618d
 UNIT=/etc/systemd/system/mnebyvpn-awg-delivery.service
+DROPIN=/etc/systemd/system/mnebyvpn-awg-delivery.service.d/90-isolated-awg-worker.conf
 CONTROLLER_SHA=e4c862bd0171e5be4ae64770a555029e090d3a8fcfa5ef2a82ffb0b798552844
 NODE_SHA=c3689b687e8888d15e3ece8e45cf7d01672b9dadb77b1963a7871ffd8e967ed9
 failed=0
@@ -87,18 +89,29 @@ approval_absent() {
      ! -L "$ROOT/approvals/awg-delivery.enable" ]]
 }
 worker_source_staged() {
-  [[ -f "$CURRENT/apps/service/src/awg-controller-delivery-worker.ts" &&
-     -f "$CURRENT/packages/provisioning/src/awg-trusted-ssh-delivery.ts" &&
-     -f "$CURRENT/packages/provisioning/src/awg-offline-maintenance.ts" ]]
+  [[ -f "$RELEASE/awg-source-manifest.json" &&
+     -f "$RELEASE/apps/service/src/awg-controller-delivery-worker.ts" &&
+     -f "$RELEASE/packages/provisioning/src/awg-trusted-ssh-delivery.ts" &&
+     -f "$RELEASE/packages/provisioning/src/awg-offline-maintenance.ts" &&
+     -f "$RELEASE/packages/provisioning/src/awg-controller-grants.ts" &&
+     -f "$RELEASE/packages/provisioning/src/awg-controller-outbox.ts" ]]
 }
 runtime_staged() {
   [[ -x "$CURRENT/bin/node" &&
-     -f "$CURRENT/node_modules/pg/lib/index.js" ]]
+     -f "$RELEASE/awg-pg-runtime-manifest.json" &&
+     -f "$RELEASE/node_modules/pg/lib/index.js" ]]
 }
 unit_staged() {
-  [[ -f "$UNIT" && ! -L "$UNIT" ]] &&
-    grep -Fq 'ConditionPathExists=/root/mnebyvpn-controller/approvals/awg-delivery.enable' "$UNIT" &&
-    grep -Fq 'ExecStart=/opt/mnebyvpn-controller/current/bin/node ' "$UNIT"
+  local effective
+  [[ -f "$UNIT" && ! -L "$UNIT" && -f "$DROPIN" && ! -L "$DROPIN" ]] &&
+    grep -Fxq 'ConditionPathExists=/root/mnebyvpn-controller/approvals/awg-delivery.enable' "$UNIT" &&
+    grep -Fxq 'ExecStart=' "$DROPIN" &&
+    grep -Fxq "ExecStart=$CURRENT/bin/node --experimental-strip-types $RELEASE/apps/service/src/awg-controller-delivery-worker.ts" "$DROPIN" &&
+    [[ "$(systemctl show -p DropInPaths --value mnebyvpn-awg-delivery.service)" == "$DROPIN" ]] &&
+    [[ "$(systemctl show -p WorkingDirectory --value mnebyvpn-awg-delivery.service)" == "$RELEASE" ]] &&
+    effective=$(systemctl show -p ExecStart --value mnebyvpn-awg-delivery.service) &&
+    [[ "$effective" == *"$RELEASE/apps/service/src/awg-controller-delivery-worker.ts"* ]] &&
+    [[ "$effective" != *"$CURRENT/apps/service/src/awg-controller-delivery-worker.ts"* ]]
 }
 
 # Verify host before any access to protected controller assets.
