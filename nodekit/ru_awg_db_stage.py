@@ -112,9 +112,13 @@ def preflight():
     flag=sql("SELECT enabled::text FROM public.vpn_release_flags "
              "WHERE feature='vpn_awg_clients';")
     if flag!="false":fail("customer_awg_release_not_disabled")
-    active=run(["systemctl","is-active","mnebyvpn-awg-delivery.service"])
-    # Nonzero inactive is normal; use separate check below if needed.
-    if active=="active":fail("refuse_active_delivery_worker")
+    try:
+        active=subprocess.run(["systemctl","is-active","--quiet",
+                               "mnebyvpn-awg-delivery.service"],
+                              capture_output=True,timeout=8).returncode==0
+    except (OSError,subprocess.TimeoutExpired):
+        fail("systemd_status_unavailable")
+    if active:fail("refuse_active_delivery_worker")
 def fields(password):
     return {
         "MNEBYVPN_ENV":"production",
