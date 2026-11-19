@@ -315,6 +315,29 @@ def preflight() -> None:
         stop("awg_migrations_not_installed_in_canonical_db")
 
 
+def inspect() -> None:
+    """Read-only scoped role/ACL classification. Never output passwords or rows."""
+    preflight()
+    if not role_exists():
+        print("FI_AWG_DB_INSPECT_ROLE=absent")
+        return
+    print("FI_AWG_DB_INSPECT_ROLE=present")
+    for table in PG_TABLES:
+        mask = sql(f"""
+SELECT has_table_privilege('{ROLE}','public.{table}','SELECT')::text,
+has_table_privilege('{ROLE}','public.{table}','INSERT')::text,
+has_any_column_privilege('{ROLE}','public.{table}','INSERT')::text,
+has_table_privilege('{ROLE}','public.{table}','UPDATE')::text,
+has_any_column_privilege('{ROLE}','public.{table}','UPDATE')::text,
+has_table_privilege('{ROLE}','public.{table}','DELETE')::text;
+""")
+        if not re.fullmatch(r"(?:true|false)(?:\\|(?:true|false)){5}",mask):
+            stop("unrecognized_scoped_role_permission_matrix")
+        print("FI_AWG_DB_INSPECT_"+table.upper()+"="+mask)
+    print("FI_AWG_DB_INSPECT_CONFIG_PRESENT="+str(ENV.exists()).lower())
+    print("FI_AWG_DB_INSPECT_WORKER=off;SUBSCRIBERS_PUBLISHED=false")
+
+
 def main() -> None:
     preflight()
     if role_exists() and not (ENV.exists() or ENV.is_symlink()):
@@ -336,7 +359,12 @@ def main() -> None:
 
 if __name__ == "__main__":
     try:
-        main()
+        if sys.argv[1:] == ["--inspect"]:
+            inspect()
+        elif sys.argv[1:]:
+            stop("unsupported_awg_db_stage_option")
+        else:
+            main()
     except (StageError, OSError, ValueError, TypeError, KeyError, UnicodeError,
             subprocess.SubprocessError):
         raise SystemExit(2)
