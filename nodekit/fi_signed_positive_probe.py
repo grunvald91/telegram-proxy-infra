@@ -141,7 +141,9 @@ def ssh_args():
     ]
 
 
-def make_challenge(public: bytes, now: dt.datetime):
+def make_challenge(public: bytes, now: dt.datetime, ttl_seconds=150):
+    if ttl_seconds not in (150,300):
+        block('unreviewed_probe_ttl')
     return {
         "nodeId":NODE,
         "endpointHost":HOST,
@@ -150,7 +152,7 @@ def make_challenge(public: bytes, now: dt.datetime):
         "nonce":b64_encode(secrets.token_bytes(32)),
         # A shorter window tolerates modest clock differences in both directions
         # while remaining inside the forced handler's maximum five-minute TTL.
-        "expiresAt":(now+dt.timedelta(seconds=150)).isoformat(timespec="milliseconds").replace("+00:00","Z"),
+        "expiresAt":(now+dt.timedelta(seconds=ttl_seconds)).isoformat(timespec="milliseconds").replace("+00:00","Z"),
     }
 
 
@@ -180,7 +182,10 @@ def main():
     known=protected(ROOT/"fi-known_hosts",512).decode("ascii")
     if len(known.splitlines())!=1 or not known.startswith(HOST+" ssh-ed25519 "):
         block("fi_ssh_host_key_not_pinned")
-    challenge=make_challenge(node_public,dt.datetime.now(dt.timezone.utc))
+    ttl=300 if sys.argv[1:]==["--max-ttl"] else 150
+    if sys.argv[1:] and sys.argv[1:]!=["--max-ttl"]:
+        block("unsupported_probe_mode")
+    challenge=make_challenge(node_public,dt.datetime.now(dt.timezone.utc),ttl)
     msg=canonical_challenge(challenge)
     with tempfile.TemporaryDirectory(prefix="fi-public-probe-",dir="/run") as tmp:
         directory=Path(tmp)
@@ -225,7 +230,7 @@ def main():
         proof_msg.write_bytes(canonical_proof(proof))
         openssl(["pkeyutl","-verify","-pubin","-inkey",str(nodefile),
                  "-keyform","DER","-rawin","-in",str(proof_msg),"-sigfile",str(sigfile)])
-    print("FI_SIGNED_PROBE=proof_verified;DB_WRITES_BY_PROBE=none;CLIENTS_PUBLISHED=false")
+    print("FI_SIGNED_PROBE=proof_verified;DB_WRITES_BY_PROBE=none;CLIENTS_PUBLISHED=false;TTL_SECONDS="+str(ttl))
 
 
 if __name__=="__main__":
