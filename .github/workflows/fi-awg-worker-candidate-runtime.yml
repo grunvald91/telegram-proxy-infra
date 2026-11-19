@@ -1,0 +1,125 @@
+name: FI217 corrected AWG worker isolated runtime (inactive)
+"on":
+  pull_request:
+    paths:
+      - .github/workflows/fi-awg-worker-candidate-runtime.yml
+      - nodekit/fi_awg_worker_candidate_runtime.py
+      - nodekit/tests/test_fi_awg_worker_candidate_runtime.py
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/fi-awg-worker-candidate-runtime.yml
+      - nodekit/fi_awg_worker_candidate_runtime.py
+      - nodekit/tests/test_fi_awg_worker_candidate_runtime.py
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ru188-awg-gateway-schema-stage
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate correct immutable runtime without server access
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile nodekit/fi_awg_worker_candidate_runtime.py
+          python3 -m unittest discover -s nodekit/tests -p test_fi_awg_worker_candidate_runtime.py -v
+  stage:
+    needs: offline
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    environment: node-fi
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install temporary pinned-host SSH transport
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y --no-install-recommends sshpass >/dev/null
+      - name: Stage isolated pg runtime then verify real ESM imports; leave service off
+        shell: bash
+        env:
+          RU_SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          [[ -n "$RU_SSH_PASSWORD" ]] || exit 2
+          grep -q '^188\.120\.254\.223 ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts
+          temp="$RUNNER_TEMP/fi-awg-runtime-ssh"
+          mkdir -m 0700 "$temp"
+          cat > "$temp/config" <<CFG
+          Host ru-controller
+            HostName 188.120.254.223
+            User root
+            UserKnownHostsFile $PWD/ops/mnebydns-owner-ssh-known_hosts
+            GlobalKnownHostsFile /dev/null
+            HostKeyAlgorithms ssh-ed25519
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+            BatchMode no
+            PasswordAuthentication yes
+            PubkeyAuthentication no
+            KbdInteractiveAuthentication no
+            ForwardAgent no
+            ClearAllForwardings yes
+            ControlMaster no
+            ProxyCommand none
+            ConnectTimeout 12
+            LogLevel ERROR
+          CFG
+          export SSHPASS="$RU_SSH_PASSWORD"
+          remote() { sshpass -e ssh -T -F "$temp/config" ru-controller "$@"; }
+          remote_dir=""
+          cleanup() {
+            set +e
+            if [[ "$remote_dir" =~ ^/run/fi-awg-worker-runtime\.[A-Za-z0-9]{8}$ ]]; then
+              remote "rm -rf -- '$remote_dir'" >/dev/null 2>&1
+            fi
+            rm -rf -- "$temp"
+          }
+          trap cleanup EXIT
+          remote_dir=$(remote 'umask 077; mktemp -d /run/fi-awg-worker-runtime.XXXXXXXX')
+          [[ "$remote_dir" =~ ^/run/fi-awg-worker-runtime\.[A-Za-z0-9]{8}$ ]] || exit 2
+          sshpass -e scp -F "$temp/config" \
+            nodekit/fi_awg_worker_candidate_runtime.py \
+            nodekit/fi_awg_worker_candidate_stage.py \
+            nodekit/fi_awg_worker_source_stage.py \
+            nodekit/fi_awg_worker_isolated_source_stage.py \
+            nodekit/fi_awg_worker_isolated_pg_stage.py \
+            nodekit/fi_awg_worker_isolated_runtime_preflight.py \
+            nodekit/fi_awg_worker_isolated_systemd_stage.py \
+            "ru-controller:$remote_dir/"
+          first=$(remote "chmod 0600 '$remote_dir/'*; python3 '$remote_dir/fi_awg_worker_candidate_runtime.py' --mode stage")
+          second=$(remote "python3 '$remote_dir/fi_awg_worker_candidate_runtime.py' --mode stage")
+          verified=$(remote "python3 '$remote_dir/fi_awg_worker_candidate_runtime.py' --mode verify")
+          export FI_FIRST="$first" FI_SECOND="$second" FI_VERIFIED="$verified"
+          python3 - <<'PY'
+          import os,re
+          pattern=(
+              r"FI_AWG_CANDIDATE_RUNTIME=STAGED;NEW=(\d+);MATCHED=(\d+);"
+              r"PACKAGES=(\d+);MODULE_IMPORT=PASS;"
+              r"EFFECTIVE_RELEASE=LEGACY_DISABLED;CUSTOMER_RELEASE=false"
+          )
+          first=re.fullmatch(pattern,os.environ["FI_FIRST"])
+          second=re.fullmatch(pattern,os.environ["FI_SECOND"])
+          if not first or not second:
+              raise SystemExit(2)
+          n,m,p=map(int,first.groups())
+          n2,m2,p2=map(int,second.groups())
+          if n+m<1 or n2!=0 or m2!=n+m or p<1 or p!=p2:
+              raise SystemExit(2)
+          if os.environ["FI_VERIFIED"]!=(
+              "FI_AWG_CANDIDATE_RUNTIME=VERIFIED;MODULE_IMPORT=PASS;"
+              "EFFECTIVE_RELEASE=LEGACY_DISABLED;CUSTOMER_RELEASE=false"):
+              raise SystemExit(2)
+          PY
+          echo 'FI_AWG_CANDIDATE_RUNTIME=VERIFIED;REPEATABLE=true;WORKER_ACTIVE=false;CUSTOMER_RELEASE=false'
