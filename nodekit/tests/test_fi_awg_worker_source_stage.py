@@ -29,6 +29,16 @@ class FiAwgWorkerSourceStageTests(unittest.TestCase):
         self.assertIn("worker_is_not_inactive",source)
         self.assertIn("not_unpublished_enrolled_fi",source)
 
+    def test_current_release_link_requires_root_ownership_and_tree_confinement(self):
+        source=PATH.read_text(encoding="utf-8")
+        self.assertIn("def current_directory()",source)
+        self.assertIn("meta.st_uid != 0",source)
+        self.assertIn("CURRENT.resolve(strict=True)",source)
+        self.assertIn("target.is_relative_to(base)",source)
+        self.assertIn("safe_directory(target)",source)
+        self.assertIn("current = current_directory()",source)
+        self.assertIn("dest.parent.relative_to(current)",source)
+
     def test_exact_five_file_source_allowlist(self):
         self.assertEqual(len(MODULE.FILES),5)
         self.assertEqual(set(MODULE.FILES.values()),{

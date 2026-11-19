@@ -68,6 +68,29 @@ def safe_directory(folder: Path) -> None:
             stop("untrusted_directory_or_symlink")
 
 
+def current_directory() -> Path:
+    """Resolve only a root-owned current -> controller-local release pointer."""
+    base = Path("/opt/mnebyvpn-controller")
+    safe_directory(base)
+    try:
+        meta = CURRENT.lstat()
+    except OSError:
+        stop("controller_current_missing")
+    if stat.S_ISLNK(meta.st_mode):
+        if meta.st_uid != 0:
+            stop("controller_current_link_owner_untrusted")
+        try:
+            target = CURRENT.resolve(strict=True)
+        except (OSError, RuntimeError):
+            stop("controller_current_link_broken")
+        if target == base or not target.is_relative_to(base):
+            stop("controller_current_link_outside_trusted_tree")
+        safe_directory(target)
+        return target
+    safe_directory(CURRENT)
+    return CURRENT
+
+
 def read_file(path: Path, limit: int = 65536) -> bytes:
     safe_directory(path.parent)
     try:
@@ -93,7 +116,7 @@ def require_safe_dormant() -> None:
     if not is_ru188():
         stop("not_existing_ru188_root")
     safe_directory(ROOT)
-    safe_directory(CURRENT)
+    current = current_directory()
     if (ROOT / "approvals/awg-delivery.enable").exists() or (
             ROOT / "approvals/awg-delivery.enable").is_symlink():
         stop("worker_approval_already_present")
@@ -123,8 +146,8 @@ def require_safe_dormant() -> None:
         stop("canonical_database_unavailable")
     if db.returncode or db.stdout.strip() != "enrolled|false":
         stop("not_unpublished_enrolled_fi")
-    if not (CURRENT / "bin/node").is_file() or not (
-            CURRENT / "node_modules/pg/lib/index.js").is_file():
+    if not (current / "bin/node").is_file() or not (
+            current / "node_modules/pg/lib/index.js").is_file():
         stop("canonical_node_runtime_missing")
 
 
@@ -189,8 +212,9 @@ def install_sources(blobs: dict[str, bytes]) -> tuple[int, int]:
         # Reject ALL mismatched existing files before writing any missing ones.
         pending = []
         already = 0
+        current = current_directory()
         for relpath, payload in blobs.items():
-            target = CURRENT / relpath
+            target = current / relpath
             if target.exists() or target.is_symlink():
                 if existing_matches(target, payload):
                     already += 1
@@ -198,8 +222,8 @@ def install_sources(blobs: dict[str, bytes]) -> tuple[int, int]:
                 pending.append((target, payload))
         installed = 0
         for dest, payload in pending:
-            folder = CURRENT
-            for part in dest.parent.relative_to(CURRENT).parts:
+            folder = current
+            for part in dest.parent.relative_to(current).parts:
                 folder = folder / part
                 make_directory(folder)
             try:
@@ -217,7 +241,7 @@ def install_sources(blobs: dict[str, bytes]) -> tuple[int, int]:
                 raise
             installed += 1
         for relpath, payload in blobs.items():
-            if not existing_matches(CURRENT / relpath, payload):
+            if not existing_matches(current / relpath, payload):
                 stop("installed_source_missing")
         return installed, already
     finally:
