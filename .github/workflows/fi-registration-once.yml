@@ -116,6 +116,28 @@ jobs:
                           print("fi_actual_unit_condition_unexpected=true")
           else:
               print("fi_actual_unit_unavailable=true")
+          paths=(
+              "/root/mnebyvpn-controller/approvals/fi-enrollment.enable",
+              "/root/mnebyvpn-controller/config/fi-enrollment.env",
+              "/root/mnebyvpn-controller/fi-known_hosts",
+              "/root/mnebyvpn-controller/fi-node-public.spki",
+              "/root/mnebyvpn-controller/controller-signing-key.pem",
+          )
+          for target in paths:
+              verdict=subprocess.run(
+                  ["systemd-analyze","condition","ConditionPathExists="+target],
+                  capture_output=True,text=True,timeout=8)
+              print("fi_systemd_analyze_"+Path(target).name.replace(".","_")+
+                    "_pass="+str(verdict.returncode==0).lower())
+          status=subprocess.run(
+              ["systemctl","status",unit,"--no-pager","--full","-n","20"],
+              capture_output=True,text=True,timeout=8)
+          for line in status.stdout.splitlines()+status.stderr.splitlines():
+              if ("Condition check resulted in" in line or
+                  "was skipped" in line or
+                  "Job for" in line or
+                  "condition failed" in line):
+                  print("fi_systemd_status_reason="+line.strip()[:240])
           journal=subprocess.run(
               ["journalctl","--no-pager","-q","-u",unit,"-n","30","-o","cat"],
               capture_output=True,text=True,timeout=8)
