@@ -176,7 +176,12 @@ def stage(stage_path:Path)->tuple[int,int]:
         if not stat.S_ISREG(meta.st_mode) or meta.st_uid!=0 or (
                 meta.st_mode&0o077) or meta.st_nlink!=1:
             trust.stop("fi_client_worker_untrusted_lock")
-        fcntl.flock(fd,fcntl.LOCK_EX)
+        # A previous interrupted stage may still hold this lock. Fail
+        # promptly instead of hanging an entire GitHub Actions deployment.
+        try:
+            fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        except BlockingIOError:
+            trust.stop("fi_client_worker_source_lock_busy")
         staged_artifacts_locked()
         if not RELEASE.exists():
             trust.make_directory(RELEASE)
