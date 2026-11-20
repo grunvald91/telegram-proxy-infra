@@ -18,7 +18,7 @@ class UnifiedSubscriptionReleaseTests(unittest.TestCase):
         self.assertIn("packages/provisioning/src/awg-device-registration-worker.ts",rollout.SOURCE)
         self.assertIn("packages/provisioning/src/awg-subscriber-material.ts",rollout.SOURCE)
         self.assertEqual(rollout.CURRENT,"446c331249085adb6536e3d9913fb4b68abf6cd7")
-        self.assertEqual(rollout.NEW,"e21d751c70d82311b27a7726ea84d1ff2020a4ac")
+        self.assertEqual(rollout.NEW,"eec5b86c62b6c58bdbda8735c7e75fd9f38fd859")
 
     def test_seed_is_never_silently_rotated(self):
         old=b"AWG_CONTROLLER_PUBLIC_SHA256=test\nMNEBYVPN_ENV=production\n"
