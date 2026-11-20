@@ -214,6 +214,142 @@ def trigger_owner_diagnostics()->dict[str,str]:
               "true" if parts[3] in ("true","t") else "false")}
 
 
+def fi_subscription_readiness()->dict[str,str]:
+    # Aggregate-only subscriber visibility investigation: includes both
+    # original long-lived subscription links and newly issued trial links.
+    # No token hashes, entitlement IDs, device keys or individual records.
+    sql="""WITH eligible AS (
+      SELECT e.id,e.revision,e.expires_at
+      FROM public.entitlements e
+      JOIN public.provisioning_state v ON v.entitlement_id=e.id
+        AND v.adapter='vpn' AND v.applied_revision=e.revision
+        AND v.last_observed_at IS NOT NULL
+      WHERE e.product='vpn' AND e.state='ACTIVE'
+        AND e.expires_at>clock_timestamp()
+        AND EXISTS(
+          SELECT 1 FROM public.vpn_subscription_links l
+          WHERE l.entitlement_id=e.id AND l.revoked_at IS NULL)
+    ), joined AS (
+      SELECT e.id,e.revision AS billing_revision,
+        e.expires_at AS entitlement_expiry,
+        a.state AS peer_state,a.expires_at AS peer_expiry,
+        a.last_command_sha256,
+        p.state AS pool_state,p.verified_at,
+        n.status AS enrollment_state,
+        o.state AS outbox_state,o.billing_revision AS outbox_billing_revision,
+        o.command_sha256,o.node_receipt_sha256
+      FROM eligible e
+      LEFT JOIN public.vpn_awg_peer_allocations a
+        ON a.entitlement_id=e.id AND a.node_id='fi-test-01'
+      LEFT JOIN public.vpn_awg_node_pools p
+        ON p.node_id='fi-test-01'
+      LEFT JOIN public.vpn_node_enrollment_inventory n
+        ON n.node_id='fi-test-01'
+      LEFT JOIN public.vpn_awg_command_outbox o
+        ON o.node_id=a.node_id AND o.entitlement_id=a.entitlement_id
+        AND o.revision=a.revision AND o.op='grant'
+    ), gates AS (
+      SELECT id,
+        (peer_state='applied' AND peer_expiry>clock_timestamp()
+          AND peer_expiry<=entitlement_expiry+interval '1 second'
+          AND outbox_state='applied'
+          AND outbox_billing_revision=billing_revision
+          AND command_sha256=last_command_sha256
+          AND node_receipt_sha256 ~ '^[a-f0-9]{64}
+    run=subprocess.run(["journalctl","-u","mnebyvpn-awg-delivery.service",
+        "--since","-20 minutes","--no-pager","--output","cat"],
+        stdin=subprocess.DEVNULL,capture_output=True,check=True,text=True,timeout=10)
+    if len(run.stdout)>1500000:
+        raise ValueError("worker journal is unbounded")
+    labels=("FI_AWG_SUBSCRIPTION_ENROLLMENT_RETRY",
+            "FI_AWG_SUBSCRIPTION_ENROLLMENT_QUEUED",
+            "FI_AWG_DEVICE_QUEUE_RETRY",
+            "AWG_DELIVERY_ACKNOWLEDGED")
+    return {label:min(999,run.stdout.count(label)) for label in labels}
+
+
+def main()->int:
+    try:
+        if (os.geteuid()!=0 or
+            "188.120.254.223" not in call("ip","-o","-4","addr","show")):
+            raise ValueError("wrong RU host")
+        state=call("systemctl","show","-p","ActiveState","--value",
+                   "mnebyvpn-awg-delivery.service")
+        wd=call("systemctl","show","-p","WorkingDirectory","--value",
+                "mnebyvpn-awg-delivery.service")
+        release=Path(wd)
+        if (state not in ("active","inactive","failed") or
+            release.parent!=Path("/opt/mnebyvpn-controller/awg-worker-releases")):
+            raise ValueError("worker unit changed")
+        public=keys(WEB)
+        worker=keys(WORKER)
+        web_running=call("docker","inspect","-f","{{.State.Running}}",
+                         "mnebyvpn-public-web")
+        seed_public=public.get("AWG_INCY_SUBSCRIPTION_SEED","")
+        seed_worker=worker.get("AWG_INCY_SUBSCRIPTION_SEED","")
+        present=(bool(seed_public) and bool(seed_worker) and
+                 re.fullmatch(r"[a-f0-9]{64}",seed_public) is not None)
+        print("FI_AWG_SUB_WORKER_ACTIVE="+("true" if state=="active" else "false"))
+        print("FI_AWG_SUB_WORKER_SOURCE="+(
+            "APPROVED_20261120" if release.name==CURRENT else "OTHER_REVIEW_REQUIRED"))
+        print("FI_AWG_SUB_PG_PRESENT="+(
+            "yes" if (release/"node_modules/pg/package.json").is_file() else "no"))
+        print("FI_AWG_SUB_WEB_RUNNING="+web_running)
+        print("FI_AWG_SUB_MIXED_FEATURE="+public.get(
+            "WEB_FI_AWG_IN_SUBSCRIPTION_ENABLED","missing"))
+        print("FI_AWG_SUB_SEED_MATCH="+(
+            "true" if present and hmac.compare_digest(seed_public,seed_worker) else "false"))
+        for key,value in db_status().items():
+            print("FI_AWG_SUB_"+key+"="+value)
+        for key,value in queue_role_diagnostics().items():
+            print("FI_AWG_SUB_ROLE_"+key+"="+value)
+        for key,value in staging_diagnostics().items():
+            print("FI_AWG_SUB_STAGE_"+key+"="+value)
+        for key,value in trigger_owner_diagnostics().items():
+            print("FI_AWG_SUB_TRIGGER_"+key+"="+value)
+        print("FI_AWG_SUB_WEB_MATERIAL="+public.get(
+            "WEB_FI_AWG_MATERIAL_ENABLED","missing"))
+        for key,value in fi_subscription_readiness().items():
+            print("FI_AWG_SUB_VISIBILITY_"+key+"="+value)
+        for key,count in worker_journal_markers().items():
+            print("FI_AWG_SUB_LOG_"+key+"="+str(count))
+        print("FI_AWG_SUB_INVENTORY=READONLY_COMPLETE")
+        return 0
+    except (OSError,ValueError,TypeError,UnicodeError,subprocess.SubprocessError):
+        print("FI_AWG_SUB_INVENTORY=BLOCKED",file=sys.stderr)
+        return 2
+
+
+if __name__=="__main__":
+    sys.exit(main())
+) IS TRUE AS ack_valid,
+        (pool_state='verified' AND enrollment_state='enrolled') IS TRUE
+          AS pool_verified,
+        (verified_at>clock_timestamp()-interval '1 hour'
+         AND verified_at<=clock_timestamp()+interval '30 seconds') IS TRUE
+          AS fresh_proof
+      FROM joined
+    )
+    SELECT count(DISTINCT id),
+      count(DISTINCT id) FILTER(WHERE ack_valid),
+      count(DISTINCT id) FILTER(WHERE ack_valid AND pool_verified),
+      count(DISTINCT id) FILTER(
+        WHERE ack_valid AND pool_verified AND fresh_proof),
+      count(DISTINCT id) FILTER(
+        WHERE ack_valid AND pool_verified AND NOT fresh_proof)
+    FROM gates;"""
+    raw=call("docker","exec","mnebyvpn-stage-postgres","psql","-X","-q",
+             "-A","-t","-v","ON_ERROR_STOP=1","-U","mnebyvpn_stage",
+             "-d","mnebyvpn_stage","-c",sql)
+    values=raw.split("|")
+    if len(values)!=5 or any(not value.isdecimal() for value in values):
+        raise ValueError("untrusted aggregate subscription gates")
+    names=("ACTIVE_LINKED_ENTITLEMENTS","LINKED_SIGNED_ACKS",
+           "LINKED_ACK_POOL_VERIFIED","LINKED_ACK_FRESH_PROOF",
+           "LINKED_ACK_STALE_PROOF")
+    return dict(zip(names,values))
+
+
 def worker_journal_markers()->dict[str,str]:
     run=subprocess.run(["journalctl","-u","mnebyvpn-awg-delivery.service",
         "--since","-20 minutes","--no-pager","--output","cat"],
