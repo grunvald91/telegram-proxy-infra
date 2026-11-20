@@ -105,11 +105,15 @@ jobs:
             nodekit/fi_awg_worker_source_stage.py \
             "ru-controller:$dir/"
           ru "chmod 0600 '$dir/'*"
-          report=$(ru "python3 '$dir/fi_awg_client_worker_cutover.py' --mode switch")
+          # Do not attempt the atomic switch unless the immutably staged
+          # source manifest is verified on RU188 and the old unit is OFF.
+          ru "set -eu; test -f /opt/mnebyvpn-controller/awg-worker-releases/446c331249085adb6536e3d9913fb4b68abf6cd7/awg-client-worker-manifest.json; test ! -L /opt/mnebyvpn-controller/awg-worker-releases/446c331249085adb6536e3d9913fb4b68abf6cd7/awg-client-worker-manifest.json; ! systemctl is-active --quiet mnebyvpn-awg-delivery.service; test ! -e /root/mnebyvpn-controller/approvals/awg-delivery.enable"
+          echo 'FI_AWG_CLIENT_WORKER_PRECHECK=STAGED_AND_INACTIVE'
+          report=$(ru "timeout --signal=TERM --kill-after=10s 180s python3 '$dir/fi_awg_client_worker_cutover.py' --mode switch")
           [[ "$report" == 'FI_AWG_CLIENT_WORKER_CUTOVER=VERIFIED;CHANGE=SWITCHED;UNIT_ACTIVE=false;CLIENT_RELEASE=false;ROLLBACK_READY=true' || \
              "$report" == 'FI_AWG_CLIENT_WORKER_CUTOVER=VERIFIED;CHANGE=UNCHANGED;UNIT_ACTIVE=false;CLIENT_RELEASE=false;ROLLBACK_READY=true' ]] || exit 2
-          check=$(ru "python3 '$dir/fi_awg_client_worker_cutover.py' --mode verify")
+          check=$(ru "timeout --signal=TERM --kill-after=10s 120s python3 '$dir/fi_awg_client_worker_cutover.py' --mode verify")
           [[ "$check" == 'FI_AWG_CLIENT_WORKER_CUTOVER=VERIFIED;READONLY=true;UNIT_ACTIVE=false;CLIENT_RELEASE=false;ROLLBACK_READY=true' ]] || exit 2
-          again=$(ru "python3 '$dir/fi_awg_client_worker_cutover.py' --mode switch")
+          again=$(ru "timeout --signal=TERM --kill-after=10s 180s python3 '$dir/fi_awg_client_worker_cutover.py' --mode switch")
           [[ "$again" == 'FI_AWG_CLIENT_WORKER_CUTOVER=VERIFIED;CHANGE=UNCHANGED;UNIT_ACTIVE=false;CLIENT_RELEASE=false;ROLLBACK_READY=true' ]] || exit 2
           echo 'FI_AWG_CLIENT_WORKER_CUTOVER=VERIFIED;EFFECTIVE_NEW_RELEASE=true;WORKER_ACTIVE=false;CUSTOMER_RELEASE=false;REPEATABLE=true'
