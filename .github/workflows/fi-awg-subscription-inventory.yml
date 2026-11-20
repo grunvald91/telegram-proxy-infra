@@ -34,6 +34,21 @@ jobs:
           assert functions.count('staging_diagnostics')==1
           assert functions.count('trigger_owner_diagnostics')==1
           assert functions.count('fi_subscription_readiness')==1
+          # Catch JS-replacement SQL literal injection: py_compile alone can
+          # pass when an old main() is swallowed into a triple-quoted SQL.
+          assert source.count('def main()->int:')==1
+          assert source.count('def worker_journal_markers()->dict[str,str]:')==1
+          assert source.count('if __name__=="__main__":')==1
+          ready=[node for node in tree.body if isinstance(node,ast.FunctionDef)
+                 and node.name=='fi_subscription_readiness']
+          assert len(ready)==1
+          ready_sql=[node.value for node in ast.walk(ready[0])
+                     if isinstance(node,ast.Constant) and
+                     isinstance(node.value,str) and 'WITH eligible AS' in node.value]
+          assert len(ready_sql)==1 and 'FROM gates;' in ready_sql[0]
+          assert "node_receipt_sha256 ~ '^[a-f0-9]{64}$'" in ready_sql[0]
+          assert 'def main()->int:' not in ready_sql[0]
+          assert 'def worker_journal_markers' not in ready_sql[0]
           assert 'FI_AWG_SUB_VISIBILITY_' in source
           assert 'LINKED_ACK_STALE_PROOF' in source
           assert 'FI_AWG_SUB_TRIGGER_' in source
