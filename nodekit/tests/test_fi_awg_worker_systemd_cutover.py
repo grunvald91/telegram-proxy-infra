@@ -106,6 +106,35 @@ class InactiveSystemdCutoverTests(unittest.TestCase):
                     self.assertEqual(active[-2].call_count, 2)
                 self.run_patched(patchers, run)
 
+
+    def test_interrupted_switch_is_rolled_back_on_next_run_if_reload_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old, new, unit, backups, patchers = self.prep(Path(tmp))
+            backups.mkdir()
+            (backups / "fi217-old.backup").write_bytes(old)
+            unit.write_bytes(new)  # interrupted AFTER atomic replace
+            with mock.patch.object(stage, "verified_new_effective_unit",
+                                   side_effect=stage.trust.StageBlocked("stale loaded unit")):
+                def run(active):
+                    with self.assertRaises(stage.trust.StageBlocked):
+                        stage.switch()
+                    self.assertEqual(unit.read_bytes(), old)
+                    self.assertEqual(active[-2].call_count, 2)
+                self.run_patched(patchers, run)
+
+    def test_unknown_backup_blocks_interrupted_switch_without_mutation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old, new, unit, backups, patchers = self.prep(Path(tmp))
+            backups.mkdir()
+            (backups / "fi217-old.backup").write_bytes(b"untrusted\n")
+            unit.write_bytes(new)
+            def run(active):
+                with self.assertRaises(stage.trust.StageBlocked):
+                    stage.switch()
+                self.assertEqual(unit.read_bytes(), new)
+                active[-2].assert_not_called()
+            self.run_patched(patchers, run)
+
     def test_failed_preflight_blocks_writes_and_backup(self):
         with tempfile.TemporaryDirectory() as tmp:
             old, _, unit, backups, patchers = self.prep(Path(tmp))
