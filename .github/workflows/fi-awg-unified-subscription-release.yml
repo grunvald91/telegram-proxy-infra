@@ -1,0 +1,146 @@
+name: RU188 FI217 as additional AmneziaWG node in existing VPN subscription
+"on":
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/fi-awg-unified-subscription-release.yml
+      - nodekit/fi_awg_unified_subscription_activate.py
+      - nodekit/tests/test_fi_awg_unified_subscription_activate.py
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/fi-awg-unified-subscription-release.yml
+      - nodekit/fi_awg_unified_subscription_activate.py
+      - nodekit/tests/test_fi_awg_unified_subscription_activate.py
+  workflow_dispatch:
+permissions: {contents: read}
+concurrency:
+  group: mnebyvpn-auto-public-deploy
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Validate guarded RU188 cutover, exact pinned source graph and rollback
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile nodekit/fi_awg_unified_subscription_activate.py
+          python3 -m unittest discover -s nodekit/tests -p 'test_fi_awg_unified_subscription_activate.py' -v
+          python3 - <<'PY'
+          from pathlib import Path
+          f=Path('nodekit/fi_awg_unified_subscription_activate.py').read_text()
+          assert 'FI_AWG_UNIFIED_SUBSCRIPTION=ENABLED' in f
+          assert 'AWG_INCY_SUBSCRIPTION_SEED' in f
+          assert 'WEB_FI_AWG_IN_SUBSCRIPTION_ENABLED' in f
+          assert 'web.write_atomic(WORKER_ENV,old_worker)' in f
+          assert "new_override.count(str(NEW_RELEASE).encode())!=2" in f
+          PY
+  ru188-live:
+    needs: offline
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    environment: node-fi
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/checkout@v4
+        with:
+          repository: grunvald91/Mnebyvpn
+          ref: eec5b86c62b6c58bdbda8735c7e75fd9f38fd859
+          path: vpn
+          persist-credentials: false
+      - name: Validate approved green MNEBYVPN main worker sources
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(git -C vpn rev-parse HEAD)" = eec5b86c62b6c58bdbda8735c7e75fd9f38fd859
+          python3 - <<'PY'
+          import hashlib
+          import sys
+          from pathlib import Path
+          sys.path.insert(0,'nodekit')
+          from fi_awg_unified_subscription_activate import SOURCE,git_blob
+          for rel,pin in SOURCE.items():
+            data=(Path('vpn')/rel).read_bytes()
+            if git_blob(data)!=pin or not data.endswith(b'\n'):
+              raise SystemExit('Unapproved subscription worker blob')
+          print('RU188_AWG_EIGHT_MODULE_PIN=VERIFIED')
+          PY
+      - name: Install pinned password SSH client
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y --no-install-recommends sshpass >/dev/null
+      - name: Upgrade RU188 root worker and website, with local rollback
+        shell: bash
+        env:
+          RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          test -n "$RU_PASSWORD"
+          grep -q '^188\.120\.254\.223 ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts
+          work="$RUNNER_TEMP/fi-awg-unified"
+          mkdir -m 0700 "$work"
+          cat > "$work/ru.cfg" <<CFG
+          Host ru-controller
+            HostName 188.120.254.223
+            User root
+            UserKnownHostsFile $GITHUB_WORKSPACE/ops/mnebydns-owner-ssh-known_hosts
+            GlobalKnownHostsFile /dev/null
+            HostKeyAlgorithms ssh-ed25519
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+            PasswordAuthentication yes
+            PubkeyAuthentication no
+            KbdInteractiveAuthentication no
+            BatchMode no
+            ForwardAgent no
+            ClearAllForwardings yes
+            ControlMaster no
+            ProxyCommand none
+            ConnectTimeout 12
+            LogLevel ERROR
+          CFG
+          ru(){ SSHPASS="$RU_PASSWORD" sshpass -e ssh -T -F "$work/ru.cfg" ru-controller "$@"; }
+          dir=''
+          cleanup(){
+            set +e
+            if [[ "$dir" =~ ^/run/fi-awg-subscription\.[A-Za-z0-9]{8}$ ]];then
+              ru "rm -rf -- '$dir'" >/dev/null 2>&1
+            fi
+            rm -rf -- "$work"
+          }
+          trap cleanup EXIT
+          mkdir -p "$work/source"
+          cp nodekit/fi_awg_unified_subscription_activate.py "$work/source/"
+          cp nodekit/fi_awg_customer_web_release.py "$work/source/"
+          for source in \
+            apps/service/src/awg-controller-delivery-worker.ts \
+            packages/provisioning/src/awg-device-registration-worker.ts \
+            packages/provisioning/src/awg-in-subscription.ts \
+            packages/provisioning/src/awg-subscriber-material.ts \
+            packages/provisioning/src/awg-trusted-ssh-delivery.ts \
+            packages/provisioning/src/awg-offline-maintenance.ts \
+            packages/provisioning/src/awg-controller-grants.ts \
+            packages/provisioning/src/awg-controller-outbox.ts; do
+            mkdir -p "$work/source/$(dirname "$source")"
+            cp "vpn/$source" "$work/source/$source"
+          done
+          tar -czf "$work/source.tgz" -C "$work/source" .
+          dir=$(ru 'umask 077; mktemp -d /run/fi-awg-subscription.XXXXXXXX')
+          [[ "$dir" =~ ^/run/fi-awg-subscription\.[A-Za-z0-9]{8}$ ]] || exit 2
+          SSHPASS="$RU_PASSWORD" sshpass -e scp -F "$work/ru.cfg" \
+            "$work/source.tgz" "ru-controller:$dir/source.tgz"
+          ru "tar -xzf '$dir/source.tgz' -C '$dir'; chmod -R go-rwx '$dir'; timeout 210s python3 '$dir/fi_awg_unified_subscription_activate.py' --stage '$dir'"
+          ru 'systemctl is-active --quiet mnebyvpn-awg-delivery.service &&
+              test "$(systemctl show -p WorkingDirectory --value mnebyvpn-awg-delivery.service)" = /opt/mnebyvpn-controller/awg-worker-releases/eec5b86c62b6c58bdbda8735c7e75fd9f38fd859 &&
+              docker inspect -f "{{.State.Running}}" mnebyvpn-public-web | grep -qx true &&
+              grep -qx WEB_FI_AWG_IN_SUBSCRIPTION_ENABLED=yes /opt/mnebyvpn/public/web.env'
+          echo 'FI_AWG_UNIFIED_SUBSCRIPTION_GITHUB_ACTION=VERIFIED;EXISTING_TOKEN_UNCHANGED=true;RU188=OWNER'
