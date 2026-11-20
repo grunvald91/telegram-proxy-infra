@@ -51,14 +51,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: grunvald91/Mnebyvpn
-          ref: e21d751c70d82311b27a7726ea84d1ff2020a4ac
+          ref: eec5b86c62b6c58bdbda8735c7e75fd9f38fd859
           path: vpn
           persist-credentials: false
       - name: Validate approved green MNEBYVPN main worker sources
         shell: bash
         run: |
           set -Eeuo pipefail
-          test "$(git -C vpn rev-parse HEAD)" = e21d751c70d82311b27a7726ea84d1ff2020a4ac
+          test "$(git -C vpn rev-parse HEAD)" = eec5b86c62b6c58bdbda8735c7e75fd9f38fd859
           python3 - <<'PY'
           import hashlib
           import sys
@@ -140,7 +140,7 @@ jobs:
             "$work/source.tgz" "ru-controller:$dir/source.tgz"
           ru "tar -xzf '$dir/source.tgz' -C '$dir'; chmod -R go-rwx '$dir'; timeout 210s python3 '$dir/fi_awg_unified_subscription_activate.py' --stage '$dir'"
           ru 'systemctl is-active --quiet mnebyvpn-awg-delivery.service &&
-              test "$(systemctl show -p WorkingDirectory --value mnebyvpn-awg-delivery.service)" = /opt/mnebyvpn-controller/awg-worker-releases/e21d751c70d82311b27a7726ea84d1ff2020a4ac &&
+              test "$(systemctl show -p WorkingDirectory --value mnebyvpn-awg-delivery.service)" = /opt/mnebyvpn-controller/awg-worker-releases/eec5b86c62b6c58bdbda8735c7e75fd9f38fd859 &&
               docker inspect -f "{{.State.Running}}" mnebyvpn-public-web | grep -qx true &&
               grep -qx WEB_FI_AWG_IN_SUBSCRIPTION_ENABLED=yes /opt/mnebyvpn/public/web.env'
           echo 'FI_AWG_UNIFIED_SUBSCRIPTION_GITHUB_ACTION=VERIFIED;EXISTING_TOKEN_UNCHANGED=true;RU188=OWNER'
