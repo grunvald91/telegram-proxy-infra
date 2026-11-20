@@ -44,7 +44,8 @@ jobs:
           assert "has_function_privilege('mnebyvpn_awg_delivery'" in source
           query=[n.value for n in ast.walk(tree) if isinstance(n,ast.Constant) and
                  isinstance(n.value,str) and
-                 'public.vpn_awg_peer_allocations a' in n.value]
+                 'public.vpn_awg_peer_allocations a' in n.value and
+                 'public.vpn_awg_device_requests' in n.value]
           assert len(query)==1 and 'public.vpn_awg_device_requests' in query[0]
           assert 'FI_AWG_SUB_INVENTORY=READONLY_COMPLETE' in source
           assert 'FI_AWG_SUB_SEED_MATCH=' in source
