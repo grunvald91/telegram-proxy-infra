@@ -1,0 +1,172 @@
+name: RU188 native FI217 AWG 6-module delivery worker production start
+# Production preflight rerun after signed egress source cutover (issue #379).
+"on":
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/fi-awg-ru-worker-enable.yml'
+      - 'nodekit/fi_awg_ru_worker_activate.py'
+      - 'nodekit/tests/test_fi_awg_ru_worker_activate.py'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/fi-awg-ru-worker-enable.yml'
+      - 'nodekit/fi_awg_ru_worker_activate.py'
+      - 'nodekit/tests/test_fi_awg_ru_worker_activate.py'
+  workflow_dispatch:
+permissions: {contents: read}
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('fi-awg-ru-worker-pr-{0}', github.event.pull_request.number) || 'mnebyvpn-fleet-fi' }}
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Validate strictly readonly inventory
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile nodekit/fi_awg_ru_worker_activate.py
+          python3 -m unittest discover -s nodekit/tests -p 'test_fi_awg_ru_worker_activate.py' -v
+          python3 -m unittest discover -s nodekit/tests -p 'test_fi_awg_client_worker_cutover.py' -v
+          python3 - <<'PY'
+          from pathlib import Path
+          rows=Path('.github/workflows/fi-awg-ru-worker-enable.yml').read_text().splitlines()
+          marker='      - name: Start pinned RU188 6-module AWG delivery worker after FI217 service readiness'
+          start=rows.index(marker)
+          start=next(i for i in range(start+1,len(rows)) if rows[i]=='        run: |')+1
+          body=[]
+          for row in rows[start:]:
+              if row and not row.startswith('          '):
+                  break
+              body.append(row[10:] if row.startswith('          ') else '')
+          assert body and 'trap cleanup EXIT' in body
+          Path('/tmp/fi-awg-ru-worker-syntax.sh').write_text('\n'.join(body)+'\n')
+          PY
+          bash -n /tmp/fi-awg-ru-worker-syntax.sh
+          rm -f /tmp/fi-awg-ru-worker-syntax.sh
+  start-worker:
+    needs: offline
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: node-fi
+    timeout-minutes: 17
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Install pinned-host password SSH transport
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y --no-install-recommends sshpass >/dev/null
+      - name: Start pinned RU188 6-module AWG delivery worker after FI217 service readiness
+        shell: bash
+        env:
+          RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+          FI_PASSWORD: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_PASSWORD }}
+          FI_USER: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_USER }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          [[ -n "$RU_PASSWORD" && -n "$FI_PASSWORD" && "$FI_USER" == root ]] || exit 2
+          grep -q '^188\.120\.254\.223 ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts
+          work="$RUNNER_TEMP/fi-awg-ru-worker"
+          mkdir -m 0700 "$work"
+          cat > "$work/ru.cfg" <<CFG
+          Host ru-controller
+            HostName 188.120.254.223
+            User root
+            UserKnownHostsFile $GITHUB_WORKSPACE/ops/mnebydns-owner-ssh-known_hosts
+            GlobalKnownHostsFile /dev/null
+            HostKeyAlgorithms ssh-ed25519
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+            BatchMode no
+            PasswordAuthentication yes
+            PubkeyAuthentication no
+            KbdInteractiveAuthentication no
+            ForwardAgent no
+            ClearAllForwardings yes
+            ControlMaster no
+            ProxyCommand none
+            ConnectTimeout 12
+            ServerAliveInterval 10
+            ServerAliveCountMax 3
+            LogLevel ERROR
+          CFG
+          ru(){ SSHPASS="$RU_PASSWORD" sshpass -e ssh -T -F "$work/ru.cfg" ru-controller "$@"; }
+          SSHPASS="$RU_PASSWORD" sshpass -e ssh -T -F "$work/ru.cfg" ru-controller \
+            'cat /root/mnebyvpn-controller/fi-known_hosts' > "$work/fi-known"
+          [[ "$(wc -l < "$work/fi-known")" == 1 ]] || exit 2
+          grep -Eq '^fi\.mnebyvpn\.site ssh-ed25519 [A-Za-z0-9+/]+={0,2}$' "$work/fi-known"
+          cat > "$work/fi.cfg" <<CFG
+          Host fi-node
+            HostName 217.11.167.91
+            User root
+            UserKnownHostsFile $work/fi-known
+            HostKeyAlias fi.mnebyvpn.site
+            GlobalKnownHostsFile /dev/null
+            HostKeyAlgorithms ssh-ed25519
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+            BatchMode no
+            PasswordAuthentication yes
+            PubkeyAuthentication no
+            KbdInteractiveAuthentication no
+            ForwardAgent no
+            ClearAllForwardings yes
+            ControlMaster no
+            ProxyCommand none
+            ConnectTimeout 12
+            ServerAliveInterval 10
+            ServerAliveCountMax 3
+            LogLevel ERROR
+          CFG
+          fi_node(){ SSHPASS="$FI_PASSWORD" sshpass -e ssh -T -F "$work/fi.cfg" fi-node "$@"; }
+          ru_dir=""
+          fi_dir=""
+          cleanup(){
+            set +e
+            if [[ "$ru_dir" =~ ^/run/fi-awg-ru-worker\.[A-Za-z0-9]{8}$ ]]; then
+              ru "rm -rf -- '$ru_dir'" >/dev/null 2>&1
+            fi
+            if [[ "$fi_dir" =~ ^/run/fi-awg-ru-worker\.[A-Za-z0-9]{8}$ ]]; then
+              fi_node "rm -rf -- '$fi_dir'" >/dev/null 2>&1
+            fi
+            rm -rf -- "$work"
+          }
+          trap cleanup EXIT
+          ru_dir=$(ru 'umask 077; mktemp -d /run/fi-awg-ru-worker.XXXXXXXX')
+          fi_dir=$(fi_node 'umask 077; mktemp -d /run/fi-awg-ru-worker.XXXXXXXX')
+          [[ "$ru_dir" =~ ^/run/fi-awg-ru-worker\.[A-Za-z0-9]{8}$ ]] || exit 2
+          [[ "$fi_dir" =~ ^/run/fi-awg-ru-worker\.[A-Za-z0-9]{8}$ ]] || exit 2
+          # This gate tests live local FI217 AWG before any RU188 worker activation.
+          fi_node 'systemctl is-active --quiet mnebyvpn-nodekit-awg@fi-test-01.service &&
+                   systemctl is-active --quiet mnebyvpn-nodekit-awg-watchdog@fi-test-01.service &&
+                   systemctl is-active --quiet mnebyvpn-nodekit-awg-egress@fi-test-01.service &&
+                   test "$(cat /proc/sys/net/ipv4/ip_forward)" = 1 &&
+                   test "$( /opt/mnebyvpn-amneziawg/awg show awg0 listen-port )" = 51821'
+          released=$(ru "docker exec mnebyvpn-stage-postgres psql -X -q -A -t -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage -c \"SELECT enabled::text FROM public.vpn_release_flags WHERE feature='vpn_awg_clients'\"")
+          [[ "$released" == false ]] || exit 2
+          SSHPASS="$RU_PASSWORD" sshpass -e scp -F "$work/ru.cfg" \
+            nodekit/fi_awg_ru_worker_activate.py \
+            nodekit/fi_awg_client_worker_cutover.py \
+            nodekit/fi_awg_client_worker_stage.py \
+            nodekit/fi_awg_worker_source_stage.py \
+            nodekit/fi_awg_worker_candidate_stage.py \
+            nodekit/fi_awg_worker_candidate_runtime.py \
+            nodekit/fi_awg_worker_systemd_cutover.py \
+            nodekit/fi_awg_worker_isolated_systemd_stage.py \
+            nodekit/fi_awg_worker_isolated_source_stage.py \
+            nodekit/fi_awg_worker_isolated_pg_stage.py \
+            nodekit/fi_awg_worker_isolated_runtime_preflight.py \
+            "ru-controller:$ru_dir/"
+          ru "chmod 0600 '$ru_dir/'*.py; timeout 180s python3 '$ru_dir/fi_awg_ru_worker_activate.py' --mode start"
+          ru "timeout 40s python3 '$ru_dir/fi_awg_ru_worker_activate.py' --mode verify"
+          released_after=$(ru "docker exec mnebyvpn-stage-postgres psql -X -q -A -t -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage -c \"SELECT enabled::text FROM public.vpn_release_flags WHERE feature='vpn_awg_clients'\"")
+          [[ "$released_after" == false ]] || exit 2
+          echo 'FI_AWG_RU_WORKER_GITHUB_ACTION=VERIFIED;CUSTOMER_RELEASE=false'
