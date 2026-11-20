@@ -87,15 +87,17 @@ def validate(node: Path) -> dict:
     conf = checked_file(node / "amneziawg" / "awg0.conf")
     text = conf.decode("ascii")
     hashes = awg.get("source_binary_sha256")
+    staged = (manifest.get("state") == "testing" and
+              manifest.get("activation_enabled") is False and
+              manifest.get("registration_enabled") is False and
+              awg.get("state") == "staged" and
+              awg.get("activation_enabled") is False and
+              awg.get("peers_enabled") is False and
+              awg.get("subscribers_enabled") is False)
+    production = manifest.get("state") == "active"
     if (manifest.get("node_id") != node.name or
-            manifest.get("state") != "testing" or
-            manifest.get("activation_enabled") is not False or
-            manifest.get("registration_enabled") is not False or
             awg.get("node_id") != node.name or
-            awg.get("state") != "staged" or
-            awg.get("activation_enabled") is not False or
-            awg.get("peers_enabled") is not False or
-            awg.get("subscribers_enabled") is not False or
+            not (staged or production) or
             awg.get("protocol") != "AmneziaWG 3.1" or
             awg.get("port") != PORT or
             not isinstance(hashes, dict) or
@@ -119,9 +121,18 @@ def validate(node: Path) -> dict:
                 p.stat().st_uid != 0 or p.stat().st_mode & 0o022 or
                 not p.stat().st_mode & stat.S_IXUSR or digest(p) != expected):
             raise AwgLifecycleError("AmneziaWG executable does not match pinned SHA-256")
+    if production:
+        # A signed, exact-identity runtime approval is required before AWG's
+        # existing systemd ExecStartPre can accept an active node manifest.
+        # The staged canary remains strict and never uses this path.
+        from fi_awg_production_policy import admit
+        proof = admit(node, manifest, awg)
+        return {"node_id": node.name, "backend": "amneziawg-go",
+                "port": PORT, "zero_peers": False, "source_verified": True,
+                "published": False, "mode": "production", **proof}
     return {"node_id": node.name, "backend": "amneziawg-go",
             "port": PORT, "zero_peers": True, "source_verified": True,
-            "published": False}
+            "published": False, "mode": "staged"}
 
 
 def install(source: Path) -> dict:
@@ -154,6 +165,18 @@ def install(source: Path) -> dict:
             raise AwgLifecycleError("Installed Nodekit validator differs")
     else:
         _install_bytes(dependency_target, dependency.read_bytes(), 0o600)
+    # The enrolled FI-only production admission helper is installed before
+    # any future signed cutover. No worker, interface or flag is started here.
+    admission = source.parent / "fi_awg_production_policy.py"
+    admission_target = APP / "fi_awg_production_policy.py"
+    if (admission.is_symlink() or not admission.is_file() or
+            admission.stat().st_uid != 0 or admission_target.is_symlink()):
+        raise AwgLifecycleError("Untrusted production approval verifier")
+    if admission_target.exists():
+        if checked_file(admission_target) != admission.read_bytes():
+            raise AwgLifecycleError("Installed production verifier differs")
+    else:
+        _install_bytes(admission_target, admission.read_bytes(), 0o600)
     unit = unit_source().encode()
     if UNIT_PATH.is_symlink():
         raise AwgLifecycleError("Systemd unit symlink forbidden")
@@ -207,6 +230,8 @@ def inspect(node: Path) -> dict:
 
 def canary(node: Path) -> dict:
     report = validate(node)
+    if report["mode"] != "staged":
+        raise AwgLifecycleError("Production node cannot enter staging canary")
     unit = unit_name(node.name)
     if (not UNIT_PATH.is_file() or UNIT_PATH.is_symlink() or
             UNIT_PATH.read_text() != unit_source() or
@@ -254,7 +279,8 @@ def main() -> int:
     try:
         if os.geteuid() != 0:
             raise AwgLifecycleError("Root required")
-        node = node_ready(args.stage_root, args.node_id)
+        node = node_ready(args.stage_root, args.node_id,
+                          allow_production=args.mode in ("validate", "inspect"))
         safe_dir(node / "amneziawg")
         report = validate(node)
         if args.mode == "install":
