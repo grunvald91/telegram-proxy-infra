@@ -105,10 +105,19 @@ def git_blob(raw:bytes)->str:
     return hashlib.sha1(b"blob "+str(len(raw)).encode()+b"\0"+raw).hexdigest()
 
 def staged(stage:Path)->dict[Path,bytes]:
-    if (not stage.is_absolute() or
-        not re.fullmatch(r"/run/fi-awg-subscription\.[A-Za-z0-9]{8}",str(stage)) or
-        stage.is_symlink() or not stage.is_dir() or
-        stage.stat().st_uid!=0 or stat.S_IMODE(stage.stat().st_mode)!=0o700):
+    # Emit only fixed booleans and permission bits. No path, key, or user data.
+    stage_name_ok=bool(re.fullmatch(
+        r"/run/fi-awg-subscription\.[A-Za-z0-9]{8}",str(stage)))
+    stage_type_ok=stage.is_absolute() and not stage.is_symlink() and stage.is_dir()
+    stage_meta=stage.stat() if stage_type_ok else None
+    stage_uid_ok=stage_meta is not None and stage_meta.st_uid==0
+    stage_mode_ok=stage_meta is not None and stat.S_IMODE(stage_meta.st_mode)==0o700
+    print("FI_AWG_STAGE_META=NAME:"+("YES" if stage_name_ok else "NO")+
+          ";TYPE:"+("YES" if stage_type_ok else "NO")+
+          ";ROOT:"+("YES" if stage_uid_ok else "NO")+
+          ";MODE700:"+("YES" if stage_mode_ok else "NO"),
+          flush=True)
+    if not (stage_name_ok and stage_type_ok and stage_uid_ok and stage_mode_ok):
         raise Blocked("untrusted source stage")
     result={}
     for relative,sha in SOURCE.items():
