@@ -139,6 +139,12 @@ jobs:
             packages/provisioning/src/awg-controller-outbox.ts
           sshpass -e scp -F "$work/config" "$work/worker.tar" "ru-controller:$folder/"
           ru "tar --no-same-owner --no-same-permissions -xf '$folder/worker.tar' -C '$folder'; find '$folder' -type d -exec chmod 0700 {} +; find '$folder' -type f -exec chmod 0600 {} +"
+          # A stale orphan must never keep this stage blocked. The installer
+          # also uses a nonblocking flock internally, but fail early and
+          # clearly if a previous run still owns the source lock.
+          lock_state=$(ru "set -eu; test -f /root/mnebyvpn-controller/awg-worker-source-stage.lock; test ! -L /root/mnebyvpn-controller/awg-worker-source-stage.lock; if flock -n -E 77 /root/mnebyvpn-controller/awg-worker-source-stage.lock -c /usr/bin/true; then echo FREE; else echo HELD; fi")
+          [[ "$lock_state" == FREE ]] || { echo 'FI_AWG_SOURCE_LOCK=NOT_FREE'; exit 2; }
+          echo 'FI_AWG_SOURCE_LOCK=FREE'
           first=$(ru "timeout --signal=TERM --kill-after=10s 180s python3 '$folder/fi_awg_client_worker_stage.py' --stage '$folder'")
           export FI_FIRST="$first"
           python3 - <<'PY'
