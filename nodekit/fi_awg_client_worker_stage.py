@@ -97,7 +97,7 @@ def staged_artifacts() -> None:
     cutover.verify()
     # cutover.verify() already checks ALL baseline dependency hashes plus
     # the *actual* post-cutover effective unit. The legacy
-    # runtime.verify_runtime_manifest() calls candidate.guard(), which
+    # legacy runtime preflight calls candidate.guard(), which
     # insists the pre-cutover OLD working directory still be effective:
     # that is intentionally false on the correctly cut-over RU188.
     if trust.read_file(candidate.CANDIDATE/WORKER)!=trust.read_file(
