@@ -30,6 +30,22 @@ jobs:
           set -Eeuo pipefail
           python3 -m py_compile nodekit/fi_awg_live_readiness.py
           python3 -m unittest discover -s nodekit/tests -p 'test_fi_awg_live_readiness.py' -v
+          python3 - <<'PY'
+          from pathlib import Path
+          rows=Path('.github/workflows/fi-awg-live-readiness.yml').read_text().splitlines()
+          marker='      - name: Inspect RU188 and FI217 without changing any release gate or customer'
+          start=rows.index(marker)
+          start=next(i for i in range(start+1,len(rows)) if rows[i]=='        run: |')+1
+          body=[]
+          for row in rows[start:]:
+              if row and not row.startswith('          '):
+                  break
+              body.append(row[10:] if row.startswith('          ') else '')
+          assert body and 'trap cleanup EXIT' in body
+          Path('/tmp/fi-awg-live-readiness-syntax.sh').write_text('\\n'.join(body)+'\\n')
+          PY
+          bash -n /tmp/fi-awg-live-readiness-syntax.sh
+          rm -f /tmp/fi-awg-live-readiness-syntax.sh
   inspect:
     needs: offline
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
@@ -108,7 +124,7 @@ jobs:
             ServerAliveCountMax 3
             LogLevel ERROR
           CFG
-          fi(){ SSHPASS="$FI_PASSWORD" sshpass -e ssh -T -F "$work/fi.cfg" fi-node "$@"; }
+          fi_node(){ SSHPASS="$FI_PASSWORD" sshpass -e ssh -T -F "$work/fi.cfg" fi-node "$@"; }
           ru_dir=""
           fi_dir=""
           cleanup(){
@@ -117,13 +133,13 @@ jobs:
               ru "rm -rf -- '$ru_dir'" >/dev/null 2>&1
             fi
             if [[ "$fi_dir" =~ ^/run/fi-awg-live-readiness\.[A-Za-z0-9]{8}$ ]]; then
-              fi "rm -rf -- '$fi_dir'" >/dev/null 2>&1
+              fi_node "rm -rf -- '$fi_dir'" >/dev/null 2>&1
             fi
             rm -rf -- "$work"
           }
           trap cleanup EXIT
           ru_dir=$(ru 'umask 077; mktemp -d /run/fi-awg-live-readiness.XXXXXXXX')
-          fi_dir=$(fi 'umask 077; mktemp -d /run/fi-awg-live-readiness.XXXXXXXX')
+          fi_dir=$(fi_node 'umask 077; mktemp -d /run/fi-awg-live-readiness.XXXXXXXX')
           [[ "$ru_dir" =~ ^/run/fi-awg-live-readiness\.[A-Za-z0-9]{8}$ ]] || exit 2
           [[ "$fi_dir" =~ ^/run/fi-awg-live-readiness\.[A-Za-z0-9]{8}$ ]] || exit 2
           SSHPASS="$RU_PASSWORD" sshpass -e scp -F "$work/ru.cfg" \
@@ -131,7 +147,7 @@ jobs:
           SSHPASS="$FI_PASSWORD" sshpass -e scp -F "$work/fi.cfg" \
             nodekit/fi_awg_live_readiness.py "fi-node:$fi_dir/inspect.py"
           ru_result=$(ru "chmod 0600 '$ru_dir/inspect.py'; timeout 40s python3 '$ru_dir/inspect.py' --mode ru")
-          fi_result=$(fi "chmod 0600 '$fi_dir/inspect.py'; timeout 40s python3 '$fi_dir/inspect.py' --mode fi")
+          fi_result=$(fi_node "chmod 0600 '$fi_dir/inspect.py'; timeout 40s python3 '$fi_dir/inspect.py' --mode fi")
           export FI_RU_REPORT="$ru_result"
           export FI_NODE_REPORT="$fi_result"
           python3 - <<'PY'
