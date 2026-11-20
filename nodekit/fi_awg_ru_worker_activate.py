@@ -46,9 +46,11 @@ def ensure_marker()->None:
 
 def effective_pinned()->None:
     trust.require_safe_dormant()
+    # pinned.verify() checks the actual six-source effective systemd unit,
+    # including exact WorkingDirectory and argv. The earlier 3/5-module
+    # isolated.systemd exact_effective_unit() is deliberately NOT used.
     pinned.verify()
     unit.approved_base_unit()
-    unit.exact_effective_unit()
     if unit.show("WorkingDirectory")!="/opt/mnebyvpn-controller/awg-worker-releases/446c331249085adb6536e3d9913fb4b68abf6cd7":
         raise Blocked("unexpected worker release")
 
