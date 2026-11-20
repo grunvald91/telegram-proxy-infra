@@ -238,9 +238,55 @@ def prune_on_fi(path:Path)->None:
     print("FI_AWG_REAL_E2E_TOMBSTONE=PRUNED;CUSTOMER_PEERS_UNCHANGED=true")
 
 
+
+def prune_stale_on_fi()->str:
+    """Remove an old, disabled synthetic test tombstone; never a customer peer.
+
+    Caller must independently verify via RU188 that the fixed synthetic
+    client address has ZERO customer allocations in canonical PostgreSQL.
+    """
+    import time
+    if not trust.is_host(FI_IP):raise Blocked("wrong FI host")
+    for unit in ("mnebyvpn-nodekit-awg@fi-test-01.service",
+                 "mnebyvpn-nodekit-awg-watchdog@fi-test-01.service",
+                 "mnebyvpn-nodekit-awg-egress@fi-test-01.service"):
+        if subprocess.run(["systemctl","is-active","--quiet",unit],
+                          capture_output=True,check=False,timeout=8).returncode:
+            raise Blocked("production watchdog/egress not active")
+    sys.path.insert(0,"/opt/mnebyvpn-nodekit")
+    from awg_peer_grants import (LedgerLock,protected_file,validate_state,
+                                 persist_state,active_peers,assert_runtime_peers)
+    ledger=FI/"amneziawg/peer-grants.json"
+    with LedgerLock(FI):
+        if not ledger.exists() and not ledger.is_symlink():
+            return "ABSENT"
+        state=validate_state(json.loads(protected_file(ledger)),NODE)
+        rows=[(uid,row) for uid,row in state["grants"].items()
+              if row["clientIpv4"]==CLIENT_IP]
+        if not rows:return "ABSENT"
+        if len(rows)!=1:raise Blocked("synthetic IP collision")
+        uid,row=rows[0]
+        if (row.get("enabled") is not False or row.get("expiresAt") is not None
+            or row.get("revision")!=2):
+            raise Blocked("synthetic IP not a fully revoked test entry")
+        # Signed grant/revoke commands expire after 45s; the persisted
+        # ledger must be undisturbed for an additional safety interval.
+        age=time.time()-ledger.stat().st_mtime
+        if not 90<=age<=86400*30:
+            raise Blocked("revoked entry still in replay window")
+        expected=active_peers(state,time.time())
+        if any(peer["allowed_ips"]==CLIENT_IP+"/32" for peer in expected):
+            raise Blocked("test IP active")
+        # Includes every paying peer, not only the synthetic address.
+        assert_runtime_peers(expected)
+        del state["grants"][uid]
+        persist_state(ledger,validate_state(state,NODE))
+    return "PRUNED"
+
+
 def main()->int:
     p=argparse.ArgumentParser()
-    p.add_argument("--mode",required=True,choices=("fi-material","ru-sign","ru-record","fi-prune"))
+    p.add_argument("--mode",required=True,choices=("fi-material","ru-sign","ru-record","fi-prune","fi-prune-stale"))
     p.add_argument("--request",type=Path)
     args=p.parse_args()
     try:
@@ -254,9 +300,12 @@ def main()->int:
         elif args.mode=="ru-record":
             if not args.request:raise Blocked("proof missing")
             record_on_ru(args.request)
-        else:
+        elif args.mode=="fi-prune":
             if not args.request:raise Blocked("signed revoke missing")
             prune_on_fi(args.request)
+        else:
+            if args.request:raise Blocked("unexpected input")
+            print("FI_AWG_REAL_E2E_OLD_TEST_TOMBSTONE="+prune_stale_on_fi())
         return 0
     except (OSError,ValueError,TypeError,KeyError,subprocess.SubprocessError,
             trust.CanaryError):
