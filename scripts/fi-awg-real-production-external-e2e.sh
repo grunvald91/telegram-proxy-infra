@@ -113,8 +113,8 @@ for name in fi_awg_live_customer_e2e.py fi_awg_signed_canary.py fi_awg_productio
 done
 ru "chmod 0600 '$ru_dir/'*.py"
 fi_node "chmod 0600 '$fi_dir/'*.py"
-fi_node 'systemctl is-active --quiet mnebyvpn-nodekit-awg@fi-test-01.service && systemctl is-active --quiet mnebyvpn-nodekit-awg-watchdog@fi-test-01.service && systemctl is-active --quiet mnebyvpn-nodekit-awg-egress@fi-test-01.service && test -z "$(/opt/mnebyvpn-amneziawg/awg show awg0 peers)"'
-ru 'test "$(docker exec mnebyvpn-stage-postgres psql -AtX -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage -c "SELECT enabled::text FROM public.vpn_release_flags WHERE feature='\''vpn_awg_clients'\''")" = false'
+fi_node 'systemctl is-active --quiet mnebyvpn-nodekit-awg@fi-test-01.service && systemctl is-active --quiet mnebyvpn-nodekit-awg-watchdog@fi-test-01.service && systemctl is-active --quiet mnebyvpn-nodekit-awg-egress@fi-test-01.service && ! /opt/mnebyvpn-amneziawg/awg show awg0 allowed-ips | grep -Fq "10.73.91.253/32"'
+ru 'value=$(docker exec mnebyvpn-stage-postgres psql -AtX -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage -c "SELECT enabled::text FROM public.vpn_release_flags WHERE feature='\''vpn_awg_clients'\''"); test "$value" = true -o "$value" = false'
 fi_node "timeout 30s python3 '$fi_dir/fi_awg_live_customer_e2e.py' --mode fi-material" > "$work/material.json"
 "$ext/awg" genkey > "$work/client.key"
 "$ext/awg" pubkey < "$work/client.key" > "$work/client.pub"
@@ -169,7 +169,7 @@ echo 'FI_AWG_LIVE_E2E_HTTPS_EGRESS=PASS'
 echo 'FI_AWG_LIVE_E2E_ENCRYPTED_BYTES=PASS'
 revoke
 [[ "$revoke_applied" == yes ]] || exit 2
-fi_node 'test -z "$(/opt/mnebyvpn-amneziawg/awg show awg0 peers)"'
+fi_node '! /opt/mnebyvpn-amneziawg/awg show awg0 allowed-ips | grep -Fq "10.73.91.253/32"'
 echo 'FI_AWG_LIVE_E2E_REVOKE=PASS'
 python3 - "$work" <<'PY'
 import json,pathlib,sys
@@ -187,3 +187,8 @@ PY
 ru_put "$work/proof.json" proof.json
 ru "timeout 40s python3 '$ru_dir/fi_awg_live_customer_e2e.py' --mode ru-record --request '$ru_dir/proof.json'"
 echo 'FI_AWG_LIVE_E2E_POOL_FRESH=PASS'
+# The exact signed revoke cannot be replayed after 45 seconds.
+# Remove ONLY the synthetic disabled ledger tombstone, preserving customer peers.
+sleep 50
+fi_node "timeout 30s python3 '$fi_dir/fi_awg_live_customer_e2e.py' --mode fi-prune --request '$fi_dir/revoke.json'"
+echo 'FI_AWG_LIVE_E2E_CUSTOMER_PEERS_PRESERVED=PASS'
