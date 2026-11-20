@@ -70,7 +70,7 @@ class StaleStageTests(unittest.TestCase):
              "apps/service/src/awg-controller-delivery-worker.ts","--stage","/run/foo")))
         self.assertFalse(repair.exact_stage_argv(
             ("python3","/run/fi-awg-client-worker.12345678/"
-             "fi_awg_client_worker_stage.py","--stage","/run/elsewhere"))
+             "fi_awg_client_worker_stage.py","--stage","/run/elsewhere")))
 
 
 if __name__=="__main__":
