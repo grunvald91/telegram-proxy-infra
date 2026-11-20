@@ -37,6 +37,35 @@ class FiAwgExternalE2ePinnedHostTests(unittest.TestCase):
         self.assertIn('root@217.11.167.91',self.text)
         self.assertIn('AWG_CLIENT_PROFILE_PUBLISHED=false',self.text)
 
+    def test_automatic_one_merge_run_gates_before_real_network(self):
+        self.assertIn("  pull_request:",self.text)
+        self.assertIn("  push:",self.text)
+        self.assertIn("    needs: offline",self.text)
+        self.assertIn("github.event_name != 'pull_request'",self.text)
+        self.assertIn("test_awg_external_canary.py",self.text)
+        self.assertIn("test_fi_awg_external_e2e_workflow.py",self.text)
+        self.assertIn("group: mnebyvpn-fleet-fi",self.text)
+
+    def test_real_tunnel_and_original_host_state_checked(self):
+        for required in (
+            "AWG_EXTERNAL_HANDSHAKE=PASS",
+            "AWG_EXTERNAL_AVG_RTT_MS=",
+            "AWG_EXTERNAL_HTTPS_SECONDS=",
+            "AWG_EXTERNAL_HTTPS_EGRESS=PASS",
+            "AWG_EXTERNAL_BIDIRECTIONAL_ENCRYPTED_BYTES=PASS",
+            "--interface \"$iface\"",
+            "217.11.167.91",
+            "original_ip_forward=$(remote",
+            "nodekit-fi-awg-canary",
+            "nodekit-fi-awg-canary-expiry.timer",
+            "test ! -e /sys/class/net/awg0",
+            "test ! -e /run/nodekit-fi-awg-external.json",
+            "AWG_CLIENT_PROFILE_PUBLISHED=false",
+        ):
+            with self.subTest(value=required):
+                self.assertIn(required,self.text)
+        self.assertNotIn("systemctl enable",self.text)
+
     def test_all_live_shell_blocks_pass_bash_syntax(self):
         lines=self.text.splitlines()
         scripts=[]
