@@ -1,0 +1,43 @@
+name: FI217 signed production AWG admission (offline; no activation)
+"on":
+  pull_request:
+    branches: [main]
+    paths:
+      - 'nodekit/fi_awg_production_policy.py'
+      - 'nodekit/awg_lifecycle.py'
+      - 'nodekit/install_components.py'
+      - 'nodekit/tests/test_fi_awg_production_policy.py'
+      - 'nodekit/tests/test_awg_lifecycle.py'
+      - 'nodekit/tests/test_amneziawg.py'
+      - '.github/workflows/fi-awg-production-policy-offline.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'nodekit/fi_awg_production_policy.py'
+      - 'nodekit/awg_lifecycle.py'
+      - 'nodekit/install_components.py'
+      - 'nodekit/tests/test_fi_awg_production_policy.py'
+      - 'nodekit/tests/test_awg_lifecycle.py'
+      - 'nodekit/tests/test_amneziawg.py'
+      - '.github/workflows/fi-awg-production-policy-offline.yml'
+  workflow_dispatch:
+permissions: {contents: read}
+jobs:
+  offline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Test immutable, RU188 Ed25519-gated FI production mode without starting AWG
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile nodekit/install_components.py nodekit/awg_lifecycle.py nodekit/fi_awg_production_policy.py
+          python3 -m unittest discover -s nodekit/tests -p 'test_fi_awg_production_policy.py' -v
+          python3 -m unittest discover -s nodekit/tests -p 'test_awg_lifecycle.py' -v
+          python3 -m unittest discover -s nodekit/tests -p 'test_amneziawg.py' -v
+          # Production authorization MUST NOT be a customer release command.
+          ! grep -q 'systemctl enable' nodekit/fi_awg_production_policy.py
+          ! grep -q 'iptables -I' nodekit/fi_awg_production_policy.py
+          ! grep -q 'vpn_release_flags SET' nodekit/fi_awg_production_policy.py
