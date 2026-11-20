@@ -37,6 +37,18 @@ class ImmutableReleaseContract(unittest.TestCase):
         self.assertNotIn("UPDATE vpn_release_flags",source)
         self.assertNotIn("sshpass",source)
 
+    def test_no_reentrant_flock_on_same_release_lock(self):
+        source=(NODEKIT/"fi_awg_client_worker_stage.py").read_text()
+        self.assertIn("def staged_artifacts_locked() -> None:",source)
+        self.assertIn("def staged_artifacts() -> None:",source)
+        self.assertIn("cutover.verify()",source)
+        locked=source.split("fcntl.flock(fd,fcntl.LOCK_EX)",1)[1]
+        locked=locked.split("fcntl.flock(fd,fcntl.LOCK_UN)",1)[0]
+        self.assertNotIn("staged_artifacts()",locked)
+        self.assertNotIn("cutover.verify()",locked)
+        self.assertEqual(locked.count("staged_artifacts_locked()"),2)
+        self.assertIn("cutover.verified_new_effective_unit(",source)
+
     def test_no_existing_candidate_mutation(self):
         source=(NODEKIT/"fi_awg_client_worker_stage.py").read_text()
         self.assertIn('RELEASE=RELEASES/NEW',source)
