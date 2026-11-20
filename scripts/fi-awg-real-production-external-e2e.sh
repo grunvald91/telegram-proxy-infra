@@ -115,6 +115,15 @@ ru "chmod 0600 '$ru_dir/'*.py"
 fi_node "chmod 0600 '$fi_dir/'*.py"
 fi_node 'systemctl is-active --quiet mnebyvpn-nodekit-awg@fi-test-01.service && systemctl is-active --quiet mnebyvpn-nodekit-awg-watchdog@fi-test-01.service && systemctl is-active --quiet mnebyvpn-nodekit-awg-egress@fi-test-01.service && ! /opt/mnebyvpn-amneziawg/awg show awg0 allowed-ips | grep -Fq "10.73.91.253/32"'
 ru 'value=$(docker exec mnebyvpn-stage-postgres psql -AtX -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage -c "SELECT enabled::text FROM public.vpn_release_flags WHERE feature='\''vpn_awg_clients'\''"); test "$value" = true -o "$value" = false'
+# Prevent a reserved synthetic address from ever colliding with a paying
+# subscription. A live FI node alone cannot grant authorization here.
+allocation_count=$(ru "docker exec mnebyvpn-stage-postgres psql -X -q -A -t -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage -c \"SELECT count(*)::text FROM public.vpn_awg_peer_allocations WHERE node_id='fi-test-01' AND client_ipv4=inet '10.73.91.253';\"")
+[[ "$allocation_count" == 0 ]] || { echo 'FI_AWG_LIVE_E2E_SYNTHETIC_SLOT=BLOCKED'; exit 2; }
+echo 'FI_AWG_LIVE_E2E_SYNTHETIC_SLOT=NO_CUSTOMER_ALLOCATION'
+# The previous external test left a fully signed-revoked entry. The FINITE
+# local recovery helper is root-only, under the watchdog ledger lock, and
+# verifies all currently active paying peers before touching only .253.
+fi_node "timeout 30s python3 '$fi_dir/fi_awg_live_customer_e2e.py' --mode fi-prune-stale"
 fi_node "timeout 30s python3 '$fi_dir/fi_awg_live_customer_e2e.py' --mode fi-material" > "$work/material.json"
 "$ext/awg" genkey > "$work/client.key"
 "$ext/awg" pubkey < "$work/client.key" > "$work/client.pub"
