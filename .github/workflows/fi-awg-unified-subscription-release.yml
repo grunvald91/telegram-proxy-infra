@@ -1,4 +1,4 @@
-name: RU188 production one VPN subscription across all FI217 and VLESS servers
+name: RU188 FI217 as additional AmneziaWG node in existing VPN subscription
 "on":
   pull_request:
     branches: [main]
