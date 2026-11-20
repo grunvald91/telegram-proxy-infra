@@ -101,7 +101,17 @@ jobs:
           [[ "$dir" =~ ^/run/fi-awg-repair\.[A-Za-z0-9]{8}$ ]] || exit 2
           sshpass -e scp -F "$work/config" \
             nodekit/fi_awg_reap_stale_stage.py "ru-controller:$dir/recover.py"
-          status=$(ru "chmod 0600 '$dir/recover.py'; timeout --signal=TERM --kill-after=5s 60s python3 '$dir/recover.py' --mode repair")
+          if ! status=$(ru "chmod 0600 '$dir/recover.py'; timeout --signal=TERM --kill-after=5s 60s python3 '$dir/recover.py' --mode repair"); then
+            # The remote script emits only a bounded constant safety reason,
+            # never command output, credentials or database records.
+            case "$status" in
+              FI_AWG_STALE_STAGE=BLOCKED\;REASON=*)
+                echo "$status";;
+              *)
+                echo 'FI_AWG_STALE_STAGE=BLOCKED;REASON=transport_or_unexpected';;
+            esac
+            exit 2
+          fi
           [[ "$status" == 'FI_AWG_STALE_STAGE=REPAIRED;PROCESSES_SIGNALED=2;LOCK=FREE;WORKER_ACTIVE=false;CLIENT_RELEASE=false;CUSTOMER_PEERS_TOUCHED=false' || \
              "$status" == 'FI_AWG_STALE_STAGE=ALREADY_CLEAR;WORKER_ACTIVE=false;CLIENT_RELEASE=false;PROCESSES_SIGNALED=0' ]] || exit 2
           echo "$status"
