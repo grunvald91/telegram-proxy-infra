@@ -1,0 +1,130 @@
+name: FI217 live customer synthetic E2E slot diagnosis (read-only)
+"on":
+  pull_request:
+    branches: [main]
+    paths:
+      - nodekit/fi_awg_health_slot_audit.py
+      - nodekit/fi_awg_health_slot_audit.py
+      - .github/workflows/fi-awg-health-slot-audit.yml
+  push:
+    branches: [main]
+    paths:
+      - nodekit/fi_awg_health_slot_audit.py
+      - nodekit/fi_awg_health_slot_audit.py
+      - .github/workflows/fi-awg-health-slot-audit.yml
+  workflow_dispatch:
+permissions: {contents: read}
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('fi-awg-slot-pr-{0}',github.event.pull_request.number) || 'mnebyvpn-fleet-fi' }}
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Validate read-only FI217 health-slot inventory
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile nodekit/fi_awg_health_slot_audit.py
+          python3 -m unittest discover -s nodekit/tests -p 'test_fi_awg_customer_web_release.py' -v
+          grep -q 'FI_AWG_HEALTH_SLOT_LEDGER=' nodekit/fi_awg_health_slot_audit.py
+  inspect:
+    needs: offline
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    environment: node-fi
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Install pinned SSH transport
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends sshpass >/dev/null
+      - name: Inspect existing FI217 test tombstone and canonical client allocation only
+        shell: bash
+        env:
+          RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+          FI_PASSWORD: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_PASSWORD }}
+          FI_USER: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_USER }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          [[ "$FI_USER" == root && -n "$RU_PASSWORD" && -n "$FI_PASSWORD" ]] || exit 2
+          grep -q '^188\.120\.254\.223 ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts
+          work="$RUNNER_TEMP/fi-awg-health-readonly"
+          mkdir -m 0700 "$work"
+          cat > "$work/ru.cfg" <<CFG
+          Host ru-controller
+            HostName 188.120.254.223
+            User root
+            UserKnownHostsFile $GITHUB_WORKSPACE/ops/mnebydns-owner-ssh-known_hosts
+            GlobalKnownHostsFile /dev/null
+            HostKeyAlgorithms ssh-ed25519
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+            PasswordAuthentication yes
+            PubkeyAuthentication no
+            KbdInteractiveAuthentication no
+            BatchMode no
+            ForwardAgent no
+            ClearAllForwardings yes
+            ControlMaster no
+            ProxyCommand none
+            ConnectTimeout 12
+            LogLevel ERROR
+          CFG
+          ru(){ SSHPASS="$RU_PASSWORD" sshpass -e ssh -T -F "$work/ru.cfg" ru-controller "$@"; }
+          ru 'test -f /root/mnebyvpn-controller/fi-known_hosts; test ! -L /root/mnebyvpn-controller/fi-known_hosts; test "$(stat -c "%u:%a" /root/mnebyvpn-controller/fi-known_hosts)" = 0:600; cat /root/mnebyvpn-controller/fi-known_hosts' > "$work/fi-known"
+          python3 - "$work/fi-known" <<'PY'
+          import base64,pathlib,sys
+          raw=pathlib.Path(sys.argv[1]).read_bytes()
+          assert len(raw)<512 and raw.count(b'\n')==1 and raw.endswith(b'\n')
+          host,kind,key=raw.decode('ascii').strip().split()
+          assert (host,kind)==('fi.mnebyvpn.site','ssh-ed25519')
+          decoded=base64.b64decode(key,validate=True)
+          assert len(decoded)==51 and decoded.startswith(b'\x00\x00\x00\x0bssh-ed25519\x00\x00\x00\x20')
+          PY
+          cat > "$work/fi.cfg" <<CFG
+          Host fi-node
+            HostName 217.11.167.91
+            User root
+            UserKnownHostsFile $work/fi-known
+            HostKeyAlias fi.mnebyvpn.site
+            GlobalKnownHostsFile /dev/null
+            HostKeyAlgorithms ssh-ed25519
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+            PasswordAuthentication yes
+            PubkeyAuthentication no
+            KbdInteractiveAuthentication no
+            BatchMode no
+            ForwardAgent no
+            ClearAllForwardings yes
+            ControlMaster no
+            ProxyCommand none
+            ConnectTimeout 12
+            LogLevel ERROR
+          CFG
+          fi_node(){ SSHPASS="$FI_PASSWORD" sshpass -e ssh -T -F "$work/fi.cfg" fi-node "$@"; }
+          fi_dir=''
+          cleanup(){
+            set +e
+            if [[ "$fi_dir" =~ ^/run/fi-awg-health-audit\.[A-Za-z0-9]{8}$ ]];then
+              fi_node "rm -rf -- '$fi_dir'" >/dev/null 2>&1
+            fi
+            rm -rf -- "$work"
+          }
+          trap cleanup EXIT
+          fi_dir=$(fi_node 'umask 077; mktemp -d /run/fi-awg-health-audit.XXXXXXXX')
+          [[ "$fi_dir" =~ ^/run/fi-awg-health-audit\.[A-Za-z0-9]{8}$ ]] || exit 2
+          SSHPASS="$FI_PASSWORD" sshpass -e scp -F "$work/fi.cfg" \
+            nodekit/fi_awg_health_slot_audit.py nodekit/fi_awg_signed_canary.py "fi-node:$fi_dir/"
+          fi_node "chmod 0600 '$fi_dir/'*.py; timeout 20s python3 '$fi_dir/fi_awg_health_slot_audit.py'"
+          data=$(ru 'docker exec mnebyvpn-stage-postgres psql -X -q -A -t -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage -c "SELECT (SELECT CASE WHEN COUNT(*)=0 THEN '\''UNALLOCATED'\'' ELSE '\''ALLOCATED'\'' END FROM public.vpn_awg_peer_allocations WHERE node_id='\''fi-test-01'\'' AND host(client_ipv4)='\''10.73.91.253'\''), (SELECT enabled::text FROM public.vpn_release_flags WHERE feature='\''vpn_awg_clients'\'');"')
+          [[ "$data" =~ ^(UNALLOCATED|ALLOCATED)\|(true|false)$ ]] || exit 2
+          echo "FI_AWG_HEALTH_DB_SLOT=${data%%|*}"
+          echo "FI_AWG_HEALTH_CUSTOMER_RELEASE=${data#*|}"
