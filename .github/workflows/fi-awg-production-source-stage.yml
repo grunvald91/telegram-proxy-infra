@@ -1,0 +1,147 @@
+name: FI217 pinned production validators dormant source cutover (NO AWG start)
+"on":
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/fi-awg-production-source-stage.yml'
+      - 'nodekit/fi_awg_production_source_stage.py'
+      - 'nodekit/tests/test_fi_awg_production_source_stage.py'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/fi-awg-production-source-stage.yml'
+      - 'nodekit/fi_awg_production_source_stage.py'
+      - 'nodekit/tests/test_fi_awg_production_source_stage.py'
+  workflow_dispatch:
+permissions: {contents: read}
+concurrency:
+  group: mnebyvpn-fleet-fi
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Test safe atomic source cutover and signed production admission
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile nodekit/fi_awg_production_source_stage.py
+          sudo python3 -m unittest discover -s nodekit/tests -p 'test_fi_awg_production_source_stage.py' -v
+          python3 -m unittest discover -s nodekit/tests -p 'test_fi_awg_production_policy.py' -v
+          python3 -m unittest discover -s nodekit/tests -p 'test_awg_lifecycle.py' -v
+  fi-dormant-stage:
+    needs: offline
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    environment: node-fi
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Install pinned-host password SSH transport
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y --no-install-recommends sshpass >/dev/null
+      - name: Upgrade FI217 validator source while both AWG units remain dormant
+        shell: bash
+        env:
+          RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+          FI_PASSWORD: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_PASSWORD }}
+          FI_USER: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_USER }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          [[ "$FI_USER" == root && -n "$FI_PASSWORD" && -n "$RU_PASSWORD" ]] || exit 2
+          base=c6091eb44ea9c1793a1668b039685c246d8cb723
+          git cat-file -e "$base^{commit}"
+          work="$RUNNER_TEMP/fi-awg-production-src"
+          mkdir -m 0700 "$work"
+          git show "$base:nodekit/install_components.py" > "$work/legacy_install_components.py"
+          git show "$base:nodekit/awg_lifecycle.py" > "$work/legacy_awg_lifecycle.py"
+          test -s "$work/legacy_awg_lifecycle.py"
+          test -s "$work/legacy_install_components.py"
+          python3 -m py_compile nodekit/install_components.py nodekit/awg_lifecycle.py nodekit/fi_awg_production_policy.py nodekit/fi_awg_production_source_stage.py
+          grep -q '^188\.120\.254\.223 ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts
+          cat > "$work/ru.cfg" <<CFG
+          Host ru-controller
+            HostName 188.120.254.223
+            User root
+            UserKnownHostsFile $GITHUB_WORKSPACE/ops/mnebydns-owner-ssh-known_hosts
+            GlobalKnownHostsFile /dev/null
+            HostKeyAlgorithms ssh-ed25519
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+            BatchMode no
+            PasswordAuthentication yes
+            PubkeyAuthentication no
+            KbdInteractiveAuthentication no
+            ForwardAgent no
+            ClearAllForwardings yes
+            ControlMaster no
+            ProxyCommand none
+            ConnectTimeout 12
+            LogLevel ERROR
+          CFG
+          ru(){ SSHPASS="$RU_PASSWORD" sshpass -e ssh -T -F "$work/ru.cfg" ru-controller "$@"; }
+          # Check the canonical RU customer release remains disabled.
+          released=$(ru "docker exec mnebyvpn-stage-postgres psql -X -A -t -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage -c \"SELECT enabled::text FROM public.vpn_release_flags WHERE feature='vpn_awg_clients'\"")
+          [[ "$released" == false ]] || exit 2
+          [[ ! -e "$work/fi-known" ]]
+          ru 'cat /root/mnebyvpn-controller/fi-known_hosts' > "$work/fi-known"
+          chmod 0600 "$work/fi-known"
+          [[ "$(wc -l < "$work/fi-known")" == 1 ]] || exit 2
+          grep -Eq '^fi\.mnebyvpn\.site ssh-ed25519 [A-Za-z0-9+/]+={0,2}$' "$work/fi-known"
+          cat > "$work/fi.cfg" <<CFG
+          Host fi-node
+            HostName 217.11.167.91
+            User root
+            UserKnownHostsFile $work/fi-known
+            HostKeyAlias fi.mnebyvpn.site
+            GlobalKnownHostsFile /dev/null
+            HostKeyAlgorithms ssh-ed25519
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+            BatchMode no
+            PasswordAuthentication yes
+            PubkeyAuthentication no
+            KbdInteractiveAuthentication no
+            ForwardAgent no
+            ClearAllForwardings yes
+            ControlMaster no
+            ProxyCommand none
+            ConnectTimeout 12
+            LogLevel ERROR
+          CFG
+          fi_node(){ SSHPASS="$FI_PASSWORD" sshpass -e ssh -T -F "$work/fi.cfg" fi-node "$@"; }
+          remote_dir=""
+          cleanup(){
+            set +e
+            if [[ "$remote_dir" =~ ^/run/fi-awg-production\.[A-Za-z0-9]{8}$ ]]; then
+              fi_node "rm -rf -- '$remote_dir'" >/dev/null 2>&1
+            fi
+            rm -rf -- "$work"
+          }
+          trap cleanup EXIT
+          remote_dir=$(fi_node 'umask 077; mktemp -d /run/fi-awg-production.XXXXXXXX')
+          [[ "$remote_dir" =~ ^/run/fi-awg-production\.[A-Za-z0-9]{8}$ ]] || exit 2
+          SSHPASS="$FI_PASSWORD" sshpass -e scp -F "$work/fi.cfg" \
+            "$work/legacy_install_components.py" "$work/legacy_awg_lifecycle.py" \
+            nodekit/install_components.py nodekit/awg_lifecycle.py \
+            nodekit/fi_awg_production_policy.py nodekit/fi_awg_production_source_stage.py \
+            "fi-node:$remote_dir/"
+          fi_node "chmod 0600 '$remote_dir/'*.py"
+          first=$(fi_node "timeout 100s python3 '$remote_dir/fi_awg_production_source_stage.py' --mode stage --folder '$remote_dir'")
+          [[ "$first" == 'FI_AWG_PRODUCTION_SOURCE=PINNED_STAGED;AWG_ACTIVE=false;CUSTOMER_RELEASE_UNCHANGED=true' ]] || exit 2
+          second=$(fi_node "timeout 100s python3 '$remote_dir/fi_awg_production_source_stage.py' --mode stage --folder '$remote_dir'")
+          [[ "$second" == "$first" ]] || exit 2
+          verified=$(fi_node "timeout 40s python3 '$remote_dir/fi_awg_production_source_stage.py' --mode verify --folder '$remote_dir'")
+          [[ "$verified" == "$first" ]] || exit 2
+          fi_node 'set -eu; ! systemctl is-active --quiet mnebyvpn-nodekit-awg@fi-test-01.service; ! systemctl is-active --quiet mnebyvpn-nodekit-awg-watchdog@fi-test-01.service; test ! -e /sys/class/net/awg0'
+          echo 'FI_AWG_PRODUCTION_CODE=PINNED_STAGED;AWG_ACTIVE=false;CUSTOMER_RELEASE=false;REPEATABLE=true'
