@@ -34,7 +34,7 @@ class UnifiedSubscriptionReleaseTests(unittest.TestCase):
 
     def test_existing_worker_and_website_rollback_are_explicit(self):
         src=Path(rollout.__file__).read_text()
-        self.assertIn("web.write_atomic(OVERRIDE,old_override)",src)
+        self.assertIn("put_systemd_dropin(old_override)",src)
         self.assertIn("web.write_atomic(WORKER_ENV,old_worker)",src)
         self.assertIn("web.write_atomic(PUBLIC_ENV,old_web)",src)
         self.assertIn("web.launch(image,web.WEB_NAME,8792,PUBLIC_ENV",src)
@@ -42,6 +42,18 @@ class UnifiedSubscriptionReleaseTests(unittest.TestCase):
         self.assertNotIn("UPDATE vpn_release_flags",src)
         self.assertNotIn("DELETE FROM entitlements",src)
         self.assertNotIn("rm -rf /",src)
+
+    def test_systemd_unit_writer_preserves_existing_reviewed_0644_mode(self):
+        import stat
+        with tempfile.TemporaryDirectory() as d:
+            path=Path(d)/"90-isolated-awg-worker.conf"
+            with patch.object(rollout,"OVERRIDE",path):
+                rollout.put_systemd_dropin(b"[Service]\\nWorkingDirectory=/opt/example\\n")
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode),0o644)
+                self.assertEqual(path.read_bytes(),b"[Service]\\nWorkingDirectory=/opt/example\\n")
+                rollout.put_systemd_dropin(b"[Service]\\nWorkingDirectory=/opt/other\\n")
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode),0o644)
+                self.assertEqual(path.read_bytes(),b"[Service]\\nWorkingDirectory=/opt/other\\n")
 
     def test_pinned_git_object_is_independent_of_manifest(self):
         raw=b"test signed release\n"
