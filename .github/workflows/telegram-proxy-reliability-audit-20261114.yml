@@ -113,6 +113,18 @@ jobs:
                       with urllib.request.urlopen('http://127.0.0.1:'+str(port)+'/readyz',timeout=4) as resp:out(label+'_READY',resp.status)
                   except urllib.error.HTTPError as e:out(label+'_READY',e.code)
                   except Exception as e:out(label+'_READY',type(e).__name__)
+          if role=='DE':
+              # Check the same-host public address after German VPN egress,
+              # not only from an external GitHub runner; no MTProto secret used.
+              for label,host,port in [('DE_PUBLIC_9446','89.125.90.101',9446),
+                                      ('DE_PUBLIC_443','89.125.90.101',443),
+                                      ('RU_PUBLIC_8443','188.120.254.223',8443)]:
+                  try:
+                      with socket.create_connection((host,port),timeout=4):
+                          out('EGRESS_'+label,'connected')
+                  except Exception as e:out('EGRESS_'+label,type(e).__name__)
+              for label,host in [('DE_SELF','89.125.90.101'),('RU_PUBLIC','188.120.254.223')]:
+                  rc,route=cmd(['ip','route','get',host]);out('ROUTE_'+label,'ok' if rc==0 and route else 'unavailable')
           peers=[('WG_DE_443','10.66.77.1',443),('WG_DE_WEB','10.66.77.1',8082)] if role=='RU' else [
               ('MT_BACKEND_1','127.0.0.1',2398),('MT_BACKEND_2','127.0.0.1',2399),
               ('MT_DIRECT_OZON','127.0.0.1',9446),
