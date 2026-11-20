@@ -62,6 +62,10 @@ class DormantCutoverTest(unittest.TestCase):
         ):
             with self.subTest(required=required):
                 self.assertIn(required,WORKFLOW)
+        self.assertIn("FI_AWG_CLIENT_WORKER_PRECHECK=STAGED_AND_INACTIVE",WORKFLOW)
+        self.assertIn("awg-client-worker-manifest.json",WORKFLOW)
+        self.assertIn("timeout --signal=TERM --kill-after=10s 120s",WORKFLOW)
+        self.assertEqual(WORKFLOW.count("timeout --signal=TERM --kill-after=10s 180s"),2)
         self.assertNotIn('StrictHostKeyChecking accept-new',WORKFLOW)
         self.assertNotIn('systemctl start',WORKFLOW)
 
