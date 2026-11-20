@@ -132,4 +132,11 @@ jobs:
             desc='RU188 FI217 subscription audit unavailable; inspect workflow'
           fi
           gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" -f state="$state" -f context="fi217/subscription-visibility-audit" -f description="$desc" -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/workflows/fi-awg-subscription-inventory.yml" >/dev/null
+          # Report only five aggregate integers in a second status context:
+          # the connected GitHub status reader does not expose descriptions.
+          if [[ "$state" == success && "$SUMMARY" =~ ^RU188[[:space:]]FI217[[:space:]]linked=([0-9]+)[[:space:]]ack=([0-9]+)[[:space:]]pool=([0-9]+)[[:space:]]fresh=([0-9]+)[[:space:]]stale=([0-9]+)$ ]]; then
+            context="fi217/counts-L${BASH_REMATCH[1]}-A${BASH_REMATCH[2]}-P${BASH_REMATCH[3]}-F${BASH_REMATCH[4]}-S${BASH_REMATCH[5]}"
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" -f state=success -f context="$context" -f description='RU188 aggregate-only active linked entitlements, signed ACK, verified, fresh, stale' -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/workflows/fi-awg-subscription-inventory.yml" >/dev/null
+          fi
+
 
