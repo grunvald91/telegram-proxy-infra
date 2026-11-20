@@ -89,6 +89,9 @@ jobs:
     env:
       HOST: '188.120.254.223'
       SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    permissions:
+      contents: read
+      statuses: write
     steps:
       - name: Checkout infrastructure scripts
         uses: actions/checkout@v4
@@ -232,6 +235,7 @@ jobs:
           scp_retry "$RUNNER_TEMP/mnebyvpn-auto-web.tar.gz" "root@$HOST:/tmp/mnebyvpn-release-auto-$sha.tar.gz"
 
       - name: Staging health, canary, atomic public promotion and rollback
+        id: promote
         if: steps.remote.outputs.deploy == 'yes'
         shell: bash
         run: |
@@ -278,3 +282,28 @@ jobs:
             sha="${{ steps.gate.outputs.sha }}"
             sshpass -e ssh -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new               -o LogLevel=ERROR "root@$HOST"               "rm -f /tmp/mnebyvpn-stage-auto-$sha.sh /tmp/mnebyvpn-promote-auto-$sha.sh /tmp/mnebyvpn-release-auto-$sha.tar.gz" || true
           fi
+      - name: Publish verified FI217 website rollout outcome
+        if: ${{ always() }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_SHA: ${{ steps.gate.outputs.sha }}
+          SOURCE_READY: ${{ steps.gate.outputs.deploy }}
+          REMOTE_OUTCOME: ${{ steps.remote.outcome }}
+          REMOTE_DEPLOY: ${{ steps.remote.outputs.deploy }}
+          PROMOTE_OUTCOME: ${{ steps.promote.outcome }}
+        run: |
+          set -Eeuo pipefail
+          state=failure
+          desc='Website source not verified or rollout failed'
+          if [[ "$SOURCE_READY" == yes && "$REMOTE_OUTCOME" == success ]]; then
+            if [[ "$REMOTE_DEPLOY" == yes && "$PROMOTE_OUTCOME" == success ]]; then
+              state=success
+              desc="Verified website FI217 source ${SOURCE_SHA:0:12} promoted"
+            elif [[ "$REMOTE_DEPLOY" == no ]]; then
+              state=success
+              desc="Website already current or runtime unchanged at ${SOURCE_SHA:0:12}"
+            fi
+          fi
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" -f state="$state" -f context="fi217/web-source-promotion" -f description="$desc" -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/workflows/mnebyvpn-main-auto-public.yml" >/dev/null
+          echo "FI217_WEB_PROMOTION_STATUS=$state"
