@@ -167,7 +167,7 @@ def backups(expected:dict, *, create:bool)->None:
     try:os.fsync(fd)
     finally:os.close(fd)
 
-def replace_atomically(path:Path,payload:bytes)->None:
+def replace_atomically(path:Path,payload:bytes,previous:bytes|None)->None:
     fd,temp=tempfile.mkstemp(prefix=".fi-awg-pinned-",dir=APP)
     try:
         os.fchmod(fd,0o600)
@@ -176,7 +176,10 @@ def replace_atomically(path:Path,payload:bytes)->None:
             handle.flush()
             os.fsync(handle.fileno())
         require_dormant()
-        # Unknown changed content is never overwritten, even mid-update.
+        # Recheck the exact old payload immediately before each atomic
+        # replacement; never overwrite root-controlled external drift.
+        if secure_file(path,require=previous is not None)!=previous:
+            refuse("ATOMIC_REPLACE_CONFLICT")
         os.replace(temp,path)
         directory=os.open(APP,os.O_RDONLY|os.O_DIRECTORY)
         try:os.fsync(directory)
@@ -200,13 +203,15 @@ def locked_stage(folder:Path, *, verify_only:bool)->str:
         fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
         require_dormant()
         current=status(expected)
-        backups(expected,create=True)
+        # Existing new/partial code cannot self-issue a plausible legacy
+        # backup. The first migration must prove BOTH original files exist.
+        backups(expected,create=current=="LEGACY")
         if current!="PINNED_STAGED":
             for name,(new,old) in expected.items():
                 installed=secure_file(APP/name,require=name in FILES)
                 if installed==new:continue
                 if installed!=old:refuse("UNEXPECTED_SOURCE_CHANGE")
-                replace_atomically(APP/name,new)
+                replace_atomically(APP/name,new,old)
         require_dormant()
         if status(expected)!="PINNED_STAGED":
             refuse("POST_INSTALL_VERIFY_FAILED")
@@ -224,12 +229,12 @@ def main()->int:
     try:
         state=locked_stage(args.folder,verify_only=args.mode=="verify")
         print("FI_AWG_PRODUCTION_SOURCE="+state+
-              ";AWG_ACTIVE=false;WORKER_ACTIVE=false;CUSTOMER_RELEASE=false")
+              ";AWG_ACTIVE=false;CUSTOMER_RELEASE_UNCHANGED=true")
         return 0
     except (Refused,OSError,ValueError,TypeError,KeyError,
             subprocess.SubprocessError,BlockingIOError):
         print("FI_AWG_PRODUCTION_SOURCE=BLOCKED;"
-              "AWG_UNCHANGED_OR_NOT_VERIFIED=true;CUSTOMER_RELEASE=false")
+              "PARTIAL_STAGING_POSSIBLE=true;CUSTOMER_RELEASE_UNCHANGED=true")
         return 2
 
 if __name__=="__main__":
