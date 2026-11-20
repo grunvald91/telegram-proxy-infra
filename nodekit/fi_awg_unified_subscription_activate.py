@@ -89,12 +89,14 @@ def staged(stage:Path)->dict[Path,bytes]:
     return result
 
 def preflight()->bytes:
+    print('FI_AWG_PRECHECK=HOST_BEGIN',flush=True)
     if os.geteuid()!=0 or RU+"/" not in cmd(["ip","-o","-4","addr","show"]).stdout:
         raise Blocked("not RU188 root")
     if not active() or show("SubState")!="running" or int(show("MainPID"))<=1:
         raise Blocked("existing signed delivery worker inactive")
     if show("WorkingDirectory")!=str(OLD):
         raise Blocked("unapproved existing worker revision")
+    print("FI_AWG_PRECHECK=WORKER_APPROVED",flush=True)
     if show("NeedDaemonReload")!="no":raise Blocked("worker unit drift")
     raw=trusted(OVERRIDE,8192)
     if (raw.count(str(OLD).encode())!=2 or
@@ -102,11 +104,14 @@ def preflight()->bytes:
         raw.count(b"ExecStart=")!=2 or
         b"/opt/mnebyvpn-controller/current/bin/node" not in raw):
         raise Blocked("existing systemd drop-in changed")
+    print("FI_AWG_PRECHECK=DROPIN_APPROVED",flush=True)
     if not (OLD/"node_modules/pg/package.json").is_file() or (OLD/"node_modules").is_symlink():
         raise Blocked("previous pinned pg dependency not verified")
+    print("FI_AWG_PRECHECK=PG_APPROVED",flush=True)
     worker=trusted(WORKER_ENV)
     if b"MNEBYVPN_AWG_DELIVERY_WORKER=enabled" not in worker:
         raise Blocked("existing worker env not approved")
+    print("FI_AWG_PRECHECK=WORKER_ENV_APPROVED",flush=True)
     original=trusted(PUBLIC_ENV)
     public=web.read_env(original)[1]
     if public.get("WEB_FI_AWG_MATERIAL_ENABLED")!="yes":
@@ -114,24 +119,28 @@ def preflight()->bytes:
     if (public.get("WEB_FI_AWG_REGISTRATION_ENABLED")!="yes" or
         public.get("WEB_NETWORK_PROVISIONING_VERIFIED")!="yes"):
         raise Blocked("FI public enrollment is not ready")
+    print("FI_AWG_PRECHECK=WEB_ENV_APPROVED",flush=True)
     image,_=web.site_info()
     # The running image must already be from the new, tested Mnebyvpn SHA.
     proof=cmd(["docker","exec",web.WEB_NAME,"sh","-c",
       "grep -Fq awgInSubscriptionEnabled /srv/mnebyvpn/apps/web/src/server.ts"],
       check=False,timeout=10)
     if proof.returncode!=0:raise Blocked("public site has not deployed mixed profile code")
+    print("FI_AWG_PRECHECK=WEB_IMAGE_APPROVED",flush=True)
     gateway=web.sql(
       "SELECT CASE WHEN to_regprocedure("+
       "'public.awg_controller_enqueue_fi_subscription(uuid,text,bigint)') "+
       "IS NOT NULL THEN 'READY' ELSE 'MISSING' END;")
     if gateway!="READY":
         raise Blocked("RU188 scoped AWG subscription enqueue migration not installed")
+    print("FI_AWG_PRECHECK=DB_GATEWAY_APPROVED",flush=True)
     release=cmd(["docker","exec","mnebyvpn-stage-postgres","psql",
         "-X","-q","-A","-t","-v","ON_ERROR_STOP=1",
         "-U","mnebyvpn_stage","-d","mnebyvpn_stage",
         "-c","SELECT enabled::text FROM public.vpn_release_flags WHERE feature='vpn_awg_clients'"],
         timeout=18).stdout.strip()
     if release!="true":raise Blocked("canonical FI client release is disabled")
+    print("FI_AWG_PRECHECK=DB_RELEASE_APPROVED",flush=True)
     return raw
 
 def stage_release(stage:Path,blobs:dict[Path,bytes])->None:
@@ -269,6 +278,7 @@ def activate(stage:Path)->None:
 def main()->int:
     parser=argparse.ArgumentParser()
     parser.add_argument("--stage",type=Path,required=True)
+    parser.add_argument("--mode",choices=("diagnose","activate"),default="activate")
     args=parser.parse_args()
     try:
         fd=os.open(LOCK,os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW|os.O_CLOEXEC,0o600)
@@ -277,7 +287,12 @@ def main()->int:
             if meta.st_uid!=0 or meta.st_mode&0o077 or not stat.S_ISREG(meta.st_mode):
                 raise Blocked("untrusted activation lock")
             fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
-            activate(args.stage)
+            if args.mode=="diagnose":
+                preflight()
+                staged(args.stage)
+                print("FI_AWG_SUB_DIAG=READY;ACTIVATION_PERFORMED=false",flush=True)
+            else:
+                activate(args.stage)
         finally:os.close(fd)
         return 0
     except (OSError,ValueError,TypeError,UnicodeError,subprocess.SubprocessError):
