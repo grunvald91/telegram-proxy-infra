@@ -1,0 +1,89 @@
+name: FI217 real public web and AWG gates read-only audit (RU188)
+"on":
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/fi-awg-public-web-audit.yml'
+      - 'scripts/fi-awg-public-web-readonly-audit.sh'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/fi-awg-public-web-audit.yml'
+      - 'scripts/fi-awg-public-web-readonly-audit.sh'
+  workflow_dispatch:
+permissions: {contents: read}
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Read-only audit contract and shell safety
+        run: |
+          set -Eeuo pipefail
+          bash -n scripts/fi-awg-public-web-readonly-audit.sh
+          ! grep -Eq 'systemctl (start|enable|restart)|docker (stop|rm|run)|UPDATE vpn_release_flags|ALTER TABLE|DROP TABLE' \
+            scripts/fi-awg-public-web-readonly-audit.sh
+          grep -q 'CLIENT_RELEASE=false' scripts/fi-awg-public-web-readonly-audit.sh
+  inspect:
+    needs: offline
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: node-fi
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Install pinned SSH tool
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends sshpass >/dev/null
+      - name: Inspect RU188 deployment without changes or secrets
+        shell: bash
+        env:
+          RU_SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          [[ -n "$RU_SSH_PASSWORD" ]] || exit 2
+          grep -q '^188\.120\.254\.223 ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts
+          work="$RUNNER_TEMP/fi-awg-public-audit"
+          mkdir -m 0700 "$work"
+          cat > "$work/config" <<CFG
+          Host ru-controller
+            HostName 188.120.254.223
+            User root
+            UserKnownHostsFile $GITHUB_WORKSPACE/ops/mnebydns-owner-ssh-known_hosts
+            GlobalKnownHostsFile /dev/null
+            HostKeyAlgorithms ssh-ed25519
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+            BatchMode no
+            PasswordAuthentication yes
+            PubkeyAuthentication no
+            KbdInteractiveAuthentication no
+            ForwardAgent no
+            ClearAllForwardings yes
+            ControlMaster no
+            ProxyCommand none
+            ConnectTimeout 12
+            LogLevel ERROR
+          CFG
+          export SSHPASS="$RU_SSH_PASSWORD"
+          ru(){ sshpass -e ssh -T -F "$work/config" ru-controller "$@"; }
+          dir=''
+          cleanup(){
+            set +e
+            if [[ "$dir" =~ ^/run/fi-awg-public-audit\.[A-Za-z0-9]{8}$ ]]; then
+              ru "rm -rf -- '$dir'" >/dev/null 2>&1
+            fi
+            rm -rf -- "$work"
+          }
+          trap cleanup EXIT
+          dir=$(ru 'umask 077; mktemp -d /run/fi-awg-public-audit.XXXXXXXX')
+          [[ "$dir" =~ ^/run/fi-awg-public-audit\.[A-Za-z0-9]{8}$ ]] || exit 2
+          sshpass -e scp -F "$work/config" scripts/fi-awg-public-web-readonly-audit.sh \
+            "ru-controller:$dir/audit.sh"
+          ru "chmod 0600 '$dir/audit.sh'; bash '$dir/audit.sh'"
