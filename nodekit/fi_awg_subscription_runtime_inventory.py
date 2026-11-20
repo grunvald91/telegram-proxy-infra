@@ -125,6 +125,60 @@ def queue_role_diagnostics()->dict[str,str]:
             for name,value in zip(names,flags)}
 
 
+def staging_diagnostics()->dict[str,str]:
+    # Bounded aggregate-only explanation of the next signed grant stage.
+    # Includes no peer keys, entitlement IDs, client IPs or raw errors.
+    sql="""SELECT
+ (SELECT count(*) FROM public.vpn_awg_device_requests
+  WHERE node_id='fi-test-01' AND attempts>0),
+ (SELECT coalesce(max(attempts),0) FROM public.vpn_awg_device_requests
+  WHERE node_id='fi-test-01'),
+ (SELECT count(*) FROM public.vpn_awg_device_requests
+  WHERE node_id='fi-test-01' AND state='queued'
+    AND next_attempt_at>clock_timestamp()),
+ (SELECT count(*) FROM public.vpn_awg_command_outbox
+  WHERE node_id='fi-test-01' AND op='grant' AND state IN ('queued','claimed')),
+ (SELECT count(*) FROM public.vpn_awg_command_outbox
+  WHERE node_id='fi-test-01' AND op='grant' AND state='stale'),
+ has_function_privilege('mnebyvpn_awg_delivery',
+  'public.awg_worker_lock_entitlement(uuid)','EXECUTE')::text,
+ has_function_privilege('mnebyvpn_awg_delivery',
+  'public.awg_worker_lock_node(text)','EXECUTE')::text,
+ has_function_privilege('mnebyvpn_awg_delivery',
+  'public.awg_worker_lock_pool(text)','EXECUTE')::text,
+ has_function_privilege('mnebyvpn_awg_delivery',
+  'public.awg_worker_lock_pool_node(text)','EXECUTE')::text,
+ has_any_column_privilege('mnebyvpn_awg_delivery',
+  'public.vpn_awg_peer_allocations','INSERT')::text,
+ has_any_column_privilege('mnebyvpn_awg_delivery',
+  'public.vpn_awg_peer_allocations','UPDATE')::text,
+ has_any_column_privilege('mnebyvpn_awg_delivery',
+  'public.vpn_awg_command_outbox','INSERT')::text,
+ has_sequence_privilege('mnebyvpn_awg_delivery',
+  'public.vpn_awg_command_outbox_id_seq','USAGE')::text;
+"""
+    raw=call("docker","exec","mnebyvpn-stage-postgres","psql","-X","-q",
+             "-A","-t","-v","ON_ERROR_STOP=1","-U","mnebyvpn_stage",
+             "-d","mnebyvpn_stage","-c",sql)
+    parts=raw.split("|")
+    if (len(parts)!=13 or
+        any(not value.isdecimal() for value in parts[:5]) or
+        any(value not in ("t","f","true","false") for value in parts[5:])):
+        raise ValueError("unknown AWG staging audit result")
+    count_names=("ATTEMPTED_REQUESTS","MAX_REQUEST_ATTEMPTS",
+                 "RETRY_DELAYED_REQUESTS","GRANT_OUTBOX_PENDING",
+                 "GRANT_OUTBOX_STALE")
+    role_names=("LOCK_ENTITLEMENT_EXECUTE","LOCK_NODE_EXECUTE",
+                "LOCK_POOL_EXECUTE","LOCK_POOL_NODE_EXECUTE",
+                "ALLOCATIONS_INSERT_COLUMN","ALLOCATIONS_UPDATE_COLUMN",
+                "OUTBOX_INSERT_COLUMN","OUTBOX_SEQUENCE_USAGE")
+    return {
+        **dict(zip(count_names,parts[:5])),
+        **{name:("true" if val in ("t","true") else "false")
+           for name,val in zip(role_names,parts[5:])}
+    }
+
+
 def worker_journal_markers()->dict[str,str]:
     run=subprocess.run(["journalctl","-u","mnebyvpn-awg-delivery.service",
         "--since","-20 minutes","--no-pager","--output","cat"],
@@ -173,6 +227,8 @@ def main()->int:
             print("FI_AWG_SUB_"+key+"="+value)
         for key,value in queue_role_diagnostics().items():
             print("FI_AWG_SUB_ROLE_"+key+"="+value)
+        for key,value in staging_diagnostics().items():
+            print("FI_AWG_SUB_STAGE_"+key+"="+value)
         for key,count in worker_journal_markers().items():
             print("FI_AWG_SUB_LOG_"+key+"="+str(count))
         print("FI_AWG_SUB_INVENTORY=READONLY_COMPLETE")
