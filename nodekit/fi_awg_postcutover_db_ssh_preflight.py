@@ -47,7 +47,7 @@ def audited_candidate_query() -> str:
     if (script.count(OLD_DECLARATION) != 1 or
             NEW_RELEASE == OLD_RELEASE or
             script.count("await client.query('BEGIN READ ONLY')") != 1 or
-            script.count("await client.query('ROLLBACK')") != 1 or
+            script.count("await client.query('ROLLBACK')") != 2 or
             script.count("await pool.end()") != 1 or
             script.count("FI_AWG_DB_RELEASE_DISABLED=PASS") != 1):
         cutover.trust.stop("postcutover_unapproved_db_probe_template")
