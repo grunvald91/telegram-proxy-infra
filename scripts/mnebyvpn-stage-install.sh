@@ -120,6 +120,67 @@ for file in "$RELEASE"/db/migrations/*.sql; do
   [[ "$name" =~ ^[0-9]{4}_[A-Za-z0-9_]+\.sql$ ]] || { echo 'Unexpected migration name'; exit 2; }
   exists="$(psql_stage -At -c "SELECT COUNT(*) FROM deployment_schema_migrations WHERE file_name='$name'")"
   if [[ "$exists" == 0 ]]; then
+    # The staging AWG request queue may already have been created by the
+    # isolated FI217 rollout, independently of this release ledger.
+    # Reconcile ONLY when the entire expected shape exists. Do not change,
+    # drop, recreate, or migrate the existing queue or its contents.
+    if [[ "$name" == '0136_awg_device_enrollment_queue.sql' ]]; then
+      queue_table="$(psql_stage -At -c "SELECT COALESCE(to_regclass('public.vpn_awg_device_requests')::text,'')")"
+      if [[ -n "$queue_table" ]]; then
+        verified="$(psql_stage -At <<'SQL'
+WITH expected(col,typ) AS (
+  VALUES
+    ('entitlement_id','uuid'),('node_id','text'),
+    ('peer_public_key','text'),('billing_revision','bigint'),
+    ('state','text'),('attempts','integer'),
+    ('created_at','timestamp with time zone'),
+    ('updated_at','timestamp with time zone'),
+    ('claimed_at','timestamp with time zone'),
+    ('next_attempt_at','timestamp with time zone')
+), actual AS (
+  SELECT attname AS col,format_type(atttypid,atttypmod) AS typ
+  FROM pg_attribute
+  WHERE attrelid='public.vpn_awg_device_requests'::regclass
+    AND attnum>0 AND NOT attisdropped
+)
+SELECT CASE WHEN
+    (SELECT count(*) FROM actual)=10
+    AND NOT EXISTS(
+      SELECT col,typ FROM expected
+      EXCEPT SELECT col,typ FROM actual
+    )
+    AND to_regclass('public.vpn_awg_device_requests_queue_idx') IS NOT NULL
+    AND to_regprocedure('public.website_request_fi_awg_device(text,uuid,text)') IS NOT NULL
+    AND to_regprocedure('public.website_fi_awg_device_status(text,uuid,text)') IS NOT NULL
+    AND (SELECT count(*) FROM pg_constraint
+      WHERE conrelid='public.vpn_awg_device_requests'::regclass
+        AND contype='p')=1
+    AND (SELECT count(*) FROM pg_constraint
+      WHERE conrelid='public.vpn_awg_device_requests'::regclass
+        AND contype='u')>=1
+    AND (SELECT count(*) FROM pg_constraint
+      WHERE conrelid='public.vpn_awg_device_requests'::regclass
+        AND contype='f')>=1
+    AND strpos(pg_get_functiondef(
+      'public.website_request_fi_awg_device(text,uuid,text)'::regprocedure),
+      'DENY_BOUND')>0
+    AND strpos(pg_get_functiondef(
+      'public.website_fi_awg_device_status(text,uuid,text)'::regprocedure),
+      'ACKNOWLEDGED')>0
+  THEN 'yes' ELSE 'no' END;
+SQL
+)"
+        if [[ "$verified" != yes ]]; then
+          echo 'Existing stage AWG queue diverges from release 0136; refuse ledger reconciliation'
+          exit 2
+        fi
+        # A verified pre-migration PGDMP snapshot was saved above.
+        # The only change is an idempotent staging migration ledger entry.
+        psql_stage -q -c "INSERT INTO deployment_schema_migrations(file_name) VALUES('$name') ON CONFLICT DO NOTHING" >/dev/null
+        echo 'Verified existing stage AWG queue; reconciled 0136 ledger only'
+        continue
+      fi
+    fi
     # All SQL migrations in this release have explicit BEGIN/COMMIT. A failing
     # migration stops the promotion; never delete or reset the database.
     psql_stage -q < "$file" >/dev/null
