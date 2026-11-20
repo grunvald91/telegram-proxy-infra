@@ -210,6 +210,20 @@ def acquire_lock() -> int:
     return fd
 
 
+
+def restore_legacy_after_failure(old: bytes) -> None:
+    """Restore a fully verified legacy definition after interrupted cutover."""
+    try:
+        atomic_replace(old)
+        reload_definitions()
+        if trust.read_file(OVERRIDE, 8192) != old:
+            trust.stop("cutover_restored_dropin_drift")
+        systemd.exact_effective_unit()
+        systemd.dormant_and_disabled()
+    except BaseException:
+        trust.stop("cutover_rollback_failed")
+
+
 def switch() -> str:
     old = systemd.expected_dropin()
     new = expected_new_dropin()
@@ -221,8 +235,15 @@ def switch() -> str:
         current = trust.read_file(OVERRIDE, 8192)
         if current == new:
             verified_backup(old)
-            verify_candidate_artifacts()
-            verified_new_effective_unit(new)
+            try:
+                verify_candidate_artifacts()
+                # If a previous job was terminated between os.replace and
+                # daemon-reload, reconcile the effective unit on this rerun.
+                reload_definitions()
+                verified_new_effective_unit(new)
+            except BaseException:
+                restore_legacy_after_failure(old)
+                trust.stop("cutover_rolled_back_after_interrupted_switch")
             return "UNCHANGED"
         if current != old:
             trust.stop("cutover_unknown_existing_dropin")
@@ -239,13 +260,7 @@ def switch() -> str:
         except BaseException:
             # Roll back even if daemon-reload or a postcondition failed.
             # Never start, restart, enable or modify the base unit.
-            try:
-                atomic_replace(old)
-                reload_definitions()
-                systemd.exact_effective_unit()
-                systemd.dormant_and_disabled()
-            except BaseException:
-                trust.stop("cutover_rollback_failed")
+            restore_legacy_after_failure(old)
             trust.stop("cutover_rolled_back_after_failure")
         return "SWITCHED"
     finally:
