@@ -29,7 +29,7 @@ def dropins()->tuple[bytes,bytes]:
     old=oldcut.expected_new_dropin()
     base=str(candidate.CANDIDATE)
     upgraded=str(client.RELEASE)
-    if base==upgraded or old.count(base)!=2:
+    if base==upgraded or old.count(base.encode("ascii"))!=2:
         trust.stop("client_cutover_unexpected_old_dropin")
     return old,old.replace(base.encode("ascii"),upgraded.encode("ascii"))
 
