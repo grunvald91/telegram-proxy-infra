@@ -36,6 +36,45 @@ class ProductionCanaryTests(unittest.TestCase):
         self.assertNotIn("systemctl stop",source)
         self.assertNotIn("systemctl start",source)
 
+    def test_signed_synthetic_tombstone_pruning_preserves_real_customer(self):
+        import contextlib
+        import datetime as dt
+        from types import SimpleNamespace
+        import awg_peer_grants as grants
+        key="AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA="
+        other="AgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4fICE="
+        test_id="11111111-2222-4333-8444-555555555555"
+        paid_id="22222222-3333-4444-8555-666666666666"
+        issued=dt.datetime.now(dt.timezone.utc)-dt.timedelta(seconds=55)
+        request={"nodeId":m.NODE,"op":"revoke","entitlementId":test_id,
+                 "revision":2,"peerPublicKey":key,"clientIpv4":m.CLIENT_IP,
+                 "expiresAt":None,
+                 "issuedAt":issued.isoformat(timespec="milliseconds").replace("+00:00","Z"),
+                 "nonce":"a"*64,"signature":"A"*86}
+        ledger={
+            "schema_version":1,"node_id":m.NODE,
+            "grants":{
+                test_id:{"revision":2,"peerPublicKey":key,"clientIpv4":m.CLIENT_IP,
+                         "expiresAt":None,"enabled":False},
+                paid_id:{"revision":1,"peerPublicKey":other,"clientIpv4":"10.73.91.2",
+                         "expiresAt":(dt.datetime.now(dt.timezone.utc)+dt.timedelta(minutes=5)).isoformat(
+                             timespec="milliseconds").replace("+00:00","Z"),"enabled":True},
+            },
+        }
+        recorded=[]
+        with patch.object(m.trust,"is_host",return_value=True),\
+             patch.object(m,"secure_json",return_value=request),\
+             patch.object(m.subprocess,"run",return_value=SimpleNamespace(returncode=0)),\
+             patch.object(grants,"LedgerLock",side_effect=lambda node:contextlib.nullcontext()),\
+             patch.object(grants,"protected_file",return_value=json.dumps(ledger).encode()),\
+             patch.object(grants,"verify_signature"),\
+             patch.object(grants,"assert_runtime_peers") as runtime,\
+             patch.object(grants,"persist_state",side_effect=lambda p,data:recorded.append(data)):
+            m.prune_on_fi(Path("/unused"))
+        self.assertEqual(len(recorded),1)
+        self.assertEqual(set(recorded[0]["grants"]),{paid_id})
+        runtime.assert_called_once()
+
     def test_wrong_or_unsigned_node_receipt_rejected(self):
         cmd={"nodeId":m.NODE,"op":"grant",
              "entitlementId":"11111111-2222-4333-8444-555555555555",

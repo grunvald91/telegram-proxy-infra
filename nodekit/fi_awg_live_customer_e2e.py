@@ -188,9 +188,59 @@ COMMIT;
     if out.returncode:raise Blocked("canonical pool update denied")
     print("FI_AWG_REAL_E2E=VERIFIED;HANDSHAKE=true;HTTPS=true;ENCRYPTED_BYTES=true;GRANT_REVOKED=true;POOL=FRESH")
 
+def prune_on_fi(path:Path)->None:
+    """Retire ONLY the fully revoked synthetic peer after replay window closes.
+
+    No production customer grant is removed or rewritten. The local signed
+    ledger and active AWG peer set are checked under the watchdog's lock.
+    """
+    import time
+    if not trust.is_host(FI_IP):raise Blocked("wrong cleanup host")
+    if not all(subprocess.run(["systemctl","is-active","--quiet",unit],
+                             capture_output=True,check=False,timeout=8).returncode==0
+               for unit in ("mnebyvpn-nodekit-awg@fi-test-01.service",
+                            "mnebyvpn-nodekit-awg-watchdog@fi-test-01.service",
+                            "mnebyvpn-nodekit-awg-egress@fi-test-01.service")):
+        raise Blocked("signed local watchdog missing")
+    req=secure_json(path,4096)
+    import sys
+    sys.path.insert(0,"/opt/mnebyvpn-nodekit")
+    from awg_peer_grants import (LedgerLock,protected_file,validate_state,
+                                 persist_state,verify_signature,active_peers,
+                                 assert_runtime_peers)
+    from awg_peer_grants import CMD_FIELDS
+    if (set(req)!=CMD_FIELDS or req.get("nodeId")!=NODE or req.get("op")!="revoke"
+        or req.get("clientIpv4")!=CLIENT_IP or req.get("revision")!=2
+        or req.get("expiresAt") is not None):
+        raise Blocked("not exact signed synthetic revoke")
+    verify_signature(req,FI/"controller-access.spki")
+    issued=dt.datetime.fromisoformat(req["issuedAt"].replace("Z","+00:00"))
+    delta=(dt.datetime.now(dt.timezone.utc)-issued).total_seconds()
+    if not 50<=delta<=1500:
+        raise Blocked("replay window not expired or test too old")
+    ledger=FI/"amneziawg/peer-grants.json"
+    with LedgerLock(FI):
+        data=validate_state(json.loads(protected_file(ledger)),NODE)
+        row=data["grants"].get(req["entitlementId"])
+        if (not isinstance(row,dict) or row.get("enabled") is not False
+            or row.get("expiresAt") is not None
+            or row.get("revision")!=2
+            or row.get("peerPublicKey")!=req["peerPublicKey"]
+            or row.get("clientIpv4")!=CLIENT_IP):
+            raise Blocked("synthetic revocation not exact")
+        actual=active_peers(data,time.time())
+        if any(peer["public_key"]==req["peerPublicKey"] or
+               peer["allowed_ips"]==CLIENT_IP+"/32" for peer in actual):
+            raise Blocked("synthetic peer still active")
+        assert_runtime_peers(actual)
+        del data["grants"][req["entitlementId"]]
+        persist_state(ledger,validate_state(data,NODE))
+    print("FI_AWG_REAL_E2E_TOMBSTONE=PRUNED;CUSTOMER_PEERS_UNCHANGED=true")
+
+
 def main()->int:
     p=argparse.ArgumentParser()
-    p.add_argument("--mode",required=True,choices=("fi-material","ru-sign","ru-record"))
+    p.add_argument("--mode",required=True,choices=("fi-material","ru-sign","ru-record","fi-prune"))
     p.add_argument("--request",type=Path)
     args=p.parse_args()
     try:
@@ -201,9 +251,12 @@ def main()->int:
         elif args.mode=="ru-sign":
             if not args.request:raise Blocked("request missing")
             print(json.dumps(sign_on_ru(read_request(args.request)),sort_keys=True))
-        else:
+        elif args.mode=="ru-record":
             if not args.request:raise Blocked("proof missing")
             record_on_ru(args.request)
+        else:
+            if not args.request:raise Blocked("signed revoke missing")
+            prune_on_fi(args.request)
         return 0
     except (OSError,ValueError,TypeError,KeyError,subprocess.SubprocessError,
             trust.CanaryError):

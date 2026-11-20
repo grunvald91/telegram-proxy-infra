@@ -1,4 +1,4 @@
-name: FI217 production native AWG signed external client E2E and pool proof
+name: FI217 production AWG signed 30-minute live external health and pool proof
 "on":
   pull_request:
     branches: [main]
@@ -15,6 +15,8 @@ name: FI217 production native AWG signed external client E2E and pool proof
       - scripts/fi-awg-real-production-external-e2e.sh
       - .github/workflows/fi-awg-real-production-external-e2e.yml
   workflow_dispatch:
+  schedule:
+    - cron: '*/30 * * * *'
 permissions: {contents: read}
 concurrency:
   group: ${{ github.event_name == 'pull_request' && format('fi-awg-real-e2e-pr-{0}',github.event.pull_request.number) || 'mnebyvpn-fleet-fi' }}
@@ -35,6 +37,7 @@ jobs:
           python3 -m unittest discover -s nodekit/tests -p 'test_fi_awg_production_policy.py' -v
           bash -n scripts/fi-awg-real-production-external-e2e.sh
           grep -q 'FI_AWG_LIVE_E2E_REVOKE=PASS' scripts/fi-awg-real-production-external-e2e.sh
+          grep -q 'FI_AWG_LIVE_E2E_CUSTOMER_PEERS_PRESERVED=PASS' scripts/fi-awg-real-production-external-e2e.sh
           grep -q 'FI_AWG_LIVE_E2E_POOL_FRESH=PASS' scripts/fi-awg-real-production-external-e2e.sh
   live-fi:
     needs: offline
