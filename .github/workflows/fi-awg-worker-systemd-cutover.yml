@@ -1,0 +1,117 @@
+name: FI217 atomic inactive AWG worker systemd cutover with rollback
+"on":
+  pull_request:
+    paths:
+      - .github/workflows/fi-awg-worker-systemd-cutover.yml
+      - nodekit/fi_awg_worker_systemd_cutover.py
+      - nodekit/tests/test_fi_awg_worker_systemd_cutover.py
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/fi-awg-worker-systemd-cutover.yml
+      - nodekit/fi_awg_worker_systemd_cutover.py
+      - nodekit/tests/test_fi_awg_worker_systemd_cutover.py
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ru188-awg-gateway-schema-stage
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate guarded inactive worker cutover and rollback
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile nodekit/fi_awg_worker_systemd_cutover.py
+          python3 -m unittest discover -s nodekit/tests -p 'test_fi_awg_worker_systemd_cutover.py' -v
+          python3 -m unittest discover -s nodekit/tests -p 'test_fi_awg_worker_candidate_stage.py' -v
+          python3 -m unittest discover -s nodekit/tests -p 'test_fi_awg_worker_candidate_runtime.py' -v
+          python3 -m unittest discover -s nodekit/tests -p 'test_fi_awg_worker_isolated_systemd_stage.py' -v
+  cutover:
+    needs: offline
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    environment: node-fi
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install password SSH client for existing pinned RU188 identity
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y --no-install-recommends sshpass >/dev/null
+      - name: Atomically switch the disabled worker, verify and retain rollback backup
+        shell: bash
+        env:
+          RU_SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          [[ -n "$RU_SSH_PASSWORD" ]] || exit 2
+          grep -q '^188\.120\.254\.223 ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts
+          work="$RUNNER_TEMP/fi-awg-systemd-cutover"
+          mkdir -m 0700 "$work"
+          cat > "$work/config" <<CFG
+          Host ru-controller
+            HostName 188.120.254.223
+            User root
+            UserKnownHostsFile $GITHUB_WORKSPACE/ops/mnebydns-owner-ssh-known_hosts
+            GlobalKnownHostsFile /dev/null
+            HostKeyAlgorithms ssh-ed25519
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+            BatchMode no
+            PasswordAuthentication yes
+            PubkeyAuthentication no
+            KbdInteractiveAuthentication no
+            ForwardAgent no
+            ClearAllForwardings yes
+            ControlMaster no
+            ProxyCommand none
+            ConnectTimeout 12
+            ServerAliveInterval 10
+            ServerAliveCountMax 3
+            LogLevel ERROR
+          CFG
+          export SSHPASS="$RU_SSH_PASSWORD"
+          remote() { sshpass -e ssh -T -F "$work/config" ru-controller "$@"; }
+          remote_dir=""
+          cleanup() {
+            set +e
+            if [[ "$remote_dir" =~ ^/run/fi-awg-systemd-cutover\.[A-Za-z0-9]{8}$ ]]; then
+              remote "rm -rf -- '$remote_dir'" >/dev/null 2>&1
+            fi
+            rm -rf -- "$work"
+          }
+          trap cleanup EXIT
+          remote_dir=$(remote 'umask 077; mktemp -d /run/fi-awg-systemd-cutover.XXXXXXXX')
+          [[ "$remote_dir" =~ ^/run/fi-awg-systemd-cutover\.[A-Za-z0-9]{8}$ ]] || exit 2
+          sshpass -e scp -F "$work/config" \
+            nodekit/fi_awg_worker_systemd_cutover.py \
+            nodekit/fi_awg_worker_candidate_stage.py \
+            nodekit/fi_awg_worker_candidate_runtime.py \
+            nodekit/fi_awg_worker_source_stage.py \
+            nodekit/fi_awg_worker_isolated_source_stage.py \
+            nodekit/fi_awg_worker_isolated_systemd_stage.py \
+            nodekit/fi_awg_worker_isolated_runtime_preflight.py \
+            nodekit/fi_awg_worker_isolated_pg_stage.py \
+            "ru-controller:$remote_dir/"
+          first=$(remote "chmod 0600 '$remote_dir/'*; python3 '$remote_dir/fi_awg_worker_systemd_cutover.py' --mode switch")
+          [[ "$first" == 'FI_AWG_SYSTEMD_CUTOVER=VERIFIED;CHANGE=SWITCHED;ROLLBACK_BACKUP=PINNED;UNIT_ACTIVE=false;CUSTOMER_RELEASE=false' ||
+             "$first" == 'FI_AWG_SYSTEMD_CUTOVER=VERIFIED;CHANGE=UNCHANGED;ROLLBACK_BACKUP=PINNED;UNIT_ACTIVE=false;CUSTOMER_RELEASE=false' ]] || exit 2
+          second=$(remote "python3 '$remote_dir/fi_awg_worker_systemd_cutover.py' --mode switch")
+          [[ "$second" == 'FI_AWG_SYSTEMD_CUTOVER=VERIFIED;CHANGE=UNCHANGED;ROLLBACK_BACKUP=PINNED;UNIT_ACTIVE=false;CUSTOMER_RELEASE=false' ]] || exit 2
+          verified=$(remote "python3 '$remote_dir/fi_awg_worker_systemd_cutover.py' --mode verify")
+          [[ "$verified" == 'FI_AWG_SYSTEMD_CUTOVER=READONLY_VERIFIED;UNIT_ACTIVE=false;CUSTOMER_RELEASE=false' ]] || exit 2
+          remote 'set -eu; ! systemctl is-active --quiet mnebyvpn-awg-delivery.service'
+          echo 'FI_AWG_SYSTEMD_CUTOVER=VERIFIED;REPEATABLE=true;BACKUP=PINNED;WORKER_ACTIVE=false;CUSTOMER_RELEASE=false'
