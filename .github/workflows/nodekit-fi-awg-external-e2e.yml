@@ -1,14 +1,39 @@
 name: MNEBYVPN FI external AWG 3.1 E2E (temporary)
 on:
   workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/nodekit-fi-awg-external-e2e.yml
+      - nodekit/tests/test_fi_awg_external_e2e_workflow.py
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/nodekit-fi-awg-external-e2e.yml
+      - nodekit/tests/test_fi_awg_external_e2e_workflow.py
 permissions:
   contents: read
 concurrency:
   group: mnebyvpn-fleet-fi
   cancel-in-progress: false
 jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate external AWG scoped firewall, pinned SSH and Bash workflow
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile nodekit/awg_external_canary.py
+          python3 -m unittest discover -s nodekit/tests -p 'test_awg_external_canary.py' -v
+          python3 -m unittest discover -s nodekit/tests -p 'test_fi_awg_external_e2e_workflow.py' -v
   external-awg:
-    if: github.ref == 'refs/heads/main'
+    needs: offline
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: node-fi
@@ -124,6 +149,8 @@ jobs:
           [[ "$client_public" =~ ^[A-Za-z0-9+/]{43}=$ ]] || exit 2
           runner_ip=$(remote 'printf "%s" "${SSH_CONNECTION%% *}"')
           [[ "$runner_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 2
+          original_ip_forward=$(remote 'cat /proc/sys/net/ipv4/ip_forward')
+          [[ "$original_ip_forward" =~ ^[01]$ ]] || exit 2
           echo_ip=$(getent ahostsv4 api.ipify.org | awk '/STREAM/ {print $1;exit}')
           [[ "$echo_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 2
           export TMP_AWG="$tmp" AWG_ECHO_IP="$echo_ip"
@@ -171,20 +198,30 @@ jobs:
           sudo ip route add 10.73.91.1/32 dev "$iface"
           sudo ip route add "$echo_ip/32" dev "$iface"
           echo "AWG_EXTERNAL_STEP=ENCRYPTED_ICMP"
-          sudo ping -I "$iface" -n -c 3 -W 4 10.73.91.1 >/dev/null
+          ping_result=$(sudo ping -I "$iface" -n -c 5 -W 4 10.73.91.1)
+          avg_rtt=$(printf '%s\n' "$ping_result" | awk -F' = ' '/^rtt min\/avg\/max\/mdev/ {split($2,v,"/");print v[2]}')
+          [[ "$avg_rtt" =~ ^[0-9]+([.][0-9]+)?$ ]] || exit 2
+          echo "AWG_EXTERNAL_AVG_RTT_MS=$avg_rtt"
           handshake=$(sudo "$ext/awg" show "$iface" latest-handshakes | awk 'NF==2{print $2;exit}')
           [[ "$handshake" =~ ^[1-9][0-9]*$ ]] || { echo "::error::No AWG 3.1 handshake"; exit 2; }
           echo "AWG_EXTERNAL_HANDSHAKE=PASS"
           echo "AWG_EXTERNAL_STEP=HTTPS_EGRESS"
-          observed=$(curl --noproxy '*' --interface "$iface" -4 --fail --silent --show-error \
-                     --connect-timeout 8 --max-time 16 \
+          https_seconds=$(curl --noproxy '*' --interface "$iface" -4 --fail --silent --show-error \
+                     --connect-timeout 8 --max-time 16 -o "$tmp/observed-egress" -w '%{time_total}' \
                      --resolve "api.ipify.org:443:$echo_ip" https://api.ipify.org)
+          observed=$(cat "$tmp/observed-egress")
           [[ "$observed" == '217.11.167.91' ]] || { echo "::error::Unexpected VPN egress IP";exit 2; }
+          [[ "$https_seconds" =~ ^[0-9]+([.][0-9]+)?$ ]] || exit 2
+          echo "AWG_EXTERNAL_HTTPS_SECONDS=$https_seconds"
+          # Actual encrypted tunnel counters must advance in BOTH directions.
+          counter_ok=$(sudo "$ext/awg" show "$iface" transfer | awk 'NF==3 && $2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ && $2>0 && $3>0 {print "yes"}')
+          [[ "$counter_ok" == yes ]] || { echo "::error::Encrypted AWG counters did not advance"; exit 2; }
+          echo "AWG_EXTERNAL_BIDIRECTIONAL_ENCRYPTED_BYTES=PASS"
           echo "AWG_EXTERNAL_ICMP=PASS"
           echo "AWG_EXTERNAL_HTTPS_EGRESS=PASS"
           echo "AWG_EXTERNAL_EGRESS_EQUALS_FI_VPS=true"
           echo "AWG_EXTERNAL_STEP=VERIFY_REMOTE_ROLLBACK"
           remote "python3 '$remote_dir/awg_external_canary.py' --mode cleanup" > "$tmp/cleanup.json"
-          remote 'set -Eeuo pipefail; ! iptables-save | grep -q nodekit-fi-awg-canary; ! systemctl is-active --quiet mnebyvpn-nodekit-awg@fi-test-01.service; test "$(cat /proc/sys/net/ipv4/ip_forward)" = 0'
+          remote "set -Eeuo pipefail; ! iptables-save | grep -q nodekit-fi-awg-canary; ! systemctl is-active --quiet mnebyvpn-nodekit-awg@fi-test-01.service; ! systemctl is-active --quiet nodekit-fi-awg-canary-expiry.timer; test ! -e /sys/class/net/awg0; test ! -e /run/nodekit-fi-awg-external.json; test \"\$(cat /proc/sys/net/ipv4/ip_forward)\" = '$original_ip_forward'"
           echo "AWG_EXTERNAL_ROLLBACK=PASS"
           echo "AWG_CLIENT_PROFILE_PUBLISHED=false"
