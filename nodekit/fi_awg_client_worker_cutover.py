@@ -98,7 +98,15 @@ def rollback(old:bytes)->None:
 
 def switch()->str:
     previous,target=dropins()
-    oldcut.verify()       # existing current candidate is still inactive
+    # The first run verifies the reviewed currently effective candidate.
+    # A repeated run must instead accept ONLY our fully verified NEW unit.
+    systemd.dormant_and_disabled()
+    if trust.read_file(systemd.OVERRIDE,8192)==previous:
+        oldcut.verify()
+    elif trust.read_file(systemd.OVERRIDE,8192)==target:
+        verify()
+    else:
+        trust.stop("client_cutover_unapproved_initial_dropin")
     verified_new_artifacts()
     fd=oldcut.acquire_lock()
     try:
