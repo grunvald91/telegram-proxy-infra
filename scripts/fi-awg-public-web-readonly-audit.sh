@@ -13,6 +13,43 @@ flag="$(docker exec mnebyvpn-stage-postgres psql -AtX -v ON_ERROR_STOP=1 \
 [[ "$flag" == false ]] || exit 2
 echo 'FI_AWG_AUDIT_RELEASE=disabled;WORKER_ACTIVE=false'
 
+old_release='/opt/mnebyvpn-controller/awg-worker-releases/6743387075102698ab23ec06de364d0d8efd1dca'
+new_release='/opt/mnebyvpn-controller/awg-worker-releases/446c331249085adb6536e3d9913fb4b68abf6cd7'
+effective="$(systemctl show -P WorkingDirectory mnebyvpn-awg-delivery.service)"
+case "$effective" in
+  "$old_release") echo 'FI_AWG_AUDIT_EFFECTIVE_WORKER=OLD_INACTIVE';;
+  "$new_release") echo 'FI_AWG_AUDIT_EFFECTIVE_WORKER=NEW_INACTIVE';;
+  *) echo 'FI_AWG_AUDIT_EFFECTIVE_WORKER=UNRECOGNIZED';;
+esac
+manifest="$new_release/awg-client-worker-manifest.json"
+if [[ -f "$manifest" && ! -L "$manifest" ]]; then
+  echo 'FI_AWG_AUDIT_NEW_RELEASE_MANIFEST=present'
+else
+  echo 'FI_AWG_AUDIT_NEW_RELEASE_MANIFEST=missing'
+fi
+# Match only exact Python source stage process; do not signal or stop it.
+stage_pid_count="$(pgrep -fc '^python3 /run/fi-awg-client-worker\.[A-Za-z0-9]{8}/fi_awg_client_worker_stage\.py --stage /run/fi-awg-client-worker\.[A-Za-z0-9]{8}$' || true)"
+[[ "$stage_pid_count" =~ ^[0-9]+$ ]] || exit 2
+echo "FI_AWG_AUDIT_STAGE_PROCESS_COUNT=$stage_pid_count"
+lock='/root/mnebyvpn-controller/awg-worker-source-stage.lock'
+if [[ ! -e "$lock" ]]; then
+  echo 'FI_AWG_AUDIT_SOURCE_FLOCK=absent'
+elif [[ -f "$lock" && ! -L "$lock" &&
+        "$(stat -c '%u:%a:%h' -- "$lock")" == '0:600:1' ]]; then
+  if flock -n -E 77 "$lock" -c /usr/bin/true; then
+    echo 'FI_AWG_AUDIT_SOURCE_FLOCK=free'
+  else
+    code=$?
+    if [[ "$code" == 77 ]]; then
+      echo 'FI_AWG_AUDIT_SOURCE_FLOCK=held'
+    else
+      echo 'FI_AWG_AUDIT_SOURCE_FLOCK=unverifiable'
+    fi
+  fi
+else
+  echo 'FI_AWG_AUDIT_SOURCE_FLOCK=untrusted'
+fi
+
 result="$(docker exec mnebyvpn-stage-postgres psql -AtX -v ON_ERROR_STOP=1 \
   -U mnebyvpn_stage -d mnebyvpn_stage -c \
   "SELECT (to_regclass('public.vpn_awg_device_requests') IS NOT NULL)::text,
