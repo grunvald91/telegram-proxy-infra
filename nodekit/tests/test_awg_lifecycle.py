@@ -72,7 +72,7 @@ class TestAwgLifecycle(unittest.TestCase):
     def test_canary_fails_closed_if_unit_enabled(self):
         with tempfile.TemporaryDirectory() as tmp:
             node=pathlib.Path(tmp)
-            with patch.object(m,"validate",return_value={"zero_peers":True}),\
+            with patch.object(m,"validate",return_value={"zero_peers":True,"mode":"staged"}),\
                  patch.object(m,"UNIT_PATH",node / "unit"),\
                  patch.object(m,"APP",node / "app"),\
                  patch.object(m,"active_unit",return_value=False),\
