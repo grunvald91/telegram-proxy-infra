@@ -75,4 +75,4 @@ jobs:
           sshpass -e scp "${opts[@]}" scripts/mnebyvpn-subscription-read-role.sh \
             "root@$HOST:$stage/installer.sh"
           remote "chmod 0600 '$stage/installer.sh'; bash '$stage/installer.sh'"
-          echo 'FI_AWG_SUBSCRIPTION_ROLE=SELECT_ONLY;CANONICAL_DB=UNCHANGED;CLIENT_RELEASE=UNCHANGED'
+          echo 'FI_AWG_SUBSCRIPTION_ROLE=SELECT_ONLY;ROLE_PRIVILEGES_UPDATED=true;BILLING_DATA_UNCHANGED=true;CLIENT_RELEASE=UNCHANGED'
