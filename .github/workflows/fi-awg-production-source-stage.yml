@@ -32,6 +32,22 @@ jobs:
           sudo python3 -m unittest discover -s nodekit/tests -p 'test_fi_awg_production_source_stage.py' -v
           python3 -m unittest discover -s nodekit/tests -p 'test_fi_awg_production_policy.py' -v
           python3 -m unittest discover -s nodekit/tests -p 'test_awg_lifecycle.py' -v
+          python3 - <<'PY'
+          from pathlib import Path
+          lines=Path('.github/workflows/fi-awg-production-source-stage.yml').read_text().splitlines()
+          anchor='      - name: Upgrade FI217 validator source while both AWG units remain dormant'
+          pos=lines.index(anchor)
+          start=next(i for i in range(pos+1,len(lines)) if lines[i]=='        run: |')+1
+          body=[]
+          for line in lines[start:]:
+              if line and not line.startswith('          '):
+                  break
+              body.append(line[10:] if line.startswith('          ') else '')
+          assert len(body)>50 and 'trap cleanup EXIT' in body
+          Path('/tmp/fi-awg-dormant-source-syntax.sh').write_text('\n'.join(body)+'\n')
+          PY
+          bash -n /tmp/fi-awg-dormant-source-syntax.sh
+          rm -f /tmp/fi-awg-dormant-source-syntax.sh
   fi-dormant-stage:
     needs: offline
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
