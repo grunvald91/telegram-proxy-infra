@@ -207,3 +207,35 @@ jobs:
           done
           echo "FI_AWG_0139_CUSTOMER_DELIVERY=PENDING;QUEUED=$queued;APPLIED=$applied;SIGNED_ACKS=$ack"
           exit 2
+
+  publish-live-status:
+    name: Publish exact FI217 production result
+    needs: [offline, ru188-live]
+    if: ${{ always() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      statuses: write
+    steps:
+      - name: Publish aggregate-only GitHub commit status
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OFFLINE_RESULT: ${{ needs.offline.result }}
+          LIVE_RESULT: ${{ needs.ru188-live.result }}
+        run: |
+          set -Eeuo pipefail
+          if [[ "$OFFLINE_RESULT" == success && "$LIVE_RESULT" == success ]]; then
+            status=success
+            reason='FI217 migration 0139 and two signed grant ACKs verified'
+          else
+            status=failure
+            reason='FI217 RU188 production not verified; inspect workflow run'
+          fi
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+            -f state="$status" \
+            -f context='fi217/awg-0139-live' \
+            -f description="$reason" \
+            -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/workflows/fi-awg-provisioning-role-activate.yml" > /dev/null
+          echo "FI217_PRODUCTION_STATUS=$status"
