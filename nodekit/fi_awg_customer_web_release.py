@@ -255,6 +255,7 @@ def release(path:Path)->str:
     flag=False
     changed=False
     stopped=False
+    backup_created=False
     try:
         # Run a separate localhost canary before touching the real site.
         if cmd(["docker","inspect",CANARY],check=False).returncode==0:
@@ -272,6 +273,7 @@ def release(path:Path)->str:
         with BACKUP.open("xb") as file:
             os.fchmod(file.fileno(),0o600)
             file.write(before);file.flush();os.fsync(file.fileno())
+        backup_created=True
         write_atomic(WEB_ENV,new);changed=True
         cmd(["docker","stop","-t","12",WEB_NAME],timeout=22)
         stopped=True
@@ -286,6 +288,8 @@ def release(path:Path)->str:
         cmd(["docker","rm","-f",CANARY],check=False,timeout=14)
         if flag:release_flag(False,pub)
         if changed:write_atomic(WEB_ENV,before)
+        if backup_created and trusted(BACKUP)==before:
+            BACKUP.unlink()
         if stopped:
             cmd(["docker","rm","-f",WEB_NAME],check=False,timeout=14)
             launch(image,WEB_NAME,8792,WEB_ENV,old,temporary=False)
