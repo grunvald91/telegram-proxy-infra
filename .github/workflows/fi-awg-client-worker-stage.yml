@@ -1,0 +1,164 @@
+name: FI217 six-module client registrar immutable RU188 stage (NO activation)
+"on":
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/fi-awg-client-worker-stage.yml'
+      - 'nodekit/fi_awg_client_worker_stage.py'
+      - 'nodekit/tests/test_fi_awg_client_worker_stage.py'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/fi-awg-client-worker-stage.yml'
+      - 'nodekit/fi_awg_client_worker_stage.py'
+      - 'nodekit/tests/test_fi_awg_client_worker_stage.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ru188-awg-gateway-schema-stage
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false, path: infra}
+      - uses: actions/checkout@v4
+        with:
+          repository: grunvald91/Mnebyvpn
+          ref: 446c331249085adb6536e3d9913fb4b68abf6cd7
+          persist-credentials: false
+          path: controller
+      - name: Verify complete independently pinned worker release before server access
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(git -C controller rev-parse HEAD)" = 446c331249085adb6536e3d9913fb4b68abf6cd7
+          python3 -m py_compile infra/nodekit/fi_awg_client_worker_stage.py
+          python3 -m unittest discover -s infra/nodekit/tests \
+            -p 'test_fi_awg_client_worker_stage.py' -v
+          python3 - <<'PY'
+          import sys
+          from pathlib import Path
+          sys.path.insert(0,'infra/nodekit')
+          import fi_awg_client_worker_stage as stage
+          for rel,blob in stage.FILES.items():
+              body=Path('controller',rel).read_bytes()
+              if not stage.independently_pinned(body,blob):
+                  raise SystemExit('Unapproved worker release')
+          print('FI_AWG_CLIENT_WORKER_SOURCE=6_INDEPENDENT_GIT_PINS;LIVE=false')
+          PY
+  stage:
+    needs: offline
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    environment: node-fi
+    timeout-minutes: 14
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false, path: infra}
+      - uses: actions/checkout@v4
+        with:
+          repository: grunvald91/Mnebyvpn
+          ref: 446c331249085adb6536e3d9913fb4b68abf6cd7
+          persist-credentials: false
+          path: controller
+      - name: Install ephemeral pinned-host SSH
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends sshpass >/dev/null
+      - name: Stage, import-check and idempotently verify NEW worker on dormant RU188
+        shell: bash
+        env:
+          RU_SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          [[ -n "$RU_SSH_PASSWORD" ]] || exit 2
+          test "$(git -C controller rev-parse HEAD)" = 446c331249085adb6536e3d9913fb4b68abf6cd7
+          grep -q '^188\.120\.254\.223 ssh-ed25519 ' infra/ops/mnebydns-owner-ssh-known_hosts
+          work="$RUNNER_TEMP/fi-client-worker-release"
+          mkdir -m 0700 "$work"
+          cat > "$work/config" <<CFG
+          Host ru-controller
+            HostName 188.120.254.223
+            User root
+            UserKnownHostsFile $GITHUB_WORKSPACE/infra/ops/mnebydns-owner-ssh-known_hosts
+            GlobalKnownHostsFile /dev/null
+            HostKeyAlgorithms ssh-ed25519
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+            BatchMode no
+            PasswordAuthentication yes
+            PubkeyAuthentication no
+            KbdInteractiveAuthentication no
+            ForwardAgent no
+            ClearAllForwardings yes
+            ControlMaster no
+            ProxyCommand none
+            ConnectTimeout 12
+            ServerAliveInterval 10
+            ServerAliveCountMax 3
+            LogLevel ERROR
+          CFG
+          export SSHPASS="$RU_SSH_PASSWORD"
+          ru(){ sshpass -e ssh -T -F "$work/config" ru-controller "$@"; }
+          folder=''
+          cleanup(){
+            set +e
+            if [[ "$folder" =~ ^/run/fi-awg-client-worker\.[A-Za-z0-9]{8}$ ]]; then
+              ru "rm -rf -- '$folder'" >/dev/null 2>&1
+            fi
+            rm -rf -- "$work"
+          }
+          trap cleanup EXIT
+          folder=$(ru 'umask 077; mktemp -d /run/fi-awg-client-worker.XXXXXXXX')
+          [[ "$folder" =~ ^/run/fi-awg-client-worker\.[A-Za-z0-9]{8}$ ]] || exit 2
+          sshpass -e scp -F "$work/config" \
+            infra/nodekit/fi_awg_client_worker_stage.py \
+            infra/nodekit/fi_awg_worker_source_stage.py \
+            infra/nodekit/fi_awg_worker_candidate_stage.py \
+            infra/nodekit/fi_awg_worker_candidate_runtime.py \
+            infra/nodekit/fi_awg_worker_systemd_cutover.py \
+            infra/nodekit/fi_awg_worker_isolated_source_stage.py \
+            infra/nodekit/fi_awg_worker_isolated_systemd_stage.py \
+            infra/nodekit/fi_awg_worker_isolated_pg_stage.py \
+            infra/nodekit/fi_awg_worker_isolated_runtime_preflight.py \
+            "ru-controller:$folder/"
+          tar --format=ustar -cf "$work/worker.tar" -C controller \
+            apps/service/src/awg-controller-delivery-worker.ts \
+            packages/provisioning/src/awg-device-registration-worker.ts \
+            packages/provisioning/src/awg-trusted-ssh-delivery.ts \
+            packages/provisioning/src/awg-offline-maintenance.ts \
+            packages/provisioning/src/awg-controller-grants.ts \
+            packages/provisioning/src/awg-controller-outbox.ts
+          sshpass -e scp -F "$work/config" "$work/worker.tar" "ru-controller:$folder/"
+          ru "tar --no-same-owner --no-same-permissions -xf '$folder/worker.tar' -C '$folder'; find '$folder' -type d -exec chmod 0700 {} +; find '$folder' -type f -exec chmod 0600 {} +"
+          first=$(ru "python3 '$folder/fi_awg_client_worker_stage.py' --stage '$folder'")
+          export FI_FIRST="$first"
+          python3 - <<'PY'
+          import os,re
+          value=os.environ['FI_FIRST']
+          match=re.fullmatch(
+             r"FI_AWG_CLIENT_WORKER=STAGED;COMMIT=446c331249085adb6536e3d9913fb4b68abf6cd7;"
+             r"NEW=([0-9]+);MATCHED=([0-9]+);IMPORT=VERIFIED;"
+             r"EFFECTIVE_WORKER=OLD_INACTIVE;CLIENT_RELEASE=false;REAL_PEERS_MODIFIED=false",value)
+          if not match or sum(map(int,match.groups()))<6:
+              raise SystemExit(2)
+          PY
+          second=$(ru "python3 '$folder/fi_awg_client_worker_stage.py' --stage '$folder'")
+          export FI_SECOND="$second"
+          python3 - <<'PY'
+          import os,re
+          first=os.environ['FI_FIRST']
+          second=os.environ['FI_SECOND']
+          pattern=r"^FI_AWG_CLIENT_WORKER=STAGED;COMMIT=446c331249085adb6536e3d9913fb4b68abf6cd7;NEW=([0-9]+);MATCHED=([0-9]+);IMPORT=VERIFIED;EFFECTIVE_WORKER=OLD_INACTIVE;CLIENT_RELEASE=false;REAL_PEERS_MODIFIED=false$"
+          a=re.fullmatch(pattern,first)
+          b=re.fullmatch(pattern,second)
+          if not a or not b or int(b[1])!=0 or int(a[1])+int(a[2])!=int(b[2]):
+              raise SystemExit(2)
+          PY
+          echo 'FI_AWG_CLIENT_WORKER=PINNED_STAGED;IMPORT=PASS;REPEATABLE=true;WORKER_ACTIVE=false;CLIENT_RELEASE=false'
