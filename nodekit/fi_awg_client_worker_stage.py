@@ -106,7 +106,7 @@ def staged_artifacts_locked() -> str:
     trust.require_safe_dormant()
     cutover.verify_candidate_artifacts()
     old,new=reviewed_unit_bytes()
-    actual=trust.read_file(isolated.systemd.OVERRIDE,8192)
+    actual=trust.read_file(cutover.systemd.OVERRIDE,8192)
     if actual==old:
         cutover.verified_new_effective_unit(old)
         if trust.read_file(candidate.CANDIDATE/WORKER)!=trust.read_file(
@@ -126,7 +126,7 @@ def staged_artifacts_locked() -> str:
 def staged_artifacts() -> str:
     """Full preflight before locking; old or new release must be pinned."""
     old,_=reviewed_unit_bytes()
-    if trust.read_file(isolated.systemd.OVERRIDE,8192)==old:
+    if trust.read_file(cutover.systemd.OVERRIDE,8192)==old:
         cutover.verify()
     else:
         import fi_awg_client_worker_cutover as clientcut
