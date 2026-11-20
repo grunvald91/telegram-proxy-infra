@@ -1,9 +1,16 @@
 name: MNEBYVPN provision read-only subscription database access on 188
-on:
-  push:
+"on":
+  pull_request:
     paths:
       - '.github/workflows/mnebyvpn-subscription-role-prepare.yml'
       - 'scripts/mnebyvpn-subscription-read-role.sh'
+      - 'nodekit/tests/test_subscription_awg_ro_role.py'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebyvpn-subscription-role-prepare.yml'
+      - 'scripts/mnebyvpn-subscription-read-role.sh'
+      - 'nodekit/tests/test_subscription_awg_ro_role.py'
   workflow_dispatch:
 permissions:
   contents: read
@@ -11,14 +18,32 @@ concurrency:
   group: mnebyvpn-subscription-role-188
   cancel-in-progress: false
 jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify least-privilege AWG SQL role deployment script
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          bash -n scripts/mnebyvpn-subscription-read-role.sh
+          python3 -m unittest discover -s nodekit/tests -p 'test_subscription_awg_ro_role.py' -v
   configure:
+    needs: offline
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 8
+    environment: node-fi
     env:
       HOST: '188.120.254.223'
       PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Validate installer and configure least privilege using existing SSH
         shell: bash
         run: |
@@ -27,8 +52,27 @@ jobs:
           bash -n scripts/mnebyvpn-subscription-read-role.sh
           sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
           export SSHPASS="$PASSWORD"
-          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          grep -q '^188\.120\.254\.223 ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts
+          known="$GITHUB_WORKSPACE/ops/mnebydns-owner-ssh-known_hosts"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+                -o HostKeyAlgorithms=ssh-ed25519
+                -o UserKnownHostsFile="$known" -o GlobalKnownHostsFile=/dev/null
+                -o PasswordAuthentication=yes -o PubkeyAuthentication=no
+                -o KbdInteractiveAuthentication=no -o ForwardAgent=no
+                -o ClearAllForwardings=yes -o LogLevel=ERROR)
+          remote(){ sshpass -e ssh -T "${opts[@]}" "root@$HOST" "$@"; }
+          stage=''
+          cleanup(){
+            set +e
+            if [[ "$stage" =~ ^/run/mnebyvpn-subscription-ro\.[A-Za-z0-9]{8}$ ]]; then
+              remote "rm -rf -- '$stage'" >/dev/null 2>&1
+            fi
+          }
+          trap cleanup EXIT
+          stage=$(remote 'umask 077; mktemp -d /run/mnebyvpn-subscription-ro.XXXXXXXX')
+          [[ "$stage" =~ ^/run/mnebyvpn-subscription-ro\.[A-Za-z0-9]{8}$ ]] || exit 2
           sshpass -e scp "${opts[@]}" scripts/mnebyvpn-subscription-read-role.sh \
-            "root@$HOST:/tmp/mnebyvpn-subscription-read-role.sh"
-          sshpass -e ssh "${opts[@]}" "root@$HOST" \
-            'bash /tmp/mnebyvpn-subscription-read-role.sh; result=$?; rm -f /tmp/mnebyvpn-subscription-read-role.sh; exit "$result"'
+            "root@$HOST:$stage/installer.sh"
+          remote "chmod 0600 '$stage/installer.sh'; bash '$stage/installer.sh'"
+          echo 'FI_AWG_SUBSCRIPTION_ROLE=SELECT_ONLY;CANONICAL_DB=UNCHANGED;CLIENT_RELEASE=UNCHANGED'
