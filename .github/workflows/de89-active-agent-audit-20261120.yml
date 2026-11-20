@@ -1,0 +1,111 @@
+name: DE89 live VPN agent and WebSocket transport audit (read-only)
+"on":
+  pull_request:
+    branches: [main]
+    paths: ['.github/workflows/de89-active-agent-audit-20261120.yml']
+  push:
+    branches: [main]
+    paths: ['.github/workflows/de89-active-agent-audit-20261120.yml']
+permissions: {contents: read}
+jobs:
+  offline:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - run: |
+          ruby -e 'require "yaml"; x=YAML.load_file(".github/workflows/de89-active-agent-audit-20261120.yml"); abort unless x["permissions"]=={"contents"=>"read"}'
+  live:
+    needs: offline
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    environment: node-fi
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Observe active isolated Xray and nginx WebSocket route without credentials
+        env:
+          SSH_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+        run: |
+          set -Eeuo pipefail
+          test -n "$SSH_PASSWORD"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass >/dev/null
+          export SSHPASS="$SSH_PASSWORD"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes \
+            -o HostKeyAlgorithms=ssh-ed25519 \
+            -o "UserKnownHostsFile=$GITHUB_WORKSPACE/ops/mnebydns-owner-ssh-known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null \
+            -o ForwardAgent=no -o ClearAllForwardings=yes -o LogLevel=ERROR \
+            root@89.125.90.101 'python3 -' <<'PY'
+          import os,json,subprocess,pathlib,re,socket,time,urllib.request
+          def cmd(args,timeout=10):
+              try:
+                  p=subprocess.run(args,capture_output=True,text=True,timeout=timeout)
+                  return p.stdout,p.returncode
+              except Exception:return '',255
+          agent='mnebyvpn-vpn-provisioner.service'
+          status,_=cmd(['systemctl','show',agent,'-p','ActiveState','-p','NRestarts',
+                        '-p','ExecMainPID','-p','ExecMainStatus'])
+          props=dict(x.split('=',1) for x in status.splitlines() if '=' in x)
+          for k in ('ActiveState','NRestarts','ExecMainStatus'):
+              print('DE89_AGENT_'+k+'='+props.get(k,'unknown'),flush=True)
+          cfg=pathlib.Path('/etc/mnebyvpn/xray-canary.json')
+          if not cfg.is_file():
+              print('DE89_ACTIVE_CONFIG_PRESENT=false');raise SystemExit(2)
+          obj=json.loads(cfg.read_text())
+          for i,x in enumerate(obj.get('inbounds',[])[:4]):
+              print('DE89_INBOUND_'+str(i)+'_PORT='+str(x.get('port','missing')),flush=True)
+              print('DE89_INBOUND_'+str(i)+'_PROTOCOL='+str(x.get('protocol','unknown')),flush=True)
+              print('DE89_INBOUND_'+str(i)+'_CLIENTS='+
+                    str(len(x.get('settings',{}).get('clients',[]))),flush=True)
+          key=pathlib.Path('/etc/mnebyvpn/canary-uuid')
+          if key.is_file():
+              uid=key.read_text().strip()
+              found=any(any(v.get('id')==uid for v in x.get('settings',{}).get('clients',[]))
+                        for x in obj.get('inbounds',[]))
+              print('DE89_TEST_UUID_IN_LIVE_AGENT_CONFIG='+str(found).lower(),flush=True)
+          ss,_=cmd(['ss','-H','-lntp'])
+          for p in (18943,18944,8443):
+              lines=[x for x in ss.splitlines() if re.search(r':'+str(p)+r'\s',x)]
+              names=set()
+              for line in lines:
+                  names.update(re.findall(r'users:\(\("([\w-]+)"',line))
+              print('DE89_LISTENER_'+str(p)+'='+
+                    (','.join(sorted(names)) if names else 'not_detected'),flush=True)
+          conf,_=cmd(['nginx','-T'],timeout=12)
+          match=re.search(r'location\s*=\s*/mnebyvpn-vpn/ws\s*\{([^}]*)\}',conf,re.S)
+          if match:
+              upstream=re.search(r'proxy_pass\s+http://127\.0\.0\.1:(\d+)',match.group(1))
+              print('DE89_WEB_WS_PROXY_TARGET='+(
+                    upstream.group(1) if upstream else 'other'),flush=True)
+          else: print('DE89_WEB_WS_PROXY_TARGET=location_missing',flush=True)
+          for endpoint in ('http://127.0.0.1:18944/healthz',
+                           'http://10.66.77.1:18944/healthz'):
+              try:
+                  r=urllib.request.urlopen(endpoint,timeout=4)
+                  print('DE89_AGENT_HEALTH_'+endpoint.split('//')[1].split(':')[0]+
+                        '='+str(r.status),flush=True)
+              except Exception as e:
+                  print('DE89_AGENT_HEALTH_'+endpoint.split('//')[1].split(':')[0]+
+                        '='+type(e).__name__,flush=True)
+          log,_=cmd(['journalctl','-u',agent,'--since','-120 minutes',
+                     '--no-pager','-n','1500','-o','cat'],timeout=15)
+          for label,pattern in [('restart',r'Started|Stopped|Stopping'),
+                                ('error',r'Traceback|RuntimeError|failed|Error'),
+                                ('child',r'child|xray|commit')]:
+              print('DE89_AGENT_LOG_'+label+'_COUNT='+
+                    str(len(re.findall(pattern,log,re.I))),flush=True)
+          def xray_pid():
+              p,_=cmd(['ss','-H','-lntp'])
+              line=next((x for x in p.splitlines() if re.search(r':18943\s',x)),'')
+              m=re.search(r'pid=(\d+)',line)
+              return int(m.group(1)) if m else None
+          one=xray_pid()
+          print('DE89_ISOLATED_XRAY_PID_PRESENT='+str(one is not None).lower(),flush=True)
+          time.sleep(20)
+          two=xray_pid()
+          print('DE89_CHILD_PID_STABLE_20S='+str(one is not None and one==two).lower(),flush=True)
+          print('DE89_AGENT_AUDIT_READ_ONLY_COMPLETE=true',flush=True)
+          PY
