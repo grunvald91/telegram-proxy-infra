@@ -1,0 +1,160 @@
+name: FI217 authenticated native AWG public customer release (website)
+"on":
+  pull_request:
+    branches: [main]
+    paths:
+      - nodekit/fi_awg_customer_web_release.py
+      - nodekit/tests/test_fi_awg_customer_web_release.py
+      - .github/workflows/fi-awg-public-customers-enable.yml
+  push:
+    branches: [main]
+    paths:
+      - nodekit/fi_awg_customer_web_release.py
+      - nodekit/tests/test_fi_awg_customer_web_release.py
+      - .github/workflows/fi-awg-public-customers-enable.yml
+  workflow_dispatch:
+permissions: {contents: read}
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('fi-awg-public-pr-{0}',github.event.pull_request.number) || 'mnebyvpn-fleet-fi' }}
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Test scoped customer website release and preserve other services
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile nodekit/fi_awg_customer_web_release.py
+          python3 -m unittest discover -s nodekit/tests -p 'test_fi_awg_customer_web_release.py' -v
+          python3 - <<'PY'
+          from pathlib import Path
+          rows=Path('.github/workflows/fi-awg-public-customers-enable.yml').read_text().splitlines()
+          marker='      - name: Publish FI AWG setup to subscribed customers after real external proof'
+          start=rows.index(marker)
+          start=next(i for i in range(start+1,len(rows)) if rows[i]=='        run: |')+1
+          body=[]
+          for line in rows[start:]:
+              if line and not line.startswith('          '):break
+              body.append(line[10:] if line.startswith('          ') else '')
+          assert body and 'trap cleanup EXIT' in body
+          Path('/tmp/fi-awg-customer-release.sh').write_text('\n'.join(body)+'\n')
+          PY
+          bash -n /tmp/fi-awg-customer-release.sh
+          rm -f /tmp/fi-awg-customer-release.sh
+  publish:
+    needs: offline
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    environment: node-fi
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Install pinned SSH transport
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends sshpass >/dev/null
+      - name: Publish FI AWG setup to subscribed customers after real external proof
+        shell: bash
+        env:
+          RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+          FI_PASSWORD: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_PASSWORD }}
+          FI_USER: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_USER }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          [[ "$FI_USER" == root && -n "$RU_PASSWORD" && -n "$FI_PASSWORD" ]] || exit 2
+          grep -q '^188\.120\.254\.223 ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts
+          work="$RUNNER_TEMP/fi-awg-customer-release"
+          mkdir -m 0700 "$work"
+          cat > "$work/ru.cfg" <<CFG
+          Host ru-controller
+            HostName 188.120.254.223
+            User root
+            UserKnownHostsFile $GITHUB_WORKSPACE/ops/mnebydns-owner-ssh-known_hosts
+            GlobalKnownHostsFile /dev/null
+            HostKeyAlgorithms ssh-ed25519
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+            PasswordAuthentication yes
+            PubkeyAuthentication no
+            KbdInteractiveAuthentication no
+            BatchMode no
+            ForwardAgent no
+            ClearAllForwardings yes
+            ControlMaster no
+            ProxyCommand none
+            ConnectTimeout 12
+            LogLevel ERROR
+          CFG
+          ru(){ SSHPASS="$RU_PASSWORD" sshpass -e ssh -T -F "$work/ru.cfg" ru-controller "$@"; }
+          ru 'test -f /root/mnebyvpn-controller/fi-known_hosts; test ! -L /root/mnebyvpn-controller/fi-known_hosts; test "$(stat -c "%u:%a" /root/mnebyvpn-controller/fi-known_hosts)" = 0:600; cat /root/mnebyvpn-controller/fi-known_hosts' > "$work/fi-known"
+          python3 - "$work/fi-known" <<'PY'
+          import base64,pathlib,sys
+          raw=pathlib.Path(sys.argv[1]).read_bytes()
+          assert len(raw)<512 and raw.count(b'\n')==1 and raw.endswith(b'\n')
+          host,kind,key=raw.decode('ascii').strip().split()
+          assert (host,kind)==('fi.mnebyvpn.site','ssh-ed25519')
+          decoded=base64.b64decode(key,validate=True)
+          assert len(decoded)==51 and decoded.startswith(b'\x00\x00\x00\x0bssh-ed25519\x00\x00\x00\x20')
+          PY
+          cat > "$work/fi.cfg" <<CFG
+          Host fi-node
+            HostName 217.11.167.91
+            User root
+            UserKnownHostsFile $work/fi-known
+            HostKeyAlias fi.mnebyvpn.site
+            GlobalKnownHostsFile /dev/null
+            HostKeyAlgorithms ssh-ed25519
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+            PasswordAuthentication yes
+            PubkeyAuthentication no
+            KbdInteractiveAuthentication no
+            BatchMode no
+            ForwardAgent no
+            ClearAllForwardings yes
+            ControlMaster no
+            ProxyCommand none
+            ConnectTimeout 12
+            LogLevel ERROR
+          CFG
+          fi_node(){ SSHPASS="$FI_PASSWORD" sshpass -e ssh -T -F "$work/fi.cfg" fi-node "$@"; }
+          ru_dir=''
+          fi_dir=''
+          cleanup(){
+            set +e
+            if [[ "$ru_dir" =~ ^/run/fi-awg-customer\.[A-Za-z0-9]{8}$ ]];then ru "rm -rf -- '$ru_dir'" >/dev/null 2>&1;fi
+            if [[ "$fi_dir" =~ ^/run/fi-awg-customer\.[A-Za-z0-9]{8}$ ]];then fi_node "rm -rf -- '$fi_dir'" >/dev/null 2>&1;fi
+            rm -rf -- "$work"
+          }
+          trap cleanup EXIT
+          ru_dir=$(ru 'umask 077; mktemp -d /run/fi-awg-customer.XXXXXXXX')
+          fi_dir=$(fi_node 'umask 077; mktemp -d /run/fi-awg-customer.XXXXXXXX')
+          [[ "$ru_dir" =~ ^/run/fi-awg-customer\.[A-Za-z0-9]{8}$ &&
+             "$fi_dir" =~ ^/run/fi-awg-customer\.[A-Za-z0-9]{8}$ ]] || exit 2
+          SSHPASS="$FI_PASSWORD" sshpass -e scp -F "$work/fi.cfg" \
+            nodekit/fi_awg_live_customer_e2e.py nodekit/fi_awg_signed_canary.py \
+            nodekit/fi_awg_production_policy.py nodekit/awg_lifecycle.py \
+            nodekit/install_components.py "fi-node:$fi_dir/"
+          fi_node "chmod 0600 '$fi_dir/'*.py; timeout 35s python3 '$fi_dir/fi_awg_live_customer_e2e.py' --mode fi-material" > "$work/material.json"
+          [[ -s "$work/material.json" ]] || exit 2
+          SSHPASS="$RU_PASSWORD" sshpass -e scp -F "$work/ru.cfg" \
+            nodekit/fi_awg_customer_web_release.py scripts/mnebyvpn-subscription-read-role.sh \
+            "ru-controller:$ru_dir/"
+          SSHPASS="$RU_PASSWORD" sshpass -e scp -F "$work/ru.cfg" "$work/material.json" "ru-controller:$ru_dir/material.json"
+          ru "chmod 0600 '$ru_dir/'*; timeout 60s bash '$ru_dir/mnebyvpn-subscription-read-role.sh'"
+          ru "timeout 180s python3 '$ru_dir/fi_awg_customer_web_release.py' --mode release --material '$ru_dir/material.json'"
+          local_code=$(ru "curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --connect-timeout 3 --max-time 7 http://127.0.0.1:8792/awg/setup")
+          [[ "$local_code" == 200 ]] || exit 2
+          public_code=$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --connect-timeout 8 --max-time 15 https://mnebyvpn.site/awg/setup || true)
+          if [[ "$public_code" == 200 ]];then
+            echo 'FI_AWG_CUSTOMER_PUBLIC_HTTPS=200'
+          else
+            echo 'FI_AWG_CUSTOMER_PUBLIC_HTTPS=NOT_CONFIRMED'
+          fi
+          echo 'FI_AWG_CUSTOMER_RELEASE_ACTION=COMPLETE;LOCAL_SETUP=200'
