@@ -1,3 +1,4 @@
+# 2026-11-20 read-only comparison of customer-facing RU :8443 and DE :9446 Telegram proxy routes; no credentials, no traffic with customer secret and no production writes.
 name: Telegram proxy reliability audit (read-only)
 "on":
   push:
@@ -27,7 +28,7 @@ jobs:
           python3 - <<'PY'
           import socket,time,ssl
           for role,addr in [('RU','188.120.254.223'),('DE','89.125.90.101')]:
-              for port in (443,8443,2052,2086):
+              for port in ((443,8443,2052,2086,9446) if role=='DE' else (443,8443,2052,2086)):
                   results=[]
                   for _ in range(2):
                       t=time.monotonic()
@@ -91,7 +92,7 @@ jobs:
                       for key,pattern in [('timeout',r'timeout|timed out'),('reset',r'connection reset|broken pipe'),('refused',r'connection refused'),('limits',r'too many open files'),('backend',r'middle.?end|upstream.*(error|closed)')]:
                           out('ERR_'+unit+'_'+key,len(re.findall(pattern,journal,re.I)))
           rc,ss=cmd(['ss','-lntH'])
-          for port in (443,8443,10443,2052,2086,8080,8081,8084,8085,2398,2399,9470):
+          for port in (443,8443,10443,2052,2086,8080,8081,8084,8085,2398,2399,9446,9470):
               out('LISTEN_'+str(port),bool(re.search(r':'+str(port)+r'\s',ss)))
           rc,wg=cmd(['wg','show','all','latest-handshakes'])
           if rc==0:
@@ -114,6 +115,7 @@ jobs:
                   except Exception as e:out(label+'_READY',type(e).__name__)
           peers=[('WG_DE_443','10.66.77.1',443),('WG_DE_WEB','10.66.77.1',8082)] if role=='RU' else [
               ('MT_BACKEND_1','127.0.0.1',2398),('MT_BACKEND_2','127.0.0.1',2399),
+              ('MT_DIRECT_OZON','127.0.0.1',9446),
               ('WEB_BACKEND_1','127.0.0.1',8080),('WEB_BACKEND_2','127.0.0.1',8084)]
           for key,host,port in peers:
               try:
