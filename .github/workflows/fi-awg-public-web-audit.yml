@@ -26,6 +26,9 @@ jobs:
           ! grep -Eq 'systemctl (start|enable|restart)|docker (stop|rm|run)|UPDATE vpn_release_flags|ALTER TABLE|DROP TABLE' \
             scripts/fi-awg-public-web-readonly-audit.sh
           grep -q 'CLIENT_RELEASE=false' scripts/fi-awg-public-web-readonly-audit.sh
+          grep -q 'FI_AWG_AUDIT_SOURCE_FLOCK=' scripts/fi-awg-public-web-readonly-audit.sh
+          grep -q 'FI_AWG_AUDIT_EFFECTIVE_WORKER=' scripts/fi-awg-public-web-readonly-audit.sh
+          ! grep -Eq '(^|[; ])(pkill|killall|kill -)' scripts/fi-awg-public-web-readonly-audit.sh
   inspect:
     needs: offline
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
