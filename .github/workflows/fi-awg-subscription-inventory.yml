@@ -33,6 +33,9 @@ jobs:
           assert functions.count('keys')==1 and functions.count('call')==1
           assert functions.count('staging_diagnostics')==1
           assert functions.count('trigger_owner_diagnostics')==1
+          assert functions.count('fi_subscription_readiness')==1
+          assert 'FI_AWG_SUB_VISIBILITY_' in source
+          assert 'LINKED_ACK_STALE_PROOF' in source
           assert 'FI_AWG_SUB_TRIGGER_' in source
           assert 'vpn_awg_enforce_address_pool' in source
           assert 'FI_AWG_SUB_STAGE_' in source
