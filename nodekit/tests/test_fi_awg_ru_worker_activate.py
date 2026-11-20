@@ -42,7 +42,7 @@ class WorkerActivate(unittest.TestCase):
         src=Path(m.__file__).read_text()
         self.assertIn("pinned.verify()",src)
         self.assertIn("unit.exact_effective_unit()",src)
-        self.assertIn("systemctl\\",\\"add-wants",src)
+        self.assertIn('systemctl","add-wants',src)
         self.assertNotIn("vpn_release_flags SET",src)
         self.assertNotIn("iptables",src)
         self.assertNotIn("awg-quick",src)
