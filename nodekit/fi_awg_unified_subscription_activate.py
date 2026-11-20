@@ -27,7 +27,7 @@ import fi_awg_customer_web_release as web
 
 RU="188.120.254.223"
 CURRENT="446c331249085adb6536e3d9913fb4b68abf6cd7"
-NEW="e21d751c70d82311b27a7726ea84d1ff2020a4ac"
+NEW="eec5b86c62b6c58bdbda8735c7e75fd9f38fd859"
 RELEASES=Path("/opt/mnebyvpn-controller/awg-worker-releases")
 OLD=RELEASES/CURRENT
 NEW_RELEASE=RELEASES/NEW
@@ -39,7 +39,7 @@ LOCK=Path("/run/lock/mnebyvpn-awg-subscription-cutover.lock")
 PUBLIC_ENV=web.WEB_ENV
 SOURCE={
  "apps/service/src/awg-controller-delivery-worker.ts":"ca548e7a05ede7109b9dfcb8e0a92399af37f5e2",
- "packages/provisioning/src/awg-device-registration-worker.ts":"e8a0b488a98f6faf66a2234742a993afa6e4b7d1",
+ "packages/provisioning/src/awg-device-registration-worker.ts":"e3f0be01038942b4e0785e7e9b8d355480f2dbed",
  "packages/provisioning/src/awg-in-subscription.ts":"fb617bd3886240ffe24694e028f2f2df83783581",
  "packages/provisioning/src/awg-subscriber-material.ts":"2152b16f2f297b80c8749043f5068034c4b93e02",
  "packages/provisioning/src/awg-trusted-ssh-delivery.ts":"516706e898f6e59599172ce3c65d9f2295a4876e",
@@ -120,6 +120,12 @@ def preflight()->bytes:
       "grep -Fq awgInSubscriptionEnabled /srv/mnebyvpn/apps/web/src/server.ts"],
       check=False,timeout=10)
     if proof.returncode!=0:raise Blocked("public site has not deployed mixed profile code")
+    gateway=web.sql(
+      "SELECT CASE WHEN to_regprocedure("+
+      "'public.awg_controller_enqueue_fi_subscription(uuid,text,bigint)') "+
+      "IS NOT NULL THEN 'READY' ELSE 'MISSING' END;")
+    if gateway!="READY":
+        raise Blocked("RU188 scoped AWG subscription enqueue migration not installed")
     release=cmd(["docker","exec","mnebyvpn-stage-postgres","psql",
         "-X","-q","-A","-t","-v","ON_ERROR_STOP=1",
         "-U","mnebyvpn_stage","-d","mnebyvpn_stage",
