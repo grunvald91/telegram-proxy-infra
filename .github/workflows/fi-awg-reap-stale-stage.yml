@@ -1,0 +1,107 @@
+name: FI217 one-shot recovery of two stale RU188 immutable stage processes
+"on":
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/fi-awg-reap-stale-stage.yml
+      - nodekit/fi_awg_reap_stale_stage.py
+      - nodekit/tests/test_fi_awg_reap_stale_stage.py
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/fi-awg-reap-stale-stage.yml
+      - nodekit/fi_awg_reap_stale_stage.py
+      - nodekit/tests/test_fi_awg_reap_stale_stage.py
+  workflow_dispatch:
+permissions:
+  contents: read
+# The normal RU188 single-writer queue is blocked BY the two stale
+# processes; this exceptional maintenance does not acquire that GitHub
+# concurrency group. The remote script must instead prove exact old,
+# inactive, flagged-OFF conditions and stale PID/lock identity.
+concurrency:
+  group: fi217-emergency-repair-only-dedicated
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Enforce exact PID match, root-only host, and no customer mutation
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile nodekit/fi_awg_reap_stale_stage.py
+          python3 -m unittest discover -s nodekit/tests \
+            -p 'test_fi_awg_reap_stale_stage.py' -v
+  recover:
+    needs: offline
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    environment: node-fi
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install ephemeral SSH client
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y --no-install-recommends sshpass >/dev/null
+      - name: Recover only proven two stale FI stage processes, no service changes
+        shell: bash
+        env:
+          RU_SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          [[ -n "$RU_SSH_PASSWORD" ]] || exit 2
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          grep -q '^188\.120\.254\.223 ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts
+          work="$RUNNER_TEMP/fi-awg-stale-stage-recovery"
+          mkdir -m 0700 "$work"
+          cat > "$work/config" <<CFG
+          Host ru-controller
+            HostName 188.120.254.223
+            User root
+            UserKnownHostsFile $GITHUB_WORKSPACE/ops/mnebydns-owner-ssh-known_hosts
+            GlobalKnownHostsFile /dev/null
+            HostKeyAlgorithms ssh-ed25519
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+            BatchMode no
+            PasswordAuthentication yes
+            PubkeyAuthentication no
+            KbdInteractiveAuthentication no
+            ForwardAgent no
+            ClearAllForwardings yes
+            ControlMaster no
+            ProxyCommand none
+            ConnectTimeout 12
+            ServerAliveInterval 10
+            ServerAliveCountMax 3
+            LogLevel ERROR
+          CFG
+          export SSHPASS="$RU_SSH_PASSWORD"
+          ru(){ sshpass -e ssh -T -F "$work/config" ru-controller "$@"; }
+          dir=''
+          cleanup(){
+            set +e
+            if [[ "$dir" =~ ^/run/fi-awg-repair\.[A-Za-z0-9]{8}$ ]]; then
+              ru "rm -rf -- '$dir'" >/dev/null 2>&1
+            fi
+            rm -rf -- "$work"
+          }
+          trap cleanup EXIT
+          dir=$(ru 'umask 077; mktemp -d /run/fi-awg-repair.XXXXXXXX')
+          [[ "$dir" =~ ^/run/fi-awg-repair\.[A-Za-z0-9]{8}$ ]] || exit 2
+          sshpass -e scp -F "$work/config" \
+            nodekit/fi_awg_reap_stale_stage.py "ru-controller:$dir/recover.py"
+          status=$(ru "chmod 0600 '$dir/recover.py'; timeout --signal=TERM --kill-after=5s 60s python3 '$dir/recover.py' --mode repair")
+          [[ "$status" == 'FI_AWG_STALE_STAGE=REPAIRED;PROCESSES_SIGNALED=2;LOCK=FREE;WORKER_ACTIVE=false;CLIENT_RELEASE=false;CUSTOMER_PEERS_TOUCHED=false' || \
+             "$status" == 'FI_AWG_STALE_STAGE=ALREADY_CLEAR;WORKER_ACTIVE=false;CLIENT_RELEASE=false;PROCESSES_SIGNALED=0' ]] || exit 2
+          echo "$status"
