@@ -47,6 +47,10 @@ class ImmutableReleaseContract(unittest.TestCase):
         self.assertNotIn("staged_artifacts()",locked)
         self.assertNotIn("cutover.verify()",locked)
         self.assertEqual(locked.count("staged_artifacts_locked()"),2)
+        self.assertIn("fcntl.LOCK_EX|fcntl.LOCK_NB",locked)
+        self.assertIn("fi_client_worker_source_lock_busy",locked)
+        workflow=(NODEKIT.parent/".github/workflows/fi-awg-client-worker-stage.yml").read_text()
+        self.assertEqual(workflow.count("timeout --signal=TERM --kill-after=10s 180s"),2)
         self.assertIn("cutover.verified_new_effective_unit(",source)
 
     def test_no_existing_candidate_mutation(self):
