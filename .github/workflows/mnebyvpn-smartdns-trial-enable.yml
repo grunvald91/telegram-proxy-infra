@@ -1,0 +1,54 @@
+name: Enable 24h Smart DNS trial and audit provisioning queues
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebyvpn-smartdns-trial-enable.yml'
+      - 'scripts/mnebyvpn-smartdns-trial-enable.sh'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mnebyvpn-smartdns-trial-enable
+  cancel-in-progress: false
+
+jobs:
+  enable-and-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      HOST: '188.120.254.223'
+      SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate script syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SSH_PASSWORD"
+          bash -n scripts/mnebyvpn-smartdns-trial-enable.sh
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+      - name: Enable Smart DNS 24h trial in DB and inspect queues (no PII)
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SSHPASS="$SSH_PASSWORD"
+          opts=(-o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          sshpass -e scp "${opts[@]}" scripts/mnebyvpn-smartdns-trial-enable.sh \
+            "root@$HOST:/tmp/mnebyvpn-smartdns-trial-enable.sh"
+          sshpass -e ssh "${opts[@]}" "root@$HOST" \
+            'bash /tmp/mnebyvpn-smartdns-trial-enable.sh'
+      - name: Clean up temporary script
+        if: always()
+        shell: bash
+        run: |
+          if [ -n "$SSH_PASSWORD" ]; then
+            export SSHPASS="$SSH_PASSWORD"
+            sshpass -e ssh -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR \
+              "root@$HOST" 'rm -f /tmp/mnebyvpn-smartdns-trial-enable.sh' || true
+          fi
