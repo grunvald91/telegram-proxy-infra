@@ -36,7 +36,7 @@ jobs:
           import hashlib
           path=Path('mnebyvpn/db/migrations/0139_awg_peer_address_trigger_owner.sql')
           raw=path.read_bytes()
-          pin=hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\\0'+raw).hexdigest()
+          pin=hashlib.sha1(b'blob '+str(len(raw)).encode()+bytes([0])+raw).hexdigest()
           assert pin=='76cf8e1162f7b4a27b1da3a8afd523ca2d81b3bb'
           sql=raw.decode()
           for term in ('BEGIN;', 'COMMIT;', 'SECURITY DEFINER',
@@ -196,8 +196,8 @@ jobs:
           SQL
           for attempt in $(seq 1 18); do
             counts=$(remote 'docker exec -i mnebyvpn-stage-postgres psql -X -q -A -t -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage' < "$work/ack.sql")
-            [[ "$counts" =~ ^[0-9]+\\|[0-9]+\\|[0-9]+$ ]] || exit 2
-            IFS='|' read -r queued applied ack <<< "$counts"
+            IFS="|" read -r queued applied ack <<< "$counts"
+            [[ "$queued" =~ ^[0-9]+$ && "$applied" =~ ^[0-9]+$ && "$ack" =~ ^[0-9]+$ ]] || exit 2
             if (( queued >= 2 && applied >= 2 && ack >= 2 )); then
               echo "FI_AWG_0139_SIGNED_ACKS=$ack"
               echo 'FI_AWG_0139_CUSTOMER_DELIVERY=VERIFIED'
