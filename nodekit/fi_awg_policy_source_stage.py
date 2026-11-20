@@ -120,12 +120,18 @@ def stage_payloads(payloads: dict[str, bytes], releases: Path) -> str:
                 handle.write(data)
                 handle.flush()
                 os.fsync(handle.fileno())
-        with os.fdopen(os.open(scratch, os.O_RDONLY | os.O_DIRECTORY), "rb") as directory:
-            os.fsync(directory.fileno())
+        directory = os.open(scratch, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
         verify_release(scratch)
         os.rename(scratch, release)
-        with os.fdopen(os.open(releases, os.O_RDONLY | os.O_DIRECTORY), "rb") as directory:
-            os.fsync(directory.fileno())
+        directory = os.open(releases, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
     finally:
         if scratch.exists():
             shutil.rmtree(scratch)
