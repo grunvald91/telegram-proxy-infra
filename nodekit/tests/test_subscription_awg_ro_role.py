@@ -17,7 +17,7 @@ class SubscriptionRoleSecurity(unittest.TestCase):
     def test_sql_transaction_and_role_is_select_only(self):
         source=SCRIPT.read_text()
         self.assertIn("BEGIN;\nDO $$",source)
-        self.assertIn("END\\n"+chr(36)*2+";\\nGRANT CONNECT",source)
+        self.assertIn("END\n"+chr(36)*2+";\nGRANT CONNECT",source)
         self.assertIn("END\n$$;\nCOMMIT;",source)
         self.assertIn("REVOKE ALL ON ALL TABLES IN SCHEMA public",source)
         self.assertIn("NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION",source)
