@@ -179,6 +179,41 @@ def staging_diagnostics()->dict[str,str]:
     }
 
 
+def trigger_owner_diagnostics()->dict[str,str]:
+    # Inspect only pg_catalog metadata: prove the node-pool row-lock
+    # privilege mismatch independently, without reading customer rows.
+    sql="""SELECT
+      (SELECT CASE WHEN p.prosecdef THEN 'DEFINER' ELSE 'INVOKER' END
+       FROM pg_catalog.pg_proc p
+       JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+       WHERE n.nspname='public' AND p.proname='vpn_awg_enforce_address_pool'
+         AND p.pronargs=0),
+      (SELECT CASE WHEN pg_catalog.strpos(
+          pg_catalog.pg_get_functiondef(p.oid),'FOR SHARE')>0 THEN 'YES' ELSE 'NO' END
+       FROM pg_catalog.pg_proc p
+       JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+       WHERE n.nspname='public' AND p.proname='vpn_awg_enforce_address_pool'
+         AND p.pronargs=0),
+      (SELECT CASE WHEN count(*)=1 THEN 'PRESENT' ELSE 'UNKNOWN' END
+       FROM pg_catalog.pg_trigger t
+       WHERE t.tgrelid='public.vpn_awg_peer_allocations'::regclass
+         AND t.tgname='vpn_awg_address_immutability' AND NOT t.tgisinternal),
+      has_any_column_privilege('mnebyvpn_awg_delivery',
+        'public.vpn_awg_node_pools','UPDATE')::text;
+"""
+    result=call("docker","exec","mnebyvpn-stage-postgres","psql","-X","-q",
+             "-A","-t","-v","ON_ERROR_STOP=1","-U","mnebyvpn_stage",
+             "-d","mnebyvpn_stage","-c",sql)
+    parts=result.split("|")
+    if (len(parts)!=4 or parts[0] not in ("INVOKER","DEFINER") or
+        parts[1] not in ("YES","NO") or parts[2]!="PRESENT" or
+        parts[3] not in ("true","false","t","f")):
+        raise ValueError("untrusted trigger metadata")
+    return {"LOCK_EXECUTION":parts[0],"POOL_FOR_SHARE":parts[1],
+            "TRIGGER":parts[2],"DELIVERY_POOL_UPDATE":(
+              "true" if parts[3] in ("true","t") else "false")}
+
+
 def worker_journal_markers()->dict[str,str]:
     run=subprocess.run(["journalctl","-u","mnebyvpn-awg-delivery.service",
         "--since","-20 minutes","--no-pager","--output","cat"],
@@ -229,6 +264,8 @@ def main()->int:
             print("FI_AWG_SUB_ROLE_"+key+"="+value)
         for key,value in staging_diagnostics().items():
             print("FI_AWG_SUB_STAGE_"+key+"="+value)
+        for key,value in trigger_owner_diagnostics().items():
+            print("FI_AWG_SUB_TRIGGER_"+key+"="+value)
         for key,count in worker_journal_markers().items():
             print("FI_AWG_SUB_LOG_"+key+"="+str(count))
         print("FI_AWG_SUB_INVENTORY=READONLY_COMPLETE")
