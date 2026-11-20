@@ -70,11 +70,13 @@ def gate_checks() -> None:
         check=False, timeout=10,
     )
     reject(systemd.returncode != 0, "awg_worker_active")
-    enabled = subprocess.run(
-        ["systemctl", "is-enabled", "--quiet", UNIT],
-        check=False, timeout=10,
-    )
-    reject(enabled.returncode != 0, "awg_worker_enabled")
+    # systemctl is-enabled exits zero for static units too.
+    # Existing canonical FI AWG guard explicitly permits static or
+    # disabled unit states, not enabled. Match that contract exactly.
+    file_state = command("systemctl", "show", "-P", "UnitFileState", UNIT)
+    reject(file_state in ("disabled", "static"), "awg_worker_not_dormant_static_or_disabled")
+    active_state = command("systemctl", "show", "-P", "ActiveState", UNIT)
+    reject(active_state == "inactive", "awg_worker_active_state_not_inactive")
     effective = command("systemctl", "show", "-P", "WorkingDirectory", UNIT)
     reject(effective == OLD_RELEASE, "awg_worker_unit_not_pinned_old_inactive")
     reject(not (Path(NEW_RELEASE) / "awg-client-worker-manifest.json").exists(),

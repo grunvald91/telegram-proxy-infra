@@ -37,7 +37,9 @@ class StaleStageTests(unittest.TestCase):
         for required in (
             "REQUIRED_STAGE_COUNT = 2", "MIN_AGE_SECONDS = 300",
             "os.geteuid() == 0", "not APPROVAL.exists()",
-            "systemctl", "is-active", "is-enabled",
+            "systemctl", "is-active", "UnitFileState", "ActiveState",
+            'file_state in ("disabled", "static")',
+            'active_state == "inactive"',
             "WorkingDirectory", "OLD_RELEASE",
             "vpn_awg_clients","state == \"false\"",
             "new_release_already_published",
