@@ -23,6 +23,22 @@ jobs:
         run: |
           set -Eeuo pipefail
           python3 -m py_compile nodekit/fi_awg_subscription_runtime_inventory.py
+          python3 - <<'PY'
+          import ast
+          from pathlib import Path
+          source=Path('nodekit/fi_awg_subscription_runtime_inventory.py').read_text()
+          tree=ast.parse(source)
+          functions=[node.name for node in tree.body if isinstance(node,ast.FunctionDef)]
+          assert functions.count('main')==1 and functions.count('db_status')==1
+          assert functions.count('keys')==1 and functions.count('call')==1
+          query=[n.value for n in ast.walk(tree) if isinstance(n,ast.Constant) and
+                 isinstance(n.value,str) and
+                 'public.vpn_awg_peer_allocations a' in n.value]
+          assert len(query)==1 and 'public.vpn_awg_device_requests' in query[0]
+          assert 'FI_AWG_SUB_INVENTORY=READONLY_COMPLETE' in source
+          assert 'FI_AWG_SUB_SEED_MATCH=' in source
+          assert 'FI_AWG_SUB_WORKER_SOURCE=' in source
+          PY
           ! grep -En 'systemctl (restart|start|stop)|docker (rm|run|stop)|UPDATE public\.|INSERT INTO|DELETE FROM|PRIVATE KEY|AWG_INCY_SUBSCRIPTION_SEED=' nodekit/fi_awg_subscription_runtime_inventory.py
   inspect:
     needs: offline
