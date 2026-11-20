@@ -1,0 +1,136 @@
+name: FI217 website-to-RU188 AWG device request queue schema (worker OFF)
+"on":
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/fi-awg-device-queue-stage.yml
+      - nodekit/fi_awg_device_queue_stage.py
+      - nodekit/tests/test_fi_awg_device_queue_stage.py
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/fi-awg-device-queue-stage.yml
+      - nodekit/fi_awg_device_queue_stage.py
+      - nodekit/tests/test_fi_awg_device_queue_stage.py
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ru188-awg-gateway-schema-stage
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          path: infra
+      - uses: actions/checkout@v4
+        with:
+          repository: grunvald91/Mnebyvpn
+          ref: 80abe4e7adc26f452d06974f6b5eb0bcbe46c922
+          persist-credentials: false
+          path: reviewed
+      - name: Verify immutable application commit, queue SQL and fail-closed stage
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(git -C reviewed rev-parse HEAD)" = 80abe4e7adc26f452d06974f6b5eb0bcbe46c922
+          python3 -m py_compile infra/nodekit/fi_awg_device_queue_stage.py
+          python3 -m unittest discover -s infra/nodekit/tests \
+            -p 'test_fi_awg_device_queue_stage.py' -v
+          python3 - <<'PY'
+          import hashlib,sys
+          from pathlib import Path
+          sys.path.insert(0,'infra/nodekit')
+          import fi_awg_device_queue_stage as stage
+          raw=(Path('reviewed/db/migrations')/stage.FILENAME).read_bytes()
+          digest=hashlib.sha1(
+              b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest()
+          assert digest==stage.BLOB
+          assert stage.COMMIT=='80abe4e7adc26f452d06974f6b5eb0bcbe46c922'
+          print('FI_AWG_DEVICE_QUEUE_SOURCE=PINNED;SERVER_CONNECTED=false')
+          PY
+  ru188-schema:
+    needs: offline
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: node-fi
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          path: infra
+      - uses: actions/checkout@v4
+        with:
+          repository: grunvald91/Mnebyvpn
+          ref: 80abe4e7adc26f452d06974f6b5eb0bcbe46c922
+          persist-credentials: false
+          path: reviewed
+      - name: Install temporary password-only, pinned-host SSH client
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y --no-install-recommends sshpass >/dev/null
+      - name: Deploy only FI public-key enrollment schema to dormant RU188
+        shell: bash
+        env:
+          RU_SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          [[ -n "$RU_SSH_PASSWORD" ]] || exit 2
+          test "$(git -C reviewed rev-parse HEAD)" = 80abe4e7adc26f452d06974f6b5eb0bcbe46c922
+          grep -q '^188\.120\.254\.223 ssh-ed25519 ' infra/ops/mnebydns-owner-ssh-known_hosts
+          work="$RUNNER_TEMP/fi-awg-queue-schema"
+          mkdir -m 0700 "$work"
+          cat > "$work/config" <<CFG
+          Host ru-controller
+            HostName 188.120.254.223
+            User root
+            UserKnownHostsFile $GITHUB_WORKSPACE/infra/ops/mnebydns-owner-ssh-known_hosts
+            GlobalKnownHostsFile /dev/null
+            HostKeyAlgorithms ssh-ed25519
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+            BatchMode no
+            PasswordAuthentication yes
+            PubkeyAuthentication no
+            KbdInteractiveAuthentication no
+            ForwardAgent no
+            ClearAllForwardings yes
+            ControlMaster no
+            ProxyCommand none
+            ConnectTimeout 12
+            ServerAliveInterval 10
+            ServerAliveCountMax 3
+            LogLevel ERROR
+          CFG
+          export SSHPASS="$RU_SSH_PASSWORD"
+          remote(){ sshpass -e ssh -T -F "$work/config" ru-controller "$@"; }
+          stage=''
+          cleanup(){
+            set +e
+            if [[ "$stage" =~ ^/run/fi-awg-device-queue\.[A-Za-z0-9]{8}$ ]]; then
+              remote "rm -rf -- '$stage'" >/dev/null 2>&1
+            fi
+            rm -rf -- "$work"
+          }
+          trap cleanup EXIT
+          stage=$(remote 'umask 077; mktemp -d /run/fi-awg-device-queue.XXXXXXXX')
+          [[ "$stage" =~ ^/run/fi-awg-device-queue\.[A-Za-z0-9]{8}$ ]] || exit 2
+          sshpass -e scp -F "$work/config" \
+            infra/nodekit/fi_awg_device_queue_stage.py \
+            infra/nodekit/fi_awg_delivery_db_stage.py \
+            reviewed/db/migrations/0136_awg_device_enrollment_queue.sql \
+            "ru-controller:$stage/"
+          first=$(remote "chmod 0600 '$stage/'*; python3 '$stage/fi_awg_device_queue_stage.py' --stage '$stage'")
+          [[ "$first" == 'FI_AWG_DEVICE_QUEUE=INSTALLED;SITE_ROLE=RPC_ONLY;WORKER_ROLE=SCOPED;WORKER_ACTIVE=false;CUSTOMER_RELEASE=false;REAL_PEERS_MODIFIED=false' || \
+             "$first" == 'FI_AWG_DEVICE_QUEUE=ALREADY_PRESENT;SITE_ROLE=RPC_ONLY;WORKER_ROLE=SCOPED;WORKER_ACTIVE=false;CUSTOMER_RELEASE=false;REAL_PEERS_MODIFIED=false' ]] || exit 2
+          second=$(remote "python3 '$stage/fi_awg_device_queue_stage.py' --stage '$stage'")
+          [[ "$second" == 'FI_AWG_DEVICE_QUEUE=ALREADY_PRESENT;SITE_ROLE=RPC_ONLY;WORKER_ROLE=SCOPED;WORKER_ACTIVE=false;CUSTOMER_RELEASE=false;REAL_PEERS_MODIFIED=false' ]] || exit 2
+          echo 'FI_AWG_DEVICE_QUEUE=VERIFIED;SCHEMA_MIGRATION=true;REPEATABLE=true;WORKER_ACTIVE=false;CUSTOMER_RELEASE=false'
