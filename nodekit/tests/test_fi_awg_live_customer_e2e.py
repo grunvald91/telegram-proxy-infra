@@ -75,6 +75,53 @@ class ProductionCanaryTests(unittest.TestCase):
         self.assertEqual(set(recorded[0]["grants"]),{paid_id})
         runtime.assert_called_once()
 
+
+    def test_old_revoked_synthetic_slot_can_be_retired_without_customer_changes(self):
+        import contextlib
+        import datetime as dt
+        import os
+        import time
+        from types import SimpleNamespace
+        import awg_peer_grants as grants
+        with tempfile.TemporaryDirectory() as t:
+            root=Path(t)
+            path=root/"amneziawg/peer-grants.json"
+            path.parent.mkdir()
+            a="11111111-2222-4333-8444-555555555555"
+            b="22222222-3333-4444-8555-666666666666"
+            material={
+                "schema_version":1,"node_id":m.NODE,
+                "grants":{
+                    a:{"revision":2,"peerPublicKey":"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
+                       "clientIpv4":m.CLIENT_IP,"expiresAt":None,"enabled":False},
+                    b:{"revision":1,"peerPublicKey":"AgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4fICE=",
+                       "clientIpv4":"10.73.91.2",
+                       "expiresAt":(dt.datetime.now(dt.timezone.utc)+dt.timedelta(minutes=5))
+                                  .isoformat(timespec="milliseconds").replace("+00:00","Z"),
+                       "enabled":True}
+                }
+            }
+            path.write_text(json.dumps(material))
+            old=time.time()-130
+            os.utime(path,(old,old))
+            saved=[]
+            with patch.object(m,"FI",root),\
+                 patch.object(m.trust,"is_host",return_value=True),\
+                 patch.object(m.subprocess,"run",return_value=SimpleNamespace(returncode=0)),\
+                 patch.object(grants,"LedgerLock",side_effect=lambda node:contextlib.nullcontext()),\
+                 patch.object(grants,"protected_file",side_effect=lambda fp:fp.read_bytes()),\
+                 patch.object(grants,"persist_state",side_effect=lambda fp,data:saved.append(data)),\
+                 patch.object(grants,"assert_runtime_peers") as runtime:
+                self.assertEqual(m.prune_stale_on_fi(),"PRUNED")
+                self.assertEqual(len(saved),1)
+                self.assertEqual(set(saved[0]["grants"]),{b})
+                runtime.assert_called_once()
+                # Revocation just written: replay window is not yet over.
+                os.utime(path,None)
+                with self.assertRaises(m.Blocked):
+                    m.prune_stale_on_fi()
+            self.assertEqual(set(material["grants"]),{a,b})
+
     def test_wrong_or_unsigned_node_receipt_rejected(self):
         cmd={"nodeId":m.NODE,"op":"grant",
              "entitlementId":"11111111-2222-4333-8444-555555555555",
