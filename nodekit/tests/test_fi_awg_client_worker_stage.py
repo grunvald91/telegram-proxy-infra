@@ -51,6 +51,9 @@ class ImmutableReleaseContract(unittest.TestCase):
         self.assertIn("fi_client_worker_source_lock_busy",locked)
         workflow=(NODEKIT.parent/".github/workflows/fi-awg-client-worker-stage.yml").read_text()
         self.assertEqual(workflow.count("timeout --signal=TERM --kill-after=10s 180s"),2)
+        self.assertIn("FI_AWG_SOURCE_LOCK=FREE",workflow)
+        self.assertIn("flock -n -E 77",workflow)
+        self.assertIn('[[ "$lock_state" == FREE ]]',workflow)
         self.assertIn("cutover.verified_new_effective_unit(",source)
 
     def test_no_existing_candidate_mutation(self):
