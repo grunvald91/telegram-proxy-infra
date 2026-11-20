@@ -1,0 +1,231 @@
+name: FI217 real signed SSH APPLIED ACK with disposable RU188 PostgreSQL
+"on":
+  pull_request:
+    paths:
+      - .github/workflows/fi-awg-real-db-ssh-e2e.yml
+      - nodekit/fi_awg_e2e_disposable_postgres.py
+      - nodekit/fi_awg_e2e_fi_guard.py
+      - nodekit/fi_awg_real_db_ssh_e2e.mjs
+      - nodekit/tests/test_fi_awg_real_db_ssh_e2e.py
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/fi-awg-real-db-ssh-e2e.yml
+      - nodekit/fi_awg_e2e_disposable_postgres.py
+      - nodekit/fi_awg_e2e_fi_guard.py
+      - nodekit/fi_awg_real_db_ssh_e2e.mjs
+      - nodekit/tests/test_fi_awg_real_db_ssh_e2e.py
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ru188-awg-gateway-schema-stage
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          path: infra
+      - uses: actions/checkout@v4
+        with:
+          repository: grunvald91/Mnebyvpn
+          ref: 6743387075102698ab23ec06de364d0d8efd1dca
+          persist-credentials: false
+          path: pinned-controller
+      - name: Test real signed DB-and-node harness without any SSH
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(git -C pinned-controller rev-parse HEAD)" = 6743387075102698ab23ec06de364d0d8efd1dca
+          python3 -m py_compile infra/nodekit/fi_awg_e2e_disposable_postgres.py \
+            infra/nodekit/fi_awg_e2e_fi_guard.py
+          python3 -m unittest discover -s infra/nodekit/tests \
+            -p 'test_fi_awg_real_db_ssh_e2e.py' -v
+          node --check infra/nodekit/fi_awg_real_db_ssh_e2e.mjs
+          test -s pinned-controller/db/migrations/0135_awg_worker_row_lock_gateway.sql
+          test -s pinned-controller/db/migrations/0133_vpn_awg_command_outbox.sql
+          test -s pinned-controller/db/migrations/0131_vpn_awg_peer_allocations.sql
+  real-disposable:
+    needs: offline
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: node-fi
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          path: infra
+      - uses: actions/checkout@v4
+        with:
+          repository: grunvald91/Mnebyvpn
+          ref: 6743387075102698ab23ec06de364d0d8efd1dca
+          persist-credentials: false
+          path: pinned-controller
+      - name: Install existing pinned-host password SSH transport
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y --no-install-recommends sshpass >/dev/null
+      - name: Apply and revoke ONE unconnectable FI217 peer through actual outbox and signed ACK
+        shell: bash
+        env:
+          RU_SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+          FI_SSH_PASSWORD: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_PASSWORD }}
+          FI_SSH_USER: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_USER }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          [[ -n "$RU_SSH_PASSWORD" && -n "$FI_SSH_PASSWORD" && "$FI_SSH_USER" == root ]] || exit 2
+          test "$(git -C pinned-controller rev-parse HEAD)" = 6743387075102698ab23ec06de364d0d8efd1dca
+          work="$RUNNER_TEMP/fi-awg-real-db-ssh"
+          mkdir -m 0700 "$work"
+          grep -q '^188\.120\.254\.223 ssh-ed25519 ' infra/ops/mnebydns-owner-ssh-known_hosts
+          cat > "$work/ru.cfg" <<CFG
+          Host ru-controller
+            HostName 188.120.254.223
+            User root
+            UserKnownHostsFile $GITHUB_WORKSPACE/infra/ops/mnebydns-owner-ssh-known_hosts
+            GlobalKnownHostsFile /dev/null
+            HostKeyAlgorithms ssh-ed25519
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+            BatchMode no
+            PasswordAuthentication yes
+            PubkeyAuthentication no
+            KbdInteractiveAuthentication no
+            ForwardAgent no
+            ClearAllForwardings yes
+            ControlMaster no
+            ProxyCommand none
+            ConnectTimeout 12
+            ServerAliveInterval 10
+            ServerAliveCountMax 3
+            LogLevel ERROR
+          CFG
+          export SSHPASS="$RU_SSH_PASSWORD"
+          ru(){ SSHPASS="$RU_SSH_PASSWORD" sshpass -e ssh -T -F "$work/ru.cfg" ru-controller "$@"; }
+          ru_dir=""
+          fi_dir=""
+          db_attempted=false
+          fi_attempted=false
+          cleanup(){
+            set +e
+            if [[ "$fi_attempted" == true && "$fi_dir" =~ ^/run/fi-awg-real-e2e\.[A-Za-z0-9]{8}$ ]]; then
+              SSHPASS="$FI_SSH_PASSWORD" sshpass -e ssh -T -F "$work/fi.cfg" fi-node \
+                "python3 '$fi_dir/fi_awg_e2e_fi_guard.py' --mode cleanup --signed '$fi_dir/signed.json'" >/dev/null 2>&1 || true
+            fi
+            if [[ "$db_attempted" == true && "$ru_dir" =~ ^/run/fi-awg-real-e2e\.[A-Za-z0-9]{8}$ ]]; then
+              ru "python3 '$ru_dir/fi_awg_e2e_disposable_postgres.py' --mode stop --stage '$ru_dir'" >/dev/null 2>&1 || true
+            fi
+            if [[ "$fi_dir" =~ ^/run/fi-awg-real-e2e\.[A-Za-z0-9]{8}$ ]]; then
+              SSHPASS="$FI_SSH_PASSWORD" sshpass -e ssh -T -F "$work/fi.cfg" fi-node \
+                "rm -rf -- '$fi_dir'" >/dev/null 2>&1 || true
+            fi
+            if [[ "$ru_dir" =~ ^/run/fi-awg-real-e2e\.[A-Za-z0-9]{8}$ ]]; then
+              ru "rm -rf -- '$ru_dir'" >/dev/null 2>&1 || true
+            fi
+            rm -rf -- "$work"
+          }
+          trap cleanup EXIT
+          ru 'cat /root/mnebyvpn-controller/fi-known_hosts' > "$work/fi-known"
+          [[ $(wc -l < "$work/fi-known") == 1 ]] || exit 2
+          grep -Eq '^fi\.mnebyvpn\.site ssh-ed25519 [A-Za-z0-9+/]+={0,2}$' "$work/fi-known"
+          cat > "$work/fi.cfg" <<CFG
+          Host fi-node
+            HostName 217.11.167.91
+            User root
+            UserKnownHostsFile $work/fi-known
+            HostKeyAlias fi.mnebyvpn.site
+            GlobalKnownHostsFile /dev/null
+            HostKeyAlgorithms ssh-ed25519
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+            BatchMode no
+            PasswordAuthentication yes
+            PubkeyAuthentication no
+            KbdInteractiveAuthentication no
+            ForwardAgent no
+            ClearAllForwardings yes
+            ControlMaster no
+            ProxyCommand none
+            ConnectTimeout 12
+            ServerAliveInterval 10
+            ServerAliveCountMax 3
+            LogLevel ERROR
+          CFG
+          fi(){ SSHPASS="$FI_SSH_PASSWORD" sshpass -e ssh -T -F "$work/fi.cfg" fi-node "$@"; }
+          # Refuse to interfere with an existing FI test, live peer or timer.
+          fi 'set -eu; ! systemctl is-active --quiet mnebyvpn-nodekit-awg@fi-test-01.service; ! systemctl is-active --quiet mnebyvpn-nodekit-awg-watchdog@fi-test-01.service; test ! -e /sys/class/net/awg0'
+          ru_dir=$(ru 'umask 077; mktemp -d /run/fi-awg-real-e2e.XXXXXXXX')
+          fi_dir=$(fi 'umask 077; mktemp -d /run/fi-awg-real-e2e.XXXXXXXX')
+          [[ "$ru_dir" =~ ^/run/fi-awg-real-e2e\.[A-Za-z0-9]{8}$ ]] || exit 2
+          [[ "$fi_dir" =~ ^/run/fi-awg-real-e2e\.[A-Za-z0-9]{8}$ ]] || exit 2
+          sshpass -e scp -F "$work/ru.cfg" \
+            infra/nodekit/fi_awg_e2e_disposable_postgres.py \
+            infra/nodekit/fi_awg_real_db_ssh_e2e.mjs \
+            infra/nodekit/fi_awg_worker_systemd_cutover.py \
+            infra/nodekit/fi_awg_worker_candidate_stage.py \
+            infra/nodekit/fi_awg_worker_candidate_runtime.py \
+            infra/nodekit/fi_awg_worker_source_stage.py \
+            infra/nodekit/fi_awg_worker_isolated_source_stage.py \
+            infra/nodekit/fi_awg_worker_isolated_systemd_stage.py \
+            infra/nodekit/fi_awg_worker_isolated_runtime_preflight.py \
+            infra/nodekit/fi_awg_worker_isolated_pg_stage.py \
+            "ru-controller:$ru_dir/"
+          tar -C pinned-controller -cf "$work/migrations.tar" db/migrations
+          sshpass -e scp -F "$work/ru.cfg" "$work/migrations.tar" "ru-controller:$ru_dir/"
+          ru "chmod 0600 '$ru_dir/'*; tar -xf '$ru_dir/migrations.tar' -C '$ru_dir'"
+          db_attempted=true
+          ru "python3 '$ru_dir/fi_awg_e2e_disposable_postgres.py' --mode start --stage '$ru_dir'"
+          ru "python3 '$ru_dir/fi_awg_e2e_disposable_postgres.py' --mode migrate --stage '$ru_dir'"
+          # Fresh real RU188 Ed25519 signatures only after DB is ready.
+          ru 'python3 - --mode issue' < infra/nodekit/fi_awg_signed_canary.py > "$work/signed.json"
+          chmod 0600 "$work/signed.json"
+          python3 - "$work/signed.json" <<'PY'
+          import json,sys
+          data=json.load(open(sys.argv[1]))
+          assert data['grant']['clientIpv4']=='10.73.91.254'
+          assert data['grant']['revision']==1 and data['revoke']['revision']==2
+          assert data['grant']['op']=='grant' and data['revoke']['op']=='revoke'
+          PY
+          SSHPASS="$RU_SSH_PASSWORD" sshpass -e scp -F "$work/ru.cfg" \
+            "$work/signed.json" "ru-controller:$ru_dir/"
+          SSHPASS="$FI_SSH_PASSWORD" sshpass -e scp -F "$work/fi.cfg" \
+            infra/nodekit/fi_awg_e2e_fi_guard.py \
+            infra/nodekit/fi_awg_applied_disposable_canary.py \
+            infra/nodekit/fi_awg_signed_canary.py \
+            infra/nodekit/awg_peer_grants.py \
+            infra/nodekit/awg_lifecycle.py \
+            infra/nodekit/install_awg_watchdog.py \
+            infra/nodekit/install_components.py \
+            "$work/signed.json" "fi-node:$fi_dir/"
+          fi_attempted=true
+          fi "chmod 0600 '$fi_dir/'*; python3 '$fi_dir/fi_awg_e2e_fi_guard.py' --mode prepare --signed '$fi_dir/signed.json'"
+          # ACTUAL production delivery code, actual RU->FI Ed25519 SSH, and
+          # authenticated node receipt persisted to a local disposable DB.
+          report=$(ru "/opt/mnebyvpn-controller/current/bin/node --experimental-strip-types '$ru_dir/fi_awg_real_db_ssh_e2e.mjs' '$ru_dir'")
+          export FI_AWG_REAL_REPORT="$report"
+          python3 - <<'PY'
+          import os
+          rows=os.environ['FI_AWG_REAL_REPORT'].splitlines()
+          assert rows==[
+            'FI_AWG_E2E=SIGNED_GRANT_IN_DISPOSABLE_OUTBOX',
+            'FI_AWG_E2E=REAL_FI_SIGNED_GRANT_ACK_PERSISTED',
+            'FI_AWG_E2E=REAL_FI_SIGNED_REVOKE_ACK_PERSISTED',
+            ('FI_AWG_E2E=GRANT_ACK_REVOKE_ACK;ACK_COUNT=2;REAL_FI_SSH=true;'
+             'REAL_FI_PEER=true;CUSTOMER_RELEASE=false;DATABASE=DISPOSABLE')
+          ],rows
+          PY
+          fi "python3 '$fi_dir/fi_awg_e2e_fi_guard.py' --mode cleanup --signed '$fi_dir/signed.json'"
+          fi_attempted=false
+          fi 'set -eu; ! systemctl is-active --quiet mnebyvpn-nodekit-awg@fi-test-01.service; ! systemctl is-active --quiet mnebyvpn-nodekit-awg-watchdog@fi-test-01.service; test ! -e /sys/class/net/awg0'
+          ru "python3 '$ru_dir/fi_awg_e2e_disposable_postgres.py' --mode stop --stage '$ru_dir'"
+          db_attempted=false
+          ru 'set -eu; ! systemctl is-active --quiet mnebyvpn-awg-delivery.service'
+          echo 'FI_AWG_FULL_E2E=PASS;GRANT_ACK=REAL_SIGNED;REVOKE_ACK=REAL_SIGNED;DB=DISPOSABLE_REMOVED;FI_PEERS=0;CUSTOMER_RELEASE=false'
