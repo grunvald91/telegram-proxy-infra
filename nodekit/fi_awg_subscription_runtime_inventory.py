@@ -92,6 +92,44 @@ def db_status()->dict[str,str]:
     return counts
 
 
+def queue_role_diagnostics()->dict[str,str]:
+    sql="""SELECT
+ has_table_privilege('mnebyvpn_awg_delivery','public.entitlements','SELECT')::text,
+ has_table_privilege('mnebyvpn_awg_delivery','public.provisioning_state','SELECT')::text,
+ has_table_privilege('mnebyvpn_awg_delivery','public.vpn_awg_device_requests','SELECT')::text,
+ has_table_privilege('mnebyvpn_awg_delivery','public.vpn_awg_peer_allocations','SELECT')::text,
+ has_table_privilege('mnebyvpn_awg_delivery','public.vpn_release_flags','SELECT')::text,
+ has_table_privilege('mnebyvpn_awg_delivery','public.vpn_awg_node_pools','SELECT')::text,
+ has_table_privilege('mnebyvpn_awg_delivery','public.vpn_node_enrollment_inventory','SELECT')::text,
+ has_function_privilege('mnebyvpn_awg_delivery',
+ 'public.awg_controller_enqueue_fi_subscription(uuid,text,bigint)','EXECUTE')::text;
+"""
+    raw=call("docker","exec","mnebyvpn-stage-postgres","psql","-X","-q",
+             "-A","-t","-v","ON_ERROR_STOP=1","-U","mnebyvpn_stage",
+             "-d","mnebyvpn_stage","-c",sql)
+    flags=raw.split("|")
+    if len(flags)!=8 or any(value not in ("true","false","t","f") for value in flags):
+        raise ValueError("invalid scoped worker permission probe")
+    names=("ENTITLEMENTS_SELECT","PROVISIONING_SELECT","QUEUE_SELECT",
+           "ALLOCATIONS_SELECT","RELEASE_SELECT","POOL_SELECT",
+           "ENROLLMENT_SELECT","FI_ENQUEUE_EXECUTE")
+    return {name:("true" if value in ("true","t") else "false")
+            for name,value in zip(names,flags)}
+
+
+def worker_journal_markers()->dict[str,str]:
+    run=subprocess.run(["journalctl","-u","mnebyvpn-awg-delivery.service",
+        "--since","-20 minutes","--no-pager","--output","cat"],
+        stdin=subprocess.DEVNULL,capture_output=True,check=True,text=True,timeout=10)
+    if len(run.stdout)>1500000:
+        raise ValueError("worker journal is unbounded")
+    labels=("FI_AWG_SUBSCRIPTION_ENROLLMENT_RETRY",
+            "FI_AWG_SUBSCRIPTION_ENROLLMENT_QUEUED",
+            "FI_AWG_DEVICE_QUEUE_RETRY",
+            "AWG_DELIVERY_ACKNOWLEDGED")
+    return {label:min(999,run.stdout.count(label)) for label in labels}
+
+
 def main()->int:
     try:
         if (os.geteuid()!=0 or
@@ -125,6 +163,10 @@ def main()->int:
             "true" if present and hmac.compare_digest(seed_public,seed_worker) else "false"))
         for key,value in db_status().items():
             print("FI_AWG_SUB_"+key+"="+value)
+        for key,value in queue_role_diagnostics().items():
+            print("FI_AWG_SUB_ROLE_"+key+"="+value)
+        for key,count in worker_journal_markers().items():
+            print("FI_AWG_SUB_LOG_"+key+"="+str(count))
         print("FI_AWG_SUB_INVENTORY=READONLY_COMPLETE")
         return 0
     except (OSError,ValueError,TypeError,UnicodeError,subprocess.SubprocessError):
