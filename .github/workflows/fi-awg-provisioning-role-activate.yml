@@ -1,0 +1,145 @@
+name: RU188 FI217 AWG subscriptions - scoped provisioning read permission
+"on":
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/fi-awg-provisioning-role-activate.yml
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/fi-awg-provisioning-role-activate.yml
+  workflow_dispatch:
+permissions: {contents: read}
+concurrency:
+  group: mnebyvpn-fleet-fi
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/checkout@v4
+        with:
+          repository: grunvald91/Mnebyvpn
+          ref: 0aa1fa880c278c65a3e007ade3ea80a94f67c226
+          path: mnebyvpn
+          persist-credentials: false
+      - name: Verify exact least-privilege SQL blob at reviewed main commit
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(git -C mnebyvpn rev-parse HEAD)" = 0aa1fa880c278c65a3e007ade3ea80a94f67c226
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          path=Path('mnebyvpn/db/migrations/0138_awg_worker_provisioning_read.sql')
+          raw=path.read_bytes()
+          pin=hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest()
+          assert pin=='ba4ec98818b274c6d0cf12455be1d40f5405c8b5'
+          sql=raw.decode()
+          assert 'GRANT SELECT (entitlement_id,adapter,applied_revision,last_observed_at)' in sql
+          assert 'ON TABLE public.provisioning_state' in sql
+          assert 'TO mnebyvpn_awg_delivery' in sql
+          assert 'COMMIT;' in sql and 'BEGIN;' in sql
+          print('FI_AWG_ROLE_MIGRATION=SOURCE_PINNED')
+          PY
+  ru188-live:
+    needs: offline
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    environment: node-fi
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/checkout@v4
+        with:
+          repository: grunvald91/Mnebyvpn
+          ref: 0aa1fa880c278c65a3e007ade3ea80a94f67c226
+          path: mnebyvpn
+          persist-credentials: false
+      - name: Install pinned SSH transport
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y --no-install-recommends sshpass >/dev/null
+      - name: Grant only four provisioning read columns and inspect automatic FI enrollment
+        env:
+          RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          test -n "$RU_PASSWORD"
+          test "$(git -C mnebyvpn rev-parse HEAD)" = 0aa1fa880c278c65a3e007ade3ea80a94f67c226
+          grep -q '^188\.120\.254\.223 ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts
+          work="$RUNNER_TEMP/fi-awg-provisioning-role"
+          mkdir -m 0700 "$work"
+          trap 'rm -rf -- "$work"' EXIT
+          cat > "$work/ru.cfg" <<CFG
+          Host ru-controller
+            HostName 188.120.254.223
+            User root
+            UserKnownHostsFile $GITHUB_WORKSPACE/ops/mnebydns-owner-ssh-known_hosts
+            GlobalKnownHostsFile /dev/null
+            HostKeyAlgorithms ssh-ed25519
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+            BatchMode no
+            PasswordAuthentication yes
+            PubkeyAuthentication no
+            KbdInteractiveAuthentication no
+            ForwardAgent no
+            ClearAllForwardings yes
+            ControlMaster no
+            ProxyCommand none
+            ConnectTimeout 12
+            ServerAliveInterval 10
+            ServerAliveCountMax 3
+            LogLevel ERROR
+          CFG
+          remote(){
+            SSHPASS="$RU_PASSWORD" sshpass -e ssh -T -F "$work/ru.cfg" ru-controller "$@"
+          }
+          remote 'test "$(id -u)" = 0 &&
+            ip -o -4 addr show | grep -Fq "188.120.254.223/" &&
+            systemctl is-active --quiet mnebyvpn-awg-delivery.service &&
+            docker inspect -f "{{.State.Running}}" mnebyvpn-public-web | grep -qx true'
+          # Only this independently pinned 0138 migration is sent to the
+          # canonical RU188 DB owner. No account or peer data is modified.
+          remote 'docker exec -i mnebyvpn-stage-postgres psql -X -q -A -t -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage' < mnebyvpn/db/migrations/0138_awg_worker_provisioning_read.sql > "$work/migration.out"
+          cat > "$work/verify.sql" <<'SQL'
+          SELECT CASE WHEN
+            has_column_privilege('mnebyvpn_awg_delivery','public.provisioning_state','entitlement_id','SELECT')
+            AND has_column_privilege('mnebyvpn_awg_delivery','public.provisioning_state','adapter','SELECT')
+            AND has_column_privilege('mnebyvpn_awg_delivery','public.provisioning_state','applied_revision','SELECT')
+            AND has_column_privilege('mnebyvpn_awg_delivery','public.provisioning_state','last_observed_at','SELECT')
+            AND NOT has_table_privilege('mnebyvpn_awg_delivery','public.provisioning_state','UPDATE')
+            AND NOT has_table_privilege('mnebyvpn_awg_delivery','public.provisioning_state','DELETE')
+            AND NOT has_table_privilege('mnebyvpn_awg_delivery','public.provisioning_state','INSERT')
+            THEN 'FI_AWG_RU188_PROVISIONING_ROLE=VERIFIED;SELECT_COLUMNS=4;WRITE_ACCESS=false'
+            ELSE 'FI_AWG_RU188_PROVISIONING_ROLE=BLOCKED' END;
+          SQL
+          result=$(remote 'docker exec -i mnebyvpn-stage-postgres psql -X -q -A -t -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage' < "$work/verify.sql")
+          test "$result" = 'FI_AWG_RU188_PROVISIONING_ROLE=VERIFIED;SELECT_COLUMNS=4;WRITE_ACCESS=false'
+          echo "$result"
+          # Existing worker polls about once/minute. Read only aggregate
+          # counts until the native FI request queue receives at least one
+          # real entitlement, or fail the action with no invented success.
+          cat > "$work/queue.sql" <<'SQL'
+          SELECT count(*)::text FROM public.vpn_awg_device_requests WHERE node_id='fi-test-01';
+          SQL
+          count=0
+          for try in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            count=$(remote 'docker exec -i mnebyvpn-stage-postgres psql -X -q -A -t -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage' < "$work/queue.sql")
+            [[ "$count" =~ ^[0-9]+$ ]] || exit 2
+            if (( count >= 1 ));then
+              echo 'FI_AWG_SUBSCRIPTIONS_AUTO_ENQUEUED=true'
+              break
+            fi
+            sleep 12
+          done
+          (( count >= 1 )) || { echo 'FI_AWG_SUBSCRIPTIONS_AUTO_ENQUEUED=false'; exit 2; }
