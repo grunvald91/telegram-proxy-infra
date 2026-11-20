@@ -119,13 +119,8 @@ class ProductionCanaryTests(unittest.TestCase):
                 # Revocation just written: replay window is not yet over.
                 os.utime(path,None)
                 with self.assertRaises(m.Blocked):
-                    m.prune_stale_on_fi() if False else self._test_recent_slot(m,grants,path,material)
+                    m.prune_stale_on_fi()
             self.assertEqual(set(material["grants"]),{a,b})
-
-    @staticmethod
-    def _test_recent_slot(module,grants,path,material):
-        # Production runtime remains active but local ledger is too young.
-        module.prune_stale_on_fi()
 
     def test_wrong_or_unsigned_node_receipt_rejected(self):
         cmd={"nodeId":m.NODE,"op":"grant",
