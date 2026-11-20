@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+import stat
 import sys
+from types import SimpleNamespace
 import tempfile
 import unittest
 from unittest import mock
@@ -53,6 +55,10 @@ class InactiveSystemdCutoverTests(unittest.TestCase):
             mock.patch.object(stage.trust, "safe_directory"),
             mock.patch.object(stage.trust, "make_directory", side_effect=safe_mkdir),
             mock.patch.object(stage, "reload_definitions"),
+            # Offline runner is not root; emulate the verified root-owned lock
+            # inode without changing the production security requirement.
+            mock.patch.object(stage.os, "fstat", return_value=SimpleNamespace(
+                st_mode=stat.S_IFREG | 0o600, st_uid=0, st_nlink=1)),
         ]
         return old, new, unit, backups, patchers
 
@@ -97,21 +103,20 @@ class InactiveSystemdCutoverTests(unittest.TestCase):
                         stage.switch()
                     self.assertEqual(unit.read_bytes(), old)
                     self.assertEqual(next(backups.iterdir()).read_bytes(), old)
-                    active[-1].assert_called_exactly if False else None
-                    self.assertEqual(active[-1].call_count, 2)
+                    self.assertEqual(active[-2].call_count, 2)
                 self.run_patched(patchers, run)
 
     def test_failed_preflight_blocks_writes_and_backup(self):
         with tempfile.TemporaryDirectory() as tmp:
             old, _, unit, backups, patchers = self.prep(Path(tmp))
-            with mock.patch.object(stage.runtime, "node_checks",
-                                   side_effect=stage.trust.StageBlocked("bad source")):
-                def run(_):
-                    with self.assertRaises(stage.trust.StageBlocked):
-                        stage.switch()
-                    self.assertEqual(unit.read_bytes(), old)
-                    self.assertFalse(backups.exists())
-                self.run_patched(patchers, run)
+            def run(active):
+                # Runtime preflight is the eleventh production guard in prep().
+                active[10].side_effect = stage.trust.StageBlocked("bad source")
+                with self.assertRaises(stage.trust.StageBlocked):
+                    stage.switch()
+                self.assertEqual(unit.read_bytes(), old)
+                self.assertFalse(backups.exists())
+            self.run_patched(patchers, run)
 
     def test_effective_worker_requires_single_exact_command_and_inactive_flag(self):
         with tempfile.TemporaryDirectory() as tmp:
