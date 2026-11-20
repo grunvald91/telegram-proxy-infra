@@ -87,6 +87,9 @@ class RealDisposableE2ETests(unittest.TestCase):
             self.assertIn(required,y)
         self.assertNotIn("systemctl start mnebyvpn-awg-delivery.service",y)
         self.assertNotIn("UPDATE public.vpn_release_flags",y)
+        self.assertIn("tar --no-same-owner --no-same-permissions",y)
+        self.assertIn("chmod -R go-w",y)
+        self.assertIn("stat -c %u",y)
 
 
 if __name__=="__main__":
