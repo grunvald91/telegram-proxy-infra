@@ -49,8 +49,19 @@ def cleanup(bundle:Path) -> None:
     grant=data["grant"]
     revoke=data["revoke"]
     status=live.residual_ledger_status()
-    if status=="OTHER_ENTITLEMENTS_PRESENT" or status=="UNVERIFIED":
+    if status=="UNVERIFIED":
         live.block("db_e2e_cleanup_untrusted_ledger")
+    if status=="OTHER_ENTITLEMENTS_PRESENT":
+        # Recognize ONLY our exact signed grant, not another entitlement.
+        from awg_peer_grants import validate_state
+        state=validate_state(json.loads(signed.protected(live.LEDGER,50000)),live.NODE)
+        rows=state["grants"]
+        if (set(rows)!={grant["entitlementId"]} or
+                rows[grant["entitlementId"]]["peerPublicKey"]!=grant["peerPublicKey"] or
+                rows[grant["entitlementId"]]["clientIpv4"]!=grant["clientIpv4"] or
+                rows[grant["entitlementId"]]["revision"]!=1 or
+                rows[grant["entitlementId"]]["enabled"] is not True):
+            live.block("db_e2e_cleanup_non_synthetic_ledger")
     if status not in ("ONLY_REVOKED_DISPOSABLE","ABSENT"):
         if (live.systemd_active_state(live.UNIT)!="active" or
                 live.systemd_active_state(live.WATCHDOG)!="active"):
