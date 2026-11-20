@@ -61,10 +61,14 @@ jobs:
     runs-on: ubuntu-24.04
     environment: node-fi
     timeout-minutes: 8
+    permissions:
+      contents: read
+      statuses: write
     steps:
       - uses: actions/checkout@v4
         with: {persist-credentials: false}
       - name: SSH pinned RU188 inventory without mutations
+        id: live_inventory
         env:
           RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
         run: |
@@ -73,7 +77,7 @@ jobs:
           grep -q '^188\.120\.254\.223 ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends sshpass >/dev/null
-          SSHPASS="$RU_PASSWORD" sshpass -e ssh -T \
+          output=$(SSHPASS="$RU_PASSWORD" sshpass -e ssh -T \
             -o HostKeyAlgorithms=ssh-ed25519 \
             -o StrictHostKeyChecking=yes \
             -o UserKnownHostsFile="$GITHUB_WORKSPACE/ops/mnebydns-owner-ssh-known_hosts" \
@@ -82,4 +86,38 @@ jobs:
             -o PubkeyAuthentication=no -o KbdInteractiveAuthentication=no \
             -o ForwardAgent=no -o ClearAllForwardings=yes -o ProxyCommand=none \
             -o ConnectTimeout=12 -o LogLevel=ERROR root@188.120.254.223 \
-            python3 - < nodekit/fi_awg_subscription_runtime_inventory.py
+            python3 - < nodekit/fi_awg_subscription_runtime_inventory.py)
+          printf '%s\\n' "$output"
+          read_gate() {
+            local label="$1" value
+            value=$(printf '%s\\n' "$output" | awk -F= -v n="FI_AWG_SUB_VISIBILITY_$label" '$1==n {print $2}')
+            [[ "$value" =~ ^[0-9]+$ ]] || exit 2
+            printf '%s' "$value"
+          }
+          linked=$(read_gate ACTIVE_LINKED_ENTITLEMENTS)
+          signed=$(read_gate LINKED_SIGNED_ACKS)
+          pool=$(read_gate LINKED_ACK_POOL_VERIFIED)
+          fresh=$(read_gate LINKED_ACK_FRESH_PROOF)
+          stale=$(read_gate LINKED_ACK_STALE_PROOF)
+          echo "summary=RU188 FI217 linked=$linked ack=$signed pool=$pool fresh=$fresh stale=$stale" >> "$GITHUB_OUTPUT"
+      - name: Publish aggregate-only RU188 subscription diagnostic
+        if: ${{ always() }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SUMMARY: ${{ steps.live_inventory.outputs.summary }}
+          INSPECT_OUTCOME: ${{ steps.live_inventory.outcome }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if [[ "$INSPECT_OUTCOME" == 'success' && "$SUMMARY" == RU188* ]]; then
+            state=success
+            desc="$SUMMARY"
+          else
+            state=failure
+            desc='RU188 FI217 subscription audit unavailable; inspect workflow'
+          fi
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \\
+            -f state="$state" -f context='fi217/subscription-visibility-audit' \\
+            -f description="$desc" \\
+            -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/workflows/fi-awg-subscription-inventory.yml" >/dev/null
+
