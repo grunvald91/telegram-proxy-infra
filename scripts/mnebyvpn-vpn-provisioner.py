@@ -187,6 +187,19 @@ class Agent:
 
     def _commit(self, next_state: dict) -> None:
         previous = copy.deepcopy(self.state)
+        # Renewal and revision updates that do not change the set of enabled
+        # Xray credentials need only durable state persistence. Restarting
+        # Xray for these changes disconnects ALL existing VPN sessions.
+        # Compare enabled flags, not expiry timestamps: an expired user's
+        # transition to disabled must STILL remove their Xray access.
+        def enrolled(table: dict) -> frozenset[str]:
+            return frozenset(item['credential'] for item in table.values()
+                             if item.get('enabled'))
+        if (self.child is not None and self.child.poll() is None
+                and enrolled(previous) == enrolled(next_state)):
+            atomic_json(STATE, next_state)
+            self.state = next_state
+            return
         self._shutdown_child()
         try:
             self._rewrite(next_state)
