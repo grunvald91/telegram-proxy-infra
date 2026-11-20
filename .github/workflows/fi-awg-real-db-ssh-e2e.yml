@@ -60,7 +60,7 @@ jobs:
                   break
               body.append(line[10:] if line.startswith('          ') else '')
           assert body and 'trap cleanup EXIT' in body
-          Path('/tmp/fi-awg-real-e2e-live-parse.sh').write_text('\\n'.join(body)+'\\n')
+          Path('/tmp/fi-awg-real-e2e-live-parse.sh').write_text('\n'.join(body)+'\n')
           PY
           bash -n /tmp/fi-awg-real-e2e-live-parse.sh
           rm -f /tmp/fi-awg-real-e2e-live-parse.sh
