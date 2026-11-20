@@ -77,7 +77,7 @@ jobs:
           set -Eeuo pipefail
           sudo apt-get update -qq
           sudo apt-get install -qq -y --no-install-recommends sshpass >/dev/null
-      - name: Read-only RU188 release diagnosis (never restart worker or website)
+      - name: Guarded RU188 subscribed AWG worker and web activation with rollback
         shell: bash
         env:
           RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
@@ -138,5 +138,9 @@ jobs:
           [[ "$dir" =~ ^/run/fi-awg-subscription\.[A-Za-z0-9]{8}$ ]] || exit 2
           SSHPASS="$RU_PASSWORD" sshpass -e scp -F "$work/ru.cfg" \
             "$work/source.tgz" "ru-controller:$dir/source.tgz"
-          ru "tar -xzf '$dir/source.tgz' -C '$dir'; chmod -R go-rwx '$dir'; timeout 80s python3 '$dir/fi_awg_unified_subscription_activate.py' --mode diagnose --stage '$dir'"
-          echo 'FI_AWG_SUB_DIAG_GITHUB_ACTION=COMPLETED;ACTIVATION_PERFORMED=false'
+          ru "tar -xzf '$dir/source.tgz' -C '$dir'; chmod -R go-rwx '$dir'; timeout 210s python3 '$dir/fi_awg_unified_subscription_activate.py' --mode activate --stage '$dir'"
+          ru 'systemctl is-active --quiet mnebyvpn-awg-delivery.service &&
+              test "$(systemctl show -p WorkingDirectory --value mnebyvpn-awg-delivery.service)" = /opt/mnebyvpn-controller/awg-worker-releases/eec5b86c62b6c58bdbda8735c7e75fd9f38fd859 &&
+              docker inspect -f "{{.State.Running}}" mnebyvpn-public-web | grep -qx true &&
+              grep -qx WEB_FI_AWG_IN_SUBSCRIPTION_ENABLED=yes /opt/mnebyvpn/public/web.env'
+          echo 'FI_AWG_UNIFIED_SUBSCRIPTION_GITHUB_ACTION=VERIFIED;EXISTING_TOKEN_UNCHANGED=true;RU188=OWNER'
