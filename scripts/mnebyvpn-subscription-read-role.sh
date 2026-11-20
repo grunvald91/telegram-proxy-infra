@@ -20,8 +20,11 @@ for table in accounts entitlements provisioning_state vpn_subscription_links; do
     { echo "Required subscription table missing: $table"; exit 2; }
 done
 
-if [[ -f "$DEST" ]]; then
-  chmod 600 "$DEST"
+if [[ -e "$DEST" || -L "$DEST" ]]; then
+  # Never follow a symlink or operate on a mutable/non-root credentials file.
+  # The role password must remain unreadable to unprivileged website users.
+  [[ -f "$DEST" && ! -L "$DEST" ]] || exit 2
+  [[ "$(stat -c '%u:%a:%h' -- "$DEST")" == '0:600:1' ]] || exit 2
   if ! grep -Eq '^VPN_SUBSCRIPTION_DATABASE_URL=postgresql://mnebyvpn_sub_ro:[a-f0-9]{64}@127[.]0[.]0[.]1:55433/mnebyvpn_stage$' "$DEST"; then
     echo 'Existing subscription DB env is malformed; refusing to overwrite'
     exit 2
@@ -115,7 +118,8 @@ if [[ "$awg_present" == all ]]; then
   test "$(psql_reader "SELECT has_table_privilege('public.vpn_release_flags','UPDATE');")" = f
 fi
 
-if [[ ! -f "$DEST" ]]; then
+if [[ ! -e "$DEST" && ! -L "$DEST" ]]; then
+  [[ -d "$ROOT/public" && ! -L "$ROOT/public" ]] || exit 2
   tmp="$(mktemp "$ROOT/public/subscription-db.env.XXXXXXXX")"
   printf 'VPN_SUBSCRIPTION_DATABASE_URL=postgresql://%s:%s@127.0.0.1:55433/mnebyvpn_stage\n' \
     "$ROLE" "$PASSWORD" > "$tmp"

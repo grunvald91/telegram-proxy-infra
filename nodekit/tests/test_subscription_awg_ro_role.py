@@ -31,6 +31,15 @@ class SubscriptionRoleSecurity(unittest.TestCase):
         self.assertNotRegex(source,re.compile(r"GRANT (ALL|INSERT|UPDATE|DELETE)\b"))
         self.assertNotIn("ALTER SYSTEM",source)
 
+    def test_existing_credentials_never_follow_symlinks_or_foreign_owners(self):
+        source=SCRIPT.read_text()
+        self.assertIn('[[ -e "$DEST" || -L "$DEST" ]]',source)
+        self.assertIn('[[ -f "$DEST" && ! -L "$DEST" ]]',source)
+        self.assertIn('stat -c',source)
+        self.assertIn('0:600:1',source)
+        self.assertNotIn('chmod 600 "$DEST"',source)
+        self.assertIn('[[ -d "$ROOT/public" && ! -L "$ROOT/public" ]]',source)
+
     def test_no_customer_modification_and_safe_ssh(self):
         flow=WORKFLOW.read_text()
         self.assertIn("  pull_request:",flow)
@@ -44,6 +53,8 @@ class SubscriptionRoleSecurity(unittest.TestCase):
         self.assertNotIn("systemctl start",flow)
         self.assertNotIn("vpn_awg_clients',true",flow)
         self.assertNotIn("UPDATE public.vpn_release_flags",flow)
+        self.assertIn("ROLE_PRIVILEGES_UPDATED=true",flow)
+        self.assertNotIn("CANONICAL_DB=UNCHANGED",flow)
 
 if __name__=="__main__":
     unittest.main()
