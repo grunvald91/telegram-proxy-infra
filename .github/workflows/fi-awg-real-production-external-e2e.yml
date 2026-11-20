@@ -37,6 +37,9 @@ jobs:
           python3 -m unittest discover -s nodekit/tests -p 'test_fi_awg_production_policy.py' -v
           bash -n scripts/fi-awg-real-production-external-e2e.sh
           grep -q 'FI_AWG_LIVE_E2E_REVOKE=PASS' scripts/fi-awg-real-production-external-e2e.sh
+          grep -q 'FI_AWG_LIVE_E2E_SYNTHETIC_SLOT=NO_CUSTOMER_ALLOCATION' scripts/fi-awg-real-production-external-e2e.sh
+          grep -q -- '--mode fi-prune-stale' scripts/fi-awg-real-production-external-e2e.sh
+          grep -q 'FI_AWG_LIVE_E2E_CUSTOMER_PEERS_PRESERVED=PASS' scripts/fi-awg-real-production-external-e2e.sh
           grep -q 'FI_AWG_LIVE_E2E_CUSTOMER_PEERS_PRESERVED=PASS' scripts/fi-awg-real-production-external-e2e.sh
           grep -q 'FI_AWG_LIVE_E2E_POOL_FRESH=PASS' scripts/fi-awg-real-production-external-e2e.sh
   live-fi:
