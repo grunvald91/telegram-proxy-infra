@@ -1,3 +1,4 @@
+# 2026-11-20 INCY rollout readback: guarded retry for Mnebyvpn main bd7c9d494cad25ede5aad1cd274a4ad2d94b371e (PR #212) after first source/deploy gate did not verify. Add only bounded stage results to commit status; no passwords, tokens, client data or service behavior in status.
 # 2026-11-20 INCY customer subscription release: publish green Mnebyvpn main bd7c9d494cad25ede5aad1cd274a4ad2d94b371e (PR #212): remove nonworking Germany Reality from /sub, label verified German WebSocket 🇩🇪, preserve working FI217 AWG, correct per-entitlement expire Unix seconds, add INCY website/Telegram bot/support actions. Reuse existing green CI, stage/canary/rollback, preserve DNS, VPN nodes, payments, customer private keys.
 # 2026-11-20 FI217 subscriber refresh fix: release Mnebyvpn main 9466bdb05eb6cab4057d44bf41d04549450d0098 (PR #211) with source main CI gate; keep already signed and ACKed AWG grant in INCY subscription across delayed external proof checks, while preserving active entitlement/expiry, revoke, degraded and signed ACK checks. Web-only deployment using existing stage/canary/rollback, preserve current AWG, VLESS and customer keys.
 # 2026-11-20 owner-requested Cyrillic brand SEO: release Mnebyvpn main 54097cd3120c767b0be8b9444ad5f571eb37c13e (PR #210); main CI 44765676948 success; PR visual QA 44765438746 success. Web-only metadata, Russian brand synonyms, compact legal links. Keep existing guarded stage/canary/rollback; no VPN/DNS/proxy/payments/bot changes.
@@ -308,3 +309,12 @@ jobs:
           fi
           gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" -f state="$state" -f context="fi217/web-source-promotion" -f description="$desc" -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/workflows/mnebyvpn-main-auto-public.yml" >/dev/null
           echo "FI217_WEB_PROMOTION_STATUS=$state"
+          # Bounded stage-only status context is readable via our GitHub
+          # status connector even when push-run logs are unavailable.
+          case "$SOURCE_READY" in yes|no) gate="$SOURCE_READY";; *) gate=unknown;; esac
+          case "$REMOTE_OUTCOME" in success|failure|skipped) inspect="$REMOTE_OUTCOME";; *) inspect=unknown;; esac
+          case "$REMOTE_DEPLOY" in yes|no) remote="$REMOTE_DEPLOY";; *) remote=unknown;; esac
+          case "$PROMOTE_OUTCOME" in success|failure|skipped) promote="$PROMOTE_OUTCOME";; *) promote=unknown;; esac
+          context="fi217/release-G-$gate-R-$inspect-D-$remote-P-$promote"
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" -f state="$state" -f context="$context" -f description='INCY website deploy step state, no credentials' -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/workflows/mnebyvpn-main-auto-public.yml" >/dev/null
+
