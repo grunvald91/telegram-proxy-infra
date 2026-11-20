@@ -1,0 +1,131 @@
+name: FI217 post-cutover RU188 PostgreSQL + FI forced SSH preflight (readonly)
+"on":
+  pull_request:
+    paths:
+      - .github/workflows/fi-awg-postcutover-db-ssh-preflight.yml
+      - nodekit/fi_awg_postcutover_db_ssh_preflight.py
+      - nodekit/tests/test_fi_awg_postcutover_db_ssh_preflight.py
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/fi-awg-postcutover-db-ssh-preflight.yml
+      - nodekit/fi_awg_postcutover_db_ssh_preflight.py
+      - nodekit/tests/test_fi_awg_postcutover_db_ssh_preflight.py
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ru188-awg-gateway-schema-stage
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Fail-closed post-cutover PG and forced SSH tests
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile \
+            nodekit/fi_awg_postcutover_db_ssh_preflight.py \
+            nodekit/fi_awg_worker_live_db_readonly.py \
+            nodekit/fi_awg_ssh_stage.py
+          python3 -m unittest discover -s nodekit/tests \
+            -p 'test_fi_awg_postcutover_db_ssh_preflight.py' -v
+          python3 -m unittest discover -s nodekit/tests \
+            -p 'test_fi_awg_worker_systemd_cutover.py' -v
+          python3 -m unittest discover -s nodekit/tests \
+            -p 'test_fi_awg_worker_candidate_runtime.py' -v
+  readonly-server:
+    needs: offline
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: node-fi
+    timeout-minutes: 13
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install ephemeral pinned-host SSH transport
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y --no-install-recommends sshpass >/dev/null
+      - name: Verify real RU188 restricted PG and forced FI217 SSH (no writes)
+        shell: bash
+        env:
+          RU_SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          [[ -n "$RU_SSH_PASSWORD" ]] || exit 2
+          grep -q '^188\.120\.254\.223 ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts
+          folder="$RUNNER_TEMP/fi-awg-postcutover-db-ssh"
+          mkdir -m 0700 "$folder"
+          cat > "$folder/config" <<CFG
+          Host ru-controller
+            HostName 188.120.254.223
+            User root
+            UserKnownHostsFile $GITHUB_WORKSPACE/ops/mnebydns-owner-ssh-known_hosts
+            GlobalKnownHostsFile /dev/null
+            HostKeyAlgorithms ssh-ed25519
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+            BatchMode no
+            PasswordAuthentication yes
+            PubkeyAuthentication no
+            KbdInteractiveAuthentication no
+            ForwardAgent no
+            ClearAllForwardings yes
+            ControlMaster no
+            ProxyCommand none
+            ConnectTimeout 12
+            LogLevel ERROR
+          CFG
+          export SSHPASS="$RU_SSH_PASSWORD"
+          remote(){ sshpass -e ssh -T -F "$folder/config" ru-controller "$@"; }
+          remote_dir=""
+          cleanup(){
+            set +e
+            if [[ "$remote_dir" =~ ^/run/fi-awg-postcutover\.[A-Za-z0-9]{8}$ ]]; then
+              remote "rm -rf -- '$remote_dir'" >/dev/null 2>&1
+            fi
+            rm -rf -- "$folder"
+          }
+          trap cleanup EXIT
+          remote_dir=$(remote 'umask 077; mktemp -d /run/fi-awg-postcutover.XXXXXXXX')
+          [[ "$remote_dir" =~ ^/run/fi-awg-postcutover\.[A-Za-z0-9]{8}$ ]] || exit 2
+          sshpass -e scp -F "$folder/config" \
+            nodekit/fi_awg_postcutover_db_ssh_preflight.py \
+            nodekit/fi_awg_worker_live_db_readonly.py \
+            nodekit/fi_awg_ssh_stage.py \
+            nodekit/fi_awg_worker_systemd_cutover.py \
+            nodekit/fi_awg_worker_candidate_stage.py \
+            nodekit/fi_awg_worker_candidate_runtime.py \
+            nodekit/fi_awg_worker_source_stage.py \
+            nodekit/fi_awg_worker_isolated_source_stage.py \
+            nodekit/fi_awg_worker_isolated_systemd_stage.py \
+            nodekit/fi_awg_worker_isolated_runtime_preflight.py \
+            nodekit/fi_awg_worker_isolated_pg_stage.py \
+            "ru-controller:$remote_dir/"
+          first=$(remote "chmod 0600 '$remote_dir/'*; python3 '$remote_dir/fi_awg_postcutover_db_ssh_preflight.py'")
+          export FI_PREFLIGHT_RESULT="$first"
+          python3 - <<'PY'
+          import os
+          rows=os.environ['FI_PREFLIGHT_RESULT'].splitlines()
+          assert len(rows)==3,repr(rows)
+          assert rows[0].startswith('FI_AWG_POSTCUTOVER_DB=PASS;ROLE=RESTRICTED;RELEASE=false;POOL_PROOF=')
+          assert rows[0].endswith(';WRITES=false')
+          assert rows[0].split('POOL_PROOF=')[1].split(';')[0] in ('FRESH','STALE','MISSING')
+          assert rows[1]=='FI_AWG_FORCED_SSH=verified;INVALID_JSON=denied;AWG_STARTED=false;CLIENTS_PUBLISHED=false'
+          assert rows[2]==('FI_AWG_RU_PG_FI_TRANSPORT=VERIFIED;DATABASE=READONLY;'
+            'SSH=FORCED_COMMAND;WORKER_ACTIVE=false;CUSTOMER_RELEASE=false;'
+            'PRODUCTION_E2E=false;NODE_ACK_IN_DB=false;POOL_PROOF='+
+            rows[0].split('POOL_PROOF=')[1].split(';')[0])
+          PY
+          second=$(remote "python3 '$remote_dir/fi_awg_postcutover_db_ssh_preflight.py'")
+          [[ "$second" == "$first" ]] || exit 2
+          echo 'FI_AWG_RU_PG_FI_TRANSPORT=VERIFIED;REPEATABLE=true;DB_WRITES=false;WORKER_ACTIVE=false;CLIENT_RELEASE=false;FULL_DB_NODE_ACK=false'
