@@ -1,4 +1,5 @@
 name: FI217 RU188 and Finland native AWG live release readiness (readonly)
+# Production preflight rerun after signed egress source cutover (issue #379).
 "on":
   pull_request:
     branches: [main]
