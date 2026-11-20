@@ -198,7 +198,9 @@ jobs:
             "ru-controller:$ru_dir/"
           tar -C pinned-controller -cf "$work/migrations.tar" db/migrations
           sshpass -e scp -F "$work/ru.cfg" "$work/migrations.tar" "ru-controller:$ru_dir/"
-          ru "chmod 0600 '$ru_dir/'*; tar -xf '$ru_dir/migrations.tar' -C '$ru_dir'"
+          # GitHub archive has runner UID; remote root must NEVER preserve it.
+          # Keep the fail-closed protected-parent checks in the DB harness.
+          ru "chmod 0600 '$ru_dir/'*; tar --no-same-owner --no-same-permissions -xf '$ru_dir/migrations.tar' -C '$ru_dir'; chmod -R go-w '$ru_dir/db'; test \"\$(stat -c %u '$ru_dir/db/migrations')\" = 0"
           db_attempted=true
           ru "python3 '$ru_dir/fi_awg_e2e_disposable_postgres.py' --mode start --stage '$ru_dir'"
           ru "python3 '$ru_dir/fi_awg_e2e_disposable_postgres.py' --mode migrate --stage '$ru_dir'"
