@@ -1,0 +1,113 @@
+name: FI217 client registrar inactive RU188 systemd cutover with rollback
+"on":
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/fi-awg-client-worker-cutover.yml'
+      - 'nodekit/fi_awg_client_worker_cutover.py'
+      - 'nodekit/tests/test_fi_awg_client_worker_cutover.py'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/fi-awg-client-worker-cutover.yml'
+      - 'nodekit/fi_awg_client_worker_cutover.py'
+      - 'nodekit/tests/test_fi_awg_client_worker_cutover.py'
+  workflow_dispatch:
+permissions: {contents: read}
+concurrency:
+  group: ru188-awg-gateway-schema-stage
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Verify rollback and dormant-only cutover offline
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile nodekit/fi_awg_client_worker_cutover.py
+          python3 -m unittest discover -s nodekit/tests \
+            -p 'test_fi_awg_client_worker_cutover.py' -v
+  inactive-cutover:
+    needs: offline
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: node-fi
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Install pinned password SSH transport
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends sshpass >/dev/null
+      - name: Atomically update INACTIVE worker to reviewed FI six-module release
+        shell: bash
+        env:
+          RU_SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          [[ -n "$RU_SSH_PASSWORD" ]] || exit 2
+          grep -q '^188\.120\.254\.223 ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts
+          work="$RUNNER_TEMP/fi-awg-client-worker-cutover"
+          mkdir -m 0700 "$work"
+          cat > "$work/config" <<CFG
+          Host ru-controller
+            HostName 188.120.254.223
+            User root
+            UserKnownHostsFile $GITHUB_WORKSPACE/ops/mnebydns-owner-ssh-known_hosts
+            GlobalKnownHostsFile /dev/null
+            HostKeyAlgorithms ssh-ed25519
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+            BatchMode no
+            PasswordAuthentication yes
+            PubkeyAuthentication no
+            KbdInteractiveAuthentication no
+            ForwardAgent no
+            ClearAllForwardings yes
+            ControlMaster no
+            ProxyCommand none
+            ConnectTimeout 12
+            ServerAliveInterval 10
+            ServerAliveCountMax 3
+            LogLevel ERROR
+          CFG
+          export SSHPASS="$RU_SSH_PASSWORD"
+          ru(){ sshpass -e ssh -T -F "$work/config" ru-controller "$@"; }
+          dir=''
+          cleanup(){
+            set +e
+            if [[ "$dir" =~ ^/run/fi-awg-client-cutover\.[A-Za-z0-9]{8}$ ]]; then
+              ru "rm -rf -- '$dir'" >/dev/null 2>&1
+            fi
+            rm -rf -- "$work"
+          }
+          trap cleanup EXIT
+          dir=$(ru 'umask 077; mktemp -d /run/fi-awg-client-cutover.XXXXXXXX')
+          [[ "$dir" =~ ^/run/fi-awg-client-cutover\.[A-Za-z0-9]{8}$ ]] || exit 2
+          sshpass -e scp -F "$work/config" \
+            nodekit/fi_awg_client_worker_cutover.py \
+            nodekit/fi_awg_client_worker_stage.py \
+            nodekit/fi_awg_worker_systemd_cutover.py \
+            nodekit/fi_awg_worker_candidate_stage.py \
+            nodekit/fi_awg_worker_candidate_runtime.py \
+            nodekit/fi_awg_worker_isolated_systemd_stage.py \
+            nodekit/fi_awg_worker_isolated_source_stage.py \
+            nodekit/fi_awg_worker_isolated_pg_stage.py \
+            nodekit/fi_awg_worker_isolated_runtime_preflight.py \
+            nodekit/fi_awg_worker_source_stage.py \
+            "ru-controller:$dir/"
+          ru "chmod 0600 '$dir/'*"
+          report=$(ru "python3 '$dir/fi_awg_client_worker_cutover.py' --mode switch")
+          [[ "$report" == 'FI_AWG_CLIENT_WORKER_CUTOVER=VERIFIED;CHANGE=SWITCHED;UNIT_ACTIVE=false;CLIENT_RELEASE=false;ROLLBACK_READY=true' || \
+             "$report" == 'FI_AWG_CLIENT_WORKER_CUTOVER=VERIFIED;CHANGE=UNCHANGED;UNIT_ACTIVE=false;CLIENT_RELEASE=false;ROLLBACK_READY=true' ]] || exit 2
+          check=$(ru "python3 '$dir/fi_awg_client_worker_cutover.py' --mode verify")
+          [[ "$check" == 'FI_AWG_CLIENT_WORKER_CUTOVER=VERIFIED;READONLY=true;UNIT_ACTIVE=false;CLIENT_RELEASE=false;ROLLBACK_READY=true' ]] || exit 2
+          again=$(ru "python3 '$dir/fi_awg_client_worker_cutover.py' --mode switch")
+          [[ "$again" == 'FI_AWG_CLIENT_WORKER_CUTOVER=VERIFIED;CHANGE=UNCHANGED;UNIT_ACTIVE=false;CLIENT_RELEASE=false;ROLLBACK_READY=true' ]] || exit 2
+          echo 'FI_AWG_CLIENT_WORKER_CUTOVER=VERIFIED;EFFECTIVE_NEW_RELEASE=true;WORKER_ACTIVE=false;CUSTOMER_RELEASE=false;REPEATABLE=true'
