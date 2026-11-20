@@ -78,6 +78,18 @@ class RealDisposableE2ETests(unittest.TestCase):
         self.assertNotIn("spawnSync=()=>",js)
         self.assertNotIn("runner=(",js)
 
+    def test_disposable_enrollment_fixture_follows_guarded_transitions(self):
+        js=(ROOT/"fi_awg_real_db_ssh_e2e.mjs").read_text()
+        planned=js.index("INSERT INTO vpn_node_enrollment_inventory")
+        approved=js.index("SET status='approved'")
+        consumed=js.index("INSERT INTO vpn_node_enrollment_challenges")
+        enrolled=js.index("SET status='enrolled'")
+        self.assertLess(planned,approved)
+        self.assertLess(approved,consumed)
+        self.assertLess(consumed,enrolled)
+        self.assertIn("consumed_at",js)
+        self.assertNotIn("'enrolled',clock_timestamp(),clock_timestamp())",js)
+
     def test_action_never_merges_or_starts_customers(self):
         y=(ROOT.parent/".github/workflows/fi-awg-real-db-ssh-e2e.yml").read_text()
         for required in ("--mode prepare","--mode cleanup",
