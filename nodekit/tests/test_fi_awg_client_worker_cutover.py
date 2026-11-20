@@ -32,6 +32,26 @@ class DormantCutoverTest(unittest.TestCase):
         self.assertIn('client.independently_pinned(raw,digest)',SRC)
         self.assertIn('client.RELEASE/client.MANIFEST',SRC)
 
+    def test_dropins_replaces_two_candidate_paths_as_bytes(self):
+        # Execute the real function body against an isolated two-path drop-in.
+        import ast
+        from types import SimpleNamespace
+        func=next(node for node in ast.parse(SRC).body
+                  if isinstance(node,ast.FunctionDef) and node.name=='dropins')
+        unit=b'WorkingDirectory=/old/release\\nExecStart=/old/release/worker.js\\n'
+        namespace={
+            'oldcut':SimpleNamespace(expected_new_dropin=lambda:unit),
+            'candidate':SimpleNamespace(CANDIDATE=pathlib.Path('/old/release')),
+            'client':SimpleNamespace(RELEASE=pathlib.Path('/new/release')),
+            'trust':SimpleNamespace(stop=lambda msg:self.fail(msg)),
+        }
+        exec(compile(ast.Module(body=[func],type_ignores=[]),
+                     '<dropins regression>', 'exec'),namespace)
+        old,new=namespace['dropins']()
+        self.assertEqual(old,unit)
+        self.assertEqual(new,b'WorkingDirectory=/new/release\\n'
+                             b'ExecStart=/new/release/worker.js\\n')
+
     def test_pr_offline_and_main_only_live_pinned_ssh(self):
         for required in (
             'pull_request:', 'branches: [main]','needs: offline',
