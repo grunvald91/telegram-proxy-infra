@@ -50,6 +50,46 @@ else
   echo 'FI_AWG_AUDIT_SOURCE_FLOCK=untrusted'
 fi
 
+# Identify only process names/PIDs holding an FD to the actual root lock.
+# This is read-only: it never sends signals, takes locks or exposes argv.
+python3 - <<'PY'
+from pathlib import Path
+import os
+import re
+
+target=Path('/root/mnebyvpn-controller/awg-worker-source-stage.lock')
+if target.is_file() and not target.is_symlink():
+    ref=target.stat()
+    holders={}
+    for entry in Path('/proc').iterdir():
+        if not entry.name.isdigit():
+            continue
+        folder=entry/'fd'
+        try:
+            descriptors=tuple(folder.iterdir())
+        except (OSError, PermissionError):
+            continue
+        for descriptor in descriptors:
+            try:
+                info=descriptor.stat()
+            except (OSError, PermissionError):
+                continue
+            if (info.st_ino,info.st_dev)!=(ref.st_ino,ref.st_dev):
+                continue
+            try:
+                command=(entry/'comm').read_text().strip()
+                if not re.fullmatch(r'[A-Za-z0-9_.-]{1,32}',command):
+                    command='unknown'
+            except OSError:
+                command='unknown'
+            holders[int(entry.name)]=command
+            break
+    values=[f'{pid}:{command}' for pid,command in sorted(holders.items())[:12]]
+    print('FI_AWG_AUDIT_LOCK_FD_OWNERS='+(','.join(values) or 'none'))
+else:
+    print('FI_AWG_AUDIT_LOCK_FD_OWNERS=lock_not_trusted')
+PY
+
 result="$(docker exec mnebyvpn-stage-postgres psql -AtX -v ON_ERROR_STOP=1 \
   -U mnebyvpn_stage -d mnebyvpn_stage -c \
   "SELECT (to_regclass('public.vpn_awg_device_requests') IS NOT NULL)::text,
