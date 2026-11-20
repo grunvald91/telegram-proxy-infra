@@ -54,6 +54,10 @@ def db_status()->dict[str,str]:
   WHERE node_id='fi-test-01'),
  (SELECT count(*) FROM public.vpn_awg_device_requests
   WHERE node_id='fi-test-01' AND state IN ('queued','processing')),
+ (SELECT count(*) FROM public.vpn_awg_device_requests
+  WHERE node_id='fi-test-01' AND state='staged'),
+ (SELECT count(*) FROM public.vpn_awg_device_requests
+  WHERE node_id='fi-test-01' AND state='blocked'),
  (SELECT count(*) FROM public.vpn_awg_peer_allocations
   WHERE node_id='fi-test-01' AND state='applied'),
  (SELECT count(*) FROM public.vpn_awg_peer_allocations a
@@ -80,22 +84,26 @@ def db_status()->dict[str,str]:
              "-A","-t","-v","ON_ERROR_STOP=1","-U","mnebyvpn_stage",
              "-d","mnebyvpn_stage","-c",query)
     fields=raw.split("|")
-    if len(fields)!=7 or any(not part.isdecimal() for part in fields[:5]):
+    if len(fields)!=9 or any(not part.isdecimal() for part in fields[:7]):
         raise ValueError("unknown aggregate result")
-    if fields[5] not in ("FRESH","STALE") or fields[6] not in ("true","false"):
+    if fields[7] not in ("FRESH","STALE") or fields[8] not in ("true","false"):
         raise ValueError("missing FI state")
     labels=("ACTIVE_VPN_ENTITLEMENTS","FI_DEVICE_REQUESTS","FI_REQUESTS_PENDING",
-            "FI_PEERS_APPLIED","FI_SIGNED_ACKS")
-    counts={key:value for key,value in zip(labels,fields[:5])}
-    counts["FI_POOL_PROOF"]=fields[5]
-    counts["FI_CUSTOMER_RELEASE"]=fields[6]
+            "FI_REQUESTS_STAGED","FI_REQUESTS_BLOCKED","FI_PEERS_APPLIED",
+            "FI_SIGNED_ACKS")
+    counts={key:value for key,value in zip(labels,fields[:7])}
+    counts["FI_POOL_PROOF"]=fields[7]
+    counts["FI_CUSTOMER_RELEASE"]=fields[8]
     return counts
 
 
 def queue_role_diagnostics()->dict[str,str]:
     sql="""SELECT
  has_table_privilege('mnebyvpn_awg_delivery','public.entitlements','SELECT')::text,
- has_table_privilege('mnebyvpn_awg_delivery','public.provisioning_state','SELECT')::text,
+ (has_column_privilege('mnebyvpn_awg_delivery','public.provisioning_state','entitlement_id','SELECT') AND
+  has_column_privilege('mnebyvpn_awg_delivery','public.provisioning_state','adapter','SELECT') AND
+  has_column_privilege('mnebyvpn_awg_delivery','public.provisioning_state','applied_revision','SELECT') AND
+  has_column_privilege('mnebyvpn_awg_delivery','public.provisioning_state','last_observed_at','SELECT'))::text,
  has_table_privilege('mnebyvpn_awg_delivery','public.vpn_awg_device_requests','SELECT')::text,
  has_table_privilege('mnebyvpn_awg_delivery','public.vpn_awg_peer_allocations','SELECT')::text,
  has_table_privilege('mnebyvpn_awg_delivery','public.vpn_release_flags','SELECT')::text,

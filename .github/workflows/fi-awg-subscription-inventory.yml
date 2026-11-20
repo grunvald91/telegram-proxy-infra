@@ -38,6 +38,9 @@ jobs:
           assert 'FI_AWG_SUB_INVENTORY=READONLY_COMPLETE' in source
           assert 'FI_AWG_SUB_SEED_MATCH=' in source
           assert 'FI_AWG_SUB_WORKER_SOURCE=' in source
+          assert "has_column_privilege('mnebyvpn_awg_delivery','public.provisioning_state','entitlement_id','SELECT')" in source
+          assert "FI_REQUESTS_STAGED" in source and "FI_REQUESTS_BLOCKED" in source
+          assert "len(fields)!=9" in source
           PY
           ! grep -En 'systemctl (restart|start|stop)|docker (rm|run|stop)|UPDATE public\.|INSERT INTO|DELETE FROM|PRIVATE KEY|AWG_INCY_SUBSCRIPTION_SEED=' nodekit/fi_awg_subscription_runtime_inventory.py
   inspect:
