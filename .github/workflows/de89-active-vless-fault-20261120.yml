@@ -1,0 +1,159 @@
+name: DE89 active VPN socket and VLESS fault isolation (read-only)
+"on":
+  push:
+    branches: [main]
+    paths: ['.github/workflows/de89-active-vless-fault-20261120.yml']
+  pull_request:
+    branches: [main]
+    paths: ['.github/workflows/de89-active-vless-fault-20261120.yml']
+permissions: {contents: read}
+jobs:
+  offline:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - run: |
+          ruby -e 'require "yaml"; y=YAML.load_file(".github/workflows/de89-active-vless-fault-20261120.yml"); abort unless y["permissions"]=={"contents"=>"read"}'
+  live:
+    needs: offline
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 7
+    environment: node-fi
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Identify actual listener and classify VLESS failure without printing keys
+        env:
+          DE_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASSWORD"
+          grep -q '^89\.125\.90\.101 ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass >/dev/null
+          export SSHPASS="$DE_PASSWORD"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes \
+            -o HostKeyAlgorithms=ssh-ed25519 \
+            -o "UserKnownHostsFile=$GITHUB_WORKSPACE/ops/mnebydns-owner-ssh-known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no \
+            -o ForwardAgent=no -o ClearAllForwardings=yes \
+            -o LogLevel=ERROR root@89.125.90.101 'bash -se' <<'REMOTE'
+          set -Eeuo pipefail
+          umask 077
+          python3 - <<'PY'
+          import subprocess,re,pathlib,json
+          def get(args,limit=10):
+              try:
+                  p=subprocess.run(args,text=True,capture_output=True,timeout=limit)
+                  return p.stdout,p.returncode
+              except Exception:return '',255
+          ss,_=get(['ss','-H','-lntp'])
+          for port in (443,8443,2053,8080,8084,4453):
+              lines=[x for x in ss.splitlines() if re.search(r':'+str(port)+r'\s',x)]
+              names=set()
+              for x in lines:
+                  names.update(re.findall(r'users:\(\("([\w-]+)"',x))
+              print('DE89_SOCKET_'+str(port)+'_OWNERS='+
+                    (','.join(sorted(names)) or 'unknown'),flush=True)
+          units,_=get(['systemctl','list-units','--all','--type=service','--no-legend','--plain'])
+          names=sorted(set(x.split()[0] for x in units.splitlines() if x.split() and
+                           re.search(r'xray|vless|mnebyvpn.*vpn',x.split()[0],re.I)))
+          for name in names[:20]:
+              lines,_=get(['systemctl','show',name,'-p','ActiveState','-p',
+                           'SubState','-p','ExecMainStatus','--no-pager'])
+              p=dict(x.split('=',1) for x in lines.splitlines() if '=' in x)
+              print('DE89_SERVICE_'+re.sub('[^A-Za-z0-9]','_',name)+'='+
+                    p.get('ActiveState','unknown')+','+
+                    p.get('SubState','unknown')+','+
+                    p.get('ExecMainStatus','unknown'),flush=True)
+          tests=[('/etc/xray/config.json','etc_xray'),
+                 ('/opt/xray/config.json','opt_xray'),
+                 ('/etc/mnebyvpn/canary-uuid','test_uuid')]
+          for file,label in tests:
+              p=pathlib.Path(file)
+              print('DE89_FILE_'+label+'_PRESENT='+str(p.is_file()),flush=True)
+          key=pathlib.Path('/etc/mnebyvpn/canary-uuid')
+          cfg=pathlib.Path('/etc/xray/config.json')
+          if key.is_file() and cfg.is_file():
+              try:
+                  obj=json.loads(cfg.read_text())
+                  uuid=key.read_text().strip()
+                  inbound=obj.get('inbounds',[])
+                  count=0
+                  for entry in inbound:
+                      clients=entry.get('settings',{}).get('clients',[])
+                      count+=len(clients) if isinstance(clients,list) else 0
+                  found=bool(uuid) and uuid in cfg.read_text()
+                  print('DE89_MAIN_CONFIG_CLIENTS='+str(count),flush=True)
+                  print('DE89_TEST_UUID_PRESENT_IN_MAIN_CONFIG='+str(found),flush=True)
+              except Exception:
+                  print('DE89_MAIN_CONFIG_PARSE=failed',flush=True)
+          proc,_=get(['ps','-eo','comm'],limit=5)
+          print('DE89_XRAY_PROCESS_COUNT='+str(sum(
+              1 for name in proc.splitlines() if name.strip()=='xray')),flush=True)
+          PY
+          KEY=/etc/mnebyvpn/canary-uuid
+          BIN=/opt/xray/xray
+          if [[ ! -s "$KEY" || ! -x "$BIN" ]]; then
+            echo 'DE89_TEST=missing_canary_or_binary'; exit 0
+          fi
+          TEMP="$(mktemp -d /tmp/de89-vless-diag-XXXXXXXX)"
+          PID=''
+          cleanup(){
+            if [[ -n "$PID" ]]; then kill "$PID" 2>/dev/null || true; wait "$PID" 2>/dev/null || true; fi
+            rm -rf "$TEMP"
+          }
+          trap cleanup EXIT
+          python3 - "$KEY" "$TEMP/client.json" <<'PY'
+          import json,pathlib,sys,uuid
+          uid=pathlib.Path(sys.argv[1]).read_text().strip()
+          uuid.UUID(uid)
+          obj={
+            'log':{'loglevel':'warning'},
+            'inbounds':[{'listen':'127.0.0.1','port':19189,'protocol':'socks',
+                         'settings':{'auth':'noauth','udp':False}}],
+            'outbounds':[{'protocol':'vless',
+              'settings':{'vnext':[{'address':'89.125.90.101','port':8443,
+                'users':[{'id':uid,'encryption':'none'}]}]},
+              'streamSettings':{'network':'ws','security':'tls',
+                'tlsSettings':{'serverName':'cdn.servgo.ru','allowInsecure':False},
+                'wsSettings':{'path':'/mnebyvpn-vpn/ws',
+                  'headers':{'Host':'cdn.servgo.ru'}}}}]}
+          pathlib.Path(sys.argv[2]).write_text(json.dumps(obj))
+          PY
+          "$BIN" run -test -config "$TEMP/client.json" >/dev/null 2>&1 || {
+            echo 'DE89_TEST=client_config_invalid'; exit 0;
+          }
+          "$BIN" run -config "$TEMP/client.json" >"$TEMP/xray.log" 2>&1 &
+          PID="$!"
+          sleep 2
+          for n in 1 2 3; do
+            curl --noproxy '' --proxy socks5h://127.0.0.1:19189 \
+              --connect-timeout 7 --max-time 15 -fsS -o /dev/null \
+              -w "DE89_E2E_${n}_HTTP=%{http_code}\n" https://example.com/ \
+              2>"$TEMP/curl.log" || {
+                python3 - "$TEMP/curl.log" <<'PY'
+          import pathlib,sys
+          data=pathlib.Path(sys.argv[1]).read_text(errors='replace').lower()
+          classes=[('socks','socks'),('tls','ssl'),
+                   ('reset','reset'),('timeout','timed out'),
+                   ('eof','empty reply'),('refused','refused'),
+                   ('proxy','proxy'),('http','http')]
+          cls=next((k for k,v in classes if v in data),'unknown')
+          print('DE89_E2E_CURL_FAILURE_CLASS='+cls,flush=True)
+          PY
+              }
+          done
+          python3 - "$TEMP/xray.log" <<'PY'
+          import pathlib,re,sys
+          text=pathlib.Path(sys.argv[1]).read_text(errors='replace').lower()
+          for key,p in [('auth',r'invalid user|invalid id|not allowed'),
+                        ('websocket',r'websocket|bad handshake|non-success status'),
+                        ('tls',r'certificate|x509|tls'),
+                        ('dial',r'failed to dial|failed to handle|failed to process'),
+                        ('reset',r'reset by peer|broken pipe')]:
+              print('DE89_CLIENT_LOG_'+key+'='+str(len(re.findall(p,text))),flush=True)
+          PY
+          REMOTE
