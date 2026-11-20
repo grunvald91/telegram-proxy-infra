@@ -1,4 +1,4 @@
-name: RU188 FI217 AWG subscriptions - scoped provisioning read permission
+name: RU188 FI217 AWG subscriptions - scoped 0139 trigger repair
 "on":
   pull_request:
     branches: [main]
@@ -23,27 +23,30 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: grunvald91/Mnebyvpn
-          ref: 0aa1fa880c278c65a3e007ade3ea80a94f67c226
+          ref: 55eae2efd95bffc7507780c18c5a6fa969a3c89a
           path: mnebyvpn
           persist-credentials: false
-      - name: Verify exact least-privilege SQL blob at reviewed main commit
+      - name: Verify independently reviewed 0139 migration at immutable commit
         shell: bash
         run: |
           set -Eeuo pipefail
-          test "$(git -C mnebyvpn rev-parse HEAD)" = 0aa1fa880c278c65a3e007ade3ea80a94f67c226
+          test "$(git -C mnebyvpn rev-parse HEAD)" = 55eae2efd95bffc7507780c18c5a6fa969a3c89a
           python3 - <<'PY'
           from pathlib import Path
           import hashlib
-          path=Path('mnebyvpn/db/migrations/0138_awg_worker_provisioning_read.sql')
+          path=Path('mnebyvpn/db/migrations/0139_awg_peer_address_trigger_owner.sql')
           raw=path.read_bytes()
-          pin=hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest()
-          assert pin=='ba4ec98818b274c6d0cf12455be1d40f5405c8b5'
+          pin=hashlib.sha1(b'blob '+str(len(raw)).encode()+bytes([0])+raw).hexdigest()
+          assert pin=='76cf8e1162f7b4a27b1da3a8afd523ca2d81b3bb'
           sql=raw.decode()
-          assert 'GRANT SELECT (entitlement_id,adapter,applied_revision,last_observed_at)' in sql
-          assert 'ON TABLE public.provisioning_state' in sql
-          assert 'TO mnebyvpn_awg_delivery' in sql
-          assert 'COMMIT;' in sql and 'BEGIN;' in sql
-          print('FI_AWG_ROLE_MIGRATION=SOURCE_PINNED')
+          for term in ('BEGIN;', 'COMMIT;', 'SECURITY DEFINER',
+                       'SET search_path = pg_catalog, public',
+                       'vpn_awg_enforce_address_pool()',
+                       'REVOKE ALL ON FUNCTION', 'actual_owner IS DISTINCT FROM current_user',
+                       'pool_owner IS DISTINCT FROM current_user'):
+              assert term in sql
+          assert 'GRANT UPDATE' not in sql and 'DROP TABLE' not in sql
+          print('FI_AWG_0139_MIGRATION=SOURCE_PINNED')
           PY
   ru188-live:
     needs: offline
@@ -57,7 +60,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: grunvald91/Mnebyvpn
-          ref: 0aa1fa880c278c65a3e007ade3ea80a94f67c226
+          ref: 55eae2efd95bffc7507780c18c5a6fa969a3c89a
           path: mnebyvpn
           persist-credentials: false
       - name: Install pinned SSH transport
@@ -74,7 +77,7 @@ jobs:
           set -Eeuo pipefail
           umask 077
           test -n "$RU_PASSWORD"
-          test "$(git -C mnebyvpn rev-parse HEAD)" = 0aa1fa880c278c65a3e007ade3ea80a94f67c226
+          test "$(git -C mnebyvpn rev-parse HEAD)" = 55eae2efd95bffc7507780c18c5a6fa969a3c89a
           grep -q '^188\.120\.254\.223 ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts
           work="$RUNNER_TEMP/fi-awg-provisioning-role"
           mkdir -m 0700 "$work"
@@ -108,38 +111,99 @@ jobs:
             ip -o -4 addr show | grep -Fq "188.120.254.223/" &&
             systemctl is-active --quiet mnebyvpn-awg-delivery.service &&
             docker inspect -f "{{.State.Running}}" mnebyvpn-public-web | grep -qx true'
-          # Only this independently pinned 0138 migration is sent to the
-          # canonical RU188 DB owner. No account or peer data is modified.
-          remote 'docker exec -i mnebyvpn-stage-postgres psql -X -q -A -t -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage' < mnebyvpn/db/migrations/0138_awg_worker_provisioning_read.sql > "$work/migration.out"
+          # Mutate only the verified trigger owner ACL, never customer rows,
+          # keys, original AWG or VLESS. SQL is pinned to reviewed git blob.
+          cat > "$work/preflight.sql" <<'SQL'
+          SELECT CASE
+            WHEN count(*)=1 AND bool_and(
+               p.proowner=c.relowner
+               AND pg_catalog.pg_get_userbyid(p.proowner)=current_user
+               AND p.prorettype='pg_catalog.trigger'::pg_catalog.regtype
+               AND pg_catalog.strpos(pg_catalog.pg_get_functiondef(p.oid),'FOR SHARE')>0
+               AND NOT has_any_column_privilege('mnebyvpn_awg_delivery',
+                   'public.vpn_awg_node_pools','UPDATE')
+               AND (NOT p.prosecdef OR
+                   ('search_path=pg_catalog, public'=ANY(p.proconfig)
+                    AND NOT EXISTS(
+                      SELECT 1 FROM pg_catalog.aclexplode(coalesce(
+                          p.proacl,pg_catalog.acldefault('f',p.proowner))) acl
+                      WHERE acl.grantee=0 AND acl.privilege_type='EXECUTE'
+                    )))
+            ) THEN CASE WHEN bool_and(p.prosecdef) THEN 'ALREADY' ELSE 'APPLY' END
+            ELSE 'BLOCKED' END
+          FROM pg_catalog.pg_proc p
+          JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+          JOIN pg_catalog.pg_class c ON c.oid='public.vpn_awg_node_pools'::regclass
+          JOIN pg_catalog.pg_trigger t
+            ON t.tgfoid=p.oid AND t.tgrelid='public.vpn_awg_peer_allocations'::regclass
+          WHERE n.nspname='public' AND p.proname='vpn_awg_enforce_address_pool'
+            AND p.pronargs=0 AND t.tgname='vpn_awg_address_immutability'
+            AND NOT t.tgisinternal AND t.tgenabled <> 'D';
+          SQL
+          mode=$(remote 'docker exec -i mnebyvpn-stage-postgres psql -X -q -A -t -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage' < "$work/preflight.sql")
+          case "$mode" in
+            APPLY)
+              remote 'docker exec -i mnebyvpn-stage-postgres psql -X -q -A -t -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage' \
+                < mnebyvpn/db/migrations/0139_awg_peer_address_trigger_owner.sql > "$work/migration.out"
+              echo 'FI_AWG_0139_MIGRATION=APPLIED' ;;
+            ALREADY)
+              echo 'FI_AWG_0139_MIGRATION=ALREADY_APPLIED' ;;
+            *) echo 'FI_AWG_0139_MIGRATION=BLOCKED'; exit 2 ;;
+          esac
           cat > "$work/verify.sql" <<'SQL'
-          SELECT CASE WHEN
-            has_column_privilege('mnebyvpn_awg_delivery','public.provisioning_state','entitlement_id','SELECT')
-            AND has_column_privilege('mnebyvpn_awg_delivery','public.provisioning_state','adapter','SELECT')
-            AND has_column_privilege('mnebyvpn_awg_delivery','public.provisioning_state','applied_revision','SELECT')
-            AND has_column_privilege('mnebyvpn_awg_delivery','public.provisioning_state','last_observed_at','SELECT')
-            AND NOT has_table_privilege('mnebyvpn_awg_delivery','public.provisioning_state','UPDATE')
-            AND NOT has_table_privilege('mnebyvpn_awg_delivery','public.provisioning_state','DELETE')
-            AND NOT has_table_privilege('mnebyvpn_awg_delivery','public.provisioning_state','INSERT')
-            THEN 'FI_AWG_RU188_PROVISIONING_ROLE=VERIFIED;SELECT_COLUMNS=4;WRITE_ACCESS=false'
-            ELSE 'FI_AWG_RU188_PROVISIONING_ROLE=BLOCKED' END;
+          SELECT CASE WHEN count(*)=1 AND bool_and(
+            p.prosecdef
+            AND 'search_path=pg_catalog, public'=ANY(p.proconfig)
+            AND p.proowner=c.relowner
+            AND pg_catalog.pg_get_userbyid(p.proowner)=current_user
+            AND NOT has_any_column_privilege('mnebyvpn_awg_delivery',
+                 'public.vpn_awg_node_pools','UPDATE')
+            AND NOT EXISTS(
+              SELECT 1 FROM pg_catalog.aclexplode(coalesce(
+                p.proacl,pg_catalog.acldefault('f',p.proowner))) acl
+              WHERE acl.grantee=0 AND acl.privilege_type='EXECUTE'
+            )
+          ) THEN 'VERIFIED' ELSE 'BLOCKED' END
+          FROM pg_catalog.pg_proc p
+          JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+          JOIN pg_catalog.pg_class c ON c.oid='public.vpn_awg_node_pools'::regclass
+          JOIN pg_catalog.pg_trigger t ON t.tgfoid=p.oid
+            AND t.tgrelid='public.vpn_awg_peer_allocations'::regclass
+          WHERE n.nspname='public' AND p.proname='vpn_awg_enforce_address_pool'
+            AND p.pronargs=0 AND t.tgname='vpn_awg_address_immutability'
+            AND NOT t.tgisinternal AND t.tgenabled <> 'D';
           SQL
           result=$(remote 'docker exec -i mnebyvpn-stage-postgres psql -X -q -A -t -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage' < "$work/verify.sql")
-          test "$result" = 'FI_AWG_RU188_PROVISIONING_ROLE=VERIFIED;SELECT_COLUMNS=4;WRITE_ACCESS=false'
-          echo "$result"
-          # Existing worker polls about once/minute. Read only aggregate
-          # counts until the native FI request queue receives at least one
-          # real entitlement, or fail the action with no invented success.
-          cat > "$work/queue.sql" <<'SQL'
-          SELECT count(*)::text FROM public.vpn_awg_device_requests WHERE node_id='fi-test-01';
+          test "$result" = 'VERIFIED' || { echo 'FI_AWG_0139_POSTCHECK=BLOCKED'; exit 2; }
+          echo 'FI_AWG_0139_POSTCHECK=VERIFIED'
+          # Automatic worker may have delayed retries. Report aggregate
+          # counts only; do not expose subscriber identifiers or key material.
+          cat > "$work/ack.sql" <<'SQL'
+          SELECT
+          (SELECT count(*) FROM public.vpn_awg_device_requests WHERE node_id='fi-test-01'),
+          (SELECT count(*) FROM public.vpn_awg_peer_allocations WHERE node_id='fi-test-01' AND state='applied'),
+          (SELECT count(*) FROM public.vpn_awg_peer_allocations a
+           JOIN public.vpn_awg_command_outbox o
+             ON o.node_id=a.node_id AND o.entitlement_id=a.entitlement_id
+             AND o.revision=a.revision AND o.op='grant'
+           JOIN public.entitlements e ON e.id=a.entitlement_id
+           WHERE a.node_id='fi-test-01' AND a.state='applied'
+             AND o.state='applied' AND o.node_receipt_sha256 ~ '^[a-f0-9]{64}$'
+             AND o.command_sha256=a.last_command_sha256
+             AND o.billing_revision=e.revision
+             AND e.product='vpn' AND e.state='ACTIVE'
+             AND e.expires_at>clock_timestamp());
           SQL
-          count=0
-          for try in 1 2 3 4 5 6 7 8 9 10 11 12; do
-            count=$(remote 'docker exec -i mnebyvpn-stage-postgres psql -X -q -A -t -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage' < "$work/queue.sql")
-            [[ "$count" =~ ^[0-9]+$ ]] || exit 2
-            if (( count >= 1 ));then
-              echo 'FI_AWG_SUBSCRIPTIONS_AUTO_ENQUEUED=true'
-              break
+          for attempt in $(seq 1 18); do
+            counts=$(remote 'docker exec -i mnebyvpn-stage-postgres psql -X -q -A -t -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage' < "$work/ack.sql")
+            IFS="|" read -r queued applied ack <<< "$counts"
+            [[ "$queued" =~ ^[0-9]+$ && "$applied" =~ ^[0-9]+$ && "$ack" =~ ^[0-9]+$ ]] || exit 2
+            if (( queued >= 2 && applied >= 2 && ack >= 2 )); then
+              echo "FI_AWG_0139_SIGNED_ACKS=$ack"
+              echo 'FI_AWG_0139_CUSTOMER_DELIVERY=VERIFIED'
+              exit 0
             fi
             sleep 12
           done
-          (( count >= 1 )) || { echo 'FI_AWG_SUBSCRIPTIONS_AUTO_ENQUEUED=false'; exit 2; }
+          echo "FI_AWG_0139_CUSTOMER_DELIVERY=PENDING;QUEUED=$queued;APPLIED=$applied;SIGNED_ACKS=$ack"
+          exit 2
