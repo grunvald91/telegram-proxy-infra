@@ -1,10 +1,12 @@
-name: FI217 signed production AWG egress source stage (inactive)
+name: FI217 AWG egress stage and guarded dormant cutover
 "on":
   pull_request:
     branches: [main]
     paths:
       - nodekit/awg_egress.py
       - nodekit/fi_awg_egress_source_stage.py
+      - nodekit/fi_awg_egress_source_cutover.py
+      - nodekit/tests/test_fi_awg_egress_source_cutover.py
       - nodekit/tests/test_awg_egress_production.py
       - nodekit/tests/test_awg_egress.py
       - nodekit/tests/test_fi_awg_egress_source_stage.py
@@ -14,6 +16,8 @@ name: FI217 signed production AWG egress source stage (inactive)
     paths:
       - nodekit/awg_egress.py
       - nodekit/fi_awg_egress_source_stage.py
+      - nodekit/fi_awg_egress_source_cutover.py
+      - nodekit/tests/test_fi_awg_egress_source_cutover.py
       - nodekit/tests/test_awg_egress_production.py
       - nodekit/tests/test_awg_egress.py
       - nodekit/tests/test_fi_awg_egress_source_stage.py
@@ -34,15 +38,16 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          python3 -m py_compile nodekit/awg_egress.py nodekit/fi_awg_egress_source_stage.py nodekit/fi_awg_policy_source_stage.py
+          python3 -m py_compile nodekit/awg_egress.py nodekit/fi_awg_egress_source_stage.py nodekit/fi_awg_egress_source_cutover.py nodekit/fi_awg_policy_source_stage.py
           python3 -m unittest discover -s nodekit/tests -p 'test_fi_awg_egress_source_stage.py' -v
+          python3 -m unittest discover -s nodekit/tests -p 'test_fi_awg_egress_source_cutover.py' -v
           python3 -m unittest discover -s nodekit/tests -p 'test_awg_egress_production.py' -v
           python3 -m unittest discover -s nodekit/tests -p 'test_awg_egress.py' -v
           python3 -m unittest discover -s nodekit/tests -p 'test_fi_awg_production_policy.py' -v
           python3 - <<'PY'
           from pathlib import Path
           rows=Path('.github/workflows/fi-awg-egress-source-stage.yml').read_text().splitlines()
-          marker='      - name: Stage approved AWG egress source on dormant FI217 only'
+          marker='      - name: Stage and atomically switch pinned egress source while AWG remains dormant'
           start=rows.index(marker)
           start=next(i for i in range(start+1,len(rows)) if rows[i]=='        run: |')+1
           body=[]
@@ -154,7 +159,11 @@ jobs:
           [[ "$released" == false ]] || exit 2
           SSHPASS="$FI_PASSWORD" sshpass -e scp -F "$work/fi.cfg" \
             nodekit/awg_egress.py nodekit/fi_awg_policy_source_stage.py \
-            nodekit/fi_awg_egress_source_stage.py "fi-node:$remote_dir/"
+            nodekit/fi_awg_egress_source_stage.py nodekit/fi_awg_egress_source_cutover.py "fi-node:$remote_dir/"
           fi_node "chmod 0600 '$remote_dir/'*.py; timeout 90s python3 '$remote_dir/fi_awg_egress_source_stage.py' --mode stage --source '$remote_dir/awg_egress.py'"
           fi_node "timeout 40s python3 '$remote_dir/fi_awg_egress_source_stage.py' --mode verify"
           fi_node "timeout 40s python3 '$remote_dir/fi_awg_egress_source_stage.py' --mode stage --source '$remote_dir/awg_egress.py'"
+          fi_node "timeout 40s python3 '$remote_dir/fi_awg_egress_source_cutover.py' --mode inspect"
+          fi_node "timeout 90s python3 '$remote_dir/fi_awg_egress_source_cutover.py' --mode switch"
+          fi_node "timeout 40s python3 '$remote_dir/fi_awg_egress_source_cutover.py' --mode verify"
+          fi_node "timeout 40s python3 '$remote_dir/fi_awg_egress_source_cutover.py' --mode switch"
