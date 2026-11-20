@@ -1,0 +1,32 @@
+name: FI217 AWG egress dormant code cutover tests (offline)
+"on":
+  pull_request:
+    branches: [main]
+    paths:
+      - nodekit/fi_awg_egress_source_cutover.py
+      - nodekit/tests/test_fi_awg_egress_source_cutover.py
+      - .github/workflows/fi-awg-egress-cutover-offline.yml
+  push:
+    branches: [main]
+    paths:
+      - nodekit/fi_awg_egress_source_cutover.py
+      - nodekit/tests/test_fi_awg_egress_source_cutover.py
+      - .github/workflows/fi-awg-egress-cutover-offline.yml
+  workflow_dispatch:
+permissions: {contents: read}
+jobs:
+  offline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Validate pinned inactive cutover and rollback without touching production
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile nodekit/fi_awg_egress_source_cutover.py
+          python3 -m unittest discover -s nodekit/tests -p 'test_fi_awg_egress_source_cutover.py' -v
+          python3 -m unittest discover -s nodekit/tests -p 'test_fi_awg_egress_source_stage.py' -v
+          python3 -m unittest discover -s nodekit/tests -p 'test_awg_egress_production.py' -v
+          python3 -m unittest discover -s nodekit/tests -p 'test_awg_egress.py' -v
