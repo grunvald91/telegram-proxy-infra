@@ -91,18 +91,20 @@ def expected_manifest(blobs:dict[str,bytes],dependency_manifest:bytes)->bytes:
     return (json.dumps(body,sort_keys=True,separators=(",",":"))+"\n").encode("ascii")
 
 
-def staged_artifacts() -> None:
+def staged_artifacts_locked() -> None:
+    """Preflight while OUR lock is held; do not re-lock through cutover.verify."""
     trust.require_safe_dormant()
-    # Verify effective legacy worker and guarded backup; no worker activation.
-    cutover.verify()
-    # cutover.verify() already checks ALL baseline dependency hashes plus
-    # the *actual* post-cutover effective unit. The legacy
-    # legacy runtime preflight calls candidate.guard(), which
-    # insists the pre-cutover OLD working directory still be effective:
-    # that is intentionally false on the correctly cut-over RU188.
+    cutover.verify_candidate_artifacts()
+    cutover.verified_new_effective_unit(cutover.expected_new_dropin())
     if trust.read_file(candidate.CANDIDATE/WORKER)!=trust.read_file(
             cutover.ENTRY):
         trust.stop("fi_client_worker_effective_worker_not_baseline")
+
+
+def staged_artifacts() -> None:
+    """Full preflight before acquiring our lock; safe standalone cutover check."""
+    cutover.verify()
+    staged_artifacts_locked()
 
 
 def copy_file_exact(target:Path,blob:bytes)->bool:
@@ -175,7 +177,7 @@ def stage(stage_path:Path)->tuple[int,int]:
                 meta.st_mode&0o077) or meta.st_nlink!=1:
             trust.stop("fi_client_worker_untrusted_lock")
         fcntl.flock(fd,fcntl.LOCK_EX)
-        staged_artifacts()
+        staged_artifacts_locked()
         if not RELEASE.exists():
             trust.make_directory(RELEASE)
         else:
@@ -207,7 +209,7 @@ def stage(stage_path:Path)->tuple[int,int]:
         else:
             if trust.read_file(marker,4096)!=manifest:
                 trust.stop("fi_client_worker_manifest_drift")
-        staged_artifacts()
+        staged_artifacts_locked()
         return new,matched
     finally:
         fcntl.flock(fd,fcntl.LOCK_UN)

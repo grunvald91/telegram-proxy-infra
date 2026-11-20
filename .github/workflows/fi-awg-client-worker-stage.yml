@@ -16,7 +16,9 @@ name: FI217 six-module client registrar immutable RU188 stage (NO activation)
 permissions:
   contents: read
 concurrency:
-  group: ru188-awg-gateway-schema-stage
+  # PR offline tests need not queue behind a long-running RU188 live stage.
+  # All live main runs retain the existing single shared RU188 mutex.
+  group: ${{ github.event_name == 'pull_request' && format('fi-awg-client-worker-pr-{0}', github.event.pull_request.number) || 'ru188-awg-gateway-schema-stage' }}
   cancel-in-progress: false
 jobs:
   offline:
