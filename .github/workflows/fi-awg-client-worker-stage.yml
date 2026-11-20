@@ -139,7 +139,7 @@ jobs:
             packages/provisioning/src/awg-controller-outbox.ts
           sshpass -e scp -F "$work/config" "$work/worker.tar" "ru-controller:$folder/"
           ru "tar --no-same-owner --no-same-permissions -xf '$folder/worker.tar' -C '$folder'; find '$folder' -type d -exec chmod 0700 {} +; find '$folder' -type f -exec chmod 0600 {} +"
-          first=$(ru "python3 '$folder/fi_awg_client_worker_stage.py' --stage '$folder'")
+          first=$(ru "timeout --signal=TERM --kill-after=10s 180s python3 '$folder/fi_awg_client_worker_stage.py' --stage '$folder'")
           export FI_FIRST="$first"
           python3 - <<'PY'
           import os,re
@@ -151,7 +151,7 @@ jobs:
           if not match or sum(map(int,match.groups()))<6:
               raise SystemExit(2)
           PY
-          second=$(ru "python3 '$folder/fi_awg_client_worker_stage.py' --stage '$folder'")
+          second=$(ru "timeout --signal=TERM --kill-after=10s 180s python3 '$folder/fi_awg_client_worker_stage.py' --stage '$folder'")
           export FI_SECOND="$second"
           python3 - <<'PY'
           import os,re
