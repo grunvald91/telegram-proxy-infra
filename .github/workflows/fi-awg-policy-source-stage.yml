@@ -1,0 +1,150 @@
+name: FI217 immutable AWG production-policy code stage (inactive)
+"on":
+  pull_request:
+    branches: [main]
+    paths:
+      - nodekit/fi_awg_policy_source_stage.py
+      - nodekit/tests/test_fi_awg_policy_source_stage.py
+      - .github/workflows/fi-awg-policy-source-stage.yml
+  push:
+    branches: [main]
+    paths:
+      - nodekit/fi_awg_policy_source_stage.py
+      - nodekit/tests/test_fi_awg_policy_source_stage.py
+      - .github/workflows/fi-awg-policy-source-stage.yml
+  workflow_dispatch:
+permissions: {contents: read}
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('fi-awg-policy-pr-{0}', github.event.pull_request.number) || 'mnebyvpn-fleet-fi' }}
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Lint source, immutable staging regressions and live Bash syntax
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile nodekit/fi_awg_policy_source_stage.py
+          python3 -m unittest discover -s nodekit/tests -p 'test_fi_awg_policy_source_stage.py' -v
+          python3 - <<'PY'
+          from pathlib import Path
+          rows=Path('.github/workflows/fi-awg-policy-source-stage.yml').read_text().splitlines()
+          marker='      - name: Stage immutable policy sources on FI217 without touching services'
+          start=rows.index(marker)
+          start=next(i for i in range(start+1,len(rows)) if rows[i]=='        run: |')+1
+          body=[]
+          for line in rows[start:]:
+              if line and not line.startswith('          '): break
+              body.append(line[10:] if line.startswith('          ') else '')
+          assert body and 'trap cleanup EXIT' in body
+          Path('/tmp/fi-awg-policy-stage.sh').write_text('\n'.join(body)+'\n')
+          PY
+          bash -n /tmp/fi-awg-policy-stage.sh
+          rm -f /tmp/fi-awg-policy-stage.sh
+  stage-fi:
+    needs: offline
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    environment: node-fi
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Install pinned SSH transport
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends sshpass >/dev/null
+      - name: Stage immutable policy sources on FI217 without touching services
+        shell: bash
+        env:
+          RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+          FI_PASSWORD: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_PASSWORD }}
+          FI_USER: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_USER }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          [[ -n "$RU_PASSWORD" && -n "$FI_PASSWORD" && "$FI_USER" == root ]] || exit 2
+          grep -q '^188\.120\.254\.223 ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts
+          work="$RUNNER_TEMP/fi-awg-policy-sources"
+          mkdir -m 0700 "$work"
+          cat > "$work/ru.cfg" <<CFG
+          Host ru-controller
+            HostName 188.120.254.223
+            User root
+            UserKnownHostsFile $GITHUB_WORKSPACE/ops/mnebydns-owner-ssh-known_hosts
+            GlobalKnownHostsFile /dev/null
+            HostKeyAlgorithms ssh-ed25519
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+            BatchMode no
+            PasswordAuthentication yes
+            PubkeyAuthentication no
+            KbdInteractiveAuthentication no
+            ForwardAgent no
+            ClearAllForwardings yes
+            ControlMaster no
+            ProxyCommand none
+            ConnectTimeout 12
+            ServerAliveInterval 10
+            ServerAliveCountMax 3
+            LogLevel ERROR
+          CFG
+          ru(){ SSHPASS="$RU_PASSWORD" sshpass -e ssh -T -F "$work/ru.cfg" ru-controller "$@"; }
+          ru 'test -f /root/mnebyvpn-controller/fi-known_hosts; test ! -L /root/mnebyvpn-controller/fi-known_hosts; test "$(stat -c "%u:%a" /root/mnebyvpn-controller/fi-known_hosts)" = 0:600; cat /root/mnebyvpn-controller/fi-known_hosts' > "$work/fi-known"
+          python3 - "$work/fi-known" <<'PY'
+          import base64,pathlib,sys
+          data=pathlib.Path(sys.argv[1]).read_bytes()
+          assert len(data)<512 and data.count(b'\n')==1 and data.endswith(b'\n')
+          host,kind,key=data.decode('ascii').strip().split()
+          assert (host,kind)==('fi.mnebyvpn.site','ssh-ed25519')
+          decoded=base64.b64decode(key,validate=True)
+          assert len(decoded)==51 and decoded.startswith(b'\x00\x00\x00\x0bssh-ed25519\x00\x00\x00\x20')
+          assert base64.b64encode(decoded).decode()==key
+          PY
+          cat > "$work/fi.cfg" <<CFG
+          Host fi-node
+            HostName 217.11.167.91
+            User root
+            UserKnownHostsFile $work/fi-known
+            HostKeyAlias fi.mnebyvpn.site
+            GlobalKnownHostsFile /dev/null
+            HostKeyAlgorithms ssh-ed25519
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+            BatchMode no
+            PasswordAuthentication yes
+            PubkeyAuthentication no
+            KbdInteractiveAuthentication no
+            ForwardAgent no
+            ClearAllForwardings yes
+            ControlMaster no
+            ProxyCommand none
+            ConnectTimeout 12
+            ServerAliveInterval 10
+            ServerAliveCountMax 3
+            LogLevel ERROR
+          CFG
+          fi_node(){ SSHPASS="$FI_PASSWORD" sshpass -e ssh -T -F "$work/fi.cfg" fi-node "$@"; }
+          remote_dir=""
+          cleanup(){
+            set +e
+            if [[ "$remote_dir" =~ ^/run/fi-awg-policy\.[A-Za-z0-9]{8}$ ]]; then
+              fi_node "rm -rf -- '$remote_dir'" >/dev/null 2>&1
+            fi
+            rm -rf -- "$work"
+          }
+          trap cleanup EXIT
+          remote_dir=$(fi_node 'umask 077; mktemp -d /run/fi-awg-policy.XXXXXXXX')
+          [[ "$remote_dir" =~ ^/run/fi-awg-policy\.[A-Za-z0-9]{8}$ ]] || exit 2
+          SSHPASS="$FI_PASSWORD" sshpass -e scp -F "$work/fi.cfg" \
+            nodekit/awg_lifecycle.py nodekit/install_components.py \
+            nodekit/fi_awg_production_policy.py nodekit/fi_awg_policy_source_stage.py \
+            "fi-node:$remote_dir/"
+          fi_node "chmod 0600 '$remote_dir/'*.py; timeout 90s python3 '$remote_dir/fi_awg_policy_source_stage.py' --mode stage --source '$remote_dir'"
+          fi_node "timeout 40s python3 '$remote_dir/fi_awg_policy_source_stage.py' --mode verify"
+          fi_node "timeout 40s python3 '$remote_dir/fi_awg_policy_source_stage.py' --mode stage --source '$remote_dir'"
