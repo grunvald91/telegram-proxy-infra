@@ -114,7 +114,10 @@ jobs:
           promoted=0
           rollback(){
             if [[ "$promoted" == 1 ]]; then
-              cp -p "$backupdir/vpn-provisioner.py" "$source"
+              # ERR and EXIT both invoke this handler. Mark rollback attempted
+              # first so a failed health gate cannot restart Xray twice.
+              promoted=0
+              cp -p "$backupdir/vpn-provisioner.py" "$source" || true
               systemctl restart "$unit" || true
               echo 'DE89_RENEWAL_AGENT=rolled_back'
             fi
