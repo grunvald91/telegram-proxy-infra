@@ -91,20 +91,47 @@ def expected_manifest(blobs:dict[str,bytes],dependency_manifest:bytes)->bytes:
     return (json.dumps(body,sort_keys=True,separators=(",",":"))+"\n").encode("ascii")
 
 
-def staged_artifacts_locked() -> None:
-    """Preflight while OUR lock is held; do not re-lock through cutover.verify."""
+def reviewed_unit_bytes() -> tuple[bytes,bytes]:
+    """Only the old reviewed unit and its verified 6-module cutover are valid."""
+    old=cutover.expected_new_dropin()
+    existing=str(candidate.CANDIDATE).encode("ascii")
+    new_root=str(RELEASE).encode("ascii")
+    if existing==new_root or old.count(existing)!=2:
+        trust.stop("fi_client_worker_unapproved_cutover_template")
+    return old,old.replace(existing,new_root)
+
+
+def staged_artifacts_locked() -> str:
+    """Verify either allowed inactive systemd state without re-locking flock."""
     trust.require_safe_dormant()
     cutover.verify_candidate_artifacts()
-    cutover.verified_new_effective_unit(cutover.expected_new_dropin())
-    if trust.read_file(candidate.CANDIDATE/WORKER)!=trust.read_file(
-            cutover.ENTRY):
-        trust.stop("fi_client_worker_effective_worker_not_baseline")
+    old,new=reviewed_unit_bytes()
+    actual=trust.read_file(cutover.systemd.OVERRIDE,8192)
+    if actual==old:
+        cutover.verified_new_effective_unit(old)
+        if trust.read_file(candidate.CANDIDATE/WORKER)!=trust.read_file(
+                cutover.ENTRY):
+            trust.stop("fi_client_worker_effective_worker_not_baseline")
+        return "OLD_INACTIVE"
+    if actual==new:
+        # Local import avoids a top-level cycle: the verifier imports this stage.
+        import fi_awg_client_worker_cutover as clientcut
+        clientcut.verify_unit(new)
+        if trust.read_file(clientcut.BACKUP,8192)!=old:
+            trust.stop("fi_client_worker_cutover_rollback_drift")
+        return "NEW_INACTIVE"
+    trust.stop("fi_client_worker_unrecognized_effective_unit")
 
 
-def staged_artifacts() -> None:
-    """Full preflight before acquiring our lock; safe standalone cutover check."""
-    cutover.verify()
-    staged_artifacts_locked()
+def staged_artifacts() -> str:
+    """Full preflight before locking; old or new release must be pinned."""
+    old,_=reviewed_unit_bytes()
+    if trust.read_file(cutover.systemd.OVERRIDE,8192)==old:
+        cutover.verify()
+    else:
+        import fi_awg_client_worker_cutover as clientcut
+        clientcut.verify()
+    return staged_artifacts_locked()
 
 
 def copy_file_exact(target:Path,blob:bytes)->bool:
@@ -162,7 +189,7 @@ def source_and_runtime_check(blobs:dict[str,bytes]) -> None:
     ],timeout=18)
 
 
-def stage(stage_path:Path)->tuple[int,int]:
+def stage(stage_path:Path)->tuple[int,int,str]:
     staged_artifacts()
     blobs=staged_inputs(stage_path)
     deps=trust.read_file(DEPENDENCY_MANIFEST,256000)
@@ -182,7 +209,7 @@ def stage(stage_path:Path)->tuple[int,int]:
             fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:
             trust.stop("fi_client_worker_source_lock_busy")
-        staged_artifacts_locked()
+        current_mode=staged_artifacts_locked()
         if not RELEASE.exists():
             trust.make_directory(RELEASE)
         else:
@@ -214,8 +241,9 @@ def stage(stage_path:Path)->tuple[int,int]:
         else:
             if trust.read_file(marker,4096)!=manifest:
                 trust.stop("fi_client_worker_manifest_drift")
-        staged_artifacts_locked()
-        return new,matched
+        if staged_artifacts_locked()!=current_mode:
+            trust.stop("fi_client_worker_cutover_changed_during_stage")
+        return new,matched,current_mode
     finally:
         fcntl.flock(fd,fcntl.LOCK_UN)
         os.close(fd)
@@ -225,9 +253,9 @@ def main() -> None:
     parser=argparse.ArgumentParser()
     parser.add_argument("--stage",type=Path,required=True)
     args=parser.parse_args()
-    new,matched=stage(args.stage)
+    new,matched,mode=stage(args.stage)
     print(f"FI_AWG_CLIENT_WORKER=STAGED;COMMIT={NEW};NEW={new};MATCHED={matched};"
-          "IMPORT=VERIFIED;EFFECTIVE_WORKER=OLD_INACTIVE;"
+          f"IMPORT=VERIFIED;EFFECTIVE_WORKER={mode};"
           "CLIENT_RELEASE=false;REAL_PEERS_MODIFIED=false")
 
 

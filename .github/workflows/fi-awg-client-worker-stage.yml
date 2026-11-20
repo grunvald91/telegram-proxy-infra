@@ -121,6 +121,7 @@ jobs:
           [[ "$folder" =~ ^/run/fi-awg-client-worker\.[A-Za-z0-9]{8}$ ]] || exit 2
           sshpass -e scp -F "$work/config" \
             infra/nodekit/fi_awg_client_worker_stage.py \
+            infra/nodekit/fi_awg_client_worker_cutover.py \
             infra/nodekit/fi_awg_worker_source_stage.py \
             infra/nodekit/fi_awg_worker_candidate_stage.py \
             infra/nodekit/fi_awg_worker_candidate_runtime.py \
@@ -153,8 +154,8 @@ jobs:
           match=re.fullmatch(
              r"FI_AWG_CLIENT_WORKER=STAGED;COMMIT=446c331249085adb6536e3d9913fb4b68abf6cd7;"
              r"NEW=([0-9]+);MATCHED=([0-9]+);IMPORT=VERIFIED;"
-             r"EFFECTIVE_WORKER=OLD_INACTIVE;CLIENT_RELEASE=false;REAL_PEERS_MODIFIED=false",value)
-          if not match or sum(map(int,match.groups()))<6:
+             r"EFFECTIVE_WORKER=(OLD_INACTIVE|NEW_INACTIVE);CLIENT_RELEASE=false;REAL_PEERS_MODIFIED=false",value)
+          if not match or sum(map(int,match.groups()[:2]))<6:
               raise SystemExit(2)
           PY
           second=$(ru "timeout --signal=TERM --kill-after=10s 180s python3 '$folder/fi_awg_client_worker_stage.py' --stage '$folder'")
@@ -163,10 +164,10 @@ jobs:
           import os,re
           first=os.environ['FI_FIRST']
           second=os.environ['FI_SECOND']
-          pattern=r"^FI_AWG_CLIENT_WORKER=STAGED;COMMIT=446c331249085adb6536e3d9913fb4b68abf6cd7;NEW=([0-9]+);MATCHED=([0-9]+);IMPORT=VERIFIED;EFFECTIVE_WORKER=OLD_INACTIVE;CLIENT_RELEASE=false;REAL_PEERS_MODIFIED=false$"
+          pattern=r"^FI_AWG_CLIENT_WORKER=STAGED;COMMIT=446c331249085adb6536e3d9913fb4b68abf6cd7;NEW=([0-9]+);MATCHED=([0-9]+);IMPORT=VERIFIED;EFFECTIVE_WORKER=(OLD_INACTIVE|NEW_INACTIVE);CLIENT_RELEASE=false;REAL_PEERS_MODIFIED=false$"
           a=re.fullmatch(pattern,first)
           b=re.fullmatch(pattern,second)
-          if not a or not b or int(b[1])!=0 or int(a[1])+int(a[2])!=int(b[2]):
+          if not a or not b or int(b[1])!=0 or int(a[1])+int(a[2])!=int(b[2]) or a[3]!=b[3]:
               raise SystemExit(2)
           PY
           echo 'FI_AWG_CLIENT_WORKER=PINNED_STAGED;IMPORT=PASS;REPEATABLE=true;WORKER_ACTIVE=false;CLIENT_RELEASE=false'

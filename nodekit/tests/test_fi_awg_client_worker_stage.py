@@ -3,6 +3,7 @@ from pathlib import Path
 import hashlib
 import sys
 import unittest
+from unittest import mock
 
 NODEKIT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(NODEKIT))
@@ -39,8 +40,8 @@ class ImmutableReleaseContract(unittest.TestCase):
 
     def test_no_reentrant_flock_on_same_release_lock(self):
         source=(NODEKIT/"fi_awg_client_worker_stage.py").read_text()
-        self.assertIn("def staged_artifacts_locked() -> None:",source)
-        self.assertIn("def staged_artifacts() -> None:",source)
+        self.assertIn("def staged_artifacts_locked() -> str:",source)
+        self.assertIn("def staged_artifacts() -> str:",source)
         self.assertIn("cutover.verify()",source)
         locked=source.split("fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)",1)[1]
         locked=locked.split("fcntl.flock(fd,fcntl.LOCK_UN)",1)[0]
@@ -55,6 +56,31 @@ class ImmutableReleaseContract(unittest.TestCase):
         self.assertIn("flock -n -E 77",workflow)
         self.assertIn('[[ "$lock_state" == FREE ]]',workflow)
         self.assertIn("cutover.verified_new_effective_unit(",source)
+
+    def test_postcutover_rerun_accepts_only_pinned_new_inactive_unit(self):
+        import fi_awg_client_worker_cutover as clientcut
+        old,new=b"reviewed-old",b"reviewed-new"
+        def trusted_read(path,*args):
+            if path==stage.cutover.systemd.OVERRIDE:
+                return new
+            if path==clientcut.BACKUP:
+                return old
+            raise AssertionError("Unexpected filesystem access")
+        with mock.patch.object(stage.trust,"require_safe_dormant"), \
+             mock.patch.object(stage.cutover,"verify_candidate_artifacts"), \
+             mock.patch.object(stage,"reviewed_unit_bytes",return_value=(old,new)), \
+             mock.patch.object(stage.trust,"read_file",side_effect=trusted_read), \
+             mock.patch.object(clientcut,"verify_unit") as verify:
+            self.assertEqual(stage.staged_artifacts_locked(),"NEW_INACTIVE")
+            verify.assert_called_once_with(new)
+
+    def test_unknown_effective_systemd_source_is_denied(self):
+        with mock.patch.object(stage.trust,"require_safe_dormant"), \
+             mock.patch.object(stage.cutover,"verify_candidate_artifacts"), \
+             mock.patch.object(stage,"reviewed_unit_bytes",return_value=(b"old",b"new")), \
+             mock.patch.object(stage.trust,"read_file",return_value=b"unapproved"):
+            with self.assertRaises(stage.trust.StageBlocked):
+                stage.staged_artifacts_locked()
 
     def test_no_existing_candidate_mutation(self):
         source=(NODEKIT/"fi_awg_client_worker_stage.py").read_text()
