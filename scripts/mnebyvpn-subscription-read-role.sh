@@ -36,7 +36,7 @@ fi
 # psql's stdin is internal; do not enable shell tracing or print SQL.
 psql_admin -q >/dev/null <<'SQL'
 BEGIN;
-DO $
+DO $$
 BEGIN
   IF NOT EXISTS(SELECT 1 FROM pg_roles WHERE rolname='mnebyvpn_sub_ro') THEN
     CREATE ROLE mnebyvpn_sub_ro LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
@@ -51,7 +51,7 @@ GRANT SELECT ON TABLE public.accounts,public.entitlements,
 -- The AWG read-only site endpoint requires the SAME canonical entitlement
 -- and bearer token, but no INSERT/UPDATE/DELETE and no private key access.
 -- AWG tables can be absent on an older node: grant nothing in that case.
-DO $
+DO $$
 BEGIN
   IF to_regclass('public.vpn_awg_node_pools') IS NOT NULL AND
      to_regclass('public.vpn_awg_peer_allocations') IS NOT NULL AND
@@ -73,7 +73,7 @@ BEGIN
       ON public.vpn_release_flags TO mnebyvpn_sub_ro;
   END IF;
 END
-$;
+$$;
 COMMIT;
 SQL
 printf "ALTER ROLE mnebyvpn_sub_ro WITH LOGIN PASSWORD '%s';\n" "$PASSWORD" |
