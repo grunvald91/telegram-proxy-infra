@@ -87,10 +87,10 @@ jobs:
             -o ForwardAgent=no -o ClearAllForwardings=yes -o ProxyCommand=none \
             -o ConnectTimeout=12 -o LogLevel=ERROR root@188.120.254.223 \
             python3 - < nodekit/fi_awg_subscription_runtime_inventory.py)
-          printf '%s\\n' "$output"
+          printf '%s\n' "$output"
           read_gate() {
             local label="$1" value
-            value=$(printf '%s\\n' "$output" | awk -F= -v n="FI_AWG_SUB_VISIBILITY_$label" '$1==n {print $2}')
+          printf '%s\n' "$output"
             [[ "$value" =~ ^[0-9]+$ ]] || exit 2
             printf '%s' "$value"
           }
@@ -116,8 +116,5 @@ jobs:
             state=failure
             desc='RU188 FI217 subscription audit unavailable; inspect workflow'
           fi
-          gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \\
-            -f state="$state" -f context='fi217/subscription-visibility-audit' \\
-            -f description="$desc" \\
-            -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/workflows/fi-awg-subscription-inventory.yml" >/dev/null
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" -f state="$state" -f context="fi217/subscription-visibility-audit" -f description="$desc" -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/workflows/fi-awg-subscription-inventory.yml" >/dev/null
 
