@@ -1,0 +1,68 @@
+"""AWG client worker inactive cutover must preserve rollback and release gates."""
+import pathlib
+import unittest
+
+HERE=pathlib.Path(__file__).resolve().parents[1]
+SRC=(HERE/'fi_awg_client_worker_cutover.py').read_text()
+WORKFLOW=(HERE.parent/'.github/workflows/fi-awg-client-worker-cutover.yml').read_text()
+
+class DormantCutoverTest(unittest.TestCase):
+    def test_mutation_is_only_inactive_systemd_definition(self):
+        for required in (
+            'oldcut.verify()', 'oldcut.verify_candidate_artifacts()',
+            'client.source_and_runtime_check(blobs)',
+            'oldcut.atomic_replace(target)',
+            'oldcut.reload_definitions()', 'verify_unit(target)',
+            'rollback(previous)', 'save_backup(previous)',
+            'oldcut.acquire_lock()', 'systemd.dormant_and_disabled()',
+            'ROLLBACK_READY=true', 'CLIENT_RELEASE=false',
+            'BACKUP=oldcut.BACKUP_DIR',
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required,SRC)
+        for forbidden in ('systemctl start','systemctl enable',
+                          'UPDATE vpn_release_flags','INSERT INTO vpn_awg_'):
+            self.assertNotIn(forbidden,SRC)
+
+    def test_repeated_cutover_requires_exact_new_pinned_release(self):
+        self.assertIn('elif trust.read_file(systemd.OVERRIDE,8192)==target:',SRC)
+        self.assertIn('verify()',SRC)
+        self.assertIn('if source==target:',SRC)
+        self.assertIn('return "UNCHANGED"',SRC)
+        self.assertIn('client.independently_pinned(raw,digest)',SRC)
+        self.assertIn('client.RELEASE/client.MANIFEST',SRC)
+
+    def test_dropins_replaces_two_candidate_paths_as_bytes(self):
+        # Execute the real function body against an isolated two-path drop-in.
+        import ast
+        from types import SimpleNamespace
+        func=next(node for node in ast.parse(SRC).body
+                  if isinstance(node,ast.FunctionDef) and node.name=='dropins')
+        unit=b'WorkingDirectory=/old/release\\nExecStart=/old/release/worker.js\\n'
+        namespace={
+            'oldcut':SimpleNamespace(expected_new_dropin=lambda:unit),
+            'candidate':SimpleNamespace(CANDIDATE=pathlib.Path('/old/release')),
+            'client':SimpleNamespace(RELEASE=pathlib.Path('/new/release')),
+            'trust':SimpleNamespace(stop=lambda msg:self.fail(msg)),
+        }
+        exec(compile(ast.Module(body=[func],type_ignores=[]),
+                     '<dropins regression>', 'exec'),namespace)
+        old,new=namespace['dropins']()
+        self.assertEqual(old,unit)
+        self.assertEqual(new,b'WorkingDirectory=/new/release\\n'
+                             b'ExecStart=/new/release/worker.js\\n')
+
+    def test_pr_offline_and_main_only_live_pinned_ssh(self):
+        for required in (
+            'pull_request:', 'branches: [main]','needs: offline',
+            "github.event_name != 'pull_request'",
+            'StrictHostKeyChecking yes', 'HostKeyAlgorithms ssh-ed25519',
+            'mnebydns-owner-ssh-known_hosts','--mode verify',
+            'CHANGE=UNCHANGED','WORKER_ACTIVE=false;CUSTOMER_RELEASE=false',
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required,WORKFLOW)
+        self.assertNotIn('StrictHostKeyChecking accept-new',WORKFLOW)
+        self.assertNotIn('systemctl start',WORKFLOW)
+
+if __name__=='__main__':unittest.main()
