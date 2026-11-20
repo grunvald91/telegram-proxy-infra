@@ -46,6 +46,24 @@ jobs:
           python3 -m unittest discover -s infra/nodekit/tests \
             -p 'test_fi_awg_real_db_ssh_e2e.py' -v
           node --check infra/nodekit/fi_awg_real_db_ssh_e2e.mjs
+          # Extract and syntax-check the EXACT server run block. This catches
+          # reserved bash keywords/functions BEFORE any SSH or FI live setup.
+          python3 - <<'PY'
+          from pathlib import Path
+          lines=Path('infra/.github/workflows/fi-awg-real-db-ssh-e2e.yml').read_text().splitlines()
+          target='      - name: Apply and revoke ONE unconnectable FI217 peer through actual outbox and signed ACK'
+          i=lines.index(target)
+          i=next(k for k in range(i+1,len(lines)) if lines[k]=='        run: |')+1
+          body=[]
+          for line in lines[i:]:
+              if line and not line.startswith('          '):
+                  break
+              body.append(line[10:] if line.startswith('          ') else '')
+          assert body and 'trap cleanup EXIT' in body
+          Path('/tmp/fi-awg-real-e2e-live-parse.sh').write_text('\n'.join(body)+'\n')
+          PY
+          bash -n /tmp/fi-awg-real-e2e-live-parse.sh
+          rm -f /tmp/fi-awg-real-e2e-live-parse.sh
           test -s pinned-controller/db/migrations/0135_awg_worker_row_lock_gateway.sql
           test -s pinned-controller/db/migrations/0133_vpn_awg_command_outbox.sql
           test -s pinned-controller/db/migrations/0131_vpn_awg_peer_allocations.sql
@@ -159,11 +177,11 @@ jobs:
             ServerAliveCountMax 3
             LogLevel ERROR
           CFG
-          fi(){ SSHPASS="$FI_SSH_PASSWORD" sshpass -e ssh -T -F "$work/fi.cfg" fi-node "$@"; }
+          fi_node(){ SSHPASS="$FI_SSH_PASSWORD" sshpass -e ssh -T -F "$work/fi.cfg" fi-node "$@"; }
           # Refuse to interfere with an existing FI test, live peer or timer.
-          fi 'set -eu; ! systemctl is-active --quiet mnebyvpn-nodekit-awg@fi-test-01.service; ! systemctl is-active --quiet mnebyvpn-nodekit-awg-watchdog@fi-test-01.service; test ! -e /sys/class/net/awg0'
+          fi_node 'set -eu; ! systemctl is-active --quiet mnebyvpn-nodekit-awg@fi-test-01.service; ! systemctl is-active --quiet mnebyvpn-nodekit-awg-watchdog@fi-test-01.service; test ! -e /sys/class/net/awg0'
           ru_dir=$(ru 'umask 077; mktemp -d /run/fi-awg-real-e2e.XXXXXXXX')
-          fi_dir=$(fi 'umask 077; mktemp -d /run/fi-awg-real-e2e.XXXXXXXX')
+          fi_dir=$(fi_node 'umask 077; mktemp -d /run/fi-awg-real-e2e.XXXXXXXX')
           [[ "$ru_dir" =~ ^/run/fi-awg-real-e2e\.[A-Za-z0-9]{8}$ ]] || exit 2
           [[ "$fi_dir" =~ ^/run/fi-awg-real-e2e\.[A-Za-z0-9]{8}$ ]] || exit 2
           sshpass -e scp -F "$work/ru.cfg" \
@@ -206,7 +224,7 @@ jobs:
             infra/nodekit/install_components.py \
             "$work/signed.json" "fi-node:$fi_dir/"
           fi_attempted=true
-          fi "chmod 0600 '$fi_dir/'*; python3 '$fi_dir/fi_awg_e2e_fi_guard.py' --mode prepare --signed '$fi_dir/signed.json'"
+          fi_node "chmod 0600 '$fi_dir/'*; python3 '$fi_dir/fi_awg_e2e_fi_guard.py' --mode prepare --signed '$fi_dir/signed.json'"
           # ACTUAL production delivery code, actual RU->FI Ed25519 SSH, and
           # authenticated node receipt persisted to a local disposable DB.
           report=$(ru "/opt/mnebyvpn-controller/current/bin/node --experimental-strip-types '$ru_dir/fi_awg_real_db_ssh_e2e.mjs' '$ru_dir'")
@@ -222,9 +240,9 @@ jobs:
              'REAL_FI_PEER=true;CUSTOMER_RELEASE=false;DATABASE=DISPOSABLE')
           ],rows
           PY
-          fi "python3 '$fi_dir/fi_awg_e2e_fi_guard.py' --mode cleanup --signed '$fi_dir/signed.json'"
+          fi_node "python3 '$fi_dir/fi_awg_e2e_fi_guard.py' --mode cleanup --signed '$fi_dir/signed.json'"
           fi_attempted=false
-          fi 'set -eu; ! systemctl is-active --quiet mnebyvpn-nodekit-awg@fi-test-01.service; ! systemctl is-active --quiet mnebyvpn-nodekit-awg-watchdog@fi-test-01.service; test ! -e /sys/class/net/awg0'
+          fi_node 'set -eu; ! systemctl is-active --quiet mnebyvpn-nodekit-awg@fi-test-01.service; ! systemctl is-active --quiet mnebyvpn-nodekit-awg-watchdog@fi-test-01.service; test ! -e /sys/class/net/awg0'
           ru "python3 '$ru_dir/fi_awg_e2e_disposable_postgres.py' --mode stop --stage '$ru_dir'"
           db_attempted=false
           ru 'set -eu; ! systemctl is-active --quiet mnebyvpn-awg-delivery.service'
