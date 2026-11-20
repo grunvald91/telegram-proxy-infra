@@ -42,6 +42,8 @@ class ImmutableReleaseContract(unittest.TestCase):
         self.assertIn('RELEASE=RELEASES/NEW',source)
         self.assertIn('read_file(candidate.CANDIDATE/rel)',source)
         self.assertIn('DEPENDENCY_MANIFEST=runtime.MARKER',source)
+        self.assertNotIn("runtime.verify_runtime_manifest()",source)
+        self.assertIn("cutover.verify()",source)
         self.assertIn('runtime.MODULES/rel',source)
         self.assertIn('matched=0',source)
 
