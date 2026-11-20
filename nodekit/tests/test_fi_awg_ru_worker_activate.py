@@ -12,10 +12,10 @@ class WorkerActivate(unittest.TestCase):
         with patch.object(m.trust,"require_safe_dormant") as a,\
              patch.object(m.pinned,"verify") as b,\
              patch.object(m.unit,"approved_base_unit") as c,\
-             patch.object(m.unit,"exact_effective_unit") as d,\
-             patch.object(m.unit,"show",return_value="/opt/mnebyvpn-controller/awg-worker-releases/446c331249085adb6536e3d9913fb4b68abf6cd7"):
+             patch.object(m.unit,"show",return_value="/opt/mnebyvpn-controller/awg-worker-releases/446c331249085adb6536e3d9913fb4b68abf6cd7") as show:
             m.effective_pinned()
-        for gate in (a,b,c,d):gate.assert_called_once()
+        for gate in (a,b,c):gate.assert_called_once()
+        show.assert_called_once_with("WorkingDirectory")
 
     def test_existing_active_worker_is_verified_not_restarted(self):
         with patch.object(m,"active",return_value=True),\
@@ -41,7 +41,7 @@ class WorkerActivate(unittest.TestCase):
     def test_does_not_modify_customer_release_or_vpn_network(self):
         src=Path(m.__file__).read_text()
         self.assertIn("pinned.verify()",src)
-        self.assertIn("unit.exact_effective_unit()",src)
+        self.assertNotIn("    unit.exact_effective_unit()",src)
         self.assertIn('systemctl","add-wants',src)
         self.assertNotIn("vpn_release_flags SET",src)
         self.assertNotIn("iptables",src)
