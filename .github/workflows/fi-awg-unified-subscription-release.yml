@@ -29,6 +29,17 @@ jobs:
         run: |
           set -Eeuo pipefail
           python3 -m py_compile nodekit/fi_awg_unified_subscription_activate.py
+          # Verify extraction never overwrites root ownership with the CI
+          # runner's archive owner (the live failure was ROOT:NO).
+          mkdir -p "$RUNNER_TEMP/fi-awg-archive/source"
+          printf 'sealed\n' > "$RUNNER_TEMP/fi-awg-archive/source/probe"
+          tar -czf "$RUNNER_TEMP/fi-awg-test.tgz" -C "$RUNNER_TEMP/fi-awg-archive/source" .
+          extracted=$(sudo mktemp -d /tmp/fi-awg-test-owner.XXXXXXXX)
+          sudo tar --no-same-owner -xzf "$RUNNER_TEMP/fi-awg-test.tgz" -C "$extracted"
+          test "$(sudo stat -c %u "$extracted")" = 0
+          test "$(sudo stat -c %u "$extracted/probe")" = 0
+          sudo rm -rf -- "$extracted"
+
           python3 -m unittest discover -s nodekit/tests -p 'test_fi_awg_unified_subscription_activate.py' -v
           python3 - <<'PY'
           from pathlib import Path
@@ -138,7 +149,7 @@ jobs:
           [[ "$dir" =~ ^/run/fi-awg-subscription\.[A-Za-z0-9]{8}$ ]] || exit 2
           SSHPASS="$RU_PASSWORD" sshpass -e scp -F "$work/ru.cfg" \
             "$work/source.tgz" "ru-controller:$dir/source.tgz"
-          ru "tar -xzf '$dir/source.tgz' -C '$dir'; chmod -R go-rwx '$dir'; timeout 210s python3 '$dir/fi_awg_unified_subscription_activate.py' --mode activate --stage '$dir'"
+          ru "tar --no-same-owner -xzf '$dir/source.tgz' -C '$dir'; chmod -R go-rwx '$dir'; test \"\$(stat -c %u '$dir')\" = 0; timeout 210s python3 '$dir/fi_awg_unified_subscription_activate.py' --mode activate --stage '$dir'"
           ru 'systemctl is-active --quiet mnebyvpn-awg-delivery.service &&
               test "$(systemctl show -p WorkingDirectory --value mnebyvpn-awg-delivery.service)" = /opt/mnebyvpn-controller/awg-worker-releases/eec5b86c62b6c58bdbda8735c7e75fd9f38fd859 &&
               docker inspect -f "{{.State.Running}}" mnebyvpn-public-web | grep -qx true &&
