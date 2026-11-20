@@ -73,7 +73,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends sshpass >/dev/null
-      - name: Stage approved AWG egress source on dormant FI217 only
+      - name: Stage and atomically switch pinned egress source while AWG remains dormant
         shell: bash
         env:
           RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
