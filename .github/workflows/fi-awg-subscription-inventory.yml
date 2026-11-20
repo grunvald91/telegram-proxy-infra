@@ -90,7 +90,7 @@ jobs:
           printf '%s\n' "$output"
           read_gate() {
             local label="$1" value
-          printf '%s\n' "$output"
+            value=$(printf '%s\n' "$output" | awk -F= -v n="FI_AWG_SUB_VISIBILITY_$label" '$1==n {print $2}')
             [[ "$value" =~ ^[0-9]+$ ]] || exit 2
             printf '%s' "$value"
           }
