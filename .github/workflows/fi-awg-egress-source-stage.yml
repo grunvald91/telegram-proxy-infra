@@ -12,7 +12,10 @@ name: FI217 signed production AWG egress source stage (inactive)
   push:
     branches: [main]
     paths:
+      - nodekit/awg_egress.py
       - nodekit/fi_awg_egress_source_stage.py
+      - nodekit/tests/test_awg_egress_production.py
+      - nodekit/tests/test_awg_egress.py
       - nodekit/tests/test_fi_awg_egress_source_stage.py
       - .github/workflows/fi-awg-egress-source-stage.yml
   workflow_dispatch:
