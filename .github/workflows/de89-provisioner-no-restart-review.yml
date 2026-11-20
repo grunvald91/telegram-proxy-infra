@@ -1,0 +1,28 @@
+name: DE89 non-disruptive VPN provisioning regression tests
+"on":
+  pull_request:
+    branches: [main]
+    paths:
+      - scripts/mnebyvpn-vpn-provisioner.py
+      - tests/test_mnebyvpn_provisioner_renewal_no_restart.py
+      - .github/workflows/de89-provisioner-no-restart-review.yml
+  push:
+    branches: [main]
+    paths:
+      - scripts/mnebyvpn-vpn-provisioner.py
+      - tests/test_mnebyvpn_provisioner_renewal_no_restart.py
+      - .github/workflows/de89-provisioner-no-restart-review.yml
+permissions: {contents: read}
+jobs:
+  offline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Test non-disruptive updates, forced revocation and failure path
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/mnebyvpn-vpn-provisioner.py
+          python3 -m unittest discover -s tests -p 'test_mnebyvpn_provisioner_renewal_no_restart.py' -v
+          python3 -m unittest discover -s tests -p 'test_mnebyvpn_ephemeral_guard.py' -v
