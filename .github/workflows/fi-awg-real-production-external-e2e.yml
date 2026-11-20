@@ -1,0 +1,79 @@
+name: FI217 production native AWG signed external client E2E and pool proof
+"on":
+  pull_request:
+    branches: [main]
+    paths:
+      - nodekit/fi_awg_live_customer_e2e.py
+      - nodekit/tests/test_fi_awg_live_customer_e2e.py
+      - scripts/fi-awg-real-production-external-e2e.sh
+      - .github/workflows/fi-awg-real-production-external-e2e.yml
+  push:
+    branches: [main]
+    paths:
+      - nodekit/fi_awg_live_customer_e2e.py
+      - nodekit/tests/test_fi_awg_live_customer_e2e.py
+      - scripts/fi-awg-real-production-external-e2e.sh
+      - .github/workflows/fi-awg-real-production-external-e2e.yml
+  workflow_dispatch:
+permissions: {contents: read}
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('fi-awg-real-e2e-pr-{0}',github.event.pull_request.number) || 'mnebyvpn-fleet-fi' }}
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Validate production-only test protocol and shell
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile nodekit/fi_awg_live_customer_e2e.py
+          python3 -m unittest discover -s nodekit/tests -p 'test_fi_awg_live_customer_e2e.py' -v
+          python3 -m unittest discover -s nodekit/tests -p 'test_fi_awg_production_policy.py' -v
+          bash -n scripts/fi-awg-real-production-external-e2e.sh
+          grep -q 'FI_AWG_LIVE_E2E_REVOKE=PASS' scripts/fi-awg-real-production-external-e2e.sh
+          grep -q 'FI_AWG_LIVE_E2E_POOL_FRESH=PASS' scripts/fi-awg-real-production-external-e2e.sh
+  live-fi:
+    needs: offline
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: node-fi
+    env:
+      RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      FI_PASSWORD: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_PASSWORD }}
+      FI_USER: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_USER }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.25.4'
+          check-latest: false
+      - name: Build exact tested official AmneziaWG 3.1 client
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends sshpass iproute2 iputils-ping curl make gcc >/dev/null
+          mkdir -p "$RUNNER_TEMP/awgrepos" "$RUNNER_TEMP/awgbin"
+          cd "$RUNNER_TEMP/awgrepos"
+          git clone -q --no-checkout https://github.com/amnezia-vpn/amneziawg-go.git userspace
+          git -C userspace checkout -q --detach 08fe3d33bbb116be09a6183d02609311b8b0c9e8
+          [[ "$(git -C userspace rev-parse HEAD)" == 08fe3d33bbb116be09a6183d02609311b8b0c9e8 ]]
+          (cd userspace && GOTOOLCHAIN=local go build -trimpath -o "$RUNNER_TEMP/awgbin/amneziawg-go" .)
+          git clone -q --no-checkout https://github.com/amnezia-vpn/amneziawg-tools.git tools
+          git -C tools checkout -q --detach ee0f0a9aa34ff0a0da4b3433b9512781cfe02843
+          [[ "$(git -C tools rev-parse HEAD)" == ee0f0a9aa34ff0a0da4b3433b9512781cfe02843 ]]
+          make -s -C tools/src
+          install -m 0755 tools/src/wg "$RUNNER_TEMP/awgbin/awg"
+          install -m 0755 tools/src/wg-quick/linux.bash "$RUNNER_TEMP/awgbin/awg-quick"
+          chmod 0755 "$RUNNER_TEMP/awgbin/amneziawg-go"
+      - name: Live signed grant, runner HTTPS exit, signed revoke and fresh canonical pool
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          bash scripts/fi-awg-real-production-external-e2e.sh
