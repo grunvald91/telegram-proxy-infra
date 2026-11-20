@@ -31,12 +31,16 @@ jobs:
           set -Eeuo pipefail
           python3 -m py_compile \
             nodekit/fi_awg_postcutover_db_ssh_preflight.py \
+            nodekit/fi_awg_client_worker_stage.py \
+            nodekit/fi_awg_client_worker_cutover.py \
             nodekit/fi_awg_worker_live_db_readonly.py \
             nodekit/fi_awg_ssh_stage.py
           python3 -m unittest discover -s nodekit/tests \
             -p 'test_fi_awg_postcutover_db_ssh_preflight.py' -v
           python3 -m unittest discover -s nodekit/tests \
             -p 'test_fi_awg_worker_systemd_cutover.py' -v
+          python3 -m unittest discover -s nodekit/tests \
+            -p 'test_fi_awg_client_worker_cutover.py' -v
           python3 -m unittest discover -s nodekit/tests \
             -p 'test_fi_awg_worker_candidate_runtime.py' -v
   readonly-server:
@@ -100,6 +104,8 @@ jobs:
           [[ "$remote_dir" =~ ^/run/fi-awg-postcutover\.[A-Za-z0-9]{8}$ ]] || exit 2
           sshpass -e scp -F "$folder/config" \
             nodekit/fi_awg_postcutover_db_ssh_preflight.py \
+            nodekit/fi_awg_client_worker_stage.py \
+            nodekit/fi_awg_client_worker_cutover.py \
             nodekit/fi_awg_worker_live_db_readonly.py \
             nodekit/fi_awg_ssh_stage.py \
             nodekit/fi_awg_worker_systemd_cutover.py \
@@ -111,7 +117,7 @@ jobs:
             nodekit/fi_awg_worker_isolated_runtime_preflight.py \
             nodekit/fi_awg_worker_isolated_pg_stage.py \
             "ru-controller:$remote_dir/"
-          first=$(remote "chmod 0600 '$remote_dir/'*; python3 '$remote_dir/fi_awg_postcutover_db_ssh_preflight.py'")
+          first=$(remote "chmod 0600 '$remote_dir/'*; timeout --signal=TERM --kill-after=10s 120s python3 '$remote_dir/fi_awg_postcutover_db_ssh_preflight.py'")
           export FI_PREFLIGHT_RESULT="$first"
           python3 - <<'PY'
           import os
@@ -126,6 +132,6 @@ jobs:
             'PRODUCTION_E2E=false;NODE_ACK_IN_DB=false;POOL_PROOF='+
             rows[0].split('POOL_PROOF=')[1].split(';')[0])
           PY
-          second=$(remote "python3 '$remote_dir/fi_awg_postcutover_db_ssh_preflight.py'")
+          second=$(remote "timeout --signal=TERM --kill-after=10s 120s python3 '$remote_dir/fi_awg_postcutover_db_ssh_preflight.py'")
           [[ "$second" == "$first" ]] || exit 2
           echo 'FI_AWG_RU_PG_FI_TRANSPORT=VERIFIED;REPEATABLE=true;DB_WRITES=false;WORKER_ACTIVE=false;CLIENT_RELEASE=false;FULL_DB_NODE_ACK=false'

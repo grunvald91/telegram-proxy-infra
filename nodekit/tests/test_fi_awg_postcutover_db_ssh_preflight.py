@@ -24,12 +24,21 @@ class PostCutoverDbSshTests(unittest.TestCase):
 
     def test_corrected_db_probe_uses_only_pinned_new_release(self):
         new = preflight.audited_candidate_query()
+        self.assertEqual(preflight.NEW_RELEASE, str(preflight.client.RELEASE))
+        self.assertNotEqual(preflight.NEW_RELEASE, str(preflight.candidate.CANDIDATE))
         self.assertIn(preflight.NEW_DECLARATION, new)
         self.assertNotIn(preflight.OLD_DECLARATION, new)
         self.assertIn("BEGIN READ ONLY", new)
         self.assertIn("ROLLBACK", new)
         self.assertIn("vpn_awg_clients", new)
         self.assertEqual(new.count(preflight.NEW_DECLARATION), 1)
+
+    def test_live_checker_never_calls_old_five_module_verifier(self):
+        from pathlib import Path
+        source = (ROOT / "fi_awg_postcutover_db_ssh_preflight.py").read_text()
+        self.assertEqual(source.count("clientcut.verify()"), 2)
+        self.assertNotIn("cutover.verify()", source)
+        self.assertIn("NEW_RELEASE = str(client.RELEASE)", source)
 
     def test_unknown_legacy_code_change_is_denied(self):
         with mock.patch.object(preflight.legacy, "CODE", "SELECT secret;"):
@@ -56,7 +65,7 @@ class PostCutoverDbSshTests(unittest.TestCase):
 
     def test_real_runner_is_readonly_and_sanitized(self):
         fake = SimpleNamespace(returncode=0, stdout=self.report("STALE"), stderr="")
-        with mock.patch.object(preflight.cutover, "verify") as cv, \
+        with mock.patch.object(preflight.clientcut, "verify") as cv, \
              mock.patch.object(preflight.node, "trusted_node_binary",
                                return_value=Path("/verified-node")), \
              mock.patch.object(preflight.subprocess, "run", return_value=fake) as run:
@@ -80,7 +89,7 @@ class PostCutoverDbSshTests(unittest.TestCase):
     def test_success_requires_fi_forced_ssh_and_two_cutover_checks(self):
         with mock.patch.object(preflight, "verify_live_db", return_value="STALE"), \
              mock.patch.object(preflight.ssh, "probe") as probe, \
-             mock.patch.object(preflight.cutover, "verify") as verified:
+             mock.patch.object(preflight.clientcut, "verify") as verified:
             self.assertEqual(preflight.main(),0)
             probe.assert_called_once()
             verified.assert_called_once()
