@@ -1,0 +1,212 @@
+name: DE89 Germany VPN WS and Ozon Telegram proxy stability (read-only)
+"on":
+  pull_request:
+    branches: [main]
+    paths: ['.github/workflows/de89-vpn-ws-proxy-continuity-20261120.yml']
+  push:
+    branches: [main]
+    paths: ['.github/workflows/de89-vpn-ws-proxy-continuity-20261120.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: de89-vpn-ws-proxy-continuity
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Parse safe workflow YAML and validate scoped target
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ruby -e 'require "yaml"; y=YAML.load_file(".github/workflows/de89-vpn-ws-proxy-continuity-20261120.yml"); abort "wrong trigger" unless y["on"].key?("pull_request") && y["on"].key?("push"); abort "unexpected write permissions" unless y["permissions"]=={"contents"=>"read"}'
+          grep -q 'DE89_VLESS_WS_E2E_OK' .github/workflows/de89-vpn-ws-proxy-continuity-20261120.yml
+          grep -q 'DE89_PROXY_ROUTE_m.ozon.ru' .github/workflows/de89-vpn-ws-proxy-continuity-20261120.yml
+  live:
+    needs: offline
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 9
+    environment: node-fi
+    env:
+      DE_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: External samples of DE89 WS TLS and Ozon port reachability
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import socket,ssl,time
+          ip='89.125.90.101'
+          for label,port in [('VPN_WS_8443',8443),('MT_PUBLIC_443',443),
+                             ('OZON_9446',9446),('OZON_9447',9447)]:
+              ok=0
+              for n in range(5):
+                  try:
+                      with socket.create_connection((ip,port),timeout=5):ok+=1
+                  except OSError:pass
+                  time.sleep(0.3)
+              print(f'DE89_PUBLIC_{label}_TCP_OK={ok}/5',flush=True)
+          ctx=ssl.create_default_context()
+          ok=0
+          for n in range(8):
+              t=time.monotonic()
+              try:
+                  with socket.create_connection((ip,8443),timeout=6) as raw:
+                      raw.settimeout(6)
+                      with ctx.wrap_socket(raw,server_hostname='cdn.servgo.ru') as sock:
+                          if sock.version():ok+=1
+                  print('DE89_PUBLIC_VPN_WS_TLS_SAMPLE='+str(n+1)+
+                        ' result=ok time_ms='+str(round((time.monotonic()-t)*1000)),flush=True)
+              except Exception as e:
+                  print('DE89_PUBLIC_VPN_WS_TLS_SAMPLE='+str(n+1)+
+                        ' result='+type(e).__name__,flush=True)
+              time.sleep(1)
+          print('DE89_PUBLIC_VPN_WS_TLS_OK='+str(ok)+'/8',flush=True)
+          if ok<6:raise SystemExit('DE89 public WS TLS unstable')
+          PY
+      - name: Live DE89 Xray process, Nginx, active Ozon routing, read-only aggregate errors and true VLESS canary
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASSWORD"
+          grep -q '^89\.125\.90\.101 ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends sshpass >/dev/null
+          export SSHPASS="$DE_PASSWORD"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes \
+            -o HostKeyAlgorithms=ssh-ed25519 \
+            -o "UserKnownHostsFile=$GITHUB_WORKSPACE/ops/mnebydns-owner-ssh-known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no \
+            -o PasswordAuthentication=yes -o PubkeyAuthentication=no \
+            -o ClearAllForwardings=yes -o ForwardAgent=no -o LogLevel=ERROR \
+            root@89.125.90.101 'bash -se' <<'REMOTE'
+          set -Eeuo pipefail
+          umask 077
+          python3 - <<'PY'
+          import subprocess,re,socket,pathlib
+          def run(args,limit=12):
+              try:
+                  p=subprocess.run(args,capture_output=True,text=True,timeout=limit)
+                  return p.returncode,p.stdout.strip()
+              except Exception:return 255,''
+          for unit in ('xray.service','mnebyvpn-xray-canary.service',
+                       'mnebyvpn-vpn-provisioner.service','nginx.service',
+                       'telemt-direct-ozon.service','wg-quick@tg-relay.service'):
+              rc,raw=run(['systemctl','show',unit,'-p','ActiveState','-p','SubState',
+                          '-p','NRestarts','-p','Result','--no-pager'])
+              p=dict(x.split('=',1) for x in raw.splitlines() if '=' in x)
+              name=re.sub('[^A-Za-z0-9]','_',unit)
+              print('DE89_UNIT_'+name+'='+
+                    ','.join(p.get(k,'unknown') for k in
+                    ('ActiveState','SubState','NRestarts','Result')),flush=True)
+              if unit in ('xray.service','mnebyvpn-xray-canary.service',
+                          'nginx.service','telemt-direct-ozon.service'):
+                  _,journal=run(['journalctl','-u',unit,'--since','-90 minutes',
+                                 '--no-pager','-n','2500','-o','cat'],limit=15)
+                  for key,pat in [('timeout',r'timeout|timed out'),
+                                  ('reset',r'connection reset|broken pipe'),
+                                  ('failed',r'failed|error|panic|out of memory'),
+                                  ('closed',r'upstream.*closed|connection.*closed')]:
+                      print('DE89_ERR_'+name+'_'+key+'='+
+                            str(len(re.findall(pat,journal,re.I))),flush=True)
+          _,listeners=run(['ss','-H','-lnt'])
+          for port in (443,8443,9446,9447,2053,8080,8084):
+              active=bool(re.search(':'+str(port)+r'\s',listeners))
+              print('DE89_LISTEN_'+str(port)+'='+str(active).lower(),flush=True)
+          rc,config=run(['nginx','-T'],limit=15)
+          print('DE89_NGINX_TEST_RC='+str(run(['nginx','-t'])[0]),flush=True)
+          for name in ('m.ozon.ru','xapi.ozon.ru','www.ozon.ru'):
+              # Only publish the target port, never the complete config.
+              port=re.search(r'(?m)^\s*'+re.escape(name)+
+                             r'\s+127\.0\.0\.1:(\d+);',config)
+              print('DE89_PROXY_ROUTE_'+name+'='+
+                    (port.group(1) if port else 'unavailable'),flush=True)
+          for port in (9446,9447):
+              try:
+                  with socket.create_connection(('127.0.0.1',port),timeout=3):
+                      status='connected'
+              except OSError as e:status=type(e).__name__
+              print('DE89_PROXY_LOOPBACK_'+str(port)+'='+status,flush=True)
+          _,dmesg=run(['journalctl','-k','-p','err','--since','-90 minutes',
+                       '-n','500','--no-pager','-o','cat'],limit=15)
+          print('DE89_KERNEL_OOM_EVENTS='+str(len(re.findall(
+              r'out of memory|oom-killer|killed process.*xray',dmesg,re.I))),flush=True)
+          PY
+          # A pre-existing test-only UUID, not a customer key. Run a transient
+          # localhost SOCKS Xray client; do not alter server listeners or configs.
+          KEY=/etc/mnebyvpn/canary-uuid
+          BIN=/opt/xray/xray
+          if [[ ! -s "$KEY" || ! -x "$BIN" ]]; then
+            echo 'DE89_VLESS_WS_E2E_BLOCKED=test_key_or_xray_missing'
+            exit 2
+          fi
+          TEMP="$(mktemp -d /tmp/de89-vless-readonly-XXXXXXXX)"
+          CLIENT_PID=''
+          cleanup(){
+            if [[ -n "$CLIENT_PID" ]]; then
+              kill "$CLIENT_PID" 2>/dev/null || true
+              wait "$CLIENT_PID" 2>/dev/null || true
+            fi
+            rm -rf "$TEMP"
+          }
+          trap cleanup EXIT
+          python3 - "$KEY" "$TEMP/client.json" <<'PY'
+          import json,pathlib,sys,uuid
+          value=pathlib.Path(sys.argv[1]).read_text().strip()
+          uuid.UUID(value)
+          data={
+            'log':{'loglevel':'warning'},
+            'inbounds':[{'listen':'127.0.0.1','port':19186,'protocol':'socks',
+                          'settings':{'auth':'noauth','udp':False}}],
+            'outbounds':[{'protocol':'vless','tag':'germany-ws-e2e',
+              'settings':{'vnext':[{'address':'89.125.90.101','port':8443,
+                                   'users':[{'id':value,'encryption':'none'}]}]},
+              'streamSettings':{'network':'ws','security':'tls',
+                'tlsSettings':{'serverName':'cdn.servgo.ru','allowInsecure':False},
+                'wsSettings':{'path':'/mnebyvpn-vpn/ws',
+                              'headers':{'Host':'cdn.servgo.ru'}}}}]
+          }
+          pathlib.Path(sys.argv[2]).write_text(json.dumps(data)+'\n')
+          PY
+          "$BIN" run -test -config "$TEMP/client.json" >/dev/null 2>&1
+          "$BIN" run -config "$TEMP/client.json" >"$TEMP/client.log" 2>&1 &
+          CLIENT_PID=$!
+          ok_listener=0
+          for n in $(seq 1 15); do
+            if ss -H -lnt | grep -q '127.0.0.1:19186'; then
+              ok_listener=1; break
+            fi
+            sleep 1
+          done
+          if [[ "$ok_listener" != 1 ]]; then
+            echo 'DE89_VLESS_WS_E2E_BLOCKED=temporary_local_socks_not_ready'
+            exit 2
+          fi
+          good=0
+          for n in 1 2 3 4 5 6; do
+            http="$(curl -sS --noproxy '' --proxy socks5h://127.0.0.1:19186 \
+              --connect-timeout 7 --max-time 16 -o /dev/null \
+              -w '%{http_code}' https://example.com/ 2>/dev/null || true)"
+            if [[ "$http" == 200 ]]; then
+              good=$((good+1))
+              echo "DE89_VLESS_WS_E2E_SAMPLE_${n}=ok"
+            else
+              echo "DE89_VLESS_WS_E2E_SAMPLE_${n}=failed_http_${http:-000}"
+            fi
+            sleep 1
+          done
+          echo "DE89_VLESS_WS_E2E_OK=$good/6"
+          if [[ "$good" -lt 5 ]]; then
+            echo 'DE89_VLESS_WS_E2E_CONCLUSION=unstable_or_upstream_rejected'
+            exit 2
+          fi
+          echo 'DE89_VLESS_WS_E2E_CONCLUSION=pass'
+          REMOTE
