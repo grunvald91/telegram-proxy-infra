@@ -234,9 +234,11 @@ def activate(stage:Path)->None:
             cmd(["docker","rm","-f","mnebyvpn-fi-sub-canary"],check=False,timeout=15)
             candidate.unlink(missing_ok=True)
         web.write_atomic(PUBLIC_ENV,web_next);changed_web_env=True
+        # Mark rollback needed BEFORE stopping: a partial stop or failed
+        # removal must still restore the old website, never leave it off.
+        changed_web_container=True
         cmd(["docker","stop","-t","12",web.WEB_NAME],timeout=22)
         cmd(["docker","rm",web.WEB_NAME],timeout=15)
-        changed_web_container=True
         web.launch(image,web.WEB_NAME,8792,PUBLIC_ENV,{},temporary=False)
         web.healthy(8792)
         if not active() or show("WorkingDirectory")!=str(NEW_RELEASE):
