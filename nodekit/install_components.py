@@ -69,18 +69,28 @@ def safe_manifest(path: Path) -> dict:
         raise InstallError("Invalid manifest type")
     return value
 
-def node_ready(root: Path, name: str) -> Path:
+def node_ready(root: Path, name: str, *, allow_production: bool = False) -> Path:
     if not NODE.fullmatch(name) or name.endswith("-"):
         raise InstallError("Invalid node ID")
     safe_dir(root)
     node = root / name
     safe_dir(node)
     m = safe_manifest(node / "manifest.json")
-    if (m.get("node_id") != name or m.get("state") != "testing" or
-            m.get("activation_enabled") is not False or
-            m.get("registration_enabled") is not False or
-            not {"vpn", "dns", "sni-proxy", "tunnel"}.issubset(set(m.get("roles", [])))):
-        raise InstallError("Only unpublished combined test nodes are allowed")
+    # Existing installers remain strict: allow_production defaults to False.
+    # Only AWG's systemd *validate* command may request the production shape;
+    # it must also independently verify the RU188 Ed25519 approval.
+    is_staged = (m.get("state") == "testing" and
+                 m.get("activation_enabled") is False and
+                 m.get("registration_enabled") is False)
+    is_production = (allow_production is True and name == "fi-test-01" and
+                     m.get("state") == "active" and
+                     m.get("activation_enabled") is True and
+                     m.get("registration_enabled") is True)
+    roles = m.get("roles")
+    if (m.get("node_id") != name or not (is_staged or is_production) or
+            not isinstance(roles, list) or
+            not {"vpn", "dns", "sni-proxy", "tunnel"}.issubset(set(roles))):
+        raise InstallError("Unapproved node state or missing roles")
     identity = node / "identity"
     safe_dir(identity)
     for key in ("node-private.pk8", "node-public.spki"):
