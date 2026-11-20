@@ -70,11 +70,26 @@ try{
     "revision,starts_at,expires_at) VALUES($1,$2,$3,'vpn','ACTIVE',11,$4,$5)",
     [id,account,order,new Date(Date.now()-30_000),
      new Date(signed.grant.expiresAt)]);
+  // The disposable fixture must follow the EXISTING enrollment guard.
+  // It is NOT a change to the production inventory or real node approval.
   await db.query(
     "INSERT INTO vpn_node_enrollment_inventory(node_id,endpoint_host,"+
-    "identity_public_spki,status,approved_at,enrolled_at) "+
-    "VALUES('fi-test-01','fi.mnebyvpn.site',$1,'enrolled',clock_timestamp(),clock_timestamp())",
+    "identity_public_spki) VALUES('fi-test-01','fi.mnebyvpn.site',$1)",
     [fingerprint]);
+  await db.query(
+    "UPDATE vpn_node_enrollment_inventory SET status='approved',"+
+    "approved_at=clock_timestamp() WHERE node_id='fi-test-01'");
+  // The isolated database uses a disposable consumed enrollment challenge
+  // as a fixture. Real FI node proof is separately required for signed ACK.
+  await db.query(
+    "INSERT INTO vpn_node_enrollment_challenges(challenge_id,node_id,"+
+    "nonce_sha256,issued_at,expires_at,consumed_at) "+
+    "VALUES($1,'fi-test-01',$2,clock_timestamp()-interval '1 second',"+
+    "clock_timestamp()+interval '2 minutes',clock_timestamp())",
+    [randomUUID(),randomBytes(32).toString('hex')]);
+  await db.query(
+    "UPDATE vpn_node_enrollment_inventory SET status='enrolled',"+
+    "enrolled_at=clock_timestamp() WHERE node_id='fi-test-01'");
   await db.query(
     "INSERT INTO vpn_awg_node_pools(node_id,endpoint_host,server_public_key,"+
     "subnet_cidr,state,external_e2e_proof_sha256,verified_at) "+
