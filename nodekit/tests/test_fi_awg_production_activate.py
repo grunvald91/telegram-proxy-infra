@@ -32,7 +32,9 @@ class ProductionBootstrapTest(unittest.TestCase):
             with patch.object(issue.trust,"is_host",return_value=True),\
                  patch.object(issue.trust,"RU_ROOT",root),\
                  patch.object(issue.trust,"pinned_spki",return_value=pub),\
-                 patch.object(issue.trust,"protected",side_effect=lambda p,*args,**kw:p.read_bytes()):
+                 patch.object(issue.trust,"protected",side_effect=lambda p,*args,**kw:p.read_bytes()),\
+                 patch.object(issue,"tempfile") as tmpmodule:
+                tmpmodule.TemporaryDirectory.side_effect=lambda **kwargs: tempfile.TemporaryDirectory(prefix=kwargs.get("prefix","ci-"))
                 result=issue.signed(payload)
             self.assertEqual(result["approvalRevision"],1)
             self.assertEqual(result["nodeId"],"fi-test-01")
@@ -81,6 +83,7 @@ class ProductionBootstrapTest(unittest.TestCase):
                  patch.object(rollout,"AWG",awg),\
                  patch.object(rollout,"BACK",node/"production-backup"),\
                  patch.object(rollout,"backed_up",side_effect=backup_for_test),\
+                 patch.object(rollout,"safe_manifest",side_effect=lambda path:json.loads(path.read_text())),\
                  patch.object(rollout,"APPROVAL",awg/"production-approval.json"),\
                  patch.object(rollout,"protected",side_effect=lambda path,*args:path.read_bytes()),\
                  patch.object(rollout,"admit",return_value={"production_approval":"signed"}),\
