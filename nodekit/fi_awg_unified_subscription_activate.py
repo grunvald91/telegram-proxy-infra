@@ -175,8 +175,10 @@ def preflight()->bytes:
     return raw
 
 def stage_release(stage:Path,blobs:dict[Path,bytes])->None:
+    print("FI_AWG_SUB_STAGE=RELEASE_ROOT_BEGIN",flush=True)
     if not RELEASES.is_dir() or RELEASES.is_symlink() or RELEASES.stat().st_uid!=0:
         raise Blocked("untrusted release root")
+    print("FI_AWG_SUB_STAGE=RELEASE_ROOT_APPROVED",flush=True)
     if NEW_RELEASE.exists() or NEW_RELEASE.is_symlink():
         if NEW_RELEASE.is_symlink() or NEW_RELEASE.stat().st_uid!=0:
             raise Blocked("untrusted candidate directory")
@@ -186,6 +188,7 @@ def stage_release(stage:Path,blobs:dict[Path,bytes])->None:
         if not (NEW_RELEASE/"node_modules/pg/package.json").is_file():
             raise Blocked("incomplete existing module graph")
         return
+    print("FI_AWG_SUB_STAGE=NEW_RELEASE_CREATE",flush=True)
     NEW_RELEASE.mkdir(mode=0o700)
     try:
         for rel,payload in blobs.items():
@@ -193,8 +196,10 @@ def stage_release(stage:Path,blobs:dict[Path,bytes])->None:
             path.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
             path.write_bytes(payload)
             path.chmod(0o600)
+        print("FI_AWG_SUB_STAGE=SOURCE_COPIED",flush=True)
         shutil.copytree(OLD/"node_modules",NEW_RELEASE/"node_modules",
                         symlinks=False,dirs_exist_ok=False)
+        print("FI_AWG_SUB_STAGE=PG_DEPENDENCIES_COPIED",flush=True)
         cmd(["/opt/mnebyvpn-controller/current/bin/node",
              "--experimental-strip-types","--input-type=module","-e",
              "await import('file://"+str(NEW_RELEASE/WORKER)+"')"],
@@ -237,8 +242,11 @@ def replace_env(raw:bytes,changes:dict[str,str])->bytes:
 
 def activate(stage:Path)->None:
     old_override=preflight()
+    print("FI_AWG_SUB_STAGE=PINNED_INPUTS_BEGIN",flush=True)
     blobs=staged(stage)
+    print("FI_AWG_SUB_STAGE=PINNED_INPUTS_VERIFIED",flush=True)
     stage_release(stage,blobs)
+    print("FI_AWG_SUB_STAGE=IMMUTABLE_RELEASE_VERIFIED",flush=True)
     old_worker=trusted(WORKER_ENV)
     old_web=trusted(PUBLIC_ENV)
     value=subscription_seed()
@@ -326,6 +334,23 @@ def main()->int:
                 activate(args.stage)
         finally:os.close(fd)
         return 0
+    except Blocked as exc:
+        # Small closed vocabulary: never emit arbitrary filesystem paths,
+        # credentials, SQL or subprocess diagnostics into GitHub Actions.
+        reasons={
+            "untrusted source stage":"UNTRUSTED_STAGE",
+            "unapproved FI subscription source":"SOURCE_PIN_MISMATCH",
+            "untrusted release root":"RELEASE_ROOT",
+            "untrusted candidate directory":"EXISTING_RELEASE",
+            "existing candidate differs":"CANDIDATE_DRIFT",
+            "incomplete existing module graph":"PG_GRAPH",
+            "untrusted protected config":"UNTRUSTED_FILE",
+            "missing protected config":"FILE_MISSING",
+            "untrusted activation lock":"LOCK",
+        }
+        print("FI_AWG_SUB_BLOCK_REASON="+reasons.get(str(exc),"OTHER_REFUSAL"),file=sys.stderr)
+        print("FI_AWG_UNIFIED_SUBSCRIPTION=BLOCKED",file=sys.stderr)
+        return 2
     except (OSError,ValueError,TypeError,UnicodeError,subprocess.SubprocessError):
         print("FI_AWG_UNIFIED_SUBSCRIPTION=BLOCKED",file=sys.stderr)
         return 2
