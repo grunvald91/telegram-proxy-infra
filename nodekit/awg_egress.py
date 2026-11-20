@@ -16,7 +16,7 @@ import subprocess
 import sys
 import tempfile
 
-from awg_lifecycle import active_unit, enabled_unit, unit_name, validate as validate_awg
+from awg_lifecycle import AWG_BIN, active_unit, enabled_unit, unit_name, validate as validate_awg
 from install_components import node_ready, safe_manifest
 
 ROOT=Path("/var/lib/mnebyvpn-nodekit")
@@ -83,25 +83,62 @@ def record(previous):
         json.dump({"schema_version":1,"node_id":NODE,"previous_forward":previous},f)
         f.flush();os.fsync(f.fileno())
 
+def production_mode(manifest: dict, awg: dict, approval: dict) -> str:
+    """Production forwarding requires locally verified signed FI admission.
+
+    Runtime approval does not grant subscriber entitlements or publish
+    customer profiles. Old, isolated test-mode egress remains unchanged.
+    """
+    mode = approval.get("mode")
+    if mode == "staged":
+        if (manifest.get("state") != "testing" or
+            manifest.get("registration_enabled") is not False or
+            manifest.get("activation_enabled") is not False or
+            awg.get("state") != "staged" or
+            awg.get("peers_enabled") is not False or
+            awg.get("subscribers_enabled") is not False):
+            raise EgressError("Staged AWG state drifted")
+    elif mode == "production":
+        if (manifest.get("state") != "active" or
+            manifest.get("registration_enabled") is not True or
+            manifest.get("activation_enabled") is not True or
+            awg.get("state") != "active" or
+            awg.get("activation_enabled") is not True or
+            awg.get("peers_enabled") is not True or
+            awg.get("subscribers_enabled") is not False or
+            approval.get("production_approval") != "signed" or
+            approval.get("customer_release") is not False or
+            approval.get("approved_binary_identity") != "pinned" or
+            approval.get("approved_config_identity") != "pinned"):
+            raise EgressError("Missing signed FI production approval")
+    else:
+        raise EgressError("Unrecognized AWG runtime mode")
+    return mode
+
+
 def validate(node):
-    if node.name!=NODE:raise EgressError("This IPAM network is FI-only")
-    validate_awg(node)
-    manifest=safe_manifest(node/"manifest.json")
-    awg=safe_manifest(node/"amneziawg"/"manifest.json")
-    if (manifest.get("advertise_host")!=HOST or
-        awg.get("test_address")!="10.73.91.1/24" or
-        awg.get("port")!=51821 or
-        manifest.get("registration_enabled") is not False or
-        manifest.get("activation_enabled") is not False):
-        raise EgressError("Unapproved AWG public ingress")
-    route=json.loads(call(["ip","-j","route","get","1.1.1.1"]).stdout)
-    if not route or route[0].get("dev")!=IFACE:
+    if node.name != NODE:
+        raise EgressError("This IPAM network is FI-only")
+    # The signed approval is checked by the exact pinned, root-owned
+    # local controller SPKI. No live controller/network lookup is needed.
+    approved = validate_awg(node)
+    manifest = safe_manifest(node / "manifest.json")
+    awg = safe_manifest(node / "amneziawg" / "manifest.json")
+    mode = production_mode(manifest, awg, approved)
+    if (manifest.get("advertise_host") != HOST or
+        awg.get("test_address") != "10.73.91.1/24" or
+        awg.get("port") != 51821):
+        raise EgressError("Unexpected AWG FI network identity")
+    route = json.loads(call(["ip", "-j", "route", "get", "1.1.1.1"]).stdout)
+    if not isinstance(route, list) or len(route) != 1 or route[0].get("dev") != IFACE:
         raise EgressError("IPv4 exit route differs from reviewed network")
     if Path("/run/nodekit-fi-awg-external.json").exists():
         raise EgressError("Cannot overlap temporary external E2E")
-    if not (Path("/opt/mnebyvpn-amneziawg")/"awg").is_file():
+    if not (AWG_BIN / "awg").is_file():
         raise EgressError("Official AWG backend missing")
-    return {"node_id":NODE,"hostname":HOST,"subnet":SUBNET,"egress_interface":IFACE}
+    return {"node_id": NODE, "hostname": HOST, "subnet": SUBNET,
+            "egress_interface": IFACE, "runtime_mode": mode,
+            "signed_production_approval": mode == "production"}
 
 def unit_source():
     return """[Unit]
@@ -249,7 +286,9 @@ def main():
             info.update(down())
             print(json.dumps(info,sort_keys=True))
             return 0
-        node=node_ready(ROOT,NODE)
+        # All real egress modes still pass the local signed AWG validator;
+        # the general Nodekit installer continues to default to test-only.
+        node=node_ready(ROOT,NODE,allow_production=True)
         info=validate(node)
         if args.mode=="install":info.update(install_code(Path(__file__)))
         elif args.mode=="up":info.update(up())
