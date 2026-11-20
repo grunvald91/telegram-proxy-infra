@@ -40,8 +40,8 @@ class ImmutableReleaseContract(unittest.TestCase):
 
     def test_no_reentrant_flock_on_same_release_lock(self):
         source=(NODEKIT/"fi_awg_client_worker_stage.py").read_text()
-        self.assertIn("def staged_artifacts_locked() -> None:",source)
-        self.assertIn("def staged_artifacts() -> None:",source)
+        self.assertIn("def staged_artifacts_locked() -> str:",source)
+        self.assertIn("def staged_artifacts() -> str:",source)
         self.assertIn("cutover.verify()",source)
         locked=source.split("fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)",1)[1]
         locked=locked.split("fcntl.flock(fd,fcntl.LOCK_UN)",1)[0]
