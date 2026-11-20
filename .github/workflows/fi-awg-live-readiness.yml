@@ -42,7 +42,7 @@ jobs:
                   break
               body.append(row[10:] if row.startswith('          ') else '')
           assert body and 'trap cleanup EXIT' in body
-          Path('/tmp/fi-awg-live-readiness-syntax.sh').write_text('\\n'.join(body)+'\\n')
+          Path('/tmp/fi-awg-live-readiness-syntax.sh').write_text('\n'.join(body)+'\n')
           PY
           bash -n /tmp/fi-awg-live-readiness-syntax.sh
           rm -f /tmp/fi-awg-live-readiness-syntax.sh
