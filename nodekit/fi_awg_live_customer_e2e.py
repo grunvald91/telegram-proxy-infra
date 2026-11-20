@@ -166,15 +166,19 @@ def record_on_ru(path:Path)->None:
     # Only exact existing FI pool identity can receive this fresh REAL proof.
     sql=f"""
 BEGIN;
-UPDATE public.vpn_awg_node_pools
-SET state='verified',external_e2e_proof_sha256='{sha}',verified_at=clock_timestamp()
-WHERE node_id='fi-test-01' AND endpoint_host='fi.mnebyvpn.site'
-  AND server_public_key='{key}' AND listen_port=51821
-  AND subnet_cidr='10.73.91.0/24'::cidr
-  AND state IN ('staged','verified','degraded');
-DO $e2e$ BEGIN
- IF (SELECT state FROM public.vpn_awg_node_pools WHERE node_id='fi-test-01') <> 'verified'
- THEN RAISE EXCEPTION 'FI production proof not accepted'; END IF;
+DO $e2e$
+DECLARE affected integer;
+BEGIN
+ UPDATE public.vpn_awg_node_pools
+ SET state='verified',external_e2e_proof_sha256='{sha}',verified_at=clock_timestamp()
+ WHERE node_id='fi-test-01' AND endpoint_host='fi.mnebyvpn.site'
+   AND server_public_key='{key}' AND listen_port=51821
+   AND subnet_cidr='10.73.91.0/24'::cidr
+   AND state IN ('staged','verified','degraded');
+ GET DIAGNOSTICS affected=ROW_COUNT;
+ IF affected<>1 THEN
+   RAISE EXCEPTION 'FI production pool proof identity mismatch';
+ END IF;
 END $e2e$;
 COMMIT;
 """
