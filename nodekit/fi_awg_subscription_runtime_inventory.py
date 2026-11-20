@@ -215,9 +215,8 @@ def trigger_owner_diagnostics()->dict[str,str]:
 
 
 def fi_subscription_readiness()->dict[str,str]:
-    # Aggregate-only subscriber visibility investigation: includes both
-    # original long-lived subscription links and newly issued trial links.
-    # No token hashes, entitlement IDs, device keys or individual records.
+    # Fixed SELECT-only aggregate: never publish individual subscriber IDs,
+    # URLs, token hashes, keys, device addresses or signed commands.
     sql="""WITH eligible AS (
       SELECT e.id,e.revision,e.expires_at
       FROM public.entitlements e
@@ -255,74 +254,7 @@ def fi_subscription_readiness()->dict[str,str]:
           AND outbox_state='applied'
           AND outbox_billing_revision=billing_revision
           AND command_sha256=last_command_sha256
-          AND node_receipt_sha256 ~ '^[a-f0-9]{64}
-    run=subprocess.run(["journalctl","-u","mnebyvpn-awg-delivery.service",
-        "--since","-20 minutes","--no-pager","--output","cat"],
-        stdin=subprocess.DEVNULL,capture_output=True,check=True,text=True,timeout=10)
-    if len(run.stdout)>1500000:
-        raise ValueError("worker journal is unbounded")
-    labels=("FI_AWG_SUBSCRIPTION_ENROLLMENT_RETRY",
-            "FI_AWG_SUBSCRIPTION_ENROLLMENT_QUEUED",
-            "FI_AWG_DEVICE_QUEUE_RETRY",
-            "AWG_DELIVERY_ACKNOWLEDGED")
-    return {label:min(999,run.stdout.count(label)) for label in labels}
-
-
-def main()->int:
-    try:
-        if (os.geteuid()!=0 or
-            "188.120.254.223" not in call("ip","-o","-4","addr","show")):
-            raise ValueError("wrong RU host")
-        state=call("systemctl","show","-p","ActiveState","--value",
-                   "mnebyvpn-awg-delivery.service")
-        wd=call("systemctl","show","-p","WorkingDirectory","--value",
-                "mnebyvpn-awg-delivery.service")
-        release=Path(wd)
-        if (state not in ("active","inactive","failed") or
-            release.parent!=Path("/opt/mnebyvpn-controller/awg-worker-releases")):
-            raise ValueError("worker unit changed")
-        public=keys(WEB)
-        worker=keys(WORKER)
-        web_running=call("docker","inspect","-f","{{.State.Running}}",
-                         "mnebyvpn-public-web")
-        seed_public=public.get("AWG_INCY_SUBSCRIPTION_SEED","")
-        seed_worker=worker.get("AWG_INCY_SUBSCRIPTION_SEED","")
-        present=(bool(seed_public) and bool(seed_worker) and
-                 re.fullmatch(r"[a-f0-9]{64}",seed_public) is not None)
-        print("FI_AWG_SUB_WORKER_ACTIVE="+("true" if state=="active" else "false"))
-        print("FI_AWG_SUB_WORKER_SOURCE="+(
-            "APPROVED_20261120" if release.name==CURRENT else "OTHER_REVIEW_REQUIRED"))
-        print("FI_AWG_SUB_PG_PRESENT="+(
-            "yes" if (release/"node_modules/pg/package.json").is_file() else "no"))
-        print("FI_AWG_SUB_WEB_RUNNING="+web_running)
-        print("FI_AWG_SUB_MIXED_FEATURE="+public.get(
-            "WEB_FI_AWG_IN_SUBSCRIPTION_ENABLED","missing"))
-        print("FI_AWG_SUB_SEED_MATCH="+(
-            "true" if present and hmac.compare_digest(seed_public,seed_worker) else "false"))
-        for key,value in db_status().items():
-            print("FI_AWG_SUB_"+key+"="+value)
-        for key,value in queue_role_diagnostics().items():
-            print("FI_AWG_SUB_ROLE_"+key+"="+value)
-        for key,value in staging_diagnostics().items():
-            print("FI_AWG_SUB_STAGE_"+key+"="+value)
-        for key,value in trigger_owner_diagnostics().items():
-            print("FI_AWG_SUB_TRIGGER_"+key+"="+value)
-        print("FI_AWG_SUB_WEB_MATERIAL="+public.get(
-            "WEB_FI_AWG_MATERIAL_ENABLED","missing"))
-        for key,value in fi_subscription_readiness().items():
-            print("FI_AWG_SUB_VISIBILITY_"+key+"="+value)
-        for key,count in worker_journal_markers().items():
-            print("FI_AWG_SUB_LOG_"+key+"="+str(count))
-        print("FI_AWG_SUB_INVENTORY=READONLY_COMPLETE")
-        return 0
-    except (OSError,ValueError,TypeError,UnicodeError,subprocess.SubprocessError):
-        print("FI_AWG_SUB_INVENTORY=BLOCKED",file=sys.stderr)
-        return 2
-
-
-if __name__=="__main__":
-    sys.exit(main())
-) IS TRUE AS ack_valid,
+          AND node_receipt_sha256 ~ '^[a-f0-9]{64}$') IS TRUE AS ack_valid,
         (pool_state='verified' AND enrollment_state='enrolled') IS TRUE
           AS pool_verified,
         (verified_at>clock_timestamp()-interval '1 hour'
@@ -402,6 +334,10 @@ def main()->int:
             print("FI_AWG_SUB_STAGE_"+key+"="+value)
         for key,value in trigger_owner_diagnostics().items():
             print("FI_AWG_SUB_TRIGGER_"+key+"="+value)
+        print("FI_AWG_SUB_WEB_MATERIAL="+public.get(
+            "WEB_FI_AWG_MATERIAL_ENABLED","missing"))
+        for key,value in fi_subscription_readiness().items():
+            print("FI_AWG_SUB_VISIBILITY_"+key+"="+value)
         for key,count in worker_journal_markers().items():
             print("FI_AWG_SUB_LOG_"+key+"="+str(count))
         print("FI_AWG_SUB_INVENTORY=READONLY_COMPLETE")
