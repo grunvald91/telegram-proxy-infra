@@ -15,7 +15,9 @@ name: FI217 client registrar inactive RU188 systemd cutover with rollback
   workflow_dispatch:
 permissions: {contents: read}
 concurrency:
-  group: ru188-awg-gateway-schema-stage
+  # Independent PR-only checks do not wait for a running RU188 staging job.
+  # Live main cutovers still share the single-writer global RU188 mutex.
+  group: ${{ github.event_name == 'pull_request' && format('fi-awg-client-cutover-pr-{0}', github.event.pull_request.number) || 'ru188-awg-gateway-schema-stage' }}
   cancel-in-progress: false
 jobs:
   offline:
