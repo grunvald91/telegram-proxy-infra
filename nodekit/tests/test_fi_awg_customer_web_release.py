@@ -33,8 +33,9 @@ class PublicReleaseTests(unittest.TestCase):
             m.updated_env(ENV+b"WEB_EMAIL_LOGIN_ENABLED=yes\n",PUB,HEADER)
 
     def test_rejects_untrusted_server_public_key(self):
-        with self.assertRaises(m.Blocked):
-            m.material_file
+        with patch.object(m,"trusted",return_value=json.dumps({"nodeId":"fi-test-01","hostname":"fi.mnebyvpn.site","port":51821,"clientIp":"10.73.91.253","serverPublicKey":"bad","headerKey":HEADER}).encode()):
+            with self.assertRaises(m.Blocked):
+                m.material(Path("/unused"))
         self.assertFalse(m.valid_key("bad"))
         self.assertFalse(m.valid_key(base64.b64encode(bytes(32)).decode()))
         self.assertTrue(m.valid_key(PUB))
