@@ -32,7 +32,7 @@ class ProductionBootstrapTest(unittest.TestCase):
             with patch.object(issue.trust,"is_host",return_value=True),\
                  patch.object(issue.trust,"RU_ROOT",root),\
                  patch.object(issue.trust,"pinned_spki",return_value=pub),\
-                 patch.object(issue.trust,"protected",side_effect=lambda p,**kw:p.read_bytes()):
+                 patch.object(issue.trust,"protected",side_effect=lambda p,*args,**kw:p.read_bytes()):
                 result=issue.signed(payload)
             self.assertEqual(result["approvalRevision"],1)
             self.assertEqual(result["nodeId"],"fi-test-01")
@@ -72,9 +72,15 @@ class ProductionBootstrapTest(unittest.TestCase):
                         "subscribers_enabled":False}
             (node/"manifest.json").write_text(json.dumps(before_node))
             (awg/"manifest.json").write_text(json.dumps(before_awg))
+            def backup_for_test():
+                back=node/"production-backup"
+                back.mkdir(mode=0o700,exist_ok=True)
+                for name in rollout.FILES:
+                    (back/name.replace("/","__")).write_bytes((node/name).read_bytes())
             with patch.object(rollout,"DATA",node),\
                  patch.object(rollout,"AWG",awg),\
                  patch.object(rollout,"BACK",node/"production-backup"),\
+                 patch.object(rollout,"backed_up",side_effect=backup_for_test),\
                  patch.object(rollout,"APPROVAL",awg/"production-approval.json"),\
                  patch.object(rollout,"protected",side_effect=lambda path,*args:path.read_bytes()),\
                  patch.object(rollout,"admit",return_value={"production_approval":"signed"}),\
