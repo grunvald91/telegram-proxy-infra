@@ -1,4 +1,4 @@
-name: DE89 scoped VPN agent renewal release when idle
+name: DE89 approved VPN agent renewal release with active-client cutover
 "on":
   pull_request:
     branches: [main]
@@ -36,7 +36,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: {persist-credentials: false, fetch-depth: 0}
-      - name: Deploy verified agent only when all current WebSocket clients are disconnected
+      - name: Operator-approved production rollout with active VPN connections
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -92,14 +92,14 @@ jobs:
             echo 'DE89_RENEWAL_AGENT=unhealthy_before_upgrade'
             exit 2
           }
-          # All established flows through the isolated 18943 Xray listener
-          # must be gone before a one-time service restart.
+          # Explicit owner authorization: allow one controlled Xray restart
+          # even with connected VPN sessions. Preserve source-pin, backup,
+          # health, client-count and rollback gates.
           established="$(ss -H -nt state established '( sport = :18943 )' | wc -l | tr -d ' ')"
           [[ "$established" =~ ^[0-9]+$ ]]
           if (( established > 0 )); then
-            echo 'DE89_RENEWAL_AGENT=deferred_active_vpn_sessions'
-            echo 'DE89_RENEWAL_AGENT_ESTABLISHED_SESSIONS=present'
-            exit 0
+            echo 'DE89_RENEWAL_AGENT=authorized_active_session_cutover'
+            echo '::warning::Owner approved interrupting active German VPN sessions for the guarded rollout'
           fi
           snapshot="$(python3 - <<'PY'
           import json
