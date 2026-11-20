@@ -70,6 +70,37 @@ def trusted(path:Path,limit:int=125000)->bytes:
         raise Blocked("untrusted protected config")
     return path.read_bytes()
 
+def root_systemd_dropin(path:Path)->bytes:
+    # Existing signed systemd cutover explicitly installs root-owned 0644
+    # drop-ins; they contain paths but NEVER secrets. A protected 0600 env
+    # reader must not be reused for public systemd unit files.
+    if path.is_symlink() or not path.is_file():
+        raise Blocked("systemd unit override missing")
+    meta=path.stat()
+    if (meta.st_uid!=0 or stat.S_IMODE(meta.st_mode)!=0o644 or
+        meta.st_nlink!=1 or not 1<=meta.st_size<=8192):
+        raise Blocked("systemd unit override ownership/mode mismatch")
+    return path.read_bytes()
+
+
+def put_systemd_dropin(data:bytes)->None:
+    # Preserve the exact reviewed 0644 mode throughout the atomic cutover.
+    if not data or len(data)>8192:raise Blocked("invalid systemd dropin length")
+    if OVERRIDE.is_symlink():raise Blocked("unit override symlink")
+    fd,tmp=tempfile.mkstemp(prefix=".mnebyvpn-awg-",dir=OVERRIDE.parent)
+    try:
+        os.fchmod(fd,0o644)
+        with os.fdopen(fd,"wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(tmp,OVERRIDE)
+        folder=os.open(OVERRIDE.parent,os.O_RDONLY|os.O_DIRECTORY)
+        try:os.fsync(folder)
+        finally:os.close(folder)
+    finally:Path(tmp).unlink(missing_ok=True)
+
+
 def git_blob(raw:bytes)->str:
     return hashlib.sha1(b"blob "+str(len(raw)).encode()+b"\0"+raw).hexdigest()
 
@@ -98,7 +129,7 @@ def preflight()->bytes:
         raise Blocked("unapproved existing worker revision")
     print("FI_AWG_PRECHECK=WORKER_APPROVED",flush=True)
     if show("NeedDaemonReload")!="no":raise Blocked("worker unit drift")
-    raw=trusted(OVERRIDE,8192)
+    raw=root_systemd_dropin(OVERRIDE)
     if (raw.count(str(OLD).encode())!=2 or
         raw.count(b"WorkingDirectory=")!=1 or
         raw.count(b"ExecStart=")!=2 or
@@ -225,7 +256,7 @@ def activate(stage:Path)->None:
     try:
         # Worker changes before website can advertise any previously ungranted FI peers.
         web.write_atomic(WORKER_ENV,worker_next);changed_worker_env=True
-        web.write_atomic(OVERRIDE,new_override);changed_unit=True
+        put_systemd_dropin(new_override);changed_unit=True
         cmd(["systemctl","daemon-reload"])
         cmd(["systemctl","restart",UNIT],timeout=38)
         for _ in range(8):
@@ -266,7 +297,7 @@ def activate(stage:Path)->None:
             cmd(["docker","rm","-f",web.WEB_NAME],check=False,timeout=15)
             web.launch(image,web.WEB_NAME,8792,PUBLIC_ENV,{},temporary=False)
             web.healthy(8792)
-        if changed_unit:web.write_atomic(OVERRIDE,old_override)
+        if changed_unit:put_systemd_dropin(old_override)
         if changed_worker_env:web.write_atomic(WORKER_ENV,old_worker)
         if changed_unit:
             cmd(["systemctl","daemon-reload"])
