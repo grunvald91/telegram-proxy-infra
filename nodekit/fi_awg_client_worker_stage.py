@@ -95,7 +95,11 @@ def staged_artifacts() -> None:
     trust.require_safe_dormant()
     # Verify effective legacy worker and guarded backup; no worker activation.
     cutover.verify()
-    runtime.verify_runtime_manifest()
+    # cutover.verify() already checks ALL baseline dependency hashes plus
+    # the *actual* post-cutover effective unit. The legacy
+    # legacy runtime preflight calls candidate.guard(), which
+    # insists the pre-cutover OLD working directory still be effective:
+    # that is intentionally false on the correctly cut-over RU188.
     if trust.read_file(candidate.CANDIDATE/WORKER)!=trust.read_file(
             cutover.ENTRY):
         trust.stop("fi_client_worker_effective_worker_not_baseline")

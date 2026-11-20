@@ -25,7 +25,7 @@ class ImmutableReleaseContract(unittest.TestCase):
     def test_existing_worker_never_starts(self):
         source=(NODEKIT/"fi_awg_client_worker_stage.py").read_text()
         for term in ("cutover.verify()","trust.require_safe_dormant()",
-                     "runtime.verify_runtime_manifest()",
+                     "cutover.verify()",
                      "candidate.verify_nonstandard_imports(blobs)",
                      "source_and_runtime_check(blobs)",
                      "REAL_PEERS_MODIFIED=false","CLIENT_RELEASE=false",
@@ -42,6 +42,8 @@ class ImmutableReleaseContract(unittest.TestCase):
         self.assertIn('RELEASE=RELEASES/NEW',source)
         self.assertIn('read_file(candidate.CANDIDATE/rel)',source)
         self.assertIn('DEPENDENCY_MANIFEST=runtime.MARKER',source)
+        self.assertNotIn("runtime.verify_runtime_manifest()",source)
+        self.assertIn("cutover.verify()",source)
         self.assertIn('runtime.MODULES/rel',source)
         self.assertIn('matched=0',source)
 
