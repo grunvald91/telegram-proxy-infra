@@ -15,11 +15,13 @@ import sys
 import fi_awg_worker_systemd_cutover as cutover
 import fi_awg_worker_live_db_readonly as legacy
 import fi_awg_worker_candidate_stage as candidate
+import fi_awg_client_worker_stage as client
+import fi_awg_client_worker_cutover as clientcut
 import fi_awg_worker_isolated_runtime_preflight as node
 import fi_awg_ssh_stage as ssh
 
 OLD_RELEASE = "/opt/mnebyvpn-controller/awg-worker-releases/" + candidate.OLD_COMMIT
-NEW_RELEASE = str(candidate.CANDIDATE)
+NEW_RELEASE = str(client.RELEASE)
 OLD_DECLARATION = "const release='" + OLD_RELEASE + "';"
 NEW_DECLARATION = "const release='" + NEW_RELEASE + "';"
 DB_MARKERS = (
@@ -38,13 +40,14 @@ PROOF = {
 
 
 def audited_candidate_query() -> str:
-    """Re-target the reviewed READ ONLY query to the actual effective release.
+    """Re-target the reviewed READ ONLY query to the effective 6-module release.
 
     Reuse the already installed exact SQL/role/gate assertions from the legacy
     checker; only its immutable Node module-resolution path may change.
     """
     script = legacy.CODE
-    if (script.count(OLD_DECLARATION) != 1 or
+    if (NEW_RELEASE == str(candidate.CANDIDATE) or
+            script.count(OLD_DECLARATION) != 1 or
             NEW_RELEASE == OLD_RELEASE or
             script.count("await client.query('BEGIN READ ONLY')") != 1 or
             script.count("await client.query('ROLLBACK')") != 2 or
@@ -69,7 +72,7 @@ def validate_report(stdout: str) -> str:
 
 
 def verify_live_db() -> str:
-    cutover.verify()
+    clientcut.verify()
     script = audited_candidate_query()
     try:
         result = subprocess.run(
@@ -99,7 +102,7 @@ def main() -> int:
     # dedicated, root-only controller key and pinned FI host. A hostile frame
     # MUST be rejected by FI's forced-command SSH handler.
     ssh.probe()
-    cutover.verify()
+    clientcut.verify()
     print("FI_AWG_RU_PG_FI_TRANSPORT=VERIFIED;DATABASE=READONLY;"
           "SSH=FORCED_COMMAND;WORKER_ACTIVE=false;CUSTOMER_RELEASE=false;"
           "PRODUCTION_E2E=false;NODE_ACK_IN_DB=false;POOL_PROOF=" + proof)
