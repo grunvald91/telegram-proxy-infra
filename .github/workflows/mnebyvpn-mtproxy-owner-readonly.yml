@@ -1,0 +1,99 @@
+name: Owner MTProxy 3-in-1 dependency audit (read-only)
+on:
+  pull_request:
+    branches: [main]
+    paths: ['.github/workflows/mnebyvpn-mtproxy-owner-readonly.yml']
+  push:
+    branches: [main]
+    paths: ['.github/workflows/mnebyvpn-mtproxy-owner-readonly.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebyvpn-owner-mtproxy-audit
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate pinned SSH host keys
+        run: |
+          set -Eeuo pipefail
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          test -n "$RU_PASS"
+          test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass >/dev/null
+      - name: Inspect canonical RU188 database and existing worker (no credentials)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$RU_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 'bash -se' <<'REMOTE'
+          set -Eeuo pipefail
+          echo 'ru188_proxy_audit=read_only'
+          echo "ru_db_container=$(docker inspect -f '{{.State.Status}}' mnebyvpn-stage-postgres 2>/dev/null || echo missing)"
+          echo "ru_bot_readyz=$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --max-time 4 http://127.0.0.1:8793/readyz || true)"
+          echo "ru_proxy_worker_container=$(docker inspect -f '{{.State.Status}}' mnebyvpn-dns-mtproxy-bonus-worker 2>/dev/null || echo missing)"
+          if ss -H -lnt 'sport = :5432' | grep -q .; then echo 'ru_postgres_host_tcp_listener=true'; else echo 'ru_postgres_host_tcp_listener=false'; fi
+          if [[ -r /opt/mnebyvpn/bot/web.env ]]; then
+            for name in WEB_DNS_MT_PROXY_BONUS_KEY WEB_DNS_MT_PROXY_BONUS_ROUTES_JSON WEB_DNS_MT_PROXY_BONUS_ENABLED WEB_DNS_MT_PROXY_BONUS_E2E_VERIFIED WEB_DNS_MT_PROXY_BONUS_REVOKER_VERIFIED MNEBYVPN_OFFLINE_SALES_ENABLED; do
+              if grep -q "^$name=" /opt/mnebyvpn/bot/web.env; then echo "ru_bot_$name=present"; else echo "ru_bot_$name=absent"; fi
+            done
+          fi
+          docker exec -i mnebyvpn-stage-postgres psql -qAtX -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage <<'SQL'
+          SELECT 'proxy_table='||(to_regclass('public.dns_mtproxy_bonus_credentials') IS NOT NULL)::text;
+          SELECT 'proxy_table_rows='||count(*)::text FROM dns_mtproxy_bonus_credentials;
+          SELECT 'manual_sale_count='||count(*)::text FROM manual_sales;
+          SELECT 'manual_active_smart_dns_count='||count(*)::text
+            FROM manual_sales m JOIN entitlements e ON e.source_order_id=m.order_id
+            WHERE e.product='smart_dns' AND e.state='ACTIVE' AND e.expires_at>clock_timestamp();
+          SQL
+          REMOTE
+      - name: Verify foreign Telemt service and localhost API in place (no writes)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'bash -se' <<'REMOTE'
+          set -Eeuo pipefail
+          echo 'de89_proxy_audit=read_only'
+          if systemctl is-active -q telemt-direct-ozon; then echo 'de_ozon_service=active'; else echo 'de_ozon_service=inactive'; fi
+          if ss -H -lnt 'sport = :9096' | grep -q .; then echo 'de_telemt_admin_9096=listener'; else echo 'de_telemt_admin_9096=missing'; fi
+          if ss -H -lnt 'sport = :9446' | grep -q .; then echo 'de_telemt_native_9446=listener'; else echo 'de_telemt_native_9446=missing'; fi
+          # Missing auth must fail; do NOT send any real customer or operator secrets.
+          code="$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --max-time 4 'http://127.0.0.1:9096/v1/users/dns_000000000000000000000000' || true)"
+          echo "de_telemt_api_unauth_status=${code:-000}"
+          if timeout 4 bash -c ': </dev/tcp/10.66.77.2/5432' 2>/dev/null; then
+            echo 'de_to_ru_postgres_wg_tcp=reachable'
+          else
+            echo 'de_to_ru_postgres_wg_tcp=unreachable'
+          fi
+          python3 - <<'PY'
+          from pathlib import Path
+          try:
+              import tomllib
+              cfg=tomllib.loads(Path('/etc/telemt/direct-ozon.toml').read_text())
+              api=cfg.get('server',{}).get('api',{})
+              print('de_config_api_enabled='+str(api.get('api_enabled') is True).lower())
+              print('de_config_api_auth_configured='+str(bool(api.get('auth_header'))).lower())
+              print('de_config_api_whitelist_present='+str(bool(api.get('whitelist'))).lower())
+          except Exception as exc:
+              print('de_config_api_read_error='+type(exc).__name__)
+          PY
+          REMOTE
