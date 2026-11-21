@@ -1,0 +1,85 @@
+name: Verify private Telemt synthetic create and revoke
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebyvpn-owner-telemt-synthetic-e2e.yml'
+      - 'scripts/mnebyvpn-owner-telemt-synthetic-create-revoke.mjs'
+  push:
+    branches: [main]
+    paths: ['.github/workflows/mnebyvpn-owner-telemt-synthetic-e2e.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebyvpn-auto-public-deploy
+  cancel-in-progress: false
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ensure ephemeral random username and required revocation
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          node --check scripts/mnebyvpn-owner-telemt-synthetic-create-revoke.mjs
+          grep -Fq 'randomBytes(12)' scripts/mnebyvpn-owner-telemt-synthetic-create-revoke.mjs
+          grep -Fq 'admin.disable(username)' scripts/mnebyvpn-owner-telemt-synthetic-create-revoke.mjs
+  canary:
+    needs: lint
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify approved runtime and install temporary synthetic script
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          export SSHPASS="$RU_PASS"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e scp "${opts[@]}" scripts/mnebyvpn-owner-telemt-synthetic-create-revoke.mjs root@188.120.254.223:/tmp/mnebyvpn-owner-telemt-synthetic.mjs
+          sshpass -e ssh -T "${opts[@]}" root@188.120.254.223 'bash -se' <<'REMOTE'
+          set -Eeuo pipefail
+          name=mnebyvpn-dns-mtproxy-bonus-worker
+          test "$(docker inspect -f '{{.State.Running}}' "$name")" = true
+          test "$(docker inspect -f '{{.RestartCount}}' "$name")" = 0
+          test "$(docker inspect -f '{{.Config.User}}' "$name")" = '13096:13096'
+          test "$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$name")" = 'container:mnebyvpn-stage-postgres'
+          test "$(stat -c '%u:%g:%a' /run/mnebyvpn-owner-mtproxy/telemt.sock)" = '13096:13096:600'
+          systemctl is-active -q mnebyvpn-owner-telemt-tunnel
+          test "$(docker exec mnebyvpn-stage-postgres psql -qAtX -U mnebyvpn_stage -d mnebyvpn_stage -c 'SELECT count(*) FROM manual_sales')" = 0
+          test "$(docker exec mnebyvpn-stage-postgres psql -qAtX -U mnebyvpn_stage -d mnebyvpn_stage -c 'SELECT count(*) FROM dns_mtproxy_bonus_credentials')" = 0
+          image="$(docker inspect -f '{{.Config.Image}}' "$name")"
+          test "$image" = mnebyvpn-stage-web:c264f2a040bf5be2590bf36fb48be6c17436bdac
+          env=/etc/mnebyvpn-owner-mtproxy/worker.env
+          test -s "$env" && test "$(stat -c '%a' "$env")" = 600
+          echo 'owner_telemt_synthetic_preflight=verified'
+          docker run --rm -i --network container:mnebyvpn-stage-postgres \
+            --user 13096:13096 --read-only --tmpfs /tmp:rw,nosuid,nodev,size=8m \
+            --mount type=bind,src=/run/mnebyvpn-owner-mtproxy,dst=/run/mnebyvpn-owner-mtproxy,readonly \
+            --cap-drop ALL --security-opt no-new-privileges --pids-limit 64 --memory 160m --cpus 0.35 \
+            --env-file "$env" --entrypoint node "$image" \
+            --experimental-strip-types --input-type=module < /tmp/mnebyvpn-owner-telemt-synthetic.mjs
+          test "$(docker exec mnebyvpn-stage-postgres psql -qAtX -U mnebyvpn_stage -d mnebyvpn_stage -c 'SELECT count(*) FROM dns_mtproxy_bonus_credentials')" = 0
+          echo 'owner_telemt_customer_database_unchanged=true'
+          REMOTE
+      - name: Remove temporary canary script
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "$RU_PASS" ]];then
+            export SSHPASS="$RU_PASS"
+            sshpass -e ssh -T -o ConnectTimeout=8 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR root@188.120.254.223 'rm -f /tmp/mnebyvpn-owner-telemt-synthetic.mjs' || true
+          fi
