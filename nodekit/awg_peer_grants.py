@@ -345,16 +345,40 @@ def assert_runtime_peers(peers: list[dict], *, runner=subprocess.run) -> None:
         raise GrantError("Live AWG allowed-ips differ from active entitlements")
 
 
+def effective_active_peers(node: Path, legacy_state: dict, now: float) -> list[dict]:
+    """V1 unchanged unless a root-only V2 ledger AND explicit V2 release exist.
+
+    Both ledgers are read under the SAME LedgerLock as the watchdog/apply.
+    A missing or malformed release marker while a V2 ledger exists is fatal:
+    it must not silently cause the V1 watcher to discard V2 peers as drift.
+    """
+    slot_path = node / "amneziawg" / "owner-device-slots-v2.json"
+    if not slot_path.exists() and not slot_path.is_symlink():
+        return active_peers(legacy_state, now)
+    if node.name != "fi-test-01":
+        raise GrantError("V2 slot runtime not approved outside FI")
+    marker = node / "amneziawg" / "owner-v2-release.json"
+    release = json.loads(protected_file(marker, max_bytes=512))
+    if release != {"node_id": node.name, "enabled": True}:
+        raise GrantError("AWG V2 owner release marker not approved")
+    from awg_slot_contract import validate_state as valid_v2, merged_active_peers
+    v2_state = valid_v2(json.loads(protected_file(slot_path)), node.name)
+    try:
+        return merged_active_peers(legacy_state, v2_state, now)
+    except ValueError as exc:
+        raise GrantError("Incompatible signed V1/V2 peer ledgers") from exc
+
+
 def reconcile(node: Path, state: dict, now: float, *,
               runner=subprocess.run) -> dict:
     """Synchronize live interface from ledger; on any mismatch STOP AWG."""
     from awg_lifecycle import active_unit, unit_name
     unit = unit_name(node.name)
-    peers = active_peers(state, now)
-    if not active_unit(unit):
-        return {"active": False, "peers": 0, "published": False}
-    config = node / "amneziawg" / "awg0.conf"
     try:
+        peers = effective_active_peers(node, state, now)
+        if not active_unit(unit):
+            return {"active": False, "peers": 0, "published": False}
+        config = node / "amneziawg" / "awg0.conf"
         if hashlib.sha256(protected_file(config)).hexdigest() != (
                 safe_manifest(node / "amneziawg" / "manifest.json")["config_sha256"]):
             raise GrantError("Staged AWG config drift")
@@ -409,7 +433,7 @@ def watchdog(node: Path, *, sleeper=time.sleep) -> None:
                          if path.exists() or path.is_symlink()
                          else empty_state(node.name))
                 now = clock.now()
-                peers = active_peers(table, now)
+                peers = effective_active_peers(node, table, now)
                 view = json.dumps(peers, sort_keys=True, separators=(",", ":"))
                 # Do not run full awg syncconf every 2 seconds on a 1-vCPU VPS.
                 # Still verify live peers on every tick to catch drift.
