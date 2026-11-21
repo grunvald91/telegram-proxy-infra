@@ -15,7 +15,7 @@ The existing workflow .github/workflows/mnebydns-dot-external-five-minute-202611
 
 Each sample reports TCP, TLS and DNS phase, elapsed time, sanitized error class. No subscriber key is read or logged.
 
-States: PASS = all samples good; DEGRADED = one of three failed (warning); FAIL = two or more failures of three (workflow fails); UNKNOWN = no valid observation (never pretend healthy). An unavailable external vantage fails monitoring, an unavailable SSH/owner vantage shows a warning.
+States: PASS = all samples good; DEGRADED = one of three failed (warning); FAIL = two or more failures of three (workflow fails); UNKNOWN = no valid observation (never pretend healthy). Unavailable external OR VPN-owner vantage fails the monitoring job as a **coverage gap** (not proof of customer outage). A reported DNS success additionally requires a parseable nonempty A answer associated with the requested DNS name (or its CNAME chain).
 
 Unknown generated personal-style hostname only tests the wildcard certificate, NOT authenticated personal DNS. For full subscriber-style testing a separate diagnostic identity is needed.
 
@@ -44,9 +44,10 @@ Possible classifications:
 - system_dns_and_dot_failed: OS DNS and direct personal DoT both failed.
 - system_resolver_problem: OS resolver fails but direct personal DoT works.
 - private_dot_path_problem: OS resolver works but direct personal DoT fails.
-- personal_dot_not_tested: personal hostname unavailable.
+- personal_dot_not_tested: personal hostname unavailable while OS resolver did not fail.
+- system_resolver_failed_dot_unverified: OS resolver failed, but personal DoT is unavailable for testing; its state is unknown.
 
-Two consecutive bad samples mark incident_started; a subsequent good sample marks incident_recovered. All data is local in mnebyvpn-handoff-local.jsonl. No personal hostname, SSID, BSSID, IP, credentials or client traffic are saved. The script cannot prove whether VPN is enabled; Android may also serve a system DNS answer from cache.
+Two consecutive bad samples mark incident_started; a subsequently *verified* healthy system resolver AND personal DoT sample marks incident_recovered. An unavailable personal DoT test cannot count as recovery. Switching from one connected Wi-Fi access point to another can be detected via a memory-only ephemeral HMAC of Wi-Fi identity; raw SSID/BSSID and the HMAC are never persisted, and the Wi-Fi hint requires Termux:API permissions. All data is local in mnebyvpn-handoff-local.jsonl. No personal hostname, SSID, BSSID, IP, credentials or client traffic are saved. The script cannot prove whether VPN is enabled; Android may also serve a system DNS answer from cache.
 
 Truly automatic detection of every network transition needs permissioned Android network-state callbacks or integration with the VPN client. GitHub Actions alone cannot observe Wi-Fi handoffs on a phone.
 
@@ -64,3 +65,7 @@ Truly automatic detection of every network transition needs permissioned Android
 References:
 https://developer.android.com/reference/android/app/admin/DevicePolicyManager.html
 https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows
+
+The Android probe observes traffic from the Termux process, not necessarily
+from every app. Per-app VPN exclusions can make its path differ from that of
+Karing or other apps; the probe does not independently detect VPN state.
