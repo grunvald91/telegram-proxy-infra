@@ -4,6 +4,7 @@ Documentation=https://github.com/grunvald91/telegram-proxy-infra
 After=network-online.target
 Wants=network-online.target
 ConditionPathExists=/etc/mnebyvpn-owner-mtproxy/id_ed25519
+StartLimitIntervalSec=0
 
 [Service]
 Type=exec
@@ -14,7 +15,6 @@ ExecStart=/usr/bin/ssh -T -N -i /etc/mnebyvpn-owner-mtproxy/id_ed25519 -o Identi
 ExecStartPost=/usr/local/sbin/mnebyvpn-owner-telemt-socket-ready
 Restart=always
 RestartSec=5
-StartLimitIntervalSec=0
 TimeoutStartSec=25
 NoNewPrivileges=yes
 ProtectHome=read-only
