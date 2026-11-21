@@ -182,6 +182,8 @@ def merged_active_peers(legacy: dict, slots: dict, now: float) -> list[dict]:
     validate_state(slots, legacy["node_id"])
     if legacy["node_id"] != slots["node_id"]:
         raise SlotError("Cannot merge different AWG nodes")
+    if len(legacy["grants"]) + len(slots["grants"]) > v1.MAX_PEERS:
+        raise SlotError("Combined V1/V2 AWG peer capacity exceeded")
     historical_peers = set()
     historical_ips = set()
     for state in (legacy, slots):
