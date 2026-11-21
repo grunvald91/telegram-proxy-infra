@@ -70,7 +70,7 @@ jobs:
           bot_env=/opt/mnebyvpn/bot/web.env
           if docker inspect "$worker_name" >/dev/null 2>&1; then
             echo "worker_restart_count=$(docker inspect -f '{{.RestartCount}}' "$worker_name")"
-            echo "worker_network_mode=$(docker inspect -f '{{.HostConfig.NetworkMode}}' \"$worker_name\")"
+            echo "worker_network_mode=$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$worker_name")"
             echo "worker_exit_code=$(docker inspect -f '{{.State.ExitCode}}' "$worker_name")"
             echo "worker_uid=$(docker inspect -f '{{.Config.User}}' "$worker_name")"
             worker_img="$(docker inspect -f '{{.Config.Image}}' "$worker_name")"
