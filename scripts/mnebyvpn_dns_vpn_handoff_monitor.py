@@ -43,19 +43,85 @@ def exact(sock, length: int) -> bytes:
     return bytes(parts)
 
 
+def dns_name(packet: bytes, start: int) -> tuple[bytes, int]:
+    """Decode bounded DNS labels and compression pointers; never trust offsets."""
+    labels = []
+    visited = set()
+    offset = start
+    after_name = None
+    for _ in range(64):
+        if offset >= len(packet) or offset in visited:
+            raise ValueError("invalid_dns_reply")
+        visited.add(offset)
+        label_length = packet[offset]
+        if label_length & 0xC0 == 0xC0:
+            if offset + 1 >= len(packet):
+                raise ValueError("invalid_dns_reply")
+            pointer = ((label_length & 0x3F) << 8) | packet[offset + 1]
+            if after_name is None:
+                after_name = offset + 2
+            offset = pointer
+            continue
+        if label_length & 0xC0:
+            raise ValueError("invalid_dns_reply")
+        offset += 1
+        if label_length == 0:
+            return b".".join(labels).lower(), after_name if after_name is not None else offset
+        if offset + label_length > len(packet):
+            raise ValueError("invalid_dns_reply")
+        labels.append(packet[offset:offset + label_length])
+        offset += label_length
+    raise ValueError("invalid_dns_reply")
+
+
 def check_dns(sock, txid: int, question: bytes) -> None:
+    """An empty NOERROR reply is not evidence that DNS resolution works."""
     answer_len = struct.unpack("!H", exact(sock, 2))[0]
     if answer_len < 12 + len(question) or answer_len > MAX_DNS_FRAME:
         raise ValueError("invalid_dns_length")
     answer = exact(sock, answer_len)
-    reply_id, flags, qd, _, _, _ = struct.unpack_from("!HHHHHH", answer)
+    reply_id, flags, qd, an, _, _ = struct.unpack_from("!HHHHHH", answer)
     if (reply_id != txid or not (flags & 0x8000) or
-            flags & 0x7800 or qd != 1 or
+            flags & 0x7A00 or qd != 1 or
             answer[12:12 + len(question)] != question):
         raise ValueError("invalid_dns_reply")
     if (flags & 0xF) != 0:
         raise ValueError("dns_rcode_" + str(flags & 0xF))
-
+    if an == 0:
+        raise ValueError("dns_no_usable_answer")
+    queried, _ = dns_name(answer, 12)
+    if not queried:
+        raise ValueError("invalid_dns_reply")
+    offset = 12 + len(question)
+    a_owners = set()
+    aliases = []
+    for _ in range(an):
+        owner, offset = dns_name(answer, offset)
+        if offset + 10 > len(answer):
+            raise ValueError("invalid_dns_reply")
+        rrtype, rrclass, _, rdlength = struct.unpack_from("!HHIH", answer, offset)
+        offset += 10
+        end = offset + rdlength
+        if end > len(answer):
+            raise ValueError("invalid_dns_reply")
+        if rrclass == 1 and rrtype == 1 and rdlength == 4:
+            a_owners.add(owner)
+        elif rrclass == 1 and rrtype == 5:
+            alias, consumed = dns_name(answer, offset)
+            if consumed != end or not alias:
+                raise ValueError("invalid_dns_reply")
+            aliases.append((owner, alias))
+        offset = end
+    reachable = {queried}
+    for _ in range(len(aliases)):
+        next_reachable = reachable | {
+            target for source, target in aliases if source in reachable
+        }
+        if next_reachable == reachable:
+            break
+        reachable = next_reachable
+    if not a_owners.intersection(reachable):
+        raise ValueError("dns_no_usable_answer")
 
 def classify_error(exc: BaseException) -> str:
     if isinstance(exc, ssl.SSLCertVerificationError):
@@ -72,7 +138,7 @@ def classify_error(exc: BaseException) -> str:
         return "closed"
     if isinstance(exc, ValueError):
         reason = str(exc)
-        if reason in ("invalid_dns_reply", "invalid_dns_length") or reason.startswith("dns_rcode_"):
+        if reason in ("invalid_dns_reply", "invalid_dns_length", "dns_no_usable_answer") or reason.startswith("dns_rcode_"):
             return reason
     return "network_or_protocol"
 
@@ -101,9 +167,10 @@ def single(sni: str, dns: bool) -> dict:
 def verdict(series: list[dict]) -> str:
     if not series:
         return "UNKNOWN"
+    threshold = (len(series) // 2) + 1
     for field in ("legacy_dns", "personal_tls"):
         failures = sum(not x[field]["ok"] for x in series)
-        if failures >= 2:
+        if failures >= threshold:
             return "FAIL"
     if any(not x[field]["ok"] for x in series for field in ("legacy_dns", "personal_tls")):
         return "DEGRADED"
@@ -135,7 +202,9 @@ def run(vantage: str, samples: int, delay: float) -> dict:
 
 def selftest() -> None:
     msg, question = frame(0x1234)
-    answer = struct.pack("!HHHHHH", 0x1234, 0x8180, 1, 0, 0, 0) + question
+    answer = (struct.pack("!HHHHHH", 0x1234, 0x8180, 1, 1, 0, 0)
+              + question + b"À" + struct.pack("!HHIH", 1, 1, 60, 4)
+              + b"]¸×")
     class Stub:
         def __init__(self, data): self.data = data
         def recv(self, n):
@@ -156,6 +225,7 @@ def selftest() -> None:
     assert verdict([a, b, a]) == "DEGRADED"
     assert verdict([a, b, b]) == "FAIL"
     assert verdict([a, c, c]) == "FAIL"
+    assert verdict([b]) == "FAIL"
     assert verdict([]) == "UNKNOWN"
     print("DNS_VPN_COMPAT_SELFTEST=PASS")
 
