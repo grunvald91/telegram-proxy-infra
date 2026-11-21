@@ -108,7 +108,7 @@ jobs:
             unset dbpw wkey bkey
           else echo 'worker_secret_file=missing';fi
           if [[ -r "$private_env" && -n "$image" ]];then
-            docker run --rm --network host --user 13096:13096 --env-file "$private_env"
+            docker run --rm --network host --user 13096:13096 --env-file "$private_env" \
               --entrypoint node "$image" --experimental-strip-types --input-type=module -e '
               import {Pool} from "pg";
               const db=new Pool({connectionString:process.env.DATABASE_URL,max:1,connectionTimeoutMillis:2500});
