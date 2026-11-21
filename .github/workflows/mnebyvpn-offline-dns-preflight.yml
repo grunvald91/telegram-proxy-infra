@@ -42,6 +42,10 @@ jobs:
           sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR "root@$HOST" 'bash -se' <<'REMOTE'
           set -Eeuo pipefail
           echo 'offline_dns_audit=read_only'
+          bot_flags="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' mnebyvpn-bot-info)"
+          if grep -Fxq 'MNEBYVPN_OFFLINE_DNS_ISSUE_ENABLED=yes' <<<"$bot_flags"; then echo 'offline_dns_live_switch=enabled'; else echo 'offline_dns_live_switch=disabled'; fi
+          if grep -Fxq 'MNEBYDNS_PERSONAL_DOT_ENABLED=yes' <<<"$bot_flags"; then echo 'public_personal_dns_flag=enabled'; else echo 'public_personal_dns_flag=not_enabled'; fi
+          echo "bot_release_image=$(docker inspect --format '{{.Config.Image}}' mnebyvpn-bot-info)"
           echo "private_gateway_readyz=$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --max-time 4 http://127.0.0.1:8859/readyz || true)"
           echo "bot_readyz=$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --max-time 4 http://127.0.0.1:8793/readyz || true)"
           for c in mnebyvpn-vpn-worker mnebydns-personal-dot-private; do
