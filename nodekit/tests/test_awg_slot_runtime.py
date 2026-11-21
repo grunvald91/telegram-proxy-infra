@@ -94,6 +94,11 @@ class RuntimeContract(unittest.TestCase):
                 self.node,command(),clock=Clock(),
                 reconcile_func=self.reconcile,signer=self.receipt)
         self.assertFalse((self.node/"amneziawg"/runtime.SLOT_LEDGER).exists())
+        self.marker.write_text(json.dumps({"enabled":1,"node_id":NODE}))
+        with self.assertRaises(runtime.SlotRuntimeError):
+            runtime.execute_signed_slot_command(
+                self.node,command(),clock=Clock(),
+                reconcile_func=self.reconcile,signer=self.receipt)
         self.marker.write_text(json.dumps({"enabled":True,"node_id":NODE}))
         with patch.object(runtime,"active_unit",return_value=False):
             with self.assertRaises(runtime.SlotRuntimeError):
