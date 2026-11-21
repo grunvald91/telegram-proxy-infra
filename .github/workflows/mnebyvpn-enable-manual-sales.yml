@@ -1,3 +1,4 @@
+# Re-run after fixing SQL boolean::text preflight comparison (2026-11-21).
 name: Activate MNEBYVPN owner-only sales
 on:
   push:
