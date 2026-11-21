@@ -109,16 +109,40 @@ def mode_hint():
 
 def classification(os_result, dot_result):
     system_fail = os_result["ok"] is False
-    dot_fail = dot_result["ok"] is False
-    if system_fail and dot_fail:
-        return "system_dns_and_dot_failed"
-    if system_fail and not dot_fail:
-        return "system_resolver_problem"
-    if dot_fail and not system_fail:
-        return "private_dot_path_problem"
+    # Unknown personal DoT must never be treated as a successful DoT probe.
     if dot_result["ok"] is None:
-        return "personal_dot_not_tested"
+        return ("system_resolver_failed_dot_unverified" if system_fail
+                else "personal_dot_not_tested")
+    if system_fail and dot_result["ok"] is False:
+        return "system_dns_and_dot_failed"
+    if system_fail:
+        return "system_resolver_problem"
+    if dot_result["ok"] is False:
+        return "private_dot_path_problem"
     return "healthy_observed"
+
+
+def next_transition(incident, fail_streak, state, wifi_changed=False):
+    """Keep distinct network and incident events without false recovery."""
+    failures = {
+        "system_dns_and_dot_failed", "system_resolver_problem",
+        "private_dot_path_problem", "system_resolver_failed_dot_unverified",
+    }
+    events = ["wifi_hint_changed"] if wifi_changed else []
+    if state in failures:
+        fail_streak += 1
+        if fail_streak >= 2 and not incident:
+            events.append("incident_started")
+            incident = True
+    elif state == "healthy_observed":
+        fail_streak = 0
+        if incident:
+            events.append("incident_recovered")
+            incident = False
+    else:
+        # No usable personal DoT sample is not a successful recovery.
+        fail_streak = 0
+    return events, incident, fail_streak
 
 
 def main():
@@ -147,25 +171,19 @@ def main():
             dot_result = actual_personal_dot(host)
             state = classification(os_result, dot_result)
             counts[state] += 1
-            failing = state in ("system_dns_and_dot_failed",
-                                "system_resolver_problem", "private_dot_path_problem")
-            fail_streak = fail_streak + 1 if failing else 0
-            event = "sample"
-            if previous_wifi is not None and wifi is not None and wifi != previous_wifi:
-                event = "wifi_hint_changed"
-            if fail_streak >= 2 and not incident:
-                event, incident = "incident_started", True
-            if incident and not failing:
-                event, incident = "incident_recovered", False
+            events, incident, fail_streak = next_transition(
+                incident, fail_streak, state,
+                wifi_changed=(previous_wifi is not None and wifi is not None
+                              and wifi != previous_wifi))
             if wifi is not None:
                 previous_wifi = wifi
-            item = {"at_utc": stamp, "event": event, "state": state,
+            item = {"at_utc": stamp, "events": events, "state": state,
                     "system_dns": os_result, "personal_dot": dot_result,
                     "wifi_connected_hint": wifi, "android_private_dns_mode": mode_hint(),
                     "vpn_enabled_verified": False}
             log.write(json.dumps(item, separators=(",", ":")) + "\n")
             log.flush()
-            if event != "sample":
+            for event in events:
                 print(stamp + " " + event + " " + state, flush=True)
             time.sleep(min(args.interval, max(0.0, limit - time.monotonic())))
     print("CLIENT_MONITOR_COUNTS="+json.dumps(dict(counts),sort_keys=True),flush=True)
