@@ -1,0 +1,81 @@
+name: Owner 3-in-1 Smart DNS preflight (read-only)
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/mnebyvpn-offline-dns-preflight.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebyvpn-offline-dns-readonly
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      HOST: '188.120.254.223'
+      PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Read-only personal DoT outside-in TLS SNI probe
+        run: |
+          python3 - <<'PY'
+          import socket,ssl
+          name='aaaaaaaaaaaa.dns.mnebyvpn.site'
+          try:
+              with socket.create_connection(('89.125.90.101',853),timeout=7) as raw:
+                  with ssl.create_default_context().wrap_socket(raw,server_hostname=name) as tls:
+                      print('personal_tls_strict=pass' if tls.version() else 'personal_tls_strict=fail')
+          except (OSError,ssl.SSLError) as err:
+              print('personal_tls_strict=fail;error_type='+type(err).__name__)
+          PY
+      - name: Inspect existing controller and DNS worker without changing state
+        run: |
+          set -Eeuo pipefail
+          test -n "$PASSWORD"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          export SSHPASS="$PASSWORD"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR "root@$HOST" 'bash -se' <<'REMOTE'
+          set -Eeuo pipefail
+          echo 'offline_dns_audit=read_only'
+          echo "private_gateway_readyz=$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --max-time 4 http://127.0.0.1:8859/readyz || true)"
+          echo "bot_readyz=$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --max-time 4 http://127.0.0.1:8793/readyz || true)"
+          for c in mnebyvpn-vpn-worker mnebydns-personal-dot-private; do
+             if docker container inspect "$c" >/dev/null 2>&1; then
+               echo "$c=$(docker inspect --format '{{.State.Status}}' "$c")"
+             else
+               echo "$c=missing"
+             fi
+          done
+          for f in bot/web.env bot/worker.env public/web.env staging/web.env; do
+            if [[ -r "/opt/mnebyvpn/$f" ]]; then
+              for key in MNEBYDNS_PERSONAL_DOT_ENABLED MNEBYDNS_OWNER_LINK_KEY MNEBYVPN_OFFLINE_DNS_ISSUE_ENABLED; do
+                if grep -q "^$key=" "/opt/mnebyvpn/$f"; then
+                  echo "$(echo "$f" | tr / _)_$key=present"
+                fi
+              done
+            fi
+          done
+          if docker container inspect mnebyvpn-vpn-worker >/dev/null 2>&1; then
+            flags="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' mnebyvpn-vpn-worker)"
+            if grep -Fxq 'MNEBYDNS_SMART_DNS_WORKER=enabled' <<<"$flags"; then echo 'dns_worker_enabled=true'; else echo 'dns_worker_enabled=false'; fi
+            if grep -Eq '^MNEBYDNS_PERSONAL_DOT_HEALTH_URL=http://127[.]0[.]0[.]1:[0-9]+/' <<<"$flags"; then echo 'dns_worker_health_guard=present'; else echo 'dns_worker_health_guard=missing'; fi
+          fi
+          docker exec -i mnebyvpn-stage-postgres psql -qAtX -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage <<'SQL'
+          SELECT 'sql_personal_dns_issuer='||(to_regprocedure('public.issue_personal_dns_credential(uuid,text,text,bigint)') IS NOT NULL)::text;
+          SELECT 'sql_personal_dns_issuer_allowed='||has_function_privilege(current_user,'public.issue_personal_dns_credential(uuid,text,text,bigint)','EXECUTE')::text;
+          SELECT 'manual_dns_'||e.state||'='||count(*)::text
+            FROM entitlements e JOIN manual_sales m ON m.order_id=e.source_order_id
+           WHERE e.product='smart_dns' GROUP BY e.state ORDER BY e.state;
+          SELECT 'dns_active_ack_count='||count(*)::text
+            FROM entitlements e JOIN provisioning_state p ON p.entitlement_id=e.id AND p.adapter='smart_dns'
+           WHERE e.product='smart_dns' AND e.state='ACTIVE' AND e.expires_at>now() AND p.applied_revision=e.revision;
+          SELECT 'dns_pending_outbox_count='||count(*)::text
+            FROM reconcile_outbox b JOIN entitlements e ON e.id=b.entitlement_id
+           WHERE e.product='smart_dns' AND e.state IN ('PAID_PENDING_PROVISIONING','PROVISIONING_FAILED');
+          SELECT 'dns_credentials_count='||count(*)::text FROM personal_dns_credentials;
+          SQL
+          REMOTE
