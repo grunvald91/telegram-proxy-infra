@@ -1,10 +1,12 @@
 name: MNEBYDNS external read-only DoT availability guard
 on:
   push:
-    branches: [main]
+    branches: [main, feature/vpn-dot-handoff-monitor-20261121]
     paths:
       - '.github/workflows/mnebydns-dot-external-five-minute-20261113.yml'
       - 'scripts/mnebydns-dot-minute-probe-20261113.py'
+      - 'scripts/mnebyvpn_dns_vpn_handoff_monitor.py'
+      - 'scripts/tests/test_mnebyvpn_dns_vpn_handoff_monitor.py'
   workflow_dispatch:
   # GitHub Actions scheduling has a minimum five-minute cadence and can drift.
   # The separate on-node systemd timer is responsible for minute-resolution data.
@@ -55,5 +57,94 @@ jobs:
         with:
           name: mnebydns-dot-external-synthetic
           path: dot-result.json
+          retention-days: 3
+          if-no-files-found: ignore
+
+      - name: Paired DoT client-path regression (external runner and VPN Xray UID)
+        if: always()
+        shell: bash
+        env:
+          DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+        run: |
+          set -Eeuo pipefail
+          python3 -m unittest discover -s scripts/tests -p 'test_mnebyvpn_dns_vpn_handoff_monitor.py' -v
+          python3 scripts/mnebyvpn_dns_vpn_handoff_monitor.py --self-test
+          # Three bounded read-only samples distinguish one-off delays from sustained failures.
+          external_rc=0
+          python3 scripts/mnebyvpn_dns_vpn_handoff_monitor.py \
+            --vantage runner --samples 3 --delay 2 --output handoff-external.json \
+            > /dev/null || external_rc=$?
+          owner_rc=255
+          if [[ -n "$DE_PASS" && -s ops/mnebydns-owner-ssh-known_hosts ]]; then
+            if ! command -v sshpass >/dev/null 2>&1; then
+              sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq
+              sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass >/dev/null
+            fi
+            owner_rc=0
+            SSHPASS="$DE_PASS" timeout 80 sshpass -e ssh -T \
+              -o ConnectTimeout=12 -o StrictHostKeyChecking=yes \
+              -o HostKeyAlgorithms=ssh-ed25519 \
+              -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" \
+              -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no \
+              -o LogLevel=ERROR root@89.125.90.101 \
+              'runuser -u mnebyvpn-xray -- python3 - --vantage vpn-owner --samples 3 --delay 2' \
+              < scripts/mnebyvpn_dns_vpn_handoff_monitor.py > handoff-owner.json \
+              2>/dev/null || owner_rc=$?
+          fi
+          python3 - "$external_rc" "$owner_rc" <<'PY'
+          import json,os,pathlib,sys
+          external_rc,owner_rc=map(int,sys.argv[1:])
+          def result(path,vantage):
+              try:
+                  data=json.loads(pathlib.Path(path).read_text())
+                  if (data["schema"]!=1 or data["vantage"]!=vantage or
+                      data["samples"]!=3 or len(data["checks"])!=3 or
+                      data["state"] not in ("PASS","DEGRADED","FAIL") or
+                      data["client_wifi_transition_verified"] is not False or
+                      data["authenticated_personal_dns_verified"] is not False):
+                      raise ValueError("invalid schema")
+                  return data
+              except (OSError,ValueError,KeyError,TypeError):
+                  return None
+          external=result("handoff-external.json","runner")
+          owner=result("handoff-owner.json","vpn-owner")
+          if external is not None and external_rc not in (0,1): external=None
+          if owner is not None and owner_rc not in (0,1): owner=None
+          states={}
+          for name,data in [("external",external),("vpn_owner",owner)]:
+              state=data["state"] if data else "UNKNOWN"
+              states[name]=state
+              print("DNS_VPN_"+name.upper()+"="+state)
+              if data:
+                  for target in ("legacy_dns","personal_tls"):
+                      count=sum(not row[target]["ok"] for row in data["checks"])
+                      errors=sorted({row[target].get("error","none") for row in data["checks"] if not row[target]["ok"]})
+                      print("DNS_VPN_"+name.upper()+"_"+target.upper()+
+                            "_FAILED_SAMPLES="+str(count)+"/3 CLASSES="+",".join(errors))
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:
+              f.write("\n### DNS + VPN handoff risk: paired synthetic checks\n\n")
+              f.write("| Path | Result | Claim |\n|---|---|---|\n")
+              f.write("| External DoT TCP/853 | "+states["external"]+" | Remote network only |\n")
+              f.write("| DE89 VPN-owner UID -> DoT | "+states["vpn_owner"]+" | Local VPN-process OUTPUT route only |\n")
+              f.write("\nAndroid Wi-Fi transitions, full VPN tunnel and issued personal profile are **NOT TESTED**.\n")
+          if any(x=="UNKNOWN" for x in states.values()):
+              print("::warning title=DNS VPN handoff inconclusive::One vantage unavailable; do not report all-clear.")
+          if any(x=="DEGRADED" for x in states.values()):
+              print("::warning title=DNS VPN handoff transient::At least one of three TLS/DNS samples failed.")
+          if "FAIL" in states.values():
+              print("::error title=DNS VPN handoff regression::At least two of three DNS/TLS samples failed on a specific path.")
+              sys.exit(1)
+          if states["external"]=="UNKNOWN":
+              # A missing external probe is a failed monitor, not evidence of health.
+              sys.exit(2)
+          PY
+      - name: Save sanitized DNS/VPN paired probe evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mnebyvpn-dot-vpn-handoff
+          path: |
+            handoff-external.json
+            handoff-owner.json
           retention-days: 3
           if-no-files-found: ignore
