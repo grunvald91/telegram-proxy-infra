@@ -1,7 +1,7 @@
 name: MNEBYDNS external read-only DoT availability guard
 on:
   push:
-    branches: [main, feature/vpn-dot-handoff-monitor-20261121]
+    branches: [main]
     paths:
       - '.github/workflows/mnebydns-dot-external-five-minute-20261113.yml'
       - 'scripts/mnebydns-dot-minute-probe-20261113.py'
