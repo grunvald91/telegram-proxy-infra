@@ -6,6 +6,7 @@ on:
     paths:
       - '.github/workflows/mnebyvpn-owner-telemt-worker-launch.yml'
       - 'scripts/mnebyvpn-owner-telemt-worker-install-188.sh'
+      - 'scripts/mnebyvpn-owner-telemt-bot-promote-existing-188.sh'
   push:
     branches: [main]
     paths: ['.github/workflows/mnebyvpn-owner-telemt-worker-launch.yml']
@@ -26,7 +27,9 @@ jobs:
         run: |
           set -Eeuo pipefail
           bash -n scripts/mnebyvpn-owner-telemt-worker-install-188.sh
-          bash -n scripts/mnebyvpn-main-bot-promote.sh
+          bash -n scripts/mnebyvpn-owner-telemt-bot-promote-existing-188.sh
+          grep -Fq 'test "$SHA" = c264f2a040bf5be2590bf36fb48be6c17436bdac' scripts/mnebyvpn-owner-telemt-bot-promote-existing-188.sh
+          ! grep -Fq 'test "$(cat "$ROOT/staging/active_sha"' scripts/mnebyvpn-owner-telemt-bot-promote-existing-188.sh
           grep -Fq 'DNS_MT_PROXY_OWNER_ONLY=yes' scripts/mnebyvpn-owner-telemt-worker-install-188.sh
           grep -Fq 'dns_mtproxy_bonus_credentials' scripts/mnebyvpn-owner-telemt-worker-install-188.sh
           grep -Fq 'mnebyvpn_owner_telemt' scripts/mnebyvpn-owner-telemt-worker-install-188.sh
@@ -81,7 +84,7 @@ jobs:
             -o HostKeyAlgorithms=ssh-ed25519
             -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
             -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
-          sshpass -e scp "${opts[@]}" scripts/mnebyvpn-main-bot-promote.sh root@188.120.254.223:/tmp/mnebyvpn-owner-mtproxy-bot-promote.sh
+          sshpass -e scp "${opts[@]}" scripts/mnebyvpn-owner-telemt-bot-promote-existing-188.sh root@188.120.254.223:/tmp/mnebyvpn-owner-mtproxy-bot-promote.sh
           sshpass -e scp "${opts[@]}" scripts/mnebyvpn-owner-telemt-worker-install-188.sh root@188.120.254.223:/tmp/mnebyvpn-owner-telemt-worker-install-188.sh
           sshpass -e ssh -T "${opts[@]}" root@188.120.254.223 'bash /tmp/mnebyvpn-owner-telemt-worker-install-188.sh'
           echo 'owner_mtproxy_worker_release_attempted=true' >> "$GITHUB_STEP_SUMMARY"
