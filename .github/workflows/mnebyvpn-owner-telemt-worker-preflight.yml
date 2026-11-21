@@ -31,6 +31,10 @@ jobs:
             root@188.120.254.223 'bash -se' <<'REMOTE'
           set -Eeuo pipefail
           echo 'worker_preflight=read_only'
+          sha="$(cat /opt/mnebyvpn/staging/active_sha 2>/dev/null || true)"
+          if [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then echo "active_stage_sha=$sha"; else echo 'active_stage_sha=missing';fi
+          if [[ "$sha" == c264f2a040bf5be2590bf36fb48be6c17436bdac ]];then echo 'expected_stage_matches=yes';else echo 'expected_stage_matches=no';fi
+          if docker image inspect mnebyvpn-stage-web:c264f2a040bf5be2590bf36fb48be6c17436bdac >/dev/null 2>&1;then echo 'expected_bot_image_exists=yes';else echo 'expected_bot_image_exists=no';fi
           if systemctl is-active -q mnebyvpn-owner-telemt-tunnel; then
             echo 'telemt_tunnel=active'
           else
