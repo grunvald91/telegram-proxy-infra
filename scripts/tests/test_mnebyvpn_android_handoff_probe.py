@@ -28,6 +28,31 @@ class AndroidHandoffTests(unittest.TestCase):
     def test_missing_profile_is_unverified(self):
         self.assertEqual(m.classification({"ok": True}, {"ok": None}), "personal_dot_not_tested")
 
+    def test_missing_personal_profile_plus_failed_resolver_is_unverified(self):
+        self.assertEqual(m.classification({"ok": False}, {"ok": None}),
+                         "system_resolver_failed_dot_unverified")
+
+    def test_unverified_dot_does_not_recover_open_incident(self):
+        events, open_incident, streak = m.next_transition(
+            True, 2, "personal_dot_not_tested")
+        self.assertEqual(events, [])
+        self.assertTrue(open_incident)
+        self.assertEqual(streak, 0)
+
+    def test_simultaneous_wifi_and_incident_start_are_preserved(self):
+        events, open_incident, streak = m.next_transition(
+            False, 1, "private_dot_path_problem", wifi_changed=True)
+        self.assertEqual(events, ["wifi_hint_changed", "incident_started"])
+        self.assertTrue(open_incident)
+        self.assertEqual(streak, 2)
+
+    def test_recovery_requires_both_paths_observed_healthy(self):
+        events, open_incident, streak = m.next_transition(
+            True, 3, "healthy_observed", wifi_changed=True)
+        self.assertEqual(events, ["wifi_hint_changed", "incident_recovered"])
+        self.assertFalse(open_incident)
+        self.assertEqual(streak, 0)
+
     def test_hostname_only_expected_domain(self):
         with patch.dict("os.environ", {"MNEBYVPN_PRIVATE_DNS_HOST": "abc123def456.dns.mnebyvpn.site"}):
             self.assertEqual(m.private_dns_name(), "abc123def456.dns.mnebyvpn.site")
