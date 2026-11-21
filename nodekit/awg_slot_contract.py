@@ -12,6 +12,9 @@ import copy
 import hashlib
 import json
 import re
+import subprocess
+import tempfile
+from pathlib import Path
 
 import awg_peer_grants as v1
 
@@ -197,3 +200,42 @@ def merged_active_peers(legacy: dict, slots: dict, now: float) -> list[dict]:
 
 def command_digest(command: dict) -> str:
     return hashlib.sha256(signed_message(command)).hexdigest()
+
+
+def verify_signature(command: dict, pinned_public_der: Path,
+                     *, runner=subprocess.run) -> None:
+    """Verify V2 bytes with an independently enrolled root-only Ed25519 SPKI.
+
+    Caller MUST validate_command first and reauthorize billing/slot before
+    applying any transition. V1 signatures do not verify under V2 domain.
+    """
+    if (not isinstance(command, dict) or set(command) != COMMAND_FIELDS or
+            not isinstance(command.get("signature"), str) or
+            not v1.SIGNATURE.fullmatch(command["signature"])):
+        raise SlotError("Invalid V2 signed command envelope")
+    pinned = v1.protected_file(pinned_public_der, max_bytes=100)
+    if len(pinned) != 44 or not pinned.startswith(v1.KEY_PREFIX):
+        raise SlotError("Expected pinned controller Ed25519 SPKI")
+    try:
+        raw = base64.urlsafe_b64decode(command["signature"] + "==")
+    except (ValueError, base64.binascii.Error) as exc:
+        raise SlotError("Invalid V2 signature encoding") from exc
+    if (len(raw) != 64 or
+            base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+            != command["signature"]):
+        raise SlotError("Noncanonical V2 signature")
+    with tempfile.TemporaryDirectory(prefix="nodekit-v2-verify-") as name:
+        message = Path(name) / "message"
+        signature = Path(name) / "signature"
+        message.write_bytes(signed_message(command))
+        signature.write_bytes(raw)
+        message.chmod(0o600)
+        signature.chmod(0o600)
+        try:
+            runner([
+                "/usr/bin/openssl", "pkeyutl", "-verify", "-pubin",
+                "-inkey", str(pinned_public_der), "-keyform", "DER",
+                "-rawin", "-in", str(message), "-sigfile", str(signature),
+            ], capture_output=True, check=True, timeout=5)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise SlotError("Controller V2 Ed25519 signature rejected") from exc
