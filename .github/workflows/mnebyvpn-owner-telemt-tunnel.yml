@@ -1,0 +1,110 @@
+name: Install restricted owner MTProxy SSH Unix tunnel (RU188 to DE89)
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebyvpn-owner-telemt-tunnel.yml'
+      - 'scripts/mnebyvpn-owner-telemt-*.sh'
+      - 'ops/mnebyvpn-owner-telemt-tunnel.service'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebyvpn-owner-telemt-tunnel.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebyvpn-auto-public-deploy
+  cancel-in-progress: false
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate scripts and fixed private-forwarding scope
+        run: |
+          set -Eeuo pipefail
+          for f in scripts/mnebyvpn-owner-telemt-{key-prepare,authorize-de,socket-ready,tunnel-start}.sh; do bash -n "$f"; done
+          grep -Fq 'permitopen="127.0.0.1:9096"' scripts/mnebyvpn-owner-telemt-authorize-de.sh ||
+            grep -Fq 'permitopen=\"127.0.0.1:9096\"' scripts/mnebyvpn-owner-telemt-authorize-de.sh
+          grep -Fq '/run/mnebyvpn-owner-mtproxy/telemt.sock:127.0.0.1:9096' ops/mnebyvpn-owner-telemt-tunnel.service
+          grep -Fq 'StrictHostKeyChecking=yes' ops/mnebyvpn-owner-telemt-tunnel.service
+          ! grep -Eq 'ufw allow|iptables -I|nft add|telemt-direct-ozon.*restart|pg_hba.conf' scripts/mnebyvpn-owner-telemt-*.sh
+  tunnel:
+    needs: lint
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 16
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prepare pinned client hosts and SSH
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+      - name: Generate RU188 private key in place; export only the PUBLIC half
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          export SSHPASS="$RU_PASS"
+          sshpass -e scp "${opts[@]}" ops/mnebydns-owner-ssh-known_hosts root@188.120.254.223:/tmp/mnebyvpn-owner-telemt-known-hosts
+          sshpass -e scp "${opts[@]}" scripts/mnebyvpn-owner-telemt-key-prepare.sh root@188.120.254.223:/tmp/mnebyvpn-owner-telemt-key-prepare.sh
+          sshpass -e ssh -T "${opts[@]}" root@188.120.254.223 'bash /tmp/mnebyvpn-owner-telemt-key-prepare.sh'
+          sshpass -e scp "${opts[@]}" root@188.120.254.223:/etc/mnebyvpn-owner-mtproxy/id_ed25519.pub "$RUNNER_TEMP/mnebyvpn-telemt.pub"
+          test -s "$RUNNER_TEMP/mnebyvpn-telemt.pub"
+      - name: Add only one restricted forward-only key on DE89
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          export SSHPASS="$DE_PASS"
+          sshpass -e scp "${opts[@]}" "$RUNNER_TEMP/mnebyvpn-telemt.pub" root@89.125.90.101:/tmp/mnebyvpn-owner-telemt-id_ed25519.pub
+          sshpass -e scp "${opts[@]}" scripts/mnebyvpn-owner-telemt-authorize-de.sh root@89.125.90.101:/tmp/mnebyvpn-owner-telemt-authorize-de.sh
+          sshpass -e ssh -T "${opts[@]}" root@89.125.90.101 'bash /tmp/mnebyvpn-owner-telemt-authorize-de.sh'
+      - name: Install RU188 socket service; verify owner UID and API envelope
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          export SSHPASS="$RU_PASS"
+          sshpass -e scp "${opts[@]}" ops/mnebyvpn-owner-telemt-tunnel.service root@188.120.254.223:/tmp/mnebyvpn-owner-telemt-tunnel.service
+          sshpass -e scp "${opts[@]}" scripts/mnebyvpn-owner-telemt-socket-ready.sh root@188.120.254.223:/tmp/mnebyvpn-owner-telemt-socket-ready.sh
+          sshpass -e scp "${opts[@]}" scripts/mnebyvpn-owner-telemt-tunnel-start.sh root@188.120.254.223:/tmp/mnebyvpn-owner-telemt-tunnel-start.sh
+          sshpass -e ssh -T "${opts[@]}" root@188.120.254.223 'bash /tmp/mnebyvpn-owner-telemt-tunnel-start.sh'
+          echo 'owner_mtproxy_ssh_socket_reachable=true' >> "$GITHUB_STEP_SUMMARY"
+      - name: Remove temporary installers, never touch private installed key
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/mnebyvpn-telemt.pub"
+          opts=(-o ConnectTimeout=8 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          if [[ -n "$RU_PASS" ]]; then
+            export SSHPASS="$RU_PASS"
+            sshpass -e ssh -T "${opts[@]}" root@188.120.254.223 'rm -f /tmp/mnebyvpn-owner-telemt-{known-hosts,key-prepare.sh,tunnel.service,socket-ready.sh,tunnel-start.sh}' || true
+          fi
+          if [[ -n "$DE_PASS" ]]; then
+            export SSHPASS="$DE_PASS"
+            sshpass -e ssh -T "${opts[@]}" root@89.125.90.101 'rm -f /tmp/mnebyvpn-owner-telemt-{id_ed25519.pub,authorize-de.sh}' || true
+          fi
