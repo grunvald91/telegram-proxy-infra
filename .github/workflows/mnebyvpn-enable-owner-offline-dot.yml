@@ -1,0 +1,70 @@
+name: Enable owner-only paid DoT after verified Smart DNS gateway
+on:
+  pull_request:
+    branches: [main]
+    paths: ['.github/workflows/mnebyvpn-enable-owner-offline-dot.yml', 'scripts/mnebyvpn-enable-owner-offline-dot-188.sh']
+  push:
+    branches: [main]
+    paths: ['.github/workflows/mnebyvpn-enable-owner-offline-dot.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebyvpn-auto-public-deploy
+  cancel-in-progress: false
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check private owner feature and no public DNS flag mutation
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          bash -n scripts/mnebyvpn-enable-owner-offline-dot-188.sh
+          bash -n scripts/mnebyvpn-main-bot-promote.sh
+          grep -Fq 'MNEBYVPN_OFFLINE_DNS_ISSUE_ENABLED=yes' scripts/mnebyvpn-enable-owner-offline-dot-188.sh
+          grep -Fq 'MNEBYDNS_SMART_DNS_WORKER=enabled' scripts/mnebyvpn-enable-owner-offline-dot-188.sh
+          ! grep -Fq 'MNEBYDNS_PERSONAL_DOT_ENABLED=yes' scripts/mnebyvpn-enable-owner-offline-dot-188.sh
+          ! grep -Eq 'systemctl (restart|stop)|nginx -s reload|iptables|ufw allow' scripts/mnebyvpn-enable-owner-offline-dot-188.sh
+  enable:
+    needs: lint
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 16
+    env:
+      HOST: '188.120.254.223'
+      PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Recheck foreign strict TLS before owner activation
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import socket,ssl
+          with socket.create_connection(('89.125.90.101',853),timeout=10) as raw:
+            with ssl.create_default_context().wrap_socket(raw,server_hostname='aaaaaaaaaaaa.dns.mnebyvpn.site') as tls:
+              assert tls.getpeercert()
+          print('private_dot_external_tls=pass')
+          PY
+      - name: Apply single owner-only env flag with canary and rollback
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$PASSWORD"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          export SSHPASS="$PASSWORD"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          sshpass -e scp "${opts[@]}" scripts/mnebyvpn-enable-owner-offline-dot-188.sh scripts/mnebyvpn-main-bot-promote.sh "root@$HOST:/tmp/"
+          sshpass -e ssh "${opts[@]}" "root@$HOST" "mv /tmp/mnebyvpn-main-bot-promote.sh /tmp/mnebyvpn-owner-offline-dns-promote.sh && bash /tmp/mnebyvpn-enable-owner-offline-dot-188.sh"
+          echo 'owner_offline_dot_activation=verified' >> "$GITHUB_STEP_SUMMARY"
+      - name: Delete only release-specific scripts
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "$PASSWORD" ]]; then
+            export SSHPASS="$PASSWORD"
+            sshpass -e ssh -o ConnectTimeout=9 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR "root@$HOST" 'rm -f /tmp/mnebyvpn-enable-owner-offline-dot-188.sh /tmp/mnebyvpn-owner-offline-dns-promote.sh /tmp/mnebyvpn-main-bot-promote.sh' || true
+          fi
