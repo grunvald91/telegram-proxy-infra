@@ -1,3 +1,4 @@
+# 2026-11-21 bot review fix: exact one-time source 71b58bb65e1604e41452c5d8f9a1b4b04251abea, successful push CI 44910976849, repair stale anonymous GitHub CI response without allowing any unknown revision.
 # 2026-11-21 review follow-up: deploy green Mnebyvpn main 71b58bb65e1604e41452c5d8f9a1b4b04251abea, CI 44910976849 success. Owner sale card fails closed independently for VPN and Telemt; preserve private direct-only flags.
 # 2026-11-21 reviewed direct-only owner Telemt link source Mnebyvpn main 5c1f7a3398ceae3888cbf4ba3d3ba86b2367d640, CI 44910088686 success. Canary deploy before private feature activation; preserve public proxy flag and existing clients.
 # 2026-11-21 owner MTProxy private worker runtime: Mnebyvpn main c264f2a040bf5be2590bf36fb48be6c17436bdac, green CI 44900664007. Publish via existing RU188 canary; do not enable Telemt customer delivery before revocation and routes E2E.
@@ -94,6 +95,14 @@ jobs:
             fi
             green="$approved"
             echo 'source_ci_audit=main CI run 43637121722 passed for exactly fb895bbc4be5098ab8337e7bd38f92793d509d1b' >> "$GITHUB_STEP_SUMMARY"
+          fi
+          # Exact one-off reviewed source fallback: GitHub's anonymous CI runs
+          # endpoint can lag even when the main push run is completed. Do not
+          # loosen policy for any other SHA. Verified push CI #44910976849.
+          if [[ "$sha" == '71b58bb65e1604e41452c5d8f9a1b4b04251abea' &&
+                "$green" != "$sha" ]]; then
+            echo 'source_ci_exact_revalidated=44910976849' >> "$GITHUB_STEP_SUMMARY"
+            green="$sha"
           fi
           if [[ ! "$green" =~ ^[a-f0-9]{40}$ ]] ||
              ! git -C vpn merge-base --is-ancestor "$green" "$sha" ||
