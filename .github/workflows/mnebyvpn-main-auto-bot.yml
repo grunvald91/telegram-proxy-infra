@@ -1,3 +1,4 @@
+# 2026-11-21 owner MTProxy private worker runtime: Mnebyvpn main c264f2a040bf5be2590bf36fb48be6c17436bdac, green CI 44900664007. Publish via existing RU188 canary; do not enable Telemt customer delivery before revocation and routes E2E.
 # 2026-11-21 owner-only Smart DNS issuance reviewed: Mnebyvpn main 2b632f1f4b65f6716a28451cc69c89fabc5d7a8c, source main CI 44897905615 success. Private flag stays OFF until guarded owner-only activation.
 # 2026-11-21 reviewed offline-sale stable-link fix: Mnebyvpn main f66d3d01b89adce45fb726a96a1a43153d9632ff green CI 44896845385; preserve owner-only flag, all existing subscriptions, private DNS, and rollback.
 # 2026-11-21 reviewed source c57c5adde8ccbb3ef3bd7bbbbc9f25ee321e1aa9, main CI 44894985641 success: stage migration 0141 for owner manual sales and gated bot canary; private sales flag remains OFF until runtime checks.
