@@ -97,3 +97,53 @@ jobs:
               print('de_config_api_read_error='+type(exc).__name__)
           PY
           REMOTE
+      - name: Inspect exact Telemt API contract without revealing response payload
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$DE_PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 -' <<'PY'
+          from pathlib import Path
+          import re, urllib.request, urllib.error, subprocess, json
+          p=Path('/etc/telemt/direct-ozon.toml')
+          if not p.is_file():
+              print('de_ozon_config=missing')
+              raise SystemExit(0)
+          src=p.read_text(encoding='utf-8')
+          found=re.search(r'(?ms)^\s*\[server\.api\]\s*$([\s\S]*?)(?=^\s*\[|\Z)',src)
+          sec=found.group(1) if found else ''
+          print('de_ozon_api_section='+str(bool(found)).lower())
+          def config(k):
+              match=re.search(r'(?m)^\s*'+re.escape(k)+r'\s*=\s*(.*?)\s*$',sec)
+              return match.group(1).strip() if match else None
+          print('de_ozon_api_enabled='+str(config('enabled')=='true').lower())
+          print('de_ozon_api_read_only='+str(config('read_only')=='true').lower())
+          print('de_ozon_api_auth_present='+str(bool(config('auth_header'))).lower())
+          print('de_ozon_api_listen_loopback='+str(bool(config('listen') and '127.0.0.1:' in config('listen'))).lower())
+          unit=subprocess.run(['systemctl','show','-p','ExecStart','--value','telemt-direct-ozon'],
+                              capture_output=True,text=True)
+          print('de_ozon_unit_uses_expected_config='+str(str(p) in unit.stdout).lower())
+          # Do not emit bodies, user inventories, identities, user secrets or credentials.
+          auth=config('auth_header')
+          if auth and (auth[0:1] in ["'",'"']) and auth[-1:]==auth[:1]: auth=auth[1:-1]
+          for path in ['/v1/users','/v1/system/info','/health']:
+              req=urllib.request.Request('http://127.0.0.1:9096'+path,method='GET')
+              if auth: req.add_header('Authorization',auth)
+              try:
+                  with urllib.request.urlopen(req,timeout=4) as response:
+                      code=response.status
+                      data=response.read(4096)
+                      valid=(len(data)<4096 and isinstance(json.loads(data),dict) and
+                             json.loads(data).get('ok') is True) if path!='/health' else False
+              except urllib.error.HTTPError as ex:
+                  code=ex.code; valid=False
+              except Exception as ex:
+                  code='error_'+type(ex).__name__;valid=False
+              tag=path.split('/')[-1]
+              print('de_api_'+tag+'_http='+str(code))
+              print('de_api_'+tag+'_success_envelope='+str(valid).lower())
+          PY
