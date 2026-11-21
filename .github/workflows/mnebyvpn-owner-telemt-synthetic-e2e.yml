@@ -56,7 +56,10 @@ jobs:
           test "$(docker inspect -f '{{.State.Running}}' "$name")" = true
           test "$(docker inspect -f '{{.RestartCount}}' "$name")" = 0
           test "$(docker inspect -f '{{.Config.User}}' "$name")" = '13096:13096'
-          test "$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$name")" = 'container:mnebyvpn-stage-postgres'
+          postgres_container_id="$(docker inspect -f '{{.Id}}' mnebyvpn-stage-postgres)"
+          [[ "$postgres_container_id" =~ ^[0-9a-f]{64}$ ]]
+          test "$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$name")" = "container:$postgres_container_id"
+          echo 'owner_telemt_same_postgresql_network_namespace=verified'
           test "$(stat -c '%u:%g:%a' /run/mnebyvpn-owner-mtproxy/telemt.sock)" = '13096:13096:600'
           systemctl is-active -q mnebyvpn-owner-telemt-tunnel
           test "$(docker exec mnebyvpn-stage-postgres psql -qAtX -U mnebyvpn_stage -d mnebyvpn_stage -c 'SELECT count(*) FROM manual_sales')" = 0
