@@ -1,0 +1,77 @@
+name: MNEBYVPN Wi-Fi VPN private DNS read-only triage
+on:
+  push:
+    branches: [diagnose/wifi-vpn-dot-20261121]
+    paths: [.github/workflows/diagnose-wifi-vpn-dot-20261121.yml]
+  workflow_dispatch:
+permissions: {contents: read}
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Collect read-only anonymized service error counters from RU188 and DE89
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y --no-install-recommends sshpass >/dev/null
+          for role in ru de; do
+            if [[ "$role" == ru ]]; then host=188.120.254.223; pw="$RU_PASS"; else host=89.125.90.101; pw="$DE_PASS"; fi
+            echo "TRIAGE_NODE=$role"
+            if SSHPASS="$pw" sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR "root@$host" "python3 - $role" <<'PY'
+import collections,datetime,json,re,subprocess,sys
+role=sys.argv[1]
+print("node_time_utc="+datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"))
+def run(args,timeout=15):
+    try:
+        p=subprocess.run(args,text=True,capture_output=True,timeout=timeout)
+        return p.stdout if p.returncode==0 else None
+    except (OSError,subprocess.TimeoutExpired):return None
+units={"ru":["nginx.service","mnebydns-personal-dot.service","mnebydns-dot.service","mnebyvpn-vpn-provisioner.service","mnebyvpn-awg-delivery-worker.service"],"de":["nginx.service","mnebydns-personal-sni-stream.service","mnebydns-personal-sni-redirect.service","mnebydns-dot.service","mnebyvpn-vpn-provisioner.service","xray.service","mnebydns-vpn-dot-selfroute-20261115.service"]}[role]
+live=run(["ss","-H","-lnt"]) or ""
+for port in [853,8854,8856,1853]:
+    print("LISTEN_"+str(port)+"="+("YES" if re.search(r":"+str(port)+r"\s",live) else "NO"))
+for unit in units:
+    state=(run(["systemctl","is-active",unit]) or "inactive").strip()
+    print("UNIT_"+unit+"="+state[:30])
+    raw=run(["journalctl","--no-pager","-q","--since","3 hours ago","-n","1000","-u",unit,"-o","short-unix"],timeout=18)
+    if raw is None:
+        print("JOURNAL_"+unit+"=UNAVAILABLE")
+        continue
+    pats={"timeout":"timed out|timeout|deadline exceeded","refused":"connection refused|econnrefused","tls":"tls.*(error|fail|alert)|ssl.*(error|fail)|handshake.*(error|fail)|certificate.*(error|fail)","reset":"connection reset|reset by peer|broken pipe|econnreset","dns":"servfail|dns.*(fail|error)|resolver.*(fail|error)","route":"network is unreachable|no route to host","capacity":"too many open files|no buffer space","upstream":"bad gateway|upstream.*(fail|down|closed)"}
+    counts={k:len(re.findall(v,raw,re.IGNORECASE)) for k,v in pats.items()}
+    print("JOURNAL_"+unit+"="+json.dumps({"lines":len(raw.splitlines()),"error_counts":counts},separators=(",",":")))
+if role=="ru":
+    raw=run(["docker","logs","--since","3h","--tail","1200","mnebydns-personal-dot-private"],timeout=18)
+    print("PERSONAL_DOT_DOCKER_LOGS="+("UNAVAILABLE" if raw is None else "READABLE_LINES_"+str(len(raw.splitlines()))))
+else:
+    for chain in ["OUTPUT","PREROUTING"]:
+        raw=run(["iptables","-w","-t","nat","-S",chain],timeout=9)
+        print("NAT_"+chain+"_DOT_RULES="+("UNKNOWN" if raw is None else str(raw.count("--dport 853"))))
+    print("PERSONAL_SNI_TIMER="+str((run(["systemctl","is-active","mnebydns-personal-sni-watch.timer"]) or "UNKNOWN").strip()))
+print("NODE_TRIAGE=COMPLETE")
+PY
+            then echo "TRIAGE_REMOTE=$role:PASS"; else echo "TRIAGE_REMOTE=$role:UNAVAILABLE"; fi
+          done
+      - name: Independent public DNS-over-TLS TCP 853 TLS handshake
+        shell: bash
+        run: |
+          python3 - <<'PY'
+import socket,ssl,time
+start=time.monotonic()
+try:
+    with socket.create_connection(("89.125.90.101",853),timeout=7) as tcp:
+        tcp.settimeout(7)
+        with ssl.create_default_context().wrap_socket(tcp,server_hostname="dns.mnebyvpn.site") as conn:
+            print("PUBLIC_DOT_TLS=PASS elapsed_ms="+str(round((time.monotonic()-start)*1000)))
+except Exception as e:
+    print("PUBLIC_DOT_TLS=FAIL "+type(e).__name__)
+PY
