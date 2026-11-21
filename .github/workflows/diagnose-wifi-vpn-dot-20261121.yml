@@ -75,3 +75,45 @@ jobs:
           except Exception as e:
               print("PUBLIC_DOT_TLS=FAIL "+type(e).__name__)
           PY
+
+      - name: Verify actual Docker backends and inspect anonymized recent stderr and nginx error counters
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for role in ru de; do
+            if [[ "$role" == ru ]]; then host=188.120.254.223; pw="$RU_PASS"; else host=89.125.90.101; pw="$DE_PASS"; fi
+            echo "DEEP_NODE=$role"
+            if SSHPASS="$pw" sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR "root@$host" "python3 - $role" <<'PY'
+          import datetime,json,os,re,subprocess,sys
+          role=sys.argv[1]
+          pats={"timeout":"timeout|timed out|deadline exceeded","reset":"connection reset|reset by peer|broken pipe","tls":"tls.*(error|fail)|ssl.*(error|fail)|handshake.*(fail|error)|certificate.*(fail|error)","upstream":"upstream.*(fail|timeout|reset)|bad gateway","dns":"servfail|dns.*(fail|error)","capacity":"too many open files|no buffer space","refused":"connection refused"}
+          def call(argv,timeout=12):
+              try:return subprocess.run(argv,capture_output=True,text=True,timeout=timeout)
+              except (OSError,subprocess.TimeoutExpired):return None
+          def summarize(tag,text,cap=2000):
+              rows=text.splitlines()[-cap:]
+              counts={k:sum(bool(re.search(p,r,re.I)) for r in rows) for k,p in pats.items()}
+              print(tag+"="+json.dumps({"lines":len(rows),"categories":counts},separators=(",",":")))
+          for unit in (["mnebydns-personal-dot.service","mnebydns-dot.service","mnebyvpn-vpn-provisioner.service"] if role=="ru" else ["mnebydns-dot.service","mnebydns-personal-sni-stream.service","mnebyvpn-vpn-provisioner.service"]):
+              q=call(["systemctl","show","-p","LoadState","-p","ActiveState","--",unit])
+              print("SYSTEMD_"+unit+"="+((q.stdout or "").strip().replace("\n",";") if q else "UNKNOWN"))
+          containers=["mnebydns-personal-dot-private"] if role=="ru" else []
+          for name in containers:
+              result=call(["docker","inspect","--format","{{.State.Status}}",name])
+              print("CONTAINER_"+name+"="+((result.stdout or "").strip() if result and result.returncode==0 else "UNKNOWN"))
+              logs=call(["docker","logs","--since","3h","--tail","2000",name],18)
+              if logs and logs.returncode==0:
+                  summarize("CONTAINER_LOG_3H_"+name,(logs.stdout or "")+"\n"+(logs.stderr or ""))
+              else:print("CONTAINER_LOG_3H_"+name+"=UNAVAILABLE")
+          for path in ["/var/log/nginx/error.log"]:
+              try:
+                  with open(path,encoding="utf-8",errors="replace") as h:
+                      from collections import deque
+                      rows=list(deque(h,maxlen=2000))
+                  summarize("NGINX_ERROR_LAST_2000", "".join(rows),2000)
+              except (OSError,PermissionError):
+                  print("NGINX_ERROR_LAST_2000=UNAVAILABLE")
+          print("DEEP_NODE_COMPLETE="+role)
+          PY
+            then echo "DEEP_SSH=$role:PASS"; else echo "DEEP_SSH=$role:UNAVAILABLE"; fi
+          done
