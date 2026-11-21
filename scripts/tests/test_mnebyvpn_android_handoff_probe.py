@@ -63,6 +63,23 @@ class AndroidHandoffTests(unittest.TestCase):
         with patch.object(m, "command", return_value='{"ssid":"private-home","bssid":"aa:bb:cc:dd:ee:ff","ip":"192.168.1.5","supplicant_state":"COMPLETED"}'):
             self.assertIs(m.wifi_hint(), True)
 
+    def test_switch_between_two_connected_wifi_networks(self):
+        one = '{"ssid":"WiFi-A","bssid":"aa:bb:cc:dd:ee:01","supplicant_state":"COMPLETED"}'
+        two = '{"ssid":"WiFi-B","bssid":"aa:bb:cc:dd:ee:02","supplicant_state":"COMPLETED"}'
+        with patch.object(m, "command", return_value=one):
+            wifi1, token1 = m.wifi_hint(b"ephemeral-key")
+        with patch.object(m, "command", return_value=two):
+            wifi2, token2 = m.wifi_hint(b"ephemeral-key")
+        self.assertTrue(wifi1)
+        self.assertTrue(wifi2)
+        self.assertNotEqual(token1, token2)
+        self.assertEqual(len(token1), 32)
+        self.assertNotIn(b"WiFi-A", token1)
+
+    def test_no_location_permission_returns_unknown(self):
+        with patch.object(m, "command", return_value=None):
+            self.assertEqual(m.wifi_hint(b"ephemeral-key"), (None, None))
+
     def test_hostname_not_printed_in_sample(self):
         source = SCRIPT.read_text(encoding="utf8")
         self.assertNotIn("print(host)", source)
