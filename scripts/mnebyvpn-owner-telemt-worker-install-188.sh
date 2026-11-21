@@ -40,17 +40,15 @@ num_proxy="$(docker exec mnebyvpn-stage-postgres psql -qAtX -v ON_ERROR_STOP=1 \
 [[ "$num_sales" == 0 && "$num_proxy" == 0 ]] || {
   echo 'owner_proxy_first_release_requires_empty_ledger=true';exit 2;
 }
+# A prior deploy may have created role+worker before the bot-key canary.
+# Resume that exact immutable instance; never regenerate customer credentials.
+already_running=no
 if docker container inspect "$container" >/dev/null 2>&1; then
   test "$(docker inspect --format '{{.State.Running}}' "$container")" = true
   test "$(docker inspect --format '{{.Config.Image}}' "$container")" = "$image"
   test "$(docker inspect --format '{{.Config.User}}' "$container")" = '13096:13096'
   test -s "$worker"
-  current_key="$(sed -n 's/^WEB_DNS_MT_PROXY_BONUS_KEY=//p' "$worker")"
-  test "$(sed -n 's/^WEB_DNS_MT_PROXY_BONUS_KEY=//p' "$botenv")" = "$current_key"
-  docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' mnebyvpn-bot-info |
-    grep -Eq '^WEB_DNS_MT_PROXY_BONUS_KEY=[a-f0-9]{64}$'
-  echo 'owner_mtproxy_worker=already_running'
-  exit 0
+  already_running=yes
 fi
 install -d -m 0700 "$private"
 existing_key="$(sed -n 's/^WEB_DNS_MT_PROXY_BONUS_KEY=//p' "$botenv")"
@@ -134,23 +132,33 @@ test "$(docker exec -e PGPASSWORD="$dbpass" mnebyvpn-stage-postgres \
     psql -h 127.0.0.1 -qAtX -v ON_ERROR_STOP=1 -U mnebyvpn_owner_telemt \
       -d mnebyvpn_stage -c 'SELECT count(*) FROM dns_mtproxy_bonus_credentials')" = 0
 echo 'owner_telemt_least_privilege_db_role=verified'
-docker run -d --name "$container" --network host \
-  --user 13096:13096 --read-only --tmpfs /tmp:rw,nosuid,nodev,size=8m \
-  --mount type=bind,src=/run/mnebyvpn-owner-mtproxy,dst=/run/mnebyvpn-owner-mtproxy,readonly \
-  --cap-drop ALL --security-opt no-new-privileges --pids-limit 64 \
-  --memory 160m --cpus 0.35 --restart unless-stopped \
-  --env-file "$worker" --entrypoint node "$image" \
-  --experimental-strip-types apps/service/src/dns-mtproxy-bonus-worker.ts >/dev/null
+if [[ "$already_running" == no ]]; then
+  docker run -d --name "$container" --network host \
+    --user 13096:13096 --read-only --tmpfs /tmp:rw,nosuid,nodev,size=8m \
+    --mount type=bind,src=/run/mnebyvpn-owner-mtproxy,dst=/run/mnebyvpn-owner-mtproxy,readonly \
+    --cap-drop ALL --security-opt no-new-privileges --pids-limit 64 \
+    --memory 160m --cpus 0.35 --restart unless-stopped \
+    --env-file "$worker" --entrypoint node "$image" \
+    --experimental-strip-types apps/service/src/dns-mtproxy-bonus-worker.ts >/dev/null
+else
+  echo 'owner_mtproxy_worker=existing_verified_instance'
+fi
 # A fresh worker has no manual customers: it must remain healthy without
 # creating or changing any existing Telemt profiles.
 sleep 8
 test "$(docker inspect --format '{{.State.Running}}' "$container")" = true
-test "$(docker inspect --format '{{.State.RestartCount}}' "$container")" = 0
+test "$(docker inspect --format '{{.RestartCount}}' "$container")" = 0
 test "$(docker inspect --format '{{.Config.User}}' "$container")" = '13096:13096'
 num_after="$(docker exec mnebyvpn-stage-postgres psql -qAtX -v ON_ERROR_STOP=1 \
   -U mnebyvpn_stage -d mnebyvpn_stage -c 'SELECT count(*) FROM dns_mtproxy_bonus_credentials')"
 [[ "$num_after" == 0 ]] || { echo 'unexpected_proxy_record_creation=true';exit 2; }
 echo 'owner_mtproxy_worker=running_private_only'
+# Detect partial bot-key installation without logging or disclosing the key.
+if [[ -n "$existing_key" ]]; then
+  test "$existing_key" = "$key"
+  docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' mnebyvpn-bot-info |
+    grep -Fxq "WEB_DNS_MT_PROXY_BONUS_KEY=$existing_key"
+fi
 # Bot needs the SAME key for later verified owner-only link retrieval.
 # Never enable either public or owner delivery release flags at this stage.
 if [[ -z "$existing_key" ]]; then
