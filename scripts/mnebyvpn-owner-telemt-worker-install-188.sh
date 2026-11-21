@@ -48,7 +48,9 @@ if docker container inspect "$container" >/dev/null 2>&1; then
   current_key="$(sed -n 's/^WEB_DNS_MT_PROXY_BONUS_KEY=//p' "$worker")"
   test "$(sed -n 's/^WEB_DNS_MT_PROXY_BONUS_KEY=//p' "$botenv")" = "$current_key"
   docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' mnebyvpn-bot-info |
-    grep -Eq '^WEB_DNS_MT_PROXY_BONUS_KEY=[a-f0-9]{64}
+    grep -Eq '^WEB_DNS_MT_PROXY_BONUS_KEY=[a-f0-9]{64}$'
+  echo 'owner_mtproxy_worker=already_running'
+  exit 0
 fi
 install -d -m 0700 "$private"
 existing_key="$(sed -n 's/^WEB_DNS_MT_PROXY_BONUS_KEY=//p' "$botenv")"
