@@ -1,0 +1,96 @@
+name: Enable owner-only direct Telemt links after reviewed E2E
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebyvpn-owner-telemt-direct-release.yml'
+      - 'scripts/mnebyvpn-owner-telemt-direct-release-188.sh'
+      - 'scripts/mnebyvpn-owner-telemt-direct-bot-promote-existing-188.sh'
+  push:
+    branches: [main]
+    paths: ['.github/workflows/mnebyvpn-owner-telemt-direct-release.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebyvpn-auto-public-deploy
+  cancel-in-progress: false
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate direct-only private release and immutable canary
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          bash -n scripts/mnebyvpn-owner-telemt-direct-release-188.sh
+          bash -n scripts/mnebyvpn-owner-telemt-direct-bot-promote-existing-188.sh
+          grep -Fq 'SHA=5c1f7a3398ceae3888cbf4ba3d3ba86b2367d640' scripts/mnebyvpn-owner-telemt-direct-release-188.sh
+          grep -Fq 'owner_telemt_direct_only=enabled_private_sales' scripts/mnebyvpn-owner-telemt-direct-release-188.sh
+          grep -Fq 'MNEBYVPN_OFFLINE_MTPROXY_ROUTES_VERIFIED' scripts/mnebyvpn-owner-telemt-direct-release-188.sh
+          grep -Fq 'MNEBYVPN_OFFLINE_MTPROXY_REVOKER_VERIFIED' scripts/mnebyvpn-owner-telemt-direct-release-188.sh
+          grep -Fq 'container:$postgres_id' scripts/mnebyvpn-owner-telemt-direct-release-188.sh
+          grep -Fq 'rollback()' scripts/mnebyvpn-owner-telemt-direct-release-188.sh
+          ! grep -Eq 'WEB_DNS_MT_PROXY_BONUS_(ROUTES_JSON|ENABLED)=' scripts/mnebyvpn-owner-telemt-direct-release-188.sh
+          ! grep -Eq 'pg_hba.conf|iptables|nft add|ufw allow|systemctl restart telemt' scripts/mnebyvpn-owner-telemt-direct-release-188.sh
+  enable:
+    needs: lint
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 16
+    env:
+      PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate external direct Telemt endpoint without customer credentials
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import socket
+          ok=0
+          for _ in range(3):
+              try:
+                  with socket.create_connection(('89.125.90.101',9446),timeout=6):
+                      ok+=1
+              except OSError:pass
+          assert ok==3, "verified direct Telemt route is not stable"
+          print('owner_telemt_direct_external_tcp=3/3')
+          PY
+      - name: Guarded activation with exact live image, owner flag and rollback
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$PASSWORD"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          export SSHPASS="$PASSWORD"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e scp "${opts[@]}" scripts/mnebyvpn-owner-telemt-direct-bot-promote-existing-188.sh \
+            root@188.120.254.223:/tmp/mnebyvpn-owner-telemt-direct-promote.sh
+          sshpass -e scp "${opts[@]}" scripts/mnebyvpn-owner-telemt-direct-release-188.sh \
+            root@188.120.254.223:/tmp/mnebyvpn-owner-telemt-direct-release.sh
+          sshpass -e ssh -T "${opts[@]}" root@188.120.254.223 \
+            'bash /tmp/mnebyvpn-owner-telemt-direct-release.sh'
+          echo 'owner_telemt_direct_release=verified' >> "$GITHUB_STEP_SUMMARY"
+      - name: Remove only temporary activation scripts
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "$PASSWORD" ]];then
+            export SSHPASS="$PASSWORD"
+            sshpass -e ssh -T -o ConnectTimeout=9 -o StrictHostKeyChecking=yes \
+              -o HostKeyAlgorithms=ssh-ed25519 \
+              -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" \
+              -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR \
+              root@188.120.254.223 \
+              'rm -f /tmp/mnebyvpn-owner-telemt-direct-{release,promote}.sh' || true
+          fi
