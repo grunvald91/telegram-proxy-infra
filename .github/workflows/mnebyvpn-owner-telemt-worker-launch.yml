@@ -1,3 +1,4 @@
+# Reviewed: worker scope restricted to manual sales; no live user provisioning on initial rollout.
 name: Launch owner-only Telemt worker on RU188 (private UDS)
 on:
   pull_request:
