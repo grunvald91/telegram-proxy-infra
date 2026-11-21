@@ -1,0 +1,92 @@
+name: Install private owner 3-seat inventory schema on RU188
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/mnebyvpn-owner-three-seat-migrate.yml'
+      - 'scripts/mnebyvpn-owner-three-seat-migrate-188.sh'
+  push:
+    branches: [main]
+    paths: ['.github/workflows/mnebyvpn-owner-three-seat-migrate.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebyvpn-auto-public-deploy
+  cancel-in-progress: false
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Check guards and absence of data-plane changes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          bash -n scripts/mnebyvpn-owner-three-seat-migrate-188.sh
+          grep -Fq 'pre-owner-three-device-0142' scripts/mnebyvpn-owner-three-seat-migrate-188.sh
+          grep -Fq 'vpn_awg_peer_allocations' scripts/mnebyvpn-owner-three-seat-migrate-188.sh
+          grep -Fq 'deployment_schema_migrations' scripts/mnebyvpn-owner-three-seat-migrate-188.sh
+          ! grep -Eq 'iptables|nft add|docker (rm|restart)|systemctl (stop|restart)|DELETE FROM|UPDATE vpn_awg' scripts/mnebyvpn-owner-three-seat-migrate-188.sh
+  migrate:
+    needs: lint
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 14
+    env:
+      PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: infra
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: grunvald91/Mnebyvpn
+          ref: 1af1668c55342d80d0cfdb10a86137c582640008
+          path: source
+          persist-credentials: false
+      - name: Pin approved main and exact migration source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(git -C source rev-parse HEAD)" = 1af1668c55342d80d0cfdb10a86137c582640008
+          test -s source/db/migrations/0142_owner_vpn_three_device_seats.sql
+          test -s infra/ops/mnebydns-owner-ssh-known_hosts
+          test -n "$PASSWORD"
+          bash -n infra/scripts/mnebyvpn-owner-three-seat-migrate-188.sh
+          # Main push source 1af... passed Offline code and database contracts
+          # GitHub Actions run 44914014581, after PR run 44913855828 passed.
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass >/dev/null
+      - name: Apply migration with verified full PGDMP backup, no service restarts
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export SSHPASS="$PASSWORD"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/infra/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sql=source/db/migrations/0142_owner_vpn_three_device_seats.sql
+          hash="$(sha256sum "$sql" | awk '{print $1}')"
+          [[ "$hash" =~ ^[a-f0-9]{64}$ ]]
+          sshpass -e scp "${opts[@]}" "$sql" root@188.120.254.223:/tmp/mnebyvpn-owner-three-seat-0142.sql
+          sshpass -e scp "${opts[@]}" infra/scripts/mnebyvpn-owner-three-seat-migrate-188.sh root@188.120.254.223:/tmp/mnebyvpn-owner-three-seat-migrate-188.sh
+          sshpass -e ssh -T "${opts[@]}" root@188.120.254.223 \
+            "bash /tmp/mnebyvpn-owner-three-seat-migrate-188.sh '$hash'"
+          echo 'owner_vpn_three_seat_ledger=verified' >> "$GITHUB_STEP_SUMMARY"
+      - name: Remove only migration upload copies
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "$PASSWORD" ]];then
+            export SSHPASS="$PASSWORD"
+            sshpass -e ssh -T -o ConnectTimeout=9 -o StrictHostKeyChecking=yes \
+              -o HostKeyAlgorithms=ssh-ed25519 \
+              -o "UserKnownHostsFile=$PWD/infra/ops/mnebydns-owner-ssh-known_hosts" \
+              -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR \
+              root@188.120.254.223 \
+              'rm -f /tmp/mnebyvpn-owner-three-seat-0142.sql /tmp/mnebyvpn-owner-three-seat-migrate-188.sh' || true
+          fi
