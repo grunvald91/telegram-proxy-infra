@@ -34,6 +34,9 @@ jobs:
           grep -Fq "{{.RestartCount}}" scripts/mnebyvpn-owner-telemt-worker-install-188.sh
           ! grep -Fq "{{.State.RestartCount}}" scripts/mnebyvpn-owner-telemt-worker-install-188.sh
           grep -Fq "already_running=yes" scripts/mnebyvpn-owner-telemt-worker-install-188.sh
+          grep -Fq 'canonical_network=container:mnebyvpn-stage-postgres' scripts/mnebyvpn-owner-telemt-worker-install-188.sh
+          grep -Fq 'owner_mtproxy_canary_database_network=verified' scripts/mnebyvpn-owner-telemt-worker-install-188.sh
+          grep -Fq 'rollback_network' scripts/mnebyvpn-owner-telemt-worker-install-188.sh
           ! grep -Eq 'pg_hba.conf|iptables|nft add|ufw allow|systemctl restart telemt|docker rm -f mnebyvpn-bot-info' scripts/mnebyvpn-owner-telemt-worker-install-188.sh
   launch:
     needs: lint
