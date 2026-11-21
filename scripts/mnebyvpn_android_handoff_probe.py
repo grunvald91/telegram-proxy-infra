@@ -55,7 +55,10 @@ def system_dns():
         if run.returncode:
             raise OSError("resolver_failed")
         return {"ok": True, "ms": round((time.monotonic() - start) * 1000)}
-    except (OSError, TimeoutError, subprocess.TimeoutExpired) as ex:
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "timeout",
+                "ms": round((time.monotonic() - start) * 1000)}
+    except (OSError, TimeoutError) as ex:
         return {"ok": False, "error": classify_error(ex),
                 "ms": round((time.monotonic() - start) * 1000)}
 
