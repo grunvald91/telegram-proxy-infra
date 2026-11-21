@@ -29,6 +29,7 @@ if grep -q '^MNEBYVPN_OFFLINE_DNS_ISSUE_ENABLED=' "$ENV"; then
   grep -Fxq 'MNEBYVPN_OFFLINE_DNS_ISSUE_ENABLED=no' "$ENV"
 fi
 changed=0
+temp=''
 backup="$(mktemp "$BOT/.owner-offline-dot-backup.XXXXXXXX")"
 cp -p "$ENV" "$backup"
 rollback() {
@@ -42,6 +43,7 @@ rollback() {
     fi
     echo 'owner_offline_dns_env=restored'
   fi
+  if [[ -n "$temp" ]]; then rm -f "$temp"; fi
   rm -f "$backup"
   exit "$status"
 }
