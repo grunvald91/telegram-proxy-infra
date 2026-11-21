@@ -31,6 +31,9 @@ jobs:
           grep -Fq 'dns_mtproxy_bonus_credentials' scripts/mnebyvpn-owner-telemt-worker-install-188.sh
           grep -Fq 'mnebyvpn_owner_telemt' scripts/mnebyvpn-owner-telemt-worker-install-188.sh
           grep -Fq '13096:13096' scripts/mnebyvpn-owner-telemt-worker-install-188.sh
+          grep -Fq "{{.RestartCount}}" scripts/mnebyvpn-owner-telemt-worker-install-188.sh
+          ! grep -Fq "{{.State.RestartCount}}" scripts/mnebyvpn-owner-telemt-worker-install-188.sh
+          grep -Fq "already_running=yes" scripts/mnebyvpn-owner-telemt-worker-install-188.sh
           ! grep -Eq 'pg_hba.conf|iptables|nft add|ufw allow|systemctl restart telemt|docker rm -f mnebyvpn-bot-info' scripts/mnebyvpn-owner-telemt-worker-install-188.sh
   launch:
     needs: lint
