@@ -43,11 +43,19 @@ num_proxy="$(docker exec mnebyvpn-stage-postgres psql -qAtX -v ON_ERROR_STOP=1 \
 # A prior deploy may have created role+worker before the bot-key canary.
 # Resume that exact immutable instance; never regenerate customer credentials.
 already_running=no
+worker_network=none
 if docker container inspect "$container" >/dev/null 2>&1; then
-  test "$(docker inspect --format '{{.State.Running}}' "$container")" = true
   test "$(docker inspect --format '{{.Config.Image}}' "$container")" = "$image"
   test "$(docker inspect --format '{{.Config.User}}' "$container")" = '13096:13096'
   test -s "$worker"
+  worker_network="$(docker inspect --format '{{.HostConfig.NetworkMode}}' "$container")"
+  if [[ "$worker_network" == host ]]; then
+    echo 'owner_telemt_worker_network_repair=required'
+  elif [[ "$worker_network" == container:* ]];then
+    test "$(docker inspect --format '{{.State.Running}}' "$container")" = true
+  else
+    echo 'owner_telemt_worker_unexpected_network_mode=true';exit 2
+  fi
   already_running=yes
 fi
 install -d -m 0700 "$private"
@@ -132,16 +140,64 @@ test "$(docker exec -e PGPASSWORD="$dbpass" mnebyvpn-stage-postgres \
     psql -h 127.0.0.1 -qAtX -v ON_ERROR_STOP=1 -U mnebyvpn_owner_telemt \
       -d mnebyvpn_stage -c 'SELECT count(*) FROM dns_mtproxy_bonus_credentials')" = 0
 echo 'owner_telemt_least_privilege_db_role=verified'
-if [[ "$already_running" == no ]]; then
-  docker run -d --name "$container" --network host \
+# The canonical PostgreSQL is inside the staging database container.
+# The host's 127.0.0.1:5432 rejects this role (SQLSTATE 28P01).
+# Share ONLY PostgreSQL's network namespace. The admin bridge is a Unix socket.
+canonical_network=container:mnebyvpn-stage-postgres
+run_worker(){
+  local name="$1" network="$2" restart="$3"
+  docker run -d --name "$name" --network "$network" \
     --user 13096:13096 --read-only --tmpfs /tmp:rw,nosuid,nodev,size=8m \
     --mount type=bind,src=/run/mnebyvpn-owner-mtproxy,dst=/run/mnebyvpn-owner-mtproxy,readonly \
     --cap-drop ALL --security-opt no-new-privileges --pids-limit 64 \
-    --memory 160m --cpus 0.35 --restart unless-stopped \
+    --memory 160m --cpus 0.35 --restart "$restart" \
     --env-file "$worker" --entrypoint node "$image" \
     --experimental-strip-types apps/service/src/dns-mtproxy-bonus-worker.ts >/dev/null
+}
+verify_worker(){
+  local name="$1"
+  test "$(docker inspect --format '{{.State.Running}}' "$name")" = true
+  test "$(docker inspect --format '{{.RestartCount}}' "$name")" = 0
+  test "$(docker inspect --format '{{.Config.User}}' "$name")" = '13096:13096'
+}
+if [[ "$already_running" == no ]];then
+  run_worker "$container" "$canonical_network" unless-stopped
+elif [[ "$worker_network" == host ]];then
+  # Zero real sales/proxy records verified above; no other customers touched.
+  canary="$container-canonical-canary"
+  backup="$container-wrong-network-backup"
+  test ! "$(docker ps -a --format '{{.Names}}' | grep -Fx "$canary" || true)"
+  test ! "$(docker ps -a --format '{{.Names}}' | grep -Fx "$backup" || true)"
+  cutover_backup=no
+  rollback_network(){
+    code=$?
+    trap - ERR EXIT
+    docker rm -f "$canary" >/dev/null 2>&1 || true
+    if [[ "$cutover_backup" == yes ]];then
+      docker rm -f "$container" >/dev/null 2>&1 || true
+      docker rename "$backup" "$container" >/dev/null 2>&1 || true
+      docker start "$container" >/dev/null 2>&1 || true
+    fi
+    exit "$code"
+  }
+  trap rollback_network ERR EXIT
+  run_worker "$canary" "$canonical_network" no
+  sleep 10
+  verify_worker "$canary"
+  echo 'owner_mtproxy_canary_database_network=verified'
+  docker stop -t 5 "$container" >/dev/null
+  docker rename "$container" "$backup"
+  cutover_backup=yes
+  run_worker "$container" "$canonical_network" unless-stopped
+  sleep 10
+  verify_worker "$container"
+  docker rm -f "$canary" "$backup" >/dev/null
+  cutover_backup=no
+  trap - ERR EXIT
+  echo 'owner_mtproxy_worker_network_repair=completed'
 else
-  echo 'owner_mtproxy_worker=existing_verified_instance'
+  test "$worker_network" = "$canonical_network"
+  echo 'owner_mtproxy_worker=existing_canonical_network'
 fi
 # A fresh worker has no manual customers: it must remain healthy without
 # creating or changing any existing Telemt profiles.
