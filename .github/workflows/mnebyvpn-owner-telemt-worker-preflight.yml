@@ -107,6 +107,19 @@ jobs:
             else echo 'worker_db_proxy_read=fail';fi
             unset dbpw wkey bkey
           else echo 'worker_secret_file=missing';fi
+          if [[ -r "$private_env" && -n "$image" ]];then
+            docker run --rm --network host --user 13096:13096 --env-file "$private_env"
+              --entrypoint node "$image" --experimental-strip-types --input-type=module -e '
+              import {Pool} from "pg";
+              const db=new Pool({connectionString:process.env.DATABASE_URL,max:1,connectionTimeoutMillis:2500});
+              for(const [label,sql] of [["connect","SELECT 1"],["credential_table","SELECT 1 FROM dns_mtproxy_bonus_credentials LIMIT 1"]]){
+                try{await db.query(sql);console.log("worker_network_"+label+"=pass");}
+                catch(e){const code=String(e?.code??"UNKNOWN");
+                  console.log("worker_network_"+label+"=fail;code="+(/^[A-Z0-9_]{1,18}$/.test(code)?code:"UNKNOWN"));}
+              }
+              await db.end();
+              ' || echo 'worker_network_diagnostic_failed=true'
+          fi
 
           docker exec -i mnebyvpn-stage-postgres psql -qAtX -v ON_ERROR_STOP=1 \
             -U mnebyvpn_stage -d mnebyvpn_stage <<'SQL'
