@@ -86,6 +86,11 @@ class MixedRuntimeTest(unittest.TestCase):
             self.assertTrue(any(c[:2]==["systemctl","stop"] for c in calls),
                 "V1 watchdog must stop AWG instead of silently pruning V2")
 
+    def test_integer_release_marker_is_not_a_signed_permission(self):
+        with self.release(raw={"node_id":NODE,"enabled":1}):
+            with self.assertRaises(v1.GrantError):
+                v1.effective_active_peers(self.node,self.legacy,NOW)
+
     def test_historical_duplicate_v1_and_v2_key_or_address_fails_closed(self):
         self.slots=v2.transition(v2.empty_state(NODE),
                                  slot_cmd(clientIpv4="10.73.91.2"),NOW)
