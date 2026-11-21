@@ -49,13 +49,13 @@ class TestReadOnlyDoT(unittest.TestCase):
             probe.check_dns(sock, 0x1234, question)
 
     def test_unrelated_a_answer_rejected(self):
-        unrelated = b"\\x05other\\x03org\\x00" + struct.pack("!HHIH", 1, 1, 60, 4) + b"\\x01\\x02\\x03\\x04"
+        unrelated = b"\x05other\x03org\x00" + struct.pack("!HHIH", 1, 1, 60, 4) + b"\x01\x02\x03\x04"
         sock, question = packet(answers=[unrelated])
         with self.assertRaisesRegex(ValueError, "dns_no_usable_answer"):
             probe.check_dns(sock, 0x1234, question)
 
     def test_compression_pointer_cycle_rejected(self):
-        cycling = b"\\xc0\\x1d" + struct.pack("!HHIH", 1, 1, 60, 4) + b"\\x01\\x02\\x03\\x04"
+        cycling = b"\xc0\x1d" + struct.pack("!HHIH", 1, 1, 60, 4) + b"\x01\x02\x03\x04"
         sock, question = packet(answers=[cycling])
         with self.assertRaisesRegex(ValueError, "invalid_dns_reply"):
             probe.check_dns(sock, 0x1234, question)
@@ -66,8 +66,8 @@ class TestReadOnlyDoT(unittest.TestCase):
             probe.check_dns(sock, 0x1234, question)
 
     def test_cname_then_a_accepted(self):
-        cname = b"\\xc0\\x0c" + struct.pack("!HHIH", 5, 1, 60, 10) + b"\\x05alias\\x03org\\x00"
-        a = b"\\x05alias\\x03org\\x00" + struct.pack("!HHIH", 1, 1, 60, 4) + b"\\x01\\x02\\x03\\x04"
+        cname = b"\xc0\x0c" + struct.pack("!HHIH", 5, 1, 60, 11) + b"\x05alias\x03org\x00"
+        a = b"\x05alias\x03org\x00" + struct.pack("!HHIH", 1, 1, 60, 4) + b"\x01\x02\x03\x04"
         sock, question = packet(answers=[cname, a])
         probe.check_dns(sock, 0x1234, question)
 
