@@ -1,3 +1,4 @@
+# Read-only postrelease verification after owner-sales bot deployment c57c5adde8ccbb3ef3bd7bbbbc9f25ee321e1aa9.
 name: MNEBYVPN personal sales readiness (read-only)
 on:
   push:
