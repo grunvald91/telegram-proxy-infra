@@ -39,7 +39,11 @@ def release_approved(node: Path) -> None:
         obj = json.loads(v1.protected_file(marker, max_bytes=512))
     except (OSError, ValueError) as exc:
         raise SlotRuntimeError("Root-only AWG V2 release marker missing or unsafe") from exc
-    if obj != {"node_id": node.name, "enabled": True}:
+    if (not isinstance(obj, dict) or
+            set(obj) != {"node_id", "enabled"} or
+            obj["node_id"] != node.name or
+            type(obj["enabled"]) is not bool or
+            obj["enabled"] is not True):
         raise SlotRuntimeError("Per-device V2 release is not enabled")
 
 
