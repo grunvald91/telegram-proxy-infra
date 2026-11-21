@@ -119,7 +119,7 @@ class SlotContractTest(unittest.TestCase):
             old["grants"][uid]={
                 "revision":1,"peerPublicKey":k,
                 "clientIpv4":f"10.73.91.{i+2}",
-                "enabled":True,"expiresAt":EXPIRES,
+                "enabled":True,"expiresAt":EXPIRY,
             }
         legacy.validate_state(old,NODE)
         new=v2.transition(v2.empty_state(NODE),
