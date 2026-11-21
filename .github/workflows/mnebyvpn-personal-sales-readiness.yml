@@ -51,6 +51,20 @@ jobs:
           done
           echo "telegram_readyz=$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' \
             --max-time 4 http://127.0.0.1:8793/readyz || true)"
+          for source in public/web.env bot/worker.env staging/web.env; do
+            if [[ -r "$ROOT/$source" ]]; then
+              for key in MNEBYDNS_PERSONAL_DOT_ENABLED WEB_DNS_MT_PROXY_BONUS_KEY \
+                  WEB_DNS_MT_PROXY_BONUS_ROUTES_JSON WEB_DNS_MT_PROXY_BONUS_ENABLED \
+                  WEB_DNS_MT_PROXY_BONUS_E2E_VERIFIED WEB_DNS_MT_PROXY_BONUS_REVOKER_VERIFIED; do
+                if grep -q "^$key=" "$ROOT/$source"; then
+                  echo "source_$(echo "$source" | tr '/.' '__')_$key=present"
+                fi
+              done
+            fi
+          done
+          echo 'proxy_worker_container_names_begin'
+          docker ps --format '{{.Names}}' | grep -E 'mnebyvpn.*(proxy|bonus|dns)' || true
+          echo 'proxy_worker_container_names_end'
           if docker ps --format '{{.Names}}' | grep -qx mnebyvpn-stage-postgres; then
             docker exec -i mnebyvpn-stage-postgres \
               psql -qAtX -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage <<'SQL'
