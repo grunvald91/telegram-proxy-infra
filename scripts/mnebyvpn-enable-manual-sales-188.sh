@@ -9,7 +9,7 @@ test "$(id -u)" -eq 0
 test -s "$ENV"
 test "$(cat "$ROOT/staging/active_sha")" = "$EXPECTED"
 test "$(docker inspect --format '{{.Config.Image}}' mnebyvpn-bot-info)" = "mnebyvpn-stage-web:$EXPECTED"
-test "$(docker exec mnebyvpn-stage-postgres psql -qAtX -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage -c "SELECT (to_regclass('public.manual_sales') IS NOT NULL AND EXISTS(SELECT 1 FROM deployment_schema_migrations WHERE file_name='0141_owner_manual_sales.sql'))::text")" = t
+test "$(docker exec mnebyvpn-stage-postgres psql -qAtX -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage -c "SELECT (to_regclass('public.manual_sales') IS NOT NULL AND EXISTS(SELECT 1 FROM deployment_schema_migrations WHERE file_name='0141_owner_manual_sales.sql'))::text")" = true
 grep -Eq '^SUPPORT_TELEGRAM_OPERATOR_ID=[1-9][0-9]{0,15}$' "$ENV" || grep -Eq '^DNS_ADMIN_TELEGRAM_ID=[1-9][0-9]{0,15}$' "$ENV"
 grep -Eq '^MNEBYDNS_OWNER_LINK_KEY=[a-f0-9]{64}$' "$ENV"
 if grep -Fxq 'MNEBYVPN_OFFLINE_SALES_ENABLED=yes' "$ENV"; then
