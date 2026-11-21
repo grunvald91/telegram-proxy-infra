@@ -7,6 +7,8 @@ on:
       - 'scripts/mnebydns-dot-minute-probe-20261113.py'
       - 'scripts/mnebyvpn_dns_vpn_handoff_monitor.py'
       - 'scripts/tests/test_mnebyvpn_dns_vpn_handoff_monitor.py'
+      - 'scripts/mnebyvpn_android_handoff_probe.py'
+      - 'scripts/tests/test_mnebyvpn_android_handoff_probe.py'
   workflow_dispatch:
   # GitHub Actions scheduling has a minimum five-minute cadence and can drift.
   # The separate on-node systemd timer is responsible for minute-resolution data.
@@ -69,6 +71,8 @@ jobs:
           set -Eeuo pipefail
           python3 -m unittest discover -s scripts/tests -p 'test_mnebyvpn_dns_vpn_handoff_monitor.py' -v
           python3 scripts/mnebyvpn_dns_vpn_handoff_monitor.py --self-test
+          python3 -m py_compile scripts/mnebyvpn_android_handoff_probe.py
+          python3 -m unittest discover -s scripts/tests -p 'test_mnebyvpn_android_handoff_probe.py' -v
           # Three bounded read-only samples distinguish one-off delays from sustained failures.
           external_rc=0
           python3 scripts/mnebyvpn_dns_vpn_handoff_monitor.py \
