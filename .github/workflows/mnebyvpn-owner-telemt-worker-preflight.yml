@@ -1,0 +1,75 @@
+name: Owner Telemt worker live readiness (read-only)
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/mnebyvpn-owner-telemt-worker-preflight.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Inspect socket UID, image, database privileges without secrets
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          test -n "$PASS"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          export SSHPASS="$PASS"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes \
+            -o HostKeyAlgorithms=ssh-ed25519 \
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR \
+            root@188.120.254.223 'bash -se' <<'REMOTE'
+          set -Eeuo pipefail
+          echo 'worker_preflight=read_only'
+          if systemctl is-active -q mnebyvpn-owner-telemt-tunnel; then
+            echo 'telemt_tunnel=active'
+          else
+            echo 'telemt_tunnel=inactive'
+          fi
+          sock=/run/mnebyvpn-owner-mtproxy/telemt.sock
+          if test -S "$sock"; then echo 'private_socket_exists=true'; else echo 'private_socket_exists=false'; fi
+          if test -S "$sock"; then
+            owner="$(stat -c '%u:%g:%a' "$sock")"
+            if [[ "$owner" == '13096:13096:600' ]]; then echo 'socket_owner_mode=verified'; else echo 'socket_owner_mode=unexpected'; fi
+            if command -v setpriv >/dev/null; then
+              if setpriv --reuid=13096 --regid=13096 --clear-groups \
+                curl --noproxy '*' --unix-socket "$sock" -fsS --max-time 6 \
+                  http://localhost/v1/system/info | python3 -c \
+                  'import json,sys; assert json.load(sys.stdin).get("ok") is True'; then
+                echo 'worker_uid_uds_api=verified'
+              else echo 'worker_uid_uds_api=failed'; fi
+            else echo 'setpriv=missing'; fi
+          fi
+          image="$(docker inspect --format '{{.Config.Image}}' mnebyvpn-bot-info)"
+          if [[ "$image" =~ ^mnebyvpn-stage-web:[0-9a-f]{40}$ ]]; then
+            sha="${image##*:}"
+            echo "current_source_sha=$sha"
+            if test -r "/opt/mnebyvpn/releases/$sha/apps/service/src/dns-mtproxy-bonus-worker.ts" \
+              && test -r "/opt/mnebyvpn/releases/$sha/packages/web/src/telegram-proxy-unix-transport.ts"; then
+              echo 'worker_source=ready'
+            else echo 'worker_source=missing'; fi
+          else echo 'worker_source=invalid_image'; fi
+          echo "existing_proxy_worker=$(docker inspect -f '{{.State.Status}}' mnebyvpn-dns-mtproxy-bonus-worker 2>/dev/null || echo missing)"
+          docker exec -i mnebyvpn-stage-postgres psql -qAtX -v ON_ERROR_STOP=1 \
+            -U mnebyvpn_stage -d mnebyvpn_stage <<'SQL'
+          SELECT 'role_super='||rolsuper::text||' role_create='||rolcreaterole::text
+            FROM pg_roles WHERE rolname=current_user;
+          SELECT 'can_grant_proxy='||has_table_privilege(current_user,
+            'dns_mtproxy_bonus_credentials','INSERT')::text;
+          SELECT 'can_grant_owner='||has_table_privilege(current_user,
+            'manual_sales','SELECT')::text;
+          SELECT 'manual_sales='||count(*)::text FROM manual_sales;
+          SELECT 'existing_proxy_secrets='||count(*)::text
+            FROM dns_mtproxy_bonus_credentials;
+          SQL
+          REMOTE
