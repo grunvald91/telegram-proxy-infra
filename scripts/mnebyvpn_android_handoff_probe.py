@@ -8,9 +8,12 @@ Run while switching networks/VPN. Result is only from this phone, unlike CI.
 import argparse
 import collections
 import datetime as dt
+import hashlib
+import hmac
 import json
 import os
 import re
+import secrets
 import socket
 import ssl
 import struct
@@ -85,22 +88,42 @@ def actual_personal_dot(host):
                 "ms": round((time.monotonic() - start) * 1000)}
 
 
-def wifi_hint():
-    # Optional Termux:API. Never save SSID, BSSID, local IP, MAC or gateway.
+def wifi_hint(session_key=None):
+    """Return Wi-Fi state and optional *memory-only* network identity.
+
+    Identity is HMAC-keyed per run; it is never logged, printed or persisted.
+    This detects Wi-Fi A -> Wi-Fi B while the connected flag stays True.
+    """
     raw = command(["termux-wifi-connectioninfo"], timeout=2)
+    unavailable = (None, None) if session_key is not None else None
     if not raw:
-        return None
+        return unavailable
     try:
         data = json.loads(raw)
         state = str(data.get("supplicant_state", "")).upper()
         if state in ("COMPLETED", "CONNECTED"):
-            return True
-        if state in ("DISCONNECTED", "INACTIVE", "SCANNING"):
-            return False
+            connected = True
+        elif state in ("DISCONNECTED", "INACTIVE", "SCANNING"):
+            connected = False
+        else:
+            return unavailable
+        if session_key is None:
+            return connected
+        raw_identity = ""
+        for field in ("bssid", "ssid"):
+            candidate = data.get(field, "")
+            if (isinstance(candidate, str) and candidate
+                    and candidate.lower() not in (
+                        "02:00:00:00:00:00", "<unknown ssid>", "unknown",
+                        "00:00:00:00:00:00")):
+                raw_identity = candidate
+                break
+        token = (hmac.new(session_key, raw_identity.encode("utf8"),
+                          hashlib.sha256).digest()
+                 if connected and raw_identity else None)
+        return connected, token
     except (TypeError, ValueError):
-        pass
-    return None
-
+        return unavailable
 
 def mode_hint():
     raw = command(["settings", "get", "global", "private_dns_mode"])
@@ -109,16 +132,40 @@ def mode_hint():
 
 def classification(os_result, dot_result):
     system_fail = os_result["ok"] is False
-    dot_fail = dot_result["ok"] is False
-    if system_fail and dot_fail:
-        return "system_dns_and_dot_failed"
-    if system_fail and not dot_fail:
-        return "system_resolver_problem"
-    if dot_fail and not system_fail:
-        return "private_dot_path_problem"
+    # Unknown personal DoT must never be treated as a successful DoT probe.
     if dot_result["ok"] is None:
-        return "personal_dot_not_tested"
+        return ("system_resolver_failed_dot_unverified" if system_fail
+                else "personal_dot_not_tested")
+    if system_fail and dot_result["ok"] is False:
+        return "system_dns_and_dot_failed"
+    if system_fail:
+        return "system_resolver_problem"
+    if dot_result["ok"] is False:
+        return "private_dot_path_problem"
     return "healthy_observed"
+
+
+def next_transition(incident, fail_streak, state, wifi_changed=False):
+    """Keep distinct network and incident events without false recovery."""
+    failures = {
+        "system_dns_and_dot_failed", "system_resolver_problem",
+        "private_dot_path_problem", "system_resolver_failed_dot_unverified",
+    }
+    events = ["wifi_hint_changed"] if wifi_changed else []
+    if state in failures:
+        fail_streak += 1
+        if fail_streak >= 2 and not incident:
+            events.append("incident_started")
+            incident = True
+    elif state == "healthy_observed":
+        fail_streak = 0
+        if incident:
+            events.append("incident_recovered")
+            incident = False
+    else:
+        # No usable personal DoT sample is not a successful recovery.
+        fail_streak = 0
+    return events, incident, fail_streak
 
 
 def main():
@@ -131,6 +178,8 @@ def main():
         parser.error("duration must be 10..900s, interval 1..30s")
     host = private_dns_name()
     previous_wifi = None
+    previous_network_token = None
+    ephemeral_network_key = secrets.token_bytes(32)
     incident = False
     fail_streak = 0
     counts = collections.Counter()
@@ -142,30 +191,32 @@ def main():
     with open(args.output, "w", encoding="utf8") as log:
         while time.monotonic() < limit:
             stamp = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
-            wifi = wifi_hint()
+            wifi, network_token = wifi_hint(ephemeral_network_key)
             os_result = system_dns()
             dot_result = actual_personal_dot(host)
             state = classification(os_result, dot_result)
             counts[state] += 1
-            failing = state in ("system_dns_and_dot_failed",
-                                "system_resolver_problem", "private_dot_path_problem")
-            fail_streak = fail_streak + 1 if failing else 0
-            event = "sample"
-            if previous_wifi is not None and wifi is not None and wifi != previous_wifi:
-                event = "wifi_hint_changed"
-            if fail_streak >= 2 and not incident:
-                event, incident = "incident_started", True
-            if incident and not failing:
-                event, incident = "incident_recovered", False
+            wifi_changed = (
+                previous_wifi is not None and wifi is not None
+                and (wifi != previous_wifi
+                     or (wifi and previous_network_token is not None
+                         and network_token is not None
+                         and network_token != previous_network_token)))
+            events, incident, fail_streak = next_transition(
+                incident, fail_streak, state, wifi_changed=wifi_changed)
             if wifi is not None:
                 previous_wifi = wifi
-            item = {"at_utc": stamp, "event": event, "state": state,
+            if wifi is False:
+                previous_network_token = None
+            elif network_token is not None:
+                previous_network_token = network_token
+            item = {"at_utc": stamp, "events": events, "state": state,
                     "system_dns": os_result, "personal_dot": dot_result,
                     "wifi_connected_hint": wifi, "android_private_dns_mode": mode_hint(),
                     "vpn_enabled_verified": False}
             log.write(json.dumps(item, separators=(",", ":")) + "\n")
             log.flush()
-            if event != "sample":
+            for event in events:
                 print(stamp + " " + event + " " + state, flush=True)
             time.sleep(min(args.interval, max(0.0, limit - time.monotonic())))
     print("CLIENT_MONITOR_COUNTS="+json.dumps(dict(counts),sort_keys=True),flush=True)
