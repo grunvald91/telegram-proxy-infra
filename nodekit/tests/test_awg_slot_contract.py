@@ -111,6 +111,24 @@ class SlotContractTest(unittest.TestCase):
             v2.validate_command(command(1,op="revoke",expiresAt=EXPIRY),NODE,NOW)
         v2.validate_command(command(1,op="revoke",revision=2,expiresAt=None),NODE,NOW)
 
+    def test_combined_v1_and_v2_capacity_is_bounded(self):
+        old=legacy.empty_state(NODE)
+        for i in range(250):
+            uid=f"00000000-0000-4000-8000-{i+1:012x}"
+            k=base64.b64encode((i+1).to_bytes(32,"big")).decode()
+            old["grants"][uid]={
+                "revision":1,"peerPublicKey":k,
+                "clientIpv4":f"10.73.91.{i+2}",
+                "enabled":True,"expiresAt":EXPIRES,
+            }
+        legacy.validate_state(old,NODE)
+        new=v2.transition(v2.empty_state(NODE),
+            command(1,peerPublicKey=base64.b64encode(
+                (251).to_bytes(32,"big")).decode(),
+                clientIpv4="10.73.91.252"),NOW)
+        with self.assertRaisesRegex(v2.SlotError,"capacity exceeded"):
+            v2.merged_active_peers(old,new,NOW)
+
     def test_invalid_slot_state_and_cross_slot_duplicate_rejected(self):
         state=v2.transition(v2.empty_state(NODE),command(),NOW)
         same=copy.deepcopy(state)
