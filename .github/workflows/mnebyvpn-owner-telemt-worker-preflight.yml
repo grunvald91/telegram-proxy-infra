@@ -60,6 +60,54 @@ jobs:
             else echo 'worker_source=missing'; fi
           else echo 'worker_source=invalid_image'; fi
           echo "existing_proxy_worker=$(docker inspect -f '{{.State.Status}}' mnebyvpn-dns-mtproxy-bonus-worker 2>/dev/null || echo missing)"
+
+          worker_name=mnebyvpn-dns-mtproxy-bonus-worker
+          private_env=/etc/mnebyvpn-owner-mtproxy/worker.env
+          bot_env=/opt/mnebyvpn/bot/web.env
+          if docker inspect "$worker_name" >/dev/null 2>&1; then
+            echo "worker_restart_count=$(docker inspect -f '{{.RestartCount}}' "$worker_name")"
+            echo "worker_exit_code=$(docker inspect -f '{{.State.ExitCode}}' "$worker_name")"
+            echo "worker_uid=$(docker inspect -f '{{.Config.User}}' "$worker_name")"
+            worker_img="$(docker inspect -f '{{.Config.Image}}' "$worker_name")"
+            if [[ "$worker_img" == "$image" ]]; then echo 'worker_image_matches_bot=yes'; else echo 'worker_image_matches_bot=no'; fi
+            if docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$worker_name" | grep -Fxq 'DNS_MT_PROXY_OWNER_ONLY=yes';then echo 'worker_scope_owner_only=yes';else echo 'worker_scope_owner_only=no';fi
+            if docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$worker_name" | grep -Fxq 'DNS_MT_PROXY_BONUS_WORKER=enabled';then echo 'worker_feature_enabled=yes';else echo 'worker_feature_enabled=no';fi
+            logs="$(docker logs --since 15m "$worker_name" 2>&1 || true)"
+            if grep -Fq 'MNEBYVPN_DNS_MTPROXY_WORKER_STOPPED' <<<"$logs";then echo 'worker_startup_errors=yes';else echo 'worker_startup_errors=no';fi
+            if grep -Fq 'MNEBYVPN_DNS_MTPROXY_RECONCILE_RETRY' <<<"$logs";then echo 'worker_reconcile_errors=yes';else echo 'worker_reconcile_errors=no';fi
+          fi
+          if [[ -r "$private_env" ]];then
+            echo 'worker_secret_file=present'
+            if [[ "$(stat -c '%a' "$private_env")" == 600 ]];then echo 'worker_secret_file_mode=secure';else echo 'worker_secret_file_mode=unexpected';fi
+            wkey="$(sed -n 's/^WEB_DNS_MT_PROXY_BONUS_KEY=//p' "$private_env")"
+            bkey="$(sed -n 's/^WEB_DNS_MT_PROXY_BONUS_KEY=//p' "$bot_env")"
+            if [[ "$wkey" =~ ^[a-f0-9]{64}$ ]];then echo 'worker_key_valid=yes';else echo 'worker_key_valid=no';fi
+            if [[ -n "$bkey" && "$bkey" == "$wkey" ]];then echo 'bot_worker_keys_equal=yes';else echo 'bot_worker_keys_equal=no';fi
+            dbpw="$(python3 - "$private_env" <<'PY'
+from pathlib import Path
+from urllib.parse import urlsplit
+import sys
+d=dict(x.split('=',1) for x in Path(sys.argv[1]).read_text().splitlines() if '=' in x)
+url=urlsplit(d.get('DATABASE_URL',''))
+assert url.hostname=='127.0.0.1' and url.username=='mnebyvpn_owner_telemt'
+print(url.password)
+PY
+)"
+            if docker exec -e PGPASSWORD="$dbpw" mnebyvpn-stage-postgres \
+              psql -h 127.0.0.1 -qAtX -v ON_ERROR_STOP=1 \
+              -U mnebyvpn_owner_telemt -d mnebyvpn_stage \
+              -c 'SELECT count(*) FROM manual_sales' >/dev/null 2>&1;then
+              echo 'worker_db_login_and_manual_sales_read=pass'
+            else echo 'worker_db_login_and_manual_sales_read=fail';fi
+            if docker exec -e PGPASSWORD="$dbpw" mnebyvpn-stage-postgres \
+              psql -h 127.0.0.1 -qAtX -v ON_ERROR_STOP=1 \
+              -U mnebyvpn_owner_telemt -d mnebyvpn_stage \
+              -c 'SELECT count(*) FROM dns_mtproxy_bonus_credentials' >/dev/null 2>&1;then
+              echo 'worker_db_proxy_read=pass'
+            else echo 'worker_db_proxy_read=fail';fi
+            unset dbpw wkey bkey
+          else echo 'worker_secret_file=missing';fi
+
           docker exec -i mnebyvpn-stage-postgres psql -qAtX -v ON_ERROR_STOP=1 \
             -U mnebyvpn_stage -d mnebyvpn_stage <<'SQL'
           SELECT 'role_super='||rolsuper::text||' role_create='||rolcreaterole::text
