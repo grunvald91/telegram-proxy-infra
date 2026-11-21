@@ -16,7 +16,10 @@ socket=/run/mnebyvpn-owner-mtproxy/telemt.sock
 lock=/run/lock/mnebyvpn-owner-mtproxy-worker.lock
 exec 9>"$lock"
 flock -w 60 9
-test "$(cat "$ROOT/staging/active_sha")" = "$EXPECTED"
+# Source is pinned to the existing production bot image and immutable
+# release directory. Never change /opt/mnebyvpn/staging/active_sha, which may
+# belong to a concurrent website deployment.
+echo 'owner_mtproxy_site_staging=untouched'
 test "$(docker inspect --format '{{.Config.Image}}' mnebyvpn-bot-info)" = "$image"
 docker image inspect "$image" >/dev/null
 test -r "$ROOT/releases/$EXPECTED/apps/service/src/dns-mtproxy-bonus-worker.ts"
