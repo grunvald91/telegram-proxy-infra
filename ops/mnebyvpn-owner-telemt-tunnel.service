@@ -1,0 +1,23 @@
+[Unit]
+Description=MNEBYVPN private owner Telemt admin SSH Unix socket
+Documentation=https://github.com/grunvald91/telegram-proxy-infra
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/mnebyvpn-owner-mtproxy/id_ed25519
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+User=root
+Group=root
+ExecStartPre=/usr/bin/install -d -m 0751 /run/mnebyvpn-owner-mtproxy
+ExecStart=/usr/bin/ssh -T -N -i /etc/mnebyvpn-owner-mtproxy/id_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/mnebyvpn-owner-mtproxy/known_hosts -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o ExitOnForwardFailure=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=3 -o ConnectTimeout=12 -o StreamLocalBindUnlink=yes -o StreamLocalBindMask=0177 -L /run/mnebyvpn-owner-mtproxy/telemt.sock:127.0.0.1:9096 root@89.125.90.101
+ExecStartPost=/usr/local/sbin/mnebyvpn-owner-telemt-socket-ready
+Restart=always
+RestartSec=5
+TimeoutStartSec=25
+NoNewPrivileges=yes
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target
