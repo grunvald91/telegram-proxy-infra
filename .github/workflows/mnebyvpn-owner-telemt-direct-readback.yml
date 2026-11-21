@@ -1,0 +1,86 @@
+name: Owner direct Telemt production read-back (read-only)
+on:
+  pull_request:
+    branches: [main]
+    paths: ['.github/workflows/mnebyvpn-owner-telemt-direct-readback.yml']
+  push:
+    branches: [main]
+    paths: ['.github/workflows/mnebyvpn-owner-telemt-direct-readback.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Audit production flags, source and worker without credentials
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          export SSHPASS="$PASS"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 'bash -se' <<'REMOTE'
+          set -Eeuo pipefail
+          image="$(docker inspect --format '{{.Config.Image}}' mnebyvpn-bot-info)"
+          echo "owner_mtproxy_live_bot_image=$image"
+          test "$(docker inspect --format '{{.State.Running}}' mnebyvpn-bot-info)" = true
+          test "$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:8793/readyz)" = 200
+          echo 'owner_mtproxy_live_bot_ready=pass'
+          flags="$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' mnebyvpn-bot-info)"
+          check(){
+            local name="$1" want="$2"
+            if grep -Fxq "$name=$want" <<<"$flags";then
+              echo "$name=verified"
+            else
+              echo "$name=NOT_VERIFIED"
+              exit 2
+            fi
+          }
+          check MNEBYVPN_OFFLINE_SALES_ENABLED yes
+          check MNEBYVPN_OFFLINE_DNS_ISSUE_ENABLED yes
+          check MNEBYVPN_OFFLINE_MTPROXY_ISSUE_ENABLED yes
+          check MNEBYVPN_OFFLINE_MTPROXY_ROUTES_VERIFIED yes
+          check MNEBYVPN_OFFLINE_MTPROXY_REVOKER_VERIFIED yes
+          check MNEBYVPN_OFFLINE_MTPROXY_ROUTES_JSON '[{"route":"direct","host":"89.125.90.101","port":9446}]'
+          if grep -Fxq 'WEB_DNS_MT_PROXY_BONUS_ENABLED=yes' <<<"$flags";then
+            echo 'public_telemt_bonus=enabled_already'
+          else
+            echo 'public_telemt_bonus=not_enabled'
+          fi
+          worker=mnebyvpn-dns-mtproxy-bonus-worker
+          test "$(docker inspect --format '{{.State.Running}}' "$worker")" = true
+          test "$(docker inspect --format '{{.RestartCount}}' "$worker")" = 0
+          test "$(docker inspect --format '{{.Config.User}}' "$worker")" = '13096:13096'
+          pgid="$(docker inspect --format '{{.Id}}' mnebyvpn-stage-postgres)"
+          test "$(docker inspect --format '{{.HostConfig.NetworkMode}}' "$worker")" = "container:$pgid"
+          echo 'owner_mtproxy_worker=running_zero_restarts_private_pg_namespace'
+          systemctl is-active -q mnebyvpn-owner-telemt-tunnel
+          test "$(stat -c '%u:%g:%a' /run/mnebyvpn-owner-mtproxy/telemt.sock)" = '13096:13096:600'
+          setpriv --reuid=13096 --regid=13096 --clear-groups \
+            curl --noproxy '*' --unix-socket /run/mnebyvpn-owner-mtproxy/telemt.sock -fsS \
+              --max-time 6 http://localhost/v1/system/info |
+            python3 -c 'import sys,json;assert json.load(sys.stdin).get("ok") is True'
+          echo 'owner_mtproxy_private_telemt_api=verified'
+          key_in_env="$(sed -n 's/^WEB_DNS_MT_PROXY_BONUS_KEY=//p' /opt/mnebyvpn/bot/web.env)"
+          worker_key="$(sed -n 's/^WEB_DNS_MT_PROXY_BONUS_KEY=//p' /etc/mnebyvpn-owner-mtproxy/worker.env)"
+          [[ "$key_in_env" =~ ^[a-f0-9]{64}$ ]] && test "$key_in_env" = "$worker_key"
+          test "$(grep -Fxc "WEB_DNS_MT_PROXY_BONUS_KEY=$key_in_env" <<<"$flags")" = 1
+          echo 'owner_mtproxy_keys_match=verified'
+          unset flags key_in_env worker_key
+          docker exec -i mnebyvpn-stage-postgres psql -qAtX -v ON_ERROR_STOP=1 \
+            -U mnebyvpn_stage -d mnebyvpn_stage <<'SQL'
+          SELECT 'owner_manual_sales_count='||count(*)::text FROM manual_sales;
+          SELECT 'owner_telemt_credentials_count='||count(*)::text FROM dns_mtproxy_bonus_credentials;
+          SQL
+          REMOTE
