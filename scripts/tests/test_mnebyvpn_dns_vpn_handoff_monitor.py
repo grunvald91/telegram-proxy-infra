@@ -20,9 +20,11 @@ class FakeSocket:
         return result
 
 
-def packet(txid=0x1234, flags=0x8180):
+def packet(txid=0x1234, flags=0x8180, answers=None):
     _, question = probe.frame(txid)
-    message = struct.pack("!HHHHHH", txid, flags, 1, 0, 0, 0) + question
+    if answers is None:
+        answers = [b"\xc0\x0c" + struct.pack("!HHIH", 1, 1, 60, 4) + b"\x5d\xb8\xd7\x0e"]
+    message = struct.pack("!HHHHHH", txid, flags, 1, len(answers), 0, 0) + question + b"".join(answers)
     return FakeSocket(struct.pack("!H", len(message)) + message), question
 
 
@@ -40,6 +42,34 @@ class TestReadOnlyDoT(unittest.TestCase):
         sock, question = packet(flags=0x8182)
         with self.assertRaisesRegex(ValueError, "dns_rcode_2"):
             probe.check_dns(sock, 0x1234, question)
+
+    def test_noerror_empty_answer_rejected(self):
+        sock, question = packet(answers=[])
+        with self.assertRaisesRegex(ValueError, "dns_no_usable_answer"):
+            probe.check_dns(sock, 0x1234, question)
+
+    def test_unrelated_a_answer_rejected(self):
+        unrelated = b"\\x05other\\x03org\\x00" + struct.pack("!HHIH", 1, 1, 60, 4) + b"\\x01\\x02\\x03\\x04"
+        sock, question = packet(answers=[unrelated])
+        with self.assertRaisesRegex(ValueError, "dns_no_usable_answer"):
+            probe.check_dns(sock, 0x1234, question)
+
+    def test_compression_pointer_cycle_rejected(self):
+        cycling = b"\\xc0\\x1d" + struct.pack("!HHIH", 1, 1, 60, 4) + b"\\x01\\x02\\x03\\x04"
+        sock, question = packet(answers=[cycling])
+        with self.assertRaisesRegex(ValueError, "invalid_dns_reply"):
+            probe.check_dns(sock, 0x1234, question)
+
+    def test_truncated_response_rejected(self):
+        sock, question = packet(flags=0x8380)
+        with self.assertRaisesRegex(ValueError, "invalid_dns_reply"):
+            probe.check_dns(sock, 0x1234, question)
+
+    def test_cname_then_a_accepted(self):
+        cname = b"\\xc0\\x0c" + struct.pack("!HHIH", 5, 1, 60, 10) + b"\\x05alias\\x03org\\x00"
+        a = b"\\x05alias\\x03org\\x00" + struct.pack("!HHIH", 1, 1, 60, 4) + b"\\x01\\x02\\x03\\x04"
+        sock, question = packet(answers=[cname, a])
+        probe.check_dns(sock, 0x1234, question)
 
     def test_short_frame(self):
         with self.assertRaises(EOFError):
@@ -65,6 +95,9 @@ class TestReadOnlyDoT(unittest.TestCase):
         self.assertEqual(probe.verdict([ok, dns, ok]), "DEGRADED")
         self.assertEqual(probe.verdict([ok, dns, dns]), "FAIL")
         self.assertEqual(probe.verdict([ok, tls, tls]), "FAIL")
+        self.assertEqual(probe.verdict([dns]), "FAIL")
+        self.assertEqual(probe.verdict([ok, dns]), "DEGRADED")
+        self.assertEqual(probe.verdict([dns, dns]), "FAIL")
 
     def test_no_client_e2e_claim(self):
         self.assertIn("client_wifi_transition_verified", SCRIPT.read_text(encoding="utf8"))
