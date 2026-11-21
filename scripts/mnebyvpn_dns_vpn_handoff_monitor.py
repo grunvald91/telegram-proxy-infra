@@ -203,8 +203,8 @@ def run(vantage: str, samples: int, delay: float) -> dict:
 def selftest() -> None:
     msg, question = frame(0x1234)
     answer = (struct.pack("!HHHHHH", 0x1234, 0x8180, 1, 1, 0, 0)
-              + question + b"À" + struct.pack("!HHIH", 1, 1, 60, 4)
-              + b"]¸×")
+              + question + b"\xc0\x0c" + struct.pack("!HHIH", 1, 1, 60, 4)
+              + b"\x5d\xb8\xd7\x0e")
     class Stub:
         def __init__(self, data): self.data = data
         def recv(self, n):
