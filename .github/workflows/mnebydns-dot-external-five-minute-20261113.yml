@@ -1,7 +1,7 @@
 name: MNEBYDNS external read-only DoT availability guard
 on:
   push:
-    branches: [main]
+    branches: [main, fix/vpn-dot-handoff-review-20261121]
     paths:
       - '.github/workflows/mnebydns-dot-external-five-minute-20261113.yml'
       - 'scripts/mnebydns-dot-minute-probe-20261113.py'
@@ -138,8 +138,10 @@ jobs:
           if "FAIL" in states.values():
               print("::error title=DNS VPN handoff regression::At least two of three DNS/TLS samples failed on a specific path.")
               sys.exit(1)
-          if states["external"]=="UNKNOWN":
-              # A missing external probe is a failed monitor, not evidence of health.
+          if "UNKNOWN" in states.values():
+              # Missing either vantage is a monitoring coverage failure, never green.
+              # It does not prove customer outage; fail the check to surface blind spots.
+              print("::error title=DNS VPN coverage gap::One vantage is UNKNOWN, cannot declare healthy.")
               sys.exit(2)
           PY
       - name: Save sanitized DNS/VPN paired probe evidence
