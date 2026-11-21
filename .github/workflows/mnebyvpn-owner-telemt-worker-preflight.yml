@@ -84,15 +84,15 @@ jobs:
             if [[ "$wkey" =~ ^[a-f0-9]{64}$ ]];then echo 'worker_key_valid=yes';else echo 'worker_key_valid=no';fi
             if [[ -n "$bkey" && "$bkey" == "$wkey" ]];then echo 'bot_worker_keys_equal=yes';else echo 'bot_worker_keys_equal=no';fi
             dbpw="$(python3 - "$private_env" <<'PY'
-from pathlib import Path
-from urllib.parse import urlsplit
-import sys
-d=dict(x.split('=',1) for x in Path(sys.argv[1]).read_text().splitlines() if '=' in x)
-url=urlsplit(d.get('DATABASE_URL',''))
-assert url.hostname=='127.0.0.1' and url.username=='mnebyvpn_owner_telemt'
-print(url.password)
-PY
-)"
+          from pathlib import Path
+          from urllib.parse import urlsplit
+          import sys
+          d=dict(x.split('=',1) for x in Path(sys.argv[1]).read_text().splitlines() if '=' in x)
+          url=urlsplit(d.get('DATABASE_URL',''))
+          assert url.hostname=='127.0.0.1' and url.username=='mnebyvpn_owner_telemt'
+          print(url.password)
+          PY
+          )"
             if docker exec -e PGPASSWORD="$dbpw" mnebyvpn-stage-postgres \
               psql -h 127.0.0.1 -qAtX -v ON_ERROR_STOP=1 \
               -U mnebyvpn_owner_telemt -d mnebyvpn_stage \
