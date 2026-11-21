@@ -15,6 +15,7 @@ import socket
 import ssl
 import struct
 import subprocess
+import sys
 import time
 
 from mnebyvpn_dns_vpn_handoff_monitor import frame, check_dns, classify_error
@@ -42,13 +43,19 @@ def private_dns_name():
 def system_dns():
     start = time.monotonic()
     try:
-        # This can be cached by Android; it complements, never replaces, DoT.
-        answers = socket.getaddrinfo("example.org", 443, family=socket.AF_INET,
-                                     type=socket.SOCK_STREAM)
-        if not answers:
-            raise OSError("empty resolver result")
+        # Android's libc resolver can block beyond socket.timeout. A short-lived
+        # subprocess provides a hard deadline while avoiding orphaned threads.
+        # Results may be cached, so this is not proof of live DNS reachability.
+        check = ("import socket,sys;"
+                 "v=socket.getaddrinfo('example.org',443,"
+                 "family=socket.AF_INET,type=socket.SOCK_STREAM);"
+                 "sys.exit(0 if v else 1)")
+        run = subprocess.run([sys.executable, "-c", check], timeout=5,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if run.returncode:
+            raise OSError("resolver_failed")
         return {"ok": True, "ms": round((time.monotonic() - start) * 1000)}
-    except (OSError, TimeoutError) as ex:
+    except (OSError, TimeoutError, subprocess.TimeoutExpired) as ex:
         return {"ok": False, "error": classify_error(ex),
                 "ms": round((time.monotonic() - start) * 1000)}
 
