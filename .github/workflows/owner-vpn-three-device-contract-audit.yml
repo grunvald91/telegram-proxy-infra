@@ -1,0 +1,69 @@
+name: Owner 3-device VPN contract production audit (read-only)
+on:
+  pull_request:
+    branches: [main]
+    paths: ['.github/workflows/owner-vpn-three-device-contract-audit.yml']
+  push:
+    branches: [main]
+    paths: ['.github/workflows/owner-vpn-three-device-contract-audit.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      SERVER_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify production schema, plan and peer counts without private customer data
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$SERVER_PASSWORD"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass >/dev/null
+          export SSHPASS="$SERVER_PASSWORD"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          sshpass -e ssh "${opts[@]}" root@188.120.254.223 'bash -se' <<'REMOTE'
+          set -Eeuo pipefail
+          echo 'owner_vpn_device_audit=read_only'
+          echo "owner_bot_image=$(docker inspect --format '{{.Config.Image}}' mnebyvpn-bot-info)"
+          echo "owner_vpn_worker_state=$(docker inspect --format '{{.State.Status}}' mnebyvpn-vpn-worker)"
+          docker exec -i mnebyvpn-stage-postgres psql -qAtX -v ON_ERROR_STOP=1 \
+            -U mnebyvpn_stage -d mnebyvpn_stage <<'SQL'
+          SELECT 'owner_bundle_30d_plan='||COALESCE(
+              (SELECT 'enabled='||enabled||',devices='||device_limit||
+                ',duration_seconds='||duration_seconds
+               FROM billing_plans WHERE id='bundle_30d_3device'),'missing');
+          SELECT 'owner_sale_ledger_count='||count(*) FROM manual_sales;
+          SELECT 'owner_bundle_order_terms_device_limit_mismatch='||count(*)
+          FROM manual_sales m JOIN order_terms t ON t.order_id=m.order_id
+          WHERE t.device_limit<>3;
+          SELECT 'owner_vpn_entitlement_rows='||count(*)
+          FROM manual_sales m JOIN entitlements e ON e.source_order_id=m.order_id
+          WHERE e.product='vpn';
+          SELECT 'awg_peer_allocation_primary_key='||
+            COALESCE((SELECT pg_get_constraintdef(c.oid) FROM pg_constraint c
+              WHERE c.conrelid='public.vpn_awg_peer_allocations'::regclass
+                AND c.contype='p' LIMIT 1),'missing');
+          SELECT 'vpn_entitlement_unique_per_order_product='||
+            EXISTS (SELECT 1 FROM pg_constraint c
+              WHERE c.conrelid='public.entitlements'::regclass AND c.contype='u'
+                AND pg_get_constraintdef(c.oid) LIKE '%source_order_id, product%');
+          SELECT 'manual_awg_allocations='||count(*)
+            FROM manual_sales m
+            JOIN entitlements e ON e.source_order_id=m.order_id
+            JOIN vpn_awg_peer_allocations a ON a.entitlement_id=e.id
+            WHERE e.product='vpn';
+          SELECT 'owner_awg_public_release='||COALESCE(
+             (SELECT enabled::text FROM vpn_release_flags
+              WHERE feature='vpn_awg_clients'),'missing');
+          SQL
+          REMOTE
