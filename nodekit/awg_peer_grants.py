@@ -359,7 +359,11 @@ def effective_active_peers(node: Path, legacy_state: dict, now: float) -> list[d
         raise GrantError("V2 slot runtime not approved outside FI")
     marker = node / "amneziawg" / "owner-v2-release.json"
     release = json.loads(protected_file(marker, max_bytes=512))
-    if release != {"node_id": node.name, "enabled": True}:
+    if (not isinstance(release, dict) or
+            set(release) != {"node_id", "enabled"} or
+            release["node_id"] != node.name or
+            type(release["enabled"]) is not bool or
+            release["enabled"] is not True):
         raise GrantError("AWG V2 owner release marker not approved")
     from awg_slot_contract import validate_state as valid_v2, merged_active_peers
     v2_state = valid_v2(json.loads(protected_file(slot_path)), node.name)
