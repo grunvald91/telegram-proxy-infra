@@ -1,0 +1,42 @@
+name: Activate MNEBYVPN owner-only sales
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/mnebyvpn-enable-manual-sales.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebyvpn-auto-public-deploy
+  cancel-in-progress: false
+jobs:
+  enable:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      HOST: '188.120.254.223'
+      PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check guarded script syntax
+        run: |
+          bash -n scripts/mnebyvpn-enable-manual-sales-188.sh
+          bash -n scripts/mnebyvpn-main-bot-promote.sh
+      - name: Activate owner-only flag with canary and rollback
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$PASSWORD"
+          sudo apt-get update -qq && sudo apt-get install -qq -y sshpass
+          export SSHPASS="$PASSWORD"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
+          sshpass -e scp "${opts[@]}" scripts/mnebyvpn-enable-manual-sales-188.sh scripts/mnebyvpn-main-bot-promote.sh "root@$HOST:/tmp/"
+          sshpass -e ssh "${opts[@]}" "root@$HOST" "mv /tmp/mnebyvpn-main-bot-promote.sh /tmp/mnebyvpn-owner-sales-promote.sh && bash /tmp/mnebyvpn-enable-manual-sales-188.sh"
+      - name: Remove only temporary scripts
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "$PASSWORD" ]]; then
+            export SSHPASS="$PASSWORD"
+            sshpass -e ssh -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR "root@$HOST" 'rm -f /tmp/mnebyvpn-enable-manual-sales-188.sh /tmp/mnebyvpn-owner-sales-promote.sh /tmp/mnebyvpn-main-bot-promote.sh' || true
+          fi
