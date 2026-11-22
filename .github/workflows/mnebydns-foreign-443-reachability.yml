@@ -1,0 +1,47 @@
+name: MNEBYDNS foreign public HTTPS ingress path reachability
+on:
+  push:
+    branches: ['feature/mnebydns-vpn-google-readonly-20261108']
+    paths: ['.github/workflows/mnebydns-foreign-443-reachability.yml']
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: External runner TCP reachability to actual foreign IP
+        run: |
+          python3 - <<'PY'
+          import socket,time
+          ip='89.125.90.101'
+          for port in [443,853,8443,2053]:
+              start=time.monotonic()
+              try:
+                  with socket.create_connection((ip,port),timeout=6): pass
+                  print('github_tcp_'+str(port)+'=pass ms='+str(round((time.monotonic()-start)*1000)))
+              except Exception as e:
+                  print('github_tcp_'+str(port)+'=fail_'+type(e).__name__)
+          PY
+      - name: Russian VPS TCP reachability to actual foreign IP
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$RU_PASS"
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y sshpass
+          export SSHPASS="$RU_PASS"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@188.120.254.223 'python3 -' <<'PY'
+          import socket,time
+          ip='89.125.90.101'
+          for port in [443,853,8443,2053]:
+              start=time.monotonic()
+              try:
+                  with socket.create_connection((ip,port),timeout=7): pass
+                  print('ru_tcp_'+str(port)+'=pass ms='+str(round((time.monotonic()-start)*1000)))
+              except Exception as e:
+                  print('ru_tcp_'+str(port)+'=fail_'+type(e).__name__)
+          print('ru_test_is_not_an_android_phone=yes')
+          PY
