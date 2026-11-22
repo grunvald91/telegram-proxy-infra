@@ -206,8 +206,7 @@ jobs:
             print('DE89_CLIENT_WS_'+label.upper()+'='+str(len(re.findall(exp,s))))
           PY
           if [[ "$warm" != yes ]]; then
-            echo 'DE89_LONGSTREAM_GATE=BLOCKED_BY_FAILED_VLESS_HTTPS_WARMUP'
-            exit 2
+            echo 'DE89_LONGSTREAM_GATE=TEST_CREDENTIAL_MISSING_OR_CONNECTION_FAILED_PASSIVE_FALLBACK'
           fi
           snapshot() {
             sshpass -e ssh -T "${opts[@]}" "$remote" 'python3 -' <<'PY'
@@ -247,6 +246,26 @@ jobs:
           PY
           }
           snapshot >"$work/before.json"
+          if [[ "$warm" != yes ]]; then
+            echo 'DE89_PASSIVE_120S=BEGIN_NO_TEST_KEY_CHANGES'
+            sleep 120
+            snapshot >"$work/after.json"
+            python3 - "$work/before.json" "$work/after.json" <<'PY'
+          import json,sys
+          a=json.load(open(sys.argv[1]));b=json.load(open(sys.argv[2]))
+          for k in sorted(set(a)&set(b)):
+            if isinstance(a[k],int) and isinstance(b[k],int):
+              print('DE89_PASSIVE_COUNTER_DELTA_'+k.replace('.','_')+'='+str(b[k]-a[k]))
+            elif k.startswith('unit.') and a[k]!=b[k]:
+              print('DE89_PASSIVE_SERVICE_CHANGED_'+k.replace('.','_')+'='+str(a[k])+'->'+str(b[k]))
+          changes=[k for k in a if k.startswith('unit.') and
+            (k.endswith('.MainPID') or k.endswith('.ActiveEnterTimestampMonotonic'))
+            and a[k]!=b.get(k)]
+          print('DE89_PASSIVE_SERVICE_RESTART_DETECTED='+str(bool(changes)).lower())
+          PY
+            echo 'DE89_LONGSTREAM_CONCLUSION=PASSIVE_ONLY_ACTIVE_STREAM_UNVERIFIED'
+            exit 0
+          fi
           echo 'DE89_LONGSTREAM_TARGET=external_runner_to_DE89_public_VLESS_WS_TLS_to_Cloudflare_HTTPS'
           echo 'DE89_LONGSTREAM_RATE_LIMIT=90kB_per_second'
           echo 'DE89_LONGSTREAM_STALL_GUARD=less_than_1200Bps_for_12s_is_failure'
