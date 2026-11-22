@@ -145,6 +145,66 @@ jobs:
               ('error',r'error|failed|panic')]:
               print('DE89_PATH_LOG_'+name+'_'+label+'='+str(len(re.findall(exp,lines))))
           PY
+          # Read only: compare live listener/config identity to preexisting
+          # synthetic canary. Do not print a UUID, subscriber IDs or config.
+          sshpass -e ssh -T "${opts[@]}" "$remote" 'python3 -' <<'PY'
+          import json,pathlib,re,subprocess
+          try:
+            p=pathlib.Path('/etc/mnebyvpn/xray-canary.json')
+            cfg=json.loads(p.read_text())
+            uid=pathlib.Path('/etc/mnebyvpn/canary-uuid').read_text().strip()
+            inbounds=cfg.get('inbounds',[])
+            matched=any(uid==client.get('id') for inbound in inbounds
+              for client in inbound.get('settings',{}).get('clients',[]))
+            print('DE89_LIVE_TEST_UUID_IN_ACTIVE_XRAY_CONFIG='+str(matched).lower())
+            print('DE89_LIVE_INBOUND_COUNT='+str(len(inbounds)))
+            for idx,inbound in enumerate(inbounds):
+              print('DE89_LIVE_INBOUND_'+str(idx)+'_LISTENER='+
+                str(inbound.get('listen'))+':'+str(inbound.get('port')))
+              print('DE89_LIVE_INBOUND_'+str(idx)+'_WS_PATH='+
+                str(inbound.get('streamSettings',{}).get('wsSettings',{}).get('path','none')))
+          except Exception as ex:
+            print('DE89_LIVE_CONFIG_INSPECT_CLASS='+type(ex).__name__)
+          ss=subprocess.run(['ss','-H','-lnt'],capture_output=True,text=True,timeout=6)
+          for port in (8443,18943,2053):
+            print('DE89_LIVE_PORT_'+str(port)+'_LISTEN='+
+              str(bool(re.search(':'+str(port)+r'\s',ss.stdout))).lower())
+          ng=subprocess.run(['nginx','-T'],capture_output=True,text=True,timeout=13)
+          print('DE89_LIVE_NGINX_CONFIG_RC='+str(ng.returncode))
+          m=re.search(r'location\s+=\s*/mnebyvpn-vpn/ws\s*\{([^}]+)\}',ng.stdout,re.S)
+          print('DE89_LIVE_NGINX_WS_LOCATION_PRESENT='+str(bool(m)).lower())
+          if m:
+            upstream=re.search(r'proxy_pass\s+http://127\.0\.0\.1:(\d+)',m.group(1))
+            delay=re.search(r'proxy_read_timeout\s+([\w]+)',m.group(1))
+            print('DE89_LIVE_NGINX_WS_UPSTREAM_PORT='+
+              (upstream.group(1) if upstream else 'unavailable'))
+            print('DE89_LIVE_NGINX_WS_READ_TIMEOUT='+
+              (delay.group(1) if delay else 'default'))
+          PY
+          set +e
+          wsstatus="$(curl -sS -k --noproxy '*' --http1.1 \
+            --resolve cdn.servgo.ru:8443:89.125.90.101 \
+            --connect-timeout 7 --max-time 4 \
+            -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+            -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+            -H 'Sec-WebSocket-Version: 13' \
+            -o /dev/null -w '%{http_code}' \
+            https://cdn.servgo.ru:8443/mnebyvpn-vpn/ws \
+            2>"$work/ws-error")"
+          wsrc=$?
+          set -e
+          echo "DE89_WEBSOCKET_UPGRADE_HTTP=$wsstatus"
+          echo "DE89_WEBSOCKET_UPGRADE_CURL_EXIT=$wsrc"
+          python3 - "$work/xray.log" <<'PY'
+          import pathlib,re,sys
+          s=pathlib.Path(sys.argv[1]).read_text(errors='replace').lower()
+          for label,exp in [('bad_handshake',r'bad handshake'),
+            ('status_400',r'\b400\b'),('status_401',r'\b401\b'),
+            ('status_403',r'\b403\b'),('status_404',r'\b404\b'),
+            ('status_502',r'\b502\b'),('unexpected_eof',r'unexpected eof'),
+            ('connection_closed',r'closed|closing')]:
+            print('DE89_CLIENT_WS_'+label.upper()+'='+str(len(re.findall(exp,s))))
+          PY
           if [[ "$warm" != yes ]]; then
             echo 'DE89_LONGSTREAM_GATE=BLOCKED_BY_FAILED_VLESS_HTTPS_WARMUP'
             exit 2
