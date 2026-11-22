@@ -76,9 +76,79 @@ jobs:
           done
           test "$ready" = yes
           # From the public GitHub runner through actual DE89 VLESS WS/TLS.
-          warm="$(curl -sS --noproxy '' --proxy socks5h://127.0.0.1:19187             --connect-timeout 10 --max-time 22 -o /dev/null -w '%{http_code}'             https://example.com/)"
-          echo "DE89_LONGSTREAM_WARMUP_HTTP=$warm"
-          test "$warm" = 200
+          echo 'DE89_PATH_DIFFERENTIAL=external_runner_direct_vs_DE_direct_vs_external_VLESS_WS'
+          direct="$(curl -sS --noproxy '*' --connect-timeout 8 --max-time 18 \
+            -o /dev/null -w '%{http_code}' https://example.com/ 2>/dev/null || true)"
+          echo "DE89_DIRECT_RUNNER_HTTP=$direct"
+          de_direct="$(sshpass -e ssh -T "${opts[@]}" "$remote" \
+            'curl -sS --noproxy "*" --connect-timeout 8 --max-time 18 -o /dev/null -w "%{http_code}" https://example.com/ 2>/dev/null || true')"
+          echo "DE89_DIRECT_NODE_HTTP=$de_direct"
+          warm=no
+          for destination in example.com speed.cloudflare.com www.youtube.com; do
+            case "$destination" in
+              example.com) url='https://example.com/' ;;
+              speed.cloudflare.com) url='https://speed.cloudflare.com/__down?bytes=1024' ;;
+              www.youtube.com) url='https://www.youtube.com/generate_204' ;;
+            esac
+            set +e
+            res="$(curl -sS --noproxy '' --proxy socks5h://127.0.0.1:19187 \
+              --connect-timeout 9 --max-time 21 \
+              -o /dev/null -w '%{http_code} %{time_connect} %{time_appconnect} %{time_total}' \
+              "$url" 2>"$work/curl-error")"
+            rc=$?
+            set -e
+            read -r code connected tls_elapsed elapsed <<<"$res"
+            reason="$(python3 - "$work/curl-error" <<'PY'
+          import pathlib,re,sys
+          s=pathlib.Path(sys.argv[1]).read_text(errors='replace').lower()
+          patterns=[('tls_syscall',r'ssl_error_syscall'),('timeout',r'tim(e|ed) out'),
+            ('reset',r'connection reset'),('connection',r'failed to connect'),
+            ('tls',r'ssl|certificate'),('socks',r'socks'),('http',r'http')]
+          print(next((name for name,expr in patterns if re.search(expr,s)),'none'))
+          PY
+            )"
+            echo "DE89_VPN_${destination//./_}_RESULT=exit_$rc,http_${code:-000},tcp_${connected:-0},tls_${tls_elapsed:-0},total_${elapsed:-0},error_$reason"
+            if [[ "$destination" == example.com && "$rc" == 0 && "$code" == 200 ]]; then
+              warm=yes
+            fi
+          done
+          python3 - "$work/xray.log" <<'PY'
+          import pathlib,re,sys
+          s=pathlib.Path(sys.argv[1]).read_text(errors='replace').lower()
+          for label,exp in [('auth',r'invalid user|invalid id|not allowed'),
+            ('dial',r'failed to dial|failed to handle|failed to process'),
+            ('ws',r'websocket|bad handshake|non-success status'),
+            ('tls',r'certificate|x509|tls|handshake'),
+            ('reset',r'reset by peer|broken pipe|connection reset'),
+            ('timeout',r'timeout|timed out')]:
+            print('DE89_CLIENT_XRAY_'+label.upper()+'_ERRORS='+str(len(re.findall(exp,s))))
+          PY
+          sshpass -e ssh -T "${opts[@]}" "$remote" 'python3 -' <<'PY'
+          import subprocess,re
+          units=('mnebyvpn-xray-canary.service','mnebyvpn-vpn-provisioner.service',
+                 'xray.service','nginx.service')
+          for unit in units:
+            p=subprocess.run(['systemctl','show',unit,'-p','ActiveState',
+              '-p','MainPID','-p','NRestarts','--no-pager'],
+              capture_output=True,text=True,timeout=8)
+            vals=dict(row.split('=',1) for row in p.stdout.splitlines() if '=' in row)
+            name=unit.replace('.','_').replace('-','_')
+            print('DE89_PATH_UNIT_'+name+'='+
+              ','.join(vals.get(k,'?') for k in ('ActiveState','MainPID','NRestarts')))
+            j=subprocess.run(['journalctl','-u',unit,'--since','-5 minutes',
+              '-n','2000','-o','cat','--no-pager'],
+              capture_output=True,text=True,timeout=12)
+            lines=j.stdout.lower()
+            for label,exp in [('auth',r'invalid user|invalid id|not allowed'),
+              ('upstream',r'upstream|connection refused|failed to connect'),
+              ('timeout',r'timeout|timed out'),('reset',r'connection reset|broken pipe'),
+              ('error',r'error|failed|panic')]:
+              print('DE89_PATH_LOG_'+name+'_'+label+'='+str(len(re.findall(exp,lines))))
+          PY
+          if [[ "$warm" != yes ]]; then
+            echo 'DE89_LONGSTREAM_GATE=BLOCKED_BY_FAILED_VLESS_HTTPS_WARMUP'
+            exit 2
+          fi
           snapshot() {
             sshpass -e ssh -T "${opts[@]}" "$remote" 'python3 -' <<'PY'
           import json,pathlib,subprocess
