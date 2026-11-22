@@ -1,0 +1,170 @@
+name: DE89 sustained VPN stream continuity and kernel loss deltas (read-only)
+"on":
+  push:
+    branches: [main]
+    paths: ['.github/workflows/de89-longstream-continuity-20261122.yml']
+  workflow_dispatch:
+permissions: {contents: read}
+concurrency:
+  group: de89-longstream-readonly
+  cancel-in-progress: false
+jobs:
+  sustained:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 9
+    environment: node-fi
+    env:
+      DE_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Two-minute real external VLESS WS continuous HTTPS stream and read-only loss snapshots
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASSWORD"
+          grep -q '^89\.125\.90\.101 ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends sshpass >/dev/null
+          export SSHPASS="$DE_PASSWORD"
+          opts=(-o ConnectTimeout=12 -o StrictHostKeyChecking=yes
+            -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$GITHUB_WORKSPACE/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no
+            -o ForwardAgent=no -o ClearAllForwardings=yes -o LogLevel=ERROR)
+          remote=root@89.125.90.101
+          work="$(mktemp -d "$RUNNER_TEMP/mnebyvpn-longstream-XXXXXXXX")"
+          client_pid=''
+          cleanup() {
+            if [[ -n "$client_pid" ]]; then
+              kill "$client_pid" 2>/dev/null || true
+              wait "$client_pid" 2>/dev/null || true
+            fi
+            rm -rf "$work"
+          }
+          trap cleanup EXIT
+          sshpass -e ssh -T "${opts[@]}" "$remote"             'test -s /etc/mnebyvpn/canary-uuid && test -x /opt/xray/xray'
+          # Only an existing synthetic canary, never any subscriber key.
+          sshpass -e ssh -T "${opts[@]}" "$remote"             'cat /etc/mnebyvpn/canary-uuid' >"$work/key"
+          chmod 0600 "$work/key"
+          echo "::add-mask::$(cat "$work/key")"
+          sshpass -e scp -q "${opts[@]}"             "$remote:/opt/xray/xray" "$work/xray"
+          chmod 0700 "$work/xray"
+          python3 - "$work/key" "$work/client.json" <<'PY'
+          import json,pathlib,sys,uuid
+          value=pathlib.Path(sys.argv[1]).read_text().strip()
+          uuid.UUID(value)
+          cfg={'log':{'loglevel':'warning'},
+            'inbounds':[{'listen':'127.0.0.1','port':19187,'protocol':'socks',
+              'settings':{'auth':'noauth','udp':False}}],
+            'outbounds':[{'protocol':'vless','tag':'external-de89-canary',
+              'settings':{'vnext':[{'address':'89.125.90.101','port':8443,
+                'users':[{'id':value,'encryption':'none'}]}]},
+              'streamSettings':{'network':'ws','security':'tls',
+                'tlsSettings':{'serverName':'cdn.servgo.ru','allowInsecure':False},
+                'wsSettings':{'path':'/mnebyvpn-vpn/ws',
+                  'headers':{'Host':'cdn.servgo.ru'}}}}]}
+          pathlib.Path(sys.argv[2]).write_text(json.dumps(cfg))
+          PY
+          "$work/xray" run -test -config "$work/client.json" >/dev/null 2>&1
+          "$work/xray" run -config "$work/client.json" >"$work/xray.log" 2>&1 &
+          client_pid=$!
+          ready=no
+          for n in $(seq 1 15); do
+            if ss -H -lnt | grep -q '127.0.0.1:19187'; then ready=yes; break; fi
+            sleep 1
+          done
+          test "$ready" = yes
+          # From the public GitHub runner through actual DE89 VLESS WS/TLS.
+          warm="$(curl -sS --noproxy '' --proxy socks5h://127.0.0.1:19187             --connect-timeout 10 --max-time 22 -o /dev/null -w '%{http_code}'             https://example.com/)"
+          echo "DE89_LONGSTREAM_WARMUP_HTTP=$warm"
+          test "$warm" = 200
+          snapshot() {
+            sshpass -e ssh -T "${opts[@]}" "$remote" 'python3 -' <<'PY'
+          import json,pathlib,subprocess
+          result={}
+          for path in ('/proc/net/netstat','/proc/net/snmp'):
+              if not pathlib.Path(path).exists():continue
+              lines=pathlib.Path(path).read_text().splitlines()
+              for i in range(0,len(lines)-1,2):
+                  heads=lines[i].split()
+                  values=lines[i+1].split()
+                  if len(heads)==len(values) and heads and heads[0]==values[0]:
+                      for k,v in zip(heads[1:],values[1:]):
+                          if (heads[0],k) in {
+                            ('TcpExt:','TCPTimeouts'),('TcpExt:','TCPLossProbes'),
+                            ('TcpExt:','TCPLossProbeRecovery'),
+                            ('TcpExt:','TCPBacklogDrop'),('TcpExt:','TCPFastRetrans'),
+                            ('TcpExt:','TCPSlowStartRetrans'),
+                            ('Tcp:','RetransSegs'),('Udp:','RcvbufErrors'),
+                            ('Udp:','InErrors')}:
+                              result[heads[0][:-1]+'.'+k]=int(v)
+          soft=pathlib.Path('/proc/net/softnet_stat')
+          if soft.exists():
+              result['softnet.dropped']=sum(int(s.split()[1],16)
+                for s in soft.read_text().splitlines() if len(s.split())>=2)
+          for unit in ('xray.service','mnebyvpn-xray-canary.service',
+                       'mnebyvpn-vpn-provisioner.service','nginx.service'):
+              p=subprocess.run(['systemctl','show',unit,
+                '-p','MainPID','-p','ActiveState','-p','NRestarts',
+                '-p','ActiveEnterTimestampMonotonic','--no-pager'],
+                capture_output=True,text=True,timeout=7)
+              for row in p.stdout.splitlines():
+                  if '=' in row:
+                      k,v=row.split('=',1)
+                      result['unit.'+unit+'.'+k]=v
+          print(json.dumps(result,sort_keys=True))
+          PY
+          }
+          snapshot >"$work/before.json"
+          echo 'DE89_LONGSTREAM_TARGET=external_runner_to_DE89_public_VLESS_WS_TLS_to_Cloudflare_HTTPS'
+          echo 'DE89_LONGSTREAM_RATE_LIMIT=90kB_per_second'
+          echo 'DE89_LONGSTREAM_STALL_GUARD=less_than_1200Bps_for_12s_is_failure'
+          # 10.5 MB at 90 KiB/s takes ~114 seconds; keep the SAME HTTPS
+          # response flowing, not just a sequence of TCP handshake probes.
+          set +e
+          stream="$(curl --noproxy '' --proxy socks5h://127.0.0.1:19187             --location --silent --show-error --speed-limit 1200 --speed-time 12             --limit-rate 90k --connect-timeout 12 --max-time 185             -o /dev/null -w '%{http_code} %{size_download} %{time_total} %{speed_download}'             'https://speed.cloudflare.com/__down?bytes=10500000')"
+          stream_rc=$?
+          set -e
+          snapshot >"$work/after.json"
+          read -r status bytes duration bps <<<"$stream"
+          echo "DE89_LONGSTREAM_CURL_EXIT=$stream_rc"
+          echo "DE89_LONGSTREAM_HTTP=${status:-none}"
+          echo "DE89_LONGSTREAM_BYTES=${bytes:-0}"
+          echo "DE89_LONGSTREAM_DURATION_SECONDS=${duration:-0}"
+          echo "DE89_LONGSTREAM_AVG_BYTES_PER_SECOND=${bps:-0}"
+          python3 - "$work/before.json" "$work/after.json" <<'PY'
+          import json,sys
+          a=json.load(open(sys.argv[1]));b=json.load(open(sys.argv[2]))
+          for k in sorted(set(a)|set(b)):
+              if k.startswith('unit.'):
+                  if a.get(k)!=b.get(k):
+                      print('DE89_LONGSTREAM_SERVICE_CHANGED_'+
+                        k.replace('.','_')+'='+str(a.get(k))+'->'+str(b.get(k)))
+              elif isinstance(a.get(k),int) and isinstance(b.get(k),int):
+                  print('DE89_LONGSTREAM_COUNTER_DELTA_'+k.replace('.','_')+
+                        '='+str(b[k]-a[k]))
+          changed=[k for k in a if k.startswith('unit.') and
+            (k.endswith('.MainPID') or
+             k.endswith('.ActiveEnterTimestampMonotonic')) and a[k]!=b.get(k)]
+          print('DE89_LONGSTREAM_SERVICE_RESTART_DETECTED='+str(bool(changed)).lower())
+          PY
+          # Test a real YouTube HTTPS endpoint through this same VPN after
+          # the long transfer; it is not equivalent to playing a video.
+          good=0
+          for n in 1 2 3; do
+            code="$(curl -sS --noproxy ''               --proxy socks5h://127.0.0.1:19187               --connect-timeout 10 --max-time 22               -o /dev/null -w '%{http_code}'               https://www.youtube.com/generate_204 2>/dev/null || true)"
+            echo "DE89_LONGSTREAM_YOUTUBE_HTTPS_SAMPLE_$n=${code:-000}"
+            if [[ "$code" == 204 || "$code" == 200 ]]; then
+              good=$((good+1))
+            fi
+          done
+          echo "DE89_LONGSTREAM_YOUTUBE_HTTPS_OK=$good/3"
+          python3 - "$stream_rc" "${status:-0}" "${bytes:-0}" <<'PY'
+          import sys
+          rc,code,bytes_=map(int,sys.argv[1:])
+          if rc!=0 or code!=200 or bytes_<10500000:
+              print('DE89_LONGSTREAM_CONCLUSION=FAIL_OR_INCOMPLETE')
+              raise SystemExit(2)
+          print('DE89_LONGSTREAM_CONCLUSION=SYNTHETIC_STREAM_PASS')
+          PY
