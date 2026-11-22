@@ -55,7 +55,7 @@ def listener_ports(ip_version, transport):
         fields = line.split()
         if len(fields) < 5:
             continue
-        address = fields[4] if transport == "udp" and fields[0] in ("UNCONN", "ESTAB") else fields[3]
+        address = fields[4] if fields[0].lower() in ("tcp", "udp") and len(fields) > 5 else fields[3]
         match = re.search(r":(\d{1,5})$", address)
         if match:
             found.add(int(match.group(1)))
