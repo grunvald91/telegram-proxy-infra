@@ -105,7 +105,12 @@ jobs:
             openssl x509 -in "$target/fullchain.pem" -noout -checkend 604800 >/dev/null
             openssl x509 -in "$target/fullchain.pem" -noout -ext subjectAltName |
               grep -Eq '(^|[[:space:],])DNS:\*\.fi\.dns\.mnebyvpn\.site([[:space:],]|$)'
-            echo 'FI_WILDCARD_CERT_ALREADY_STAGED_VERIFY_KEY_SEPARATELY=true'
+            openssl verify -purpose sslserver -CAfile /etc/ssl/certs/ca-certificates.crt \
+              -untrusted "$target/fullchain.pem" "$target/fullchain.pem" >/dev/null
+            key_hash="$(openssl pkey -in "$target/privkey.pem" -pubout -outform DER | sha256sum | cut -d' ' -f1)"
+            leaf_hash="$(openssl x509 -in "$target/fullchain.pem" -pubkey -noout | openssl pkey -pubin -outform DER | sha256sum | cut -d' ' -f1)"
+            test "$key_hash" = "$leaf_hash"
+            echo 'FI_WILDCARD_CERT_ALREADY_STAGED_AND_VALID=true'
             exit 0
           fi
           log="$(mktemp "$home/manual-finalize.XXXXXXXX")"
