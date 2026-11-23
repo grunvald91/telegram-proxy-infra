@@ -119,6 +119,57 @@ class TestServiceReadiness(unittest.TestCase):
                 with self.assertRaises(audit.ServiceReadinessError):
                     audit.assess(node, audit.HOST_REVIEWED, "f" * 64)
 
+    def test_active_awg_node_cannot_implicitly_enable_dns_or_telemt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            node = pathlib.Path(tmp) / audit.NODE_REVIEWED
+            node.mkdir()
+            manifest = {
+                "state": "active",
+                "node_id": node.name,
+                "advertise_host": audit.HOST_REVIEWED,
+                "activation_enabled": True,
+                "registration_enabled": True,
+            }
+            awg = {
+                "control_plane_prerequisites_met": False,
+                "watchdog_unit_installed": True,
+                "egress_unit_installed": True,
+                "controller_public_key_independently_pinned": True,
+            }
+            candidate = {"staged": True, "route_count": 0,
+                         "blockers": ["personal_dns_authorization_missing"]}
+            tls = {"staged": False, "personal_fqdn_tls_verified": False,
+                   "blockers": ["tls_stage_missing"]}
+            with patch.object(audit.os, "geteuid", return_value=0), \
+                 patch.object(audit, "safe_manifest", return_value=manifest), \
+                 patch.object(audit, "protected_file", return_value=PUBLIC), \
+                 patch.object(audit, "dns_proxy_stage", return_value=candidate), \
+                 patch.object(audit, "tls_stage", return_value=tls), \
+                 patch.object(audit, "awg_controller_inspect", return_value=awg):
+                report = audit.assess(
+                    node, audit.HOST_REVIEWED, IDENTITY_SHA)
+            self.assertFalse(report["automatic_publication_authorized"])
+            self.assertFalse(report["existing_clients_changed"])
+            self.assertFalse(report["services"]["personal_dns"]["ready"])
+            self.assertFalse(report["services"]["telegram_proxy"]["ready"])
+            self.assertFalse(report["services"]["dns_sni_transport"]["ready"])
+            self.assertFalse(report["services"]["personal_dns"]["local_candidate_verified"])
+
+    def test_active_awg_manifest_with_false_flags_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            node = pathlib.Path(tmp) / audit.NODE_REVIEWED
+            node.mkdir()
+            invalid = {
+                "state": "active", "node_id": node.name,
+                "advertise_host": audit.HOST_REVIEWED,
+                "activation_enabled": False,
+                "registration_enabled": False,
+            }
+            with patch.object(audit.os, "geteuid", return_value=0), \
+                 patch.object(audit, "safe_manifest", return_value=invalid):
+                with self.assertRaises(audit.ServiceReadinessError):
+                    audit.assess(node, audit.HOST_REVIEWED, IDENTITY_SHA)
+
     def test_unexpected_vps_is_never_a_release_candidate(self):
         with tempfile.TemporaryDirectory() as tmp:
             node = pathlib.Path(tmp) / "de-test-01"
