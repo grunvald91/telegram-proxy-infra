@@ -81,6 +81,7 @@ class TestServiceReadiness(unittest.TestCase):
             node = pathlib.Path(tmp) / audit.NODE_REVIEWED
             node.mkdir()
             manifest = {
+                "state": "testing",
                 "node_id": node.name, "advertise_host": audit.HOST_REVIEWED,
                 "activation_enabled": False, "registration_enabled": False,
             }
