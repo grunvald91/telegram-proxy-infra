@@ -62,7 +62,8 @@ jobs:
           files=(nodekit/service_readiness.py nodekit/awg_controller_readiness.py
             nodekit/awg_lifecycle.py nodekit/awg_egress.py
             nodekit/install_awg_watchdog.py nodekit/awg_peer_grants.py
-            nodekit/install_components.py nodekit/telemt_stage.py nodekit/nodekit.py)
+            nodekit/install_components.py nodekit/telemt_stage.py nodekit/nodekit.py
+            nodekit/fi_awg_production_policy.py)
           sshpass -e scp ${opts_scp[@]} ${files[@]} "$SSH_USER@217.11.167.91:$remote_dir/"
           remote "python3 '$remote_dir/service_readiness.py' --node-id fi-test-01 --host fi.mnebyvpn.site --expected-identity-sha256 c3689b687e8888d15e3ece8e45cf7d01672b9dadb77b1963a7871ffd8e967ed9"
           echo 'CHECK_COMPLETED=read-only'
