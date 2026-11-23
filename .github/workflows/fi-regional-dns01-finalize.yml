@@ -3,6 +3,8 @@ on:
   push:
     branches: [main]
     paths: ['.github/workflows/fi-regional-dns01-finalize.yml']
+  pull_request:
+    paths: ['.github/workflows/fi-regional-dns01-finalize.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -10,7 +12,39 @@ concurrency:
   group: mnebyvpn-fi-regional-acme-finalize
   cancel-in-progress: false
 jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Verify exact FI DNS-01 finalize Bash and no current service publication
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          lines=Path('.github/workflows/fi-regional-dns01-finalize.yml').read_text().splitlines()
+          marker='      - name: Finalize isolated FI wildcard certificate (staged on DE, no customer release)'
+          i=lines.index(marker)
+          i=next(j for j in range(i+1,len(lines)) if lines[j]=='        run: |')+1
+          out=[]
+          for line in lines[i:]:
+              if line and not line.startswith('          '): break
+              out.append(line[10:] if line.startswith('          ') else '')
+          script='\n'.join(out)+'\n'
+          assert "home=/var/lib/mnebydns/acme-fi-regional" in script
+          assert "target=/var/lib/mnebydns/fi-regional-issued" in script
+          assert "domain='*.fi.dns.mnebyvpn.site'" in script
+          assert 'fi.dns.mnebyvpn.site' in script
+          assert 'systemctl' not in script
+          assert 'DE_FI_853_CONFIGURATION_UNCHANGED=true' in script
+          Path('/tmp/fi-regional-dns01-finalize-check.sh').write_text(script)
+          PY
+          bash -n /tmp/fi-regional-dns01-finalize-check.sh
+          rm -f /tmp/fi-regional-dns01-finalize-check.sh
   cert:
+    needs: offline
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 12
     env:
@@ -61,6 +95,7 @@ jobs:
           client=/opt/mnebydns/acme-client-3.1.6/acme.sh
           home=/var/lib/mnebydns/acme-fi-regional
           target=/var/lib/mnebydns/fi-regional-issued
+          [[ ! -L "$target" ]] || exit 3
           domain='*.fi.dns.mnebyvpn.site'
           test -x "$client"
           test -d "$home"
