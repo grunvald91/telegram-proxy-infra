@@ -34,6 +34,11 @@ def client_hello(name=HOST, *, double_sni=False):
     return tls_record(handshake)
 
 
+class FakeHighwater:
+    def observe(self, snapshot):
+        pass
+
+
 class FakeWriter:
     def __init__(self):
         self.closed = False
@@ -92,7 +97,7 @@ class TestFiDoTIngress(unittest.TestCase):
 
     def test_rejected_fifth_socket_does_not_steal_existing_counter(self):
         async def exercise():
-            g = guard.Guard("f"*64)
+            g = guard.Guard("f"*64, highwater=FakeHighwater())
             digest = grants.hostname_digest(HOST)
             g.connections[digest] = guard.MAX_PER_CREDENTIAL
             async def fake_prelude(_):
@@ -109,9 +114,33 @@ class TestFiDoTIngress(unittest.TestCase):
                 self.assertEqual(g.total, 0)
         asyncio.run(exercise())
 
+    def test_active_stream_watcher_rechecks_revoke_and_current_revision(self):
+        async def exercise():
+            g = guard.Guard("f"*64, highwater=FakeHighwater())
+            first = {"revision": 10, "validUntil": "2099-01-01T00:00:00.000Z"}
+            revoked = {"revision": 11, "validUntil": "2099-01-01T00:00:00.000Z"}
+            with patch.object(guard, "load", side_effect=[first, revoked]) as loader, \
+                 patch.object(guard, "authorized",
+                              side_effect=[(True, time.time()+10), (False, 0.0)]) as permit, \
+                 patch.object(guard, "POLICY_CACHE_SECONDS", 0), \
+                 patch.object(guard, "POLICY_RECHECK_SECONDS", 0.001):
+                self.assertIs(g._verified_policy(), first)
+                self.assertTrue(permit(first, HOST)[0])
+                await asyncio.wait_for(g._watch(HOST), timeout=0.2)
+                self.assertEqual(loader.call_count, 2)
+
+    def test_invalid_or_missing_signed_refresh_ends_existing_stream(self):
+        async def exercise():
+            g = guard.Guard("f"*64, highwater=FakeHighwater())
+            with patch.object(guard, "load",
+                              side_effect=grants.RegionalDnsGrantError("bad signature")), \
+                 patch.object(guard, "POLICY_RECHECK_SECONDS", 0.001):
+                await asyncio.wait_for(g._watch(HOST), timeout=0.2)
+        asyncio.run(exercise())
+
     def test_unknown_credentials_do_not_open_upstream_socket(self):
         async def exercise():
-            g = guard.Guard("f"*64)
+            g = guard.Guard("f"*64, highwater=FakeHighwater())
             async def fake_prelude(_):
                 return HOST, client_hello()
             with patch.object(guard, "prelude", new=fake_prelude), \

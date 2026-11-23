@@ -21,6 +21,7 @@ import time
 from fi_dns_signed_grants import (
     RegionalDnsGrantError, hostname_digest, load, authorized,
 )
+from fi_dns_highwater import Highwater
 
 NODE = "fi-test-01"
 ROOT = Path("/var/lib/mnebyvpn-nodekit") / NODE
@@ -36,6 +37,9 @@ MAX_GLOBAL_CONNECTIONS = 64
 MAX_PER_CREDENTIAL = 4
 PROBE_A = "aaaaaaaaaaaa.fi.dns.mnebyvpn.site"
 PROBE_B = "bbbbbbbbbbbb.fi.dns.mnebyvpn.site"
+HIGHWATER = ROOT / "dns-auth" / "snapshot-highwater.json"
+POLICY_CACHE_SECONDS = 1.0
+POLICY_RECHECK_SECONDS = 3.0
 
 
 class IncompleteHello(Exception):
@@ -177,25 +181,54 @@ def verify_local_origin() -> None:
     # A passing TLS handshake does not prove DNS query correctness or egress.
 
 
-async def _pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
-                deadline: float) -> None:
+async def _pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
     while True:
-        remain = deadline - time.time()
-        if remain <= 0:
-            return
-        block = await asyncio.wait_for(reader.read(16_384), timeout=remain)
+        block = await reader.read(16_384)
         if not block:
             return
         writer.write(block)
-        await asyncio.wait_for(writer.drain(), timeout=min(remain, 5))
+        await asyncio.wait_for(writer.drain(), timeout=5)
 
 
 class Guard:
-    def __init__(self, expected_controller_sha: str):
+    def __init__(self, expected_controller_sha: str,
+                 *, highwater: Highwater | None = None):
         self.pin = expected_controller_sha
         self.connections: Counter[str] = Counter()
         self.total = 0
-        self.last_revision = 0
+        self.highwater = highwater if highwater is not None else Highwater(HIGHWATER)
+        self._cached: dict | None = None
+        self._cached_at = 0.0
+
+    def _verified_policy(self) -> dict:
+        # A single policy reload for all sockets per interval avoids running
+        # 64 OpenSSL verifications every few seconds on a 1-vCPU VPS.
+        if (self._cached is not None and
+                time.monotonic() - self._cached_at < POLICY_CACHE_SECONDS):
+            return self._cached
+        policy = load(SNAPSHOT, CONTROLLER, self.pin)
+        # Persist the increasing signed revision BEFORE allowing any traffic.
+        # A post-crash restart cannot silently downgrade to an older version.
+        self.highwater.observe(policy)
+        self._cached = policy
+        self._cached_at = time.monotonic()
+        return policy
+
+    async def _watch(self, hostname: str) -> None:
+        """End long-lived TLS streams after signed revoke or stale policy.
+
+        The watcher is deliberately independent of DNS packet forwarding:
+        a quiet DoT socket must still be closed after policy expiry/revocation.
+        """
+        while True:
+            await asyncio.sleep(POLICY_RECHECK_SECONDS)
+            try:
+                policy = self._verified_policy()
+                active, expires = authorized(policy, hostname)
+                if not active or expires <= time.time():
+                    return
+            except (OSError, ValueError, TypeError, KeyError):
+                return
 
     async def handle(self, reader: asyncio.StreamReader,
                      writer: asyncio.StreamWriter) -> None:
@@ -207,10 +240,7 @@ class Guard:
             if self.total > MAX_GLOBAL_CONNECTIONS:
                 return
             name, buffered = await prelude(reader)
-            snapshot = load(SNAPSHOT, CONTROLLER, self.pin)
-            if snapshot["revision"] < self.last_revision:
-                return
-            self.last_revision = snapshot["revision"]
+            snapshot = self._verified_policy()
             ok, expires = authorized(snapshot, name)
             if not ok:
                 return
@@ -226,15 +256,17 @@ class Guard:
                 asyncio.open_connection(CORE_IP, CORE_PORT), timeout=3)
             upwriter.write(buffered)
             await asyncio.wait_for(upwriter.drain(), timeout=3)
-            # Even persistent DoT sockets are closed at signed-snapshot expiry.
+            # Policy renewal may keep one Android DoT connection alive.
+            # Revocation/expiry close even a quiet active TLS stream within
+            # POLICY_RECHECK_SECONDS + POLICY_CACHE_SECONDS.
             jobs = [
-                asyncio.create_task(_pipe(reader, upwriter, expires)),
-                asyncio.create_task(_pipe(upreader, writer, expires)),
+                asyncio.create_task(_pipe(reader, upwriter)),
+                asyncio.create_task(_pipe(upreader, writer)),
+                asyncio.create_task(self._watch(name)),
             ]
             try:
                 done, pending = await asyncio.wait(
-                    jobs, timeout=max(0, expires-time.time()),
-                    return_when=asyncio.FIRST_COMPLETED)
+                    jobs, return_when=asyncio.FIRST_COMPLETED)
                 for job in done:
                     try:
                         job.result()
@@ -273,6 +305,7 @@ async def serve(sha: str) -> None:
         raise DnsIngressError("No verified FI grants staged")
     verify_local_origin()
     guard = Guard(sha)
+    guard._verified_policy()
     server = await asyncio.start_server(
         guard.handle, host=LISTEN_IP, port=LISTEN_PORT,
         limit=PRELUDE_MAX)

@@ -78,3 +78,38 @@ every 60 seconds; a stale snapshot expires by 120 seconds.
 based on unit tests. Next is controller-bound signer + signed local grant
 staging and TLS/DNS-01 preparation. Telegram Telemt remains a separate
 unreleased FI priority after Smart DNS.
+
+
+## Security review: signed policy freshness and live revocation
+
+The initial signed ingress had three serious staging issues now corrected:
+
+- Previously, an already admitted TLS socket was **not rechecked** after an
+  RU188 snapshot revoke. A quiet connection could remain open until the
+  original snapshot expiry. A single shared, short-lived signed-policy cache
+  now revalidates every active socket at most every 3 seconds (plus up to
+  1 second cache age); missing or invalid refreshed policy closes the stream.
+  Policy renewal keeps the same authenticated Android TLS socket alive rather
+  than forcing a disconnect every 120 seconds.
+- A revision downgrade check existed only in process memory. A root-owned
+  `dns-auth/snapshot-highwater.json` now persists the largest verified
+  signed revision and its canonical transcript SHA-256 across restart. It
+  rejects an older revision **or different data at the same revision**.
+  The file is updated atomically with fsync before allowing new traffic.
+  Its parent directory must already be root-owned and not group-accessible;
+  the process never repairs unknown filesystem state by deleting the fence.
+  Destruction of this root-only file by a compromised root user remains out
+  of scope and should be monitored independently.
+- FI DNS signature/file checks imported an AWG/VPN module unnecessarily.
+  The DNS reader now independently verifies root ownership, permissions,
+  symlink exclusion and file size; a broken AWG import cannot prevent
+  DNS-specific verification.
+
+With up to 2048 individual entitlement grants, the signed JSON may exceed
+440 KB. The root-only snapshot size bound has been raised to 700 KB, with
+the same 2048-entry, strict schema and signature validation.
+
+This **does not** make FI217 Smart DNS ready. No production signed snapshot
+writer, durable protected delivery, paid per-query reserve/settle, wildcard
+certificate, published listener or Android external E2E is supplied by this
+review. No systemd service or DNS port is installed by these changes.

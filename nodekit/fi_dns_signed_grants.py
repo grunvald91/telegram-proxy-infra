@@ -14,12 +14,12 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import stat
 import subprocess
 import tempfile
 import time
 import uuid
 
-from awg_peer_grants import protected_file
 
 NODE = "fi-test-01"
 COUNTRY = "FI"
@@ -35,12 +35,31 @@ GRANT_KEYS = frozenset((
     "entitlementId", "credentialRevision", "tokenSha256", "expiresAt",
     "state"))
 MAX_GRANTS = 2048
+# A fully populated canonical 2048-grant JSON snapshot can exceed 440 KB.
+# Still bound the root-only signed file to a strict <700 KB maximum.
+MAX_SNAPSHOT_FILE_BYTES = 700_000
 MAX_SNAPSHOT_SECONDS = 120
 FUTURE_CLOCK_TOLERANCE_SECONDS = 15
 
 
 class RegionalDnsGrantError(ValueError):
     pass
+
+
+def protected_file(path: Path, *, max_bytes: int = 350_000) -> bytes:
+    """DNS-owned root-only read, independent from FI AWG lifecycle imports.
+
+    Reject symlinks, non-root owners and any group/other access even for
+    signed messages; an attacker must not replace the approved trust anchor.
+    """
+    if path.is_symlink() or not path.is_file():
+        raise RegionalDnsGrantError("Missing protected FI DNS file")
+    metadata = path.stat()
+    if (metadata.st_uid != 0 or metadata.st_mode & 0o077 or
+            not stat.S_ISREG(metadata.st_mode) or
+            not 1 <= metadata.st_size <= max_bytes):
+        raise RegionalDnsGrantError("Unsafe FI DNS source ownership or size")
+    return path.read_bytes()
 
 
 def fail() -> None:
@@ -169,7 +188,7 @@ def verify_signature(data: dict, controller_public_spki: Path,
 def load(snapshot_path: Path, controller_public_spki: Path,
          expected_sha256: str, *, now: float | None = None) -> dict:
     """Read-only, root-owned signed policy loader. NEVER accept unsigned files."""
-    raw = protected_file(snapshot_path, max_bytes=350_000)
+    raw = protected_file(snapshot_path, max_bytes=MAX_SNAPSHOT_FILE_BYTES)
     try:
         data = json.loads(raw)
     except (ValueError, UnicodeError):
