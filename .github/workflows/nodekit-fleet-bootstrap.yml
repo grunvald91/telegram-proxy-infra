@@ -70,7 +70,9 @@ jobs:
               # Telemt stages. Existing production VPN and FI fleet JSON stay intact.
               ops=subprocess.check_output(["git","diff","--name-only","--diff-filter=A",
                   before,after,"--","nodekit/fleet-operations"],text=True).splitlines()
-              from nodekit.fleet_operations import select as approved_operations
+              import sys
+              sys.path.insert(0,str(pathlib.Path.cwd()/"nodekit"))
+              from fleet_operations import select as approved_operations
               selected += approved_operations(ops,pathlib.Path.cwd())
               if len(selected)>8 or len(selected)!=len(set(selected)):
                   raise SystemExit("Overlapping or oversized fleet operations")
