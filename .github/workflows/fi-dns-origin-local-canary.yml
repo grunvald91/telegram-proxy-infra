@@ -27,6 +27,23 @@ jobs:
           set -Eeuo pipefail
           python3 -m py_compile nodekit/fi_dns_origin_canary.py
           python3 -m unittest discover -s nodekit/tests -p 'test_fi_dns_origin_canary.py' -v
+          # Parse the EXACT live Bash step before any SSH/network changes.
+          python3 - <<'PY'
+          from pathlib import Path
+          lines=Path('.github/workflows/fi-dns-origin-local-canary.yml').read_text().splitlines()
+          target='      - name: Verify pinned RU and FI host keys and run temporary loopback DoT'
+          i=lines.index(target)
+          i=next(j for j in range(i+1,len(lines)) if lines[j]=='        run: |')+1
+          rows=[]
+          for line in lines[i:]:
+              if line and not line.startswith('          '):
+                  break
+              rows.append(line[10:] if line.startswith('          ') else '')
+          assert rows and 'trap cleanup EXIT' in rows
+          Path('/tmp/fi-dns-origin-live-parse.sh').write_text('\n'.join(rows)+'\n')
+          PY
+          bash -n /tmp/fi-dns-origin-live-parse.sh
+          rm -f /tmp/fi-dns-origin-live-parse.sh
   private-canary:
     needs: offline
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
@@ -97,21 +114,21 @@ jobs:
             ConnectTimeout 12
             LogLevel ERROR
           CFG
-          fi() { SSHPASS="$FI_PASSWORD" sshpass -e ssh -T -F "$work/fi.cfg" fi-node "$@"; }
+          fi_node() { SSHPASS="$FI_PASSWORD" sshpass -e ssh -T -F "$work/fi.cfg" fi-node "$@"; }
           dir=''
           cleanup() {
             set +e
             if [[ "$dir" =~ ^/run/fi-dns-origin-canary\.[A-Za-z0-9]{8}$ ]]; then
-              fi "rm -rf -- '$dir'" >/dev/null 2>&1 || true
+              fi_node "rm -rf -- '$dir'" >/dev/null 2>&1 || true
             fi
             rm -rf "$work"
           }
           trap cleanup EXIT
-          dir=$(fi 'umask 077; mktemp -d /run/fi-dns-origin-canary.XXXXXXXX')
+          dir=$(fi_node 'umask 077; mktemp -d /run/fi-dns-origin-canary.XXXXXXXX')
           [[ "$dir" =~ ^/run/fi-dns-origin-canary\.[A-Za-z0-9]{8}$ ]] || exit 2
           SSHPASS="$FI_PASSWORD" sshpass -e scp -F "$work/fi.cfg" \
             nodekit/fi_dns_origin_canary.py "fi-node:$dir/"
-          fi "timeout --signal=TERM --kill-after=8s 80s python3 '$dir/fi_dns_origin_canary.py'"
+          fi_node "timeout --signal=TERM --kill-after=8s 80s python3 '$dir/fi_dns_origin_canary.py'"
           echo 'FI_ORIGIN_LOCAL_E2E_COMPLETED=true'
           echo 'FI_PUBLIC_853_UNCHANGED=true'
           echo 'FI_AWG_UNCHANGED=true'
