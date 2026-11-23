@@ -120,11 +120,31 @@ def assess(node: Path, host: str, identity_sha: str, controller_sha: str = "") -
             hashlib.sha256(identity).hexdigest() != identity_sha):
         raise ServiceReadinessError("Node Ed25519 identity pin mismatch")
 
-    candidate = dns_proxy_stage(node)
-    tls = tls_stage(node, host)
+    # Each product has an independent diagnostic domain. A corrupt candidate
+    # is reported as a HARD blocker for that product; it never becomes READY
+    # nor hides other products' diagnostics.
+    try:
+        candidate = dns_proxy_stage(node)
+    except (OSError, ValueError, TypeError):
+        candidate = {
+            "staged": False, "route_count": 0,
+            "blockers": ["dns_candidate_integrity_error"],
+        }
+    try:
+        tls = tls_stage(node, host)
+    except (OSError, ValueError, TypeError):
+        tls = {
+            "staged": False, "personal_fqdn_tls_verified": False,
+            "blockers": ["personal_dns_tls_integrity_error"],
+        }
     telemt_path = node / "telemt-stage"
-    # Corrupt or symlinked candidates must fail closed, never appear as missing.
-    telemt = inspect_telemt(node, host) if (telemt_path.exists() or telemt_path.is_symlink()) else None
+    telemt = None
+    telemt_error = False
+    if telemt_path.exists() or telemt_path.is_symlink():
+        try:
+            telemt = inspect_telemt(node, host)
+        except (OSError, ValueError, TypeError):
+            telemt_error = True
     # Personal DNS and Telegram readiness must be independently observable.
     # A broken/mismatched AWG control-plane cannot turn either service READY,
     # but it also must not hide their own read-only candidate status.
@@ -180,8 +200,10 @@ def assess(node: Path, host: str, identity_sha: str, controller_sha: str = "") -
                 "expiration_revoke_e2e_verified": False,
                 "independent_telegram_client_e2e_verified": False,
                 "ready": False,
-                "blockers": (["telegram_mtproxy_telemt_stage_missing"] if not telemt
-                             else ["telegram_mtproxy_service_activation_missing"]) + [
+                "blockers": (["telegram_mtproxy_stage_integrity_error"]
+                             if telemt_error else
+                             (["telegram_mtproxy_telemt_stage_missing"] if not telemt
+                              else ["telegram_mtproxy_service_activation_missing"])) + [
                              "telegram_proxy_client_auth_and_revocation_missing",
                              "external_telegram_client_e2e_missing"],
             },
