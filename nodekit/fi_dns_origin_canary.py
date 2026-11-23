@@ -16,6 +16,7 @@ import ssl
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 
 NODE = "fi-test-01"
@@ -24,7 +25,7 @@ COREDNS = Path("/opt/coredns/coredns")
 HOSTS = ("aaaaaaaaaaaa.fi.dns.mnebyvpn.site",
          "bbbbbbbbbbbb.fi.dns.mnebyvpn.site")
 PORT = 8853
-QUERY = "example.com"
+QUERY = "fi-dns-canary.invalid"
 
 
 class FiDnsOriginError(ValueError):
@@ -119,52 +120,104 @@ def dot_probe(hostname: str) -> bool:
             return True
 
 
+def local_test_corefile(original: Path, directory: Path) -> Path:
+    """Derive ephemeral local A answer, preserving pinned TLS/loopback config.
+
+    No forwarder, signed production policy or origin Corefile is edited.
+    The synthetic .invalid domain cannot be mistaken for a customer route.
+    """
+    text = original.read_text("ascii")
+    marker = "  forward . tls://1.1.1.1 tls://1.0.0.1 {"
+    if text.count(marker) != 1:
+        raise FiDnsOriginError("Unsupported staged forwarder")
+    template = (
+        "  template IN A . {\n"
+        r"    match ^fi-dns-canary\.invalid\.$" + "\n"
+        '    answer "{{ .Name }} 5 IN A 192.0.2.1"\n'
+        "    fallthrough\n"
+        "  }\n"
+    )
+    result = directory / "Corefile"
+    result.write_text(text.replace(marker, template + marker), encoding="ascii")
+    result.chmod(0o600)
+    return result
+
+
 def run() -> dict:
     core = prepare()
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as check:
         check.bind(("127.0.0.1", PORT))
-    child = subprocess.Popen([str(COREDNS), "-conf", str(core)],
-                             stdin=subprocess.DEVNULL,
-                             stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL, start_new_session=True)
-    try:
-        results = {}
-        for host in HOSTS:
-            for attempt in range(12):
-                if child.poll() is not None:
-                    raise FiDnsOriginError("CoreDNS child exited")
+    # Temporary root-only Corefile is a derivative of the approved stage.
+    # This tests the REAL CoreDNS TLS listener and DNS message parser without
+    # depending on the external Cloudflare upstream's current connectivity.
+    with tempfile.TemporaryDirectory(
+        prefix=".fi-dns-test-", dir=ROOT
+    ) as temp:
+        test_conf = local_test_corefile(core, Path(temp))
+        child = subprocess.Popen([str(COREDNS), "-conf", str(test_conf)],
+                                 stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, start_new_session=True)
+        try:
+            results = {}
+            for host in HOSTS:
+                for attempt in range(12):
+                    if child.poll() is not None:
+                        raise FiDnsOriginError("CoreDNS child exited")
+                    try:
+                        results[host] = dot_probe(host)
+                        break
+                    except (OSError, ssl.SSLError) as error:
+                        if attempt == 11:
+                            raise FiDnsOriginError("CoreDNS local TLS/DoT unavailable") from error
+                        time.sleep(0.5)
+            if not all(results.values()):
+                raise FiDnsOriginError("FI regional DoT probe denied")
+            return {"fi_dns_origin_local_canary": "PASS",
+                    "two_distinct_regional_tls_names": True,
+                    "dns_local_a_answer_verified": True,
+                    "external_upstream_verified": False,
+                    "public_port_opened": False,
+                    "customer_grant_issued": False,
+                    "awg_changed": False}
+        finally:
+            if child.poll() is None:
+                child.terminate()
                 try:
-                    results[host] = dot_probe(host)
-                    break
-                except (OSError, ssl.SSLError) as error:
-                    if attempt == 11:
-                        raise FiDnsOriginError("CoreDNS local TLS/DoT unavailable") from error
-                    time.sleep(0.5)
-        if not all(results.values()):
-            raise FiDnsOriginError("FI regional DoT probe denied")
-        return {"fi_dns_origin_local_canary": "PASS",
-                "two_distinct_regional_tls_names": True,
-                "dns_a_answer_verified": True,
-                "public_port_opened": False,
-                "customer_grant_issued": False,
-                "awg_changed": False}
-    finally:
-        if child.poll() is None:
-            child.terminate()
-            try:
-                child.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                child.kill()
-                child.wait(timeout=5)
+                    child.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    child.kill()
+                    child.wait(timeout=5)
 
 
 def main() -> int:
     try:
         print(json.dumps(run(), sort_keys=True))
         return 0
+    except FiDnsOriginError as exc:
+        # Only static, non-secret categories; never print CoreDNS config/key.
+        known = {
+            "Root required": "root_required",
+            "Missing pinned private FI DNS file": "missing_file",
+            "Untrusted FI DNS file": "file_permissions",
+            "FI staged CoreDNS config not approved": "stage_state",
+            "Missing pinned CoreDNS executable hash": "binary_pin_absent",
+            "CoreDNS binary is not approved": "binary_pin_mismatch",
+            "Staged CoreDNS content drift": "corefile_drift",
+            "CoreDNS loopback-only invariants lost": "unsafe_corefile",
+            "Unsupported staged forwarder": "forwarder_mismatch",
+            "CoreDNS child exited": "coredns_start_failed",
+            "CoreDNS local TLS/DoT unavailable": "local_tls_unavailable",
+            "FI regional DoT probe denied": "regional_dot_denied",
+            "CoreDNS failed independent A question": "local_dns_answer_failed",
+            "FI-specific wildcard SAN missing": "regional_wildcard_missing",
+        }
+        print("FI_DNS_LOOPBACK_BLOCKER=" +
+              known.get(str(exc), "uncategorized"), file=sys.stderr)
+        return 2
     except (OSError, ValueError, TypeError, ssl.SSLError,
             subprocess.SubprocessError):
-        print("FI_DNS_LOOPBACK_CANARY=FAILED", file=sys.stderr)
+        print("FI_DNS_LOOPBACK_BLOCKER=runtime_or_tls_error", file=sys.stderr)
         return 2
 
 
