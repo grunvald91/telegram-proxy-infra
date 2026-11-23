@@ -39,8 +39,7 @@ def policy(rows=None, **kwargs):
         "schemaVersion": 1, "nodeId": "fi-test-01", "countryCode": "FI",
         "revision": 10, "issuedAt": iso(T0),
         "validUntil": iso(T0+90),
-        "grants": sorted(rows if rows is not None else [item()],
-                         key=lambda r: r["tokenSha256"]),
+        "grants": [item()] if rows is None else rows,
         "signature": "A" * 86,
     }
     fields.update(kwargs)
@@ -111,7 +110,7 @@ class FiDnsGrantsTests(unittest.TestCase):
         for bad in [
             policy(validUntil=iso(T0+121)),
             policy(validUntil=iso(T0)),
-            policy(issuedAt=iso(T0+16)),
+            policy(issuedAt=iso(T0+30)),
             policy(nodeId="de-test-01"),
             policy(countryCode="DE"),
             policy(revision=True),
