@@ -107,7 +107,9 @@ def inspect_awg_dump(raw: str, *, now: int) -> dict:
     if not isinstance(raw, str) or len(raw.encode("utf8")) > MAX_DUMP:
         raise ObservationError("Invalid AWG status length")
     lines = raw.rstrip("\n").splitlines()
-    if not lines or len(lines) > 1005 or len(lines[0].split("\t")) != 4:
+    # AWG 3.1 pinned tools output 29 interface columns, not WG's 4.
+    # Official pinned src/show.c::dump_print; peer lines remain 8 columns.
+    if not lines or len(lines) > 1005 or len(lines[0].split("\t")) != 29:
         raise ObservationError("Invalid AWG status header")
     seen: set[str] = set()
     recent = 0

@@ -1,3 +1,4 @@
+# Read-only recheck: pinned AmneziaWG 3.1 dump has 29 interface columns.
 name: MNEBYVPN DE+FI admission signals (read-only)
 "on":
   pull_request:
