@@ -106,7 +106,18 @@ def dot_probe(hostname: str) -> bool:
         try:
             tls = context.wrap_socket(raw, server_hostname=hostname)
         except ssl.SSLCertVerificationError as exc:
-            raise FiDnsOriginError("FI regional TLS certificate trust failed") from exc
+            # Never print certificate or OpenSSL error details into public
+            # Actions logs. Only stable verification category is allowed.
+            reason = {
+                10: "cert_expired",
+                18: "self_signed",
+                19: "untrusted_self_signed_chain",
+                20: "issuer_missing",
+                21: "signature_unverified",
+                62: "hostname_mismatch",
+                23: "cert_revoked",
+            }.get(getattr(exc, "verify_code", None), "other_verify_failure")
+            raise FiDnsOriginError("FI TLS verify code: " + reason) from exc
         except ssl.SSLError as exc:
             allow = {
                 "TLSV1_ALERT_INTERNAL_ERROR": "tls_remote_internal_alert",
@@ -237,6 +248,14 @@ def main() -> int:
             "Local TCP connect failed": "loopback_connect_failed",
             "FI regional TLS handshake rejected": "tls_handshake_failed",
             "FI regional TLS certificate trust failed": "tls_ca_chain_untrusted",
+            "FI TLS verify code: cert_expired": "tls_verify_cert_expired",
+            "FI TLS verify code: self_signed": "tls_verify_self_signed",
+            "FI TLS verify code: untrusted_self_signed_chain": "tls_verify_untrusted_chain",
+            "FI TLS verify code: issuer_missing": "tls_verify_issuer_missing",
+            "FI TLS verify code: signature_unverified": "tls_verify_signature_unverified",
+            "FI TLS verify code: hostname_mismatch": "tls_verify_hostname_mismatch",
+            "FI TLS verify code: cert_revoked": "tls_verify_cert_revoked",
+            "FI TLS verify code: other_verify_failure": "tls_verify_other",
             "FI TLS signal: tls_remote_internal_alert": "tls_remote_internal_alert",
             "FI TLS signal: tls_peer_handshake_alert": "tls_peer_handshake_alert",
             "FI TLS signal: tls_peer_unknown_ca": "tls_peer_unknown_ca",
