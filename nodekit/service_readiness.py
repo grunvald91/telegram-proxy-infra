@@ -100,11 +100,19 @@ def assess(node: Path, host: str, identity_sha: str, controller_sha: str = "") -
         raise ServiceReadinessError("Independent node public-key pin is required")
 
     manifest = safe_manifest(node / "manifest.json")
+    # FI217 can already be in an independently approved AWG production
+    # state. That must not prevent READ-ONLY DNS/Telemt inspection, nor
+    # authorize either of those services by inheriting AWG's live status.
+    staged = (manifest.get("state") == "testing" and
+              manifest.get("activation_enabled") is False and
+              manifest.get("registration_enabled") is False)
+    active_awg_node = (manifest.get("state") == "active" and
+                       manifest.get("activation_enabled") is True and
+                       manifest.get("registration_enabled") is True)
     if (manifest.get("node_id") != node.name or
             manifest.get("advertise_host") != host or
-            manifest.get("activation_enabled") is not False or
-            manifest.get("registration_enabled") is not False):
-        raise ServiceReadinessError("Release audit target differs from reviewed stage")
+            not (staged or active_awg_node)):
+        raise ServiceReadinessError("Unapproved FI audit manifest state")
 
     identity = protected_file(node / "identity" / "node-public.spki", max_bytes=100)
     if (len(identity) != 44 or
@@ -195,7 +203,10 @@ def main() -> int:
     parser.add_argument("--stage-root", type=Path, default=ROOT)
     args = parser.parse_args()
     try:
-        node = node_ready(args.stage_root, args.node_id)
+        # The generic component installer is staged-only by default.
+        # This is NOT an installer or release action; permit a previously
+        # signed production AWG manifest solely for inspecting other stages.
+        node = node_ready(args.stage_root, args.node_id, allow_production=True)
         report = assess(node, args.host, args.expected_identity_sha256,
                         args.expected_controller_sha256)
         print(json.dumps(report, sort_keys=True))
@@ -203,6 +214,20 @@ def main() -> int:
     except (OSError, ValueError, TypeError) as exc:
         print("NODEKIT_SERVICE_READINESS_ERROR=" + type(exc).__name__,
               file=sys.stderr)
+        # Only a bounded allowlist of non-secret health categories is printed;
+        # never emit stack traces, certificates, peer keys or file contents.
+        reason = str(exc)
+        code = {
+            "Unapproved node state or missing roles": "manifest_state_or_roles",
+            "Less than 2 GiB free": "free_space_below_staging_threshold",
+            "Missing isolated node identity": "node_identity_not_ready",
+            "Supports Ubuntu 24.04 only": "unsupported_os",
+            "Unsupported CPU": "unsupported_cpu",
+            "Invalid node ID": "invalid_node_id",
+            "Unapproved FI audit manifest state": "unexpected_manifest_state",
+        }.get(reason)
+        if code:
+            print("NODEKIT_SERVICE_READINESS_BLOCKER=" + code, file=sys.stderr)
         return 2
 
 
