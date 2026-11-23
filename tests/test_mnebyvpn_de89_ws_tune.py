@@ -62,6 +62,11 @@ class De89WsTuneTests(unittest.TestCase):
                 SAMPLE_CONF.replace("proxy_send_timeout 600s;", "proxy_buffering on;\n        proxy_send_timeout 600s;")
             )
 
+    def test_extract_listen_ip_8443(self):
+        self.assertEqual(ws_tune.extract_listen_ip_8443(SAMPLE_CONF), "89.125.90.101")
+        with self.assertRaises(ws_tune.TuneError):
+            ws_tune.extract_listen_ip_8443("server { listen 8443 ssl; }")
+
     def test_dry_run_cli_does_not_mutate_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = pathlib.Path(tmp) / "site.conf"

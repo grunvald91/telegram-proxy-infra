@@ -98,24 +98,32 @@ def run_cmd(*args: str, timeout: int = 12) -> None:
         raise TuneError(f"Command failed: {' '.join(args[:2])}: {res.stderr.strip()[:200]}")
 
 
-def verify_live_health() -> None:
+def extract_listen_ip_8443(source: str) -> str:
+    m = re.search(r"(?m)^\s*listen\s+([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+):8443\b", source)
+    if not m:
+        raise TuneError("Expected explicit IPv4:8443 listen directive in site config")
+    return m.group(1)
+
+
+def verify_live_health(listen_ip: str) -> None:
     run_cmd("nginx", "-t")
     listeners = subprocess.run(
         ["ss", "-H", "-lnt"], capture_output=True, text=True, timeout=8, check=True
     ).stdout
     if not any(line.split()[3] == "127.0.0.1:18943" for line in listeners.splitlines() if len(line.split()) >= 4):
         raise TuneError("127.0.0.1:18943 xray listener missing")
-    code = subprocess.run(
+    res = subprocess.run(
         [
             "curl", "--noproxy", "*", "-s", "-o", "/dev/null", "-w", "%{http_code}",
-            "--max-time", "6", "--resolve", "cdn.servgo.ru:8443:127.0.0.1",
+            "--max-time", "6", "--resolve", f"cdn.servgo.ru:8443:{listen_ip}",
             "-X", "POST", "-H", "Content-Type: application/json", "-d", '{"update_id":1}',
             "https://cdn.servgo.ru:8443/mnebyvpn-telegram/webhook",
         ],
-        capture_output=True, text=True, timeout=10, check=True,
-    ).stdout.strip()
-    if code != "401":
-        raise TuneError(f"Unexpected webhook status on 8443: {code}")
+        capture_output=True, text=True, timeout=10,
+    )
+    code = res.stdout.strip()
+    if res.returncode != 0 or code != "401":
+        raise TuneError(f"Unexpected webhook status on {listen_ip}:8443 (rc={res.returncode}, code={code})")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -138,19 +146,21 @@ def main(argv: list[str] | None = None) -> int:
     if os.geteuid() != 0:
         raise TuneError("Live apply/rollback requires root")
 
+    listen_ip = extract_listen_ip_8443(current)
+
     if args.mode == "rollback":
         if args.backup_dir is None or not (args.backup_dir / "original.conf").is_file():
             raise TuneError("Valid --backup-dir with original.conf required for rollback")
         atomic_write(args.site, (args.backup_dir / "original.conf").read_text(encoding="utf-8"))
         run_cmd("nginx", "-t")
         run_cmd("systemctl", "reload", "nginx")
-        verify_live_health()
+        verify_live_health(listen_ip)
         print("ws_tune_rolled_back=true")
         return 0
 
     updated, changed = render_ws_tune(current)
     if not changed:
-        verify_live_health()
+        verify_live_health(listen_ip)
         print("ws_tune_already_present=true")
         return 0
 
@@ -166,7 +176,7 @@ def main(argv: list[str] | None = None) -> int:
         atomic_write(args.site, updated)
         run_cmd("nginx", "-t")
         run_cmd("systemctl", "reload", "nginx")
-        verify_live_health()
+        verify_live_health(listen_ip)
     except Exception:
         atomic_write(args.site, current)
         subprocess.run(["nginx", "-t"], capture_output=True, timeout=8)
