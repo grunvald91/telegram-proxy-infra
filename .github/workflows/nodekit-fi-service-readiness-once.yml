@@ -2,6 +2,7 @@ name: FI Nodekit three-service readiness live one-shot (read-only)
 # Audit the existing FI217 active AWG node without enabling DNS or Telemt.
 # Product-specific readiness is reported even when another service fails.
 # Report CA chain and key match for both FI wildcard certificate candidates.
+# Distinguish exact DNS subjectAltName from legacy CN hostname fallback.
 on:
   push:
     branches: [main]
