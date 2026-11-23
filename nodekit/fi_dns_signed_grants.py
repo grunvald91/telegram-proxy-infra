@@ -106,8 +106,8 @@ def validate(data: object, now: float) -> dict:
         fail()
     issued = utc_seconds(data["issuedAt"])
     valid_until = utc_seconds(data["validUntil"])
-    if (not issued - MAX_SNAPSHOT_SECONDS <= now <= issued +
-            FUTURE_CLOCK_TOLERANCE_SECONDS or
+    if (not issued - FUTURE_CLOCK_TOLERANCE_SECONDS <= now <= issued +
+            MAX_SNAPSHOT_SECONDS or
             not issued < valid_until <= issued + MAX_SNAPSHOT_SECONDS or
             valid_until <= now):
         fail()
