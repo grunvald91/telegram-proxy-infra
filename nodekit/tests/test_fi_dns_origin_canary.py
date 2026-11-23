@@ -59,13 +59,17 @@ class TestFiDnsOrigin(unittest.TestCase):
             original = Path(temp) / "source"
             original.write_text(
                 "tls://.:8853 {\n  bind 127.0.0.1\n"
+                f"  tls {canary.ROOT / 'tls/fullchain.pem'} {canary.ROOT / 'tls/privkey.pem'}\n"
                 "  forward . tls://1.1.1.1 tls://1.0.0.1 {\n"
                 "    tls_servername cloudflare-dns.com\n  }\n}\n")
-            generated = canary.local_test_corefile(original, Path(temp))
+            with patch.object(canary, "verify_pair", return_value={"ok": True}):
+                generated = canary.local_test_corefile(original, Path(temp))
             content = generated.read_text()
             self.assertIn(r"match ^fi-dns-canary\.invalid\.$", content)
             self.assertIn('answer "{{ .Name }} 5 IN A 192.0.2.1"', content)
             self.assertIn("tls://.:8853", content)
+            self.assertIn(str(canary.REGIONAL_TLS / "fullchain.pem"), content)
+            self.assertNotIn("  tls " + str(canary.ROOT / "tls/fullchain.pem"), content)
             self.assertEqual(content.count("  forward . "), 1)
             self.assertNotIn("listen 0.0.0.0", content)
             self.assertEqual(original.read_text().count("template IN A"), 0)
