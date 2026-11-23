@@ -110,6 +110,10 @@ def certificate_summary() -> dict:
         "regional_wildcard_present": any(
             c["regional_two_name_match"] and c["unexpired_14d"]
             for c in results),
+        "regional_wildcard_trusted": any(
+            c["regional_two_name_match"] and c["unexpired_14d"] and
+            c["ca_chain_verified"] and c["certificate_key_match"]
+            for c in results),
     }
 
 
