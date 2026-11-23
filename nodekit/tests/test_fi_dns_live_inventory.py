@@ -29,7 +29,12 @@ class TestFiDnsInventory(unittest.TestCase):
                 path = directory / name
                 path.write_text(json.dumps(data))
                 path.chmod(0o600)
+            # The CI fixture is intentionally not root-owned; ownership
+            # rejection itself is independently tested below.
             with patch.object(audit, "ROOT", root), \
+                 patch.object(audit, "secure_json",
+                              side_effect=lambda p: json.loads(p.read_text())
+                              if p.is_file() else None), \
                  patch.object(audit.os, "geteuid", return_value=0), \
                  patch.object(audit, "certificate_summary",
                               return_value={"candidates": [],
