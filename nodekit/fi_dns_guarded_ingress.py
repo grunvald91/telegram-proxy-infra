@@ -171,6 +171,9 @@ def verify_local_origin() -> None:
             with context.wrap_socket(raw, server_hostname=name) as tls:
                 if tls.version() not in ("TLSv1.2", "TLSv1.3"):
                     raise DnsIngressError("Untrusted CoreDNS TLS protocol")
+                san = tls.getpeercert().get("subjectAltName", ())
+                if ("DNS", "*.fi.dns.mnebyvpn.site") not in san:
+                    raise DnsIngressError("Required FI wildcard SAN missing")
     # A passing TLS handshake does not prove DNS query correctness or egress.
 
 
@@ -197,6 +200,7 @@ class Guard:
     async def handle(self, reader: asyncio.StreamReader,
                      writer: asyncio.StreamWriter) -> None:
         digest: str | None = None
+        counted = False
         upwriter: asyncio.StreamWriter | None = None
         self.total += 1
         try:
@@ -214,6 +218,7 @@ class Guard:
             if self.connections[digest] >= MAX_PER_CREDENTIAL:
                 return
             self.connections[digest] += 1
+            counted = True
             # This is TLS passthrough. CoreDNS must offer the *same* wildcard
             # TLS certificate checked at startup. The application never
             # decrypts or logs customers' DNS queries.
@@ -243,7 +248,7 @@ class Guard:
                 ValueError, asyncio.TimeoutError, asyncio.IncompleteReadError):
             pass
         finally:
-            if digest is not None and self.connections[digest] > 0:
+            if counted and digest is not None and self.connections[digest] > 0:
                 self.connections[digest] -= 1
                 if self.connections[digest] == 0:
                     del self.connections[digest]
