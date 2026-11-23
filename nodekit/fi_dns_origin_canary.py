@@ -105,7 +105,20 @@ def dot_probe(hostname: str) -> bool:
     with raw:
         try:
             tls = context.wrap_socket(raw, server_hostname=hostname)
+        except ssl.SSLCertVerificationError as exc:
+            raise FiDnsOriginError("FI regional TLS certificate trust failed") from exc
         except ssl.SSLError as exc:
+            allow = {
+                "TLSV1_ALERT_INTERNAL_ERROR": "tls_remote_internal_alert",
+                "SSLV3_ALERT_HANDSHAKE_FAILURE": "tls_peer_handshake_alert",
+                "TLSV1_ALERT_UNKNOWN_CA": "tls_peer_unknown_ca",
+                "UNEXPECTED_EOF_WHILE_READING": "tls_peer_closed_early",
+                "SSLV3_ALERT_BAD_CERTIFICATE": "tls_peer_bad_certificate",
+                "WRONG_VERSION_NUMBER": "tls_wrong_version",
+            }
+            reason = allow.get(getattr(exc, "reason", None))
+            if reason:
+                raise FiDnsOriginError("FI TLS signal: " + reason) from exc
             raise FiDnsOriginError("FI regional TLS handshake rejected") from exc
         with tls:
             tls.settimeout(5)
@@ -223,6 +236,13 @@ def main() -> int:
             "CoreDNS local TLS/DoT unavailable": "local_tls_unavailable",
             "Local TCP connect failed": "loopback_connect_failed",
             "FI regional TLS handshake rejected": "tls_handshake_failed",
+            "FI regional TLS certificate trust failed": "tls_ca_chain_untrusted",
+            "FI TLS signal: tls_remote_internal_alert": "tls_remote_internal_alert",
+            "FI TLS signal: tls_peer_handshake_alert": "tls_peer_handshake_alert",
+            "FI TLS signal: tls_peer_unknown_ca": "tls_peer_unknown_ca",
+            "FI TLS signal: tls_peer_closed_early": "tls_peer_closed_early",
+            "FI TLS signal: tls_peer_bad_certificate": "tls_peer_bad_certificate",
+            "FI TLS signal: tls_wrong_version": "tls_wrong_version",
             "Local DoT DNS answer timeout": "dns_response_timeout",
             "Invalid DoT reply frame": "invalid_dns_frame",
             "Unsupported TLS": "unsupported_tls",
