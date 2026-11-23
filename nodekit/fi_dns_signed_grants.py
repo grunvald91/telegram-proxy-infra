@@ -35,6 +35,9 @@ GRANT_KEYS = frozenset((
     "entitlementId", "credentialRevision", "tokenSha256", "expiresAt",
     "state"))
 MAX_GRANTS = 2048
+# A fully populated canonical 2048-grant JSON snapshot can exceed 440 KB.
+# Still bound the root-only signed file to a strict <700 KB maximum.
+MAX_SNAPSHOT_FILE_BYTES = 700_000
 MAX_SNAPSHOT_SECONDS = 120
 FUTURE_CLOCK_TOLERANCE_SECONDS = 15
 
@@ -185,7 +188,7 @@ def verify_signature(data: dict, controller_public_spki: Path,
 def load(snapshot_path: Path, controller_public_spki: Path,
          expected_sha256: str, *, now: float | None = None) -> dict:
     """Read-only, root-owned signed policy loader. NEVER accept unsigned files."""
-    raw = protected_file(snapshot_path, max_bytes=350_000)
+    raw = protected_file(snapshot_path, max_bytes=MAX_SNAPSHOT_FILE_BYTES)
     try:
         data = json.loads(raw)
     except (ValueError, UnicodeError):
