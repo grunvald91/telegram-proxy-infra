@@ -54,6 +54,23 @@ class TestFiDnsOrigin(unittest.TestCase):
                 with self.assertRaises(canary.FiDnsOriginError):
                     canary.prepare()
 
+    def test_ephemeral_private_corefile_adds_only_reserved_local_answer(self):
+        with tempfile.TemporaryDirectory() as temp:
+            original = Path(temp) / "source"
+            original.write_text(
+                "tls://.:8853 {\n  bind 127.0.0.1\n"
+                "  forward . tls://1.1.1.1 tls://1.0.0.1 {\n"
+                "    tls_servername cloudflare-dns.com\n  }\n}\n")
+            generated = canary.local_test_corefile(original, Path(temp))
+            content = generated.read_text()
+            self.assertIn(r"match ^fi-dns-canary\.invalid\.$", content)
+            self.assertIn('answer "{{ .Name }} 5 IN A 192.0.2.1"', content)
+            self.assertIn("tls://.:8853", content)
+            self.assertEqual(content.count("  forward . "), 1)
+            self.assertNotIn("listen 0.0.0.0", content)
+            self.assertEqual(original.read_text().count("template IN A"), 0)
+            self.assertEqual(generated.stat().st_mode & 0o777, 0o600)
+
     def test_question_is_standard_framed_dns_a(self):
         wire = canary.query_bytes(0x1234)
         self.assertEqual(wire[:2], b"\x12\x34")
