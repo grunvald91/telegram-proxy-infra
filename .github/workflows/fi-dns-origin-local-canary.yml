@@ -1,5 +1,6 @@
 name: FI217 isolated CoreDNS regional TLS/DoT origin E2E (no public listener)
 # Re-run once using isolated .invalid A response to separate TLS from upstream.
+# Fail with a non-secret diagnostic code for TCP, TLS or DNS response phase.
 "on":
   pull_request:
     branches: [main]

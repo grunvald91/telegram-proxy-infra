@@ -98,20 +98,31 @@ def read_exact(stream, amount: int) -> bytes:
 
 def dot_probe(hostname: str) -> bool:
     context = ssl.create_default_context()
-    with socket.create_connection(("127.0.0.1", PORT), timeout=4) as raw:
-        with context.wrap_socket(raw, server_hostname=hostname) as tls:
-            tls.settimeout(7)
+    try:
+        raw = socket.create_connection(("127.0.0.1", PORT), timeout=3)
+    except OSError as exc:
+        raise FiDnsOriginError("Local TCP connect failed") from exc
+    with raw:
+        try:
+            tls = context.wrap_socket(raw, server_hostname=hostname)
+        except ssl.SSLError as exc:
+            raise FiDnsOriginError("FI regional TLS handshake rejected") from exc
+        with tls:
+            tls.settimeout(5)
             if tls.version() not in ("TLSv1.2", "TLSv1.3"):
                 raise FiDnsOriginError("Unsupported TLS")
             names = tls.getpeercert().get("subjectAltName", ())
             if ("DNS", "*.fi.dns.mnebyvpn.site") not in names:
                 raise FiDnsOriginError("FI-specific wildcard SAN missing")
             query = query_bytes(0x4a71)
-            tls.sendall(struct.pack("!H", len(query)) + query)
-            n = struct.unpack("!H", read_exact(tls, 2))[0]
-            if not 12 < n <= 4096:
-                raise FiDnsOriginError("Invalid DoT reply frame")
-            answer = read_exact(tls, n)
+            try:
+                tls.sendall(struct.pack("!H", len(query)) + query)
+                n = struct.unpack("!H", read_exact(tls, 2))[0]
+                if not 12 < n <= 4096:
+                    raise FiDnsOriginError("Invalid DoT reply frame")
+                answer = read_exact(tls, n)
+            except (TimeoutError, socket.timeout) as exc:
+                raise FiDnsOriginError("Local DoT DNS answer timeout") from exc
             ident, flags, qd, count, _, _ = struct.unpack("!HHHHHH", answer[:12])
             if (ident != 0x4a71 or not flags & 0x8000 or flags & 0xF or
                     qd != 1 or count <= 0 or
@@ -167,9 +178,11 @@ def run() -> dict:
                     try:
                         results[host] = dot_probe(host)
                         break
-                    except (OSError, ssl.SSLError) as error:
-                        if attempt == 11:
-                            raise FiDnsOriginError("CoreDNS local TLS/DoT unavailable") from error
+                    except FiDnsOriginError as error:
+                        # Only a startup TCP-bind race warrants retries.
+                        # TLS/DNS failures must be classified and not masked.
+                        if str(error) != "Local TCP connect failed" or attempt == 11:
+                            raise
                         time.sleep(0.5)
             if not all(results.values()):
                 raise FiDnsOriginError("FI regional DoT probe denied")
@@ -208,6 +221,11 @@ def main() -> int:
             "Unsupported staged forwarder": "forwarder_mismatch",
             "CoreDNS child exited": "coredns_start_failed",
             "CoreDNS local TLS/DoT unavailable": "local_tls_unavailable",
+            "Local TCP connect failed": "loopback_connect_failed",
+            "FI regional TLS handshake rejected": "tls_handshake_failed",
+            "Local DoT DNS answer timeout": "dns_response_timeout",
+            "Invalid DoT reply frame": "invalid_dns_frame",
+            "Unsupported TLS": "unsupported_tls",
             "FI regional DoT probe denied": "regional_dot_denied",
             "CoreDNS failed independent A question": "local_dns_answer_failed",
             "FI-specific wildcard SAN missing": "regional_wildcard_missing",
