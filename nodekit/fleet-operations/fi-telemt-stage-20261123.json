@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "operation": "stage_telemt",
+  "country_code": "FI",
+  "node_id": "fi-test-01",
+  "advertise_host": "fi.mnebyvpn.site",
+  "ssh_ipv4": "217.11.167.91",
+  "approved": true,
+  "subscriber_publication_allowed": false
+}
