@@ -43,6 +43,35 @@ and DB release/authorization gates are missing. Green CI or `FLEET_STAGE_COMPLET
 can never override those booleans. The script makes no release decisions
 and cannot be used as a caller-supplied positive evidence blob.
 
+## FI217 actual read-only findings, 2026-11-23
+
+Independent FI inspection (after fixing incomplete diagnostic dependencies and
+separating unrelated AWG errors):
+[run 45222896888](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/45222896888)
+**SUCCESS**. No existing clients or services changed.
+
+- `personal_dns.local_candidate_verified=true`: local candidate + TLS stage
+  present; `personal_fqdn_tls_verified=false`, `entitlement_enforcement_verified=false`,
+  `independent_external_e2e_verified=false`; not ready.
+- `dns_sni_transport.local_candidate_verified=true`, `route_count=0`,
+  no signed policy / external allow-and-deny E2E; not ready.
+- `telegram_proxy.local_candidate_verified=true` (staged Telemt 3.5.17),
+  `telemt_installed_verified=false`, no active listener,
+  no personalized grants/revoke or actual Telegram mobile E2E; not ready.
+- `amneziawg.blockers=["awg_independent_inspection_error"]`: the separate
+  AWG audit failed while DNS/Telemt inspection passed. **Do not infer AWG
+  tunnel failure from this diagnostic result**; its production behavior must
+  be evaluated separately.
+- `automatic_publication_authorized=false` across all services.
+
+**Immediate FI product priorities:** complete and independently test personal
+DoT (policy, per-entitlement credentials, TLS, revoke and externally verified
+Android connection) before controlled public release; then activate the
+reviewed FI Telemt service with per-subscriber signed access, independent
+Telegram message/file E2E and expiry/revoke. Do not use successful RU/DE
+Smart DNS or German Telemt as evidence for Finland. Keep live FI AWG,
+RU/DE DNS, existing MTProxy and customer entitlements untouched.
+
 ## Live evidence at time of implementation
 
 - Temporary FI external AmneziaWG runner passed on 2026-11-18:
@@ -73,6 +102,6 @@ The single central controller remains **RU188 188.120.254.223** (website,
 Telegram bot, PostgreSQL, subscription/expiry workers). There is **no new
 controller host**. On FI, `dns_sni_transport` refers only to a staged Nginx
 SmartDNS component; the Telegram user-facing proxy is `telegram_proxy`
-(Telemt/MTProto). No Telegram proxy has been installed or verified on FI.
+(Telemt/MTProto). A verified **dormant Telemt candidate** is staged on FI, but a running, customer-authorized Telegram proxy is NOT yet installed or E2E-verified.
 This is audit schema **v2**, not evidence of customer release. See
 [CONTROLLER188_TELEGRAM_PROXY.md](CONTROLLER188_TELEGRAM_PROXY.md).
