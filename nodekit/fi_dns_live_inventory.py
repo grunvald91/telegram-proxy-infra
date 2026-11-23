@@ -63,7 +63,40 @@ def certificate_summary() -> dict:
                     "-noout", "-checkhost", name).returncode == 0
             for name in REGIONAL_PROBES
         ]
+        # openssl x509 -checkhost is not CA trust validation. Verify that
+        # the actual presented leaf chains to the system trust store.
+        chain_verified = command(
+            "openssl", "verify", "-purpose", "sslserver",
+            "-CAfile", "/etc/ssl/certs/ca-certificates.crt",
+            "-untrusted", str(path), str(path)).returncode == 0
+        # Public key extraction only; never display private key or cert PEM.
+        private = path.parent / "privkey.pem"
+        key_match = False
+        if private.exists():
+            # DER is binary, so do NOT use the text-mode command() wrapper.
+            try:
+                from_key = subprocess.run([
+                    "openssl", "pkey", "-in", str(private),
+                    "-pubout", "-outform", "DER"],
+                    capture_output=True, timeout=6)
+                from_leaf_pem = subprocess.run([
+                    "openssl", "x509", "-in", str(path),
+                    "-pubkey", "-noout"],
+                    capture_output=True, timeout=6)
+                from_leaf_der = subprocess.run([
+                    "openssl", "pkey", "-pubin", "-outform", "DER"],
+                    input=from_leaf_pem.stdout,
+                    capture_output=True, timeout=6)
+                key_match = bool(from_key.returncode == 0 and
+                    from_leaf_pem.returncode == 0 and
+                    from_leaf_der.returncode == 0 and
+                    from_leaf_der.stdout == from_key.stdout)
+            except (OSError, subprocess.TimeoutExpired):
+                key_match = False
         results.append({
+            "ca_chain_verified": chain_verified,
+            "certificate_key_match": key_match,
+            "chain_pem_count": path.read_bytes().count(b"-----BEGIN CERTIFICATE-----"),
             "source": "nodekit_tls" if path == CERT_CANDIDATES[0]
             else "regional_dns_auth" if path == CERT_CANDIDATES[1]
             else "regional_acme" if path == CERT_CANDIDATES[2]
@@ -76,6 +109,10 @@ def certificate_summary() -> dict:
         "candidates": results,
         "regional_wildcard_present": any(
             c["regional_two_name_match"] and c["unexpired_14d"]
+            for c in results),
+        "regional_wildcard_trusted": any(
+            c["regional_two_name_match"] and c["unexpired_14d"] and
+            c["ca_chain_verified"] and c["certificate_key_match"]
             for c in results),
     }
 
