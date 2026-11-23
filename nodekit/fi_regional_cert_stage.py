@@ -31,6 +31,7 @@ CERT = "fullchain.pem"
 KEY = "privkey.pem"
 MAX_CHAIN = 40000
 MAX_KEY = 12000
+CAFILE = "/etc/ssl/certs/ca-certificates.crt"
 
 
 class CertStageError(ValueError):
@@ -96,7 +97,7 @@ def verify_pair(directory: Path) -> dict:
     for hostname in PROBES:
         command(["openssl", "verify", "-purpose", "sslserver",
                  "-verify_hostname", hostname,
-                 "-CAfile", "/etc/ssl/certs/ca-certificates.crt",
+                 "-CAfile", CAFILE,
                  "-untrusted", str(chain_path), str(chain_path)])
     pub_key = command(["openssl", "pkey", "-in", str(key_path),
                        "-pubout", "-outform", "DER"])
