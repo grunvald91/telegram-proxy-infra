@@ -105,6 +105,8 @@ def dot_probe(hostname: str) -> bool:
     with raw:
         try:
             tls = context.wrap_socket(raw, server_hostname=hostname)
+        except ssl.SSLCertVerificationError as exc:
+            raise FiDnsOriginError("FI regional TLS certificate trust failed") from exc
         except ssl.SSLError as exc:
             raise FiDnsOriginError("FI regional TLS handshake rejected") from exc
         with tls:
@@ -223,6 +225,7 @@ def main() -> int:
             "CoreDNS local TLS/DoT unavailable": "local_tls_unavailable",
             "Local TCP connect failed": "loopback_connect_failed",
             "FI regional TLS handshake rejected": "tls_handshake_failed",
+            "FI regional TLS certificate trust failed": "tls_ca_chain_untrusted",
             "Local DoT DNS answer timeout": "dns_response_timeout",
             "Invalid DoT reply frame": "invalid_dns_frame",
             "Unsupported TLS": "unsupported_tls",
