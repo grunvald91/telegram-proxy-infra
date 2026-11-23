@@ -14,12 +14,12 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import stat
 import subprocess
 import tempfile
 import time
 import uuid
 
-from awg_peer_grants import protected_file
 
 NODE = "fi-test-01"
 COUNTRY = "FI"
@@ -41,6 +41,22 @@ FUTURE_CLOCK_TOLERANCE_SECONDS = 15
 
 class RegionalDnsGrantError(ValueError):
     pass
+
+
+def protected_file(path: Path, *, max_bytes: int = 350_000) -> bytes:
+    """DNS-owned root-only read, independent from FI AWG lifecycle imports.
+
+    Reject symlinks, non-root owners and any group/other access even for
+    signed messages; an attacker must not replace the approved trust anchor.
+    """
+    if path.is_symlink() or not path.is_file():
+        raise RegionalDnsGrantError("Missing protected FI DNS file")
+    metadata = path.stat()
+    if (metadata.st_uid != 0 or metadata.st_mode & 0o077 or
+            not stat.S_ISREG(metadata.st_mode) or
+            not 1 <= metadata.st_size <= max_bytes):
+        raise RegionalDnsGrantError("Unsafe FI DNS source ownership or size")
+    return path.read_bytes()
 
 
 def fail() -> None:
