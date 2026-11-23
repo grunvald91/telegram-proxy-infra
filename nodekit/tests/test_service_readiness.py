@@ -156,6 +156,38 @@ class TestServiceReadiness(unittest.TestCase):
             self.assertFalse(report["services"]["dns_sni_transport"]["ready"])
             self.assertFalse(report["services"]["personal_dns"]["local_candidate_verified"])
 
+    def test_broken_awg_does_not_hide_fi_dns_and_telemt_blockers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            node = pathlib.Path(tmp) / audit.NODE_REVIEWED
+            node.mkdir()
+            manifest = {
+                "state": "active",
+                "node_id": node.name, "advertise_host": audit.HOST_REVIEWED,
+                "activation_enabled": True, "registration_enabled": True,
+            }
+            dns = {"staged": True, "route_count": 3, "blockers": ["dns_auth_missing"]}
+            tls = {"staged": False, "personal_fqdn_tls_verified": False,
+                   "blockers": ["dns_tls_missing"]}
+            with patch.object(audit.os, "geteuid", return_value=0), \
+                 patch.object(audit, "safe_manifest", return_value=manifest), \
+                 patch.object(audit, "protected_file", return_value=PUBLIC), \
+                 patch.object(audit, "dns_proxy_stage", return_value=dns), \
+                 patch.object(audit, "tls_stage", return_value=tls), \
+                 patch.object(audit, "awg_controller_inspect",
+                              side_effect=ValueError("AWG reviewed source mismatch")):
+                report = audit.assess(node, audit.HOST_REVIEWED, IDENTITY_SHA)
+            self.assertTrue(report["services"]["dns_sni_transport"]["local_candidate_verified"])
+            self.assertFalse(report["services"]["personal_dns"]["local_candidate_verified"])
+            self.assertIn("dns_auth_missing", report["services"]["personal_dns"]["blockers"])
+            self.assertIn("dns_tls_missing", report["services"]["personal_dns"]["blockers"])
+            self.assertEqual(report["services"]["amneziawg"]["blockers"],
+                             ["awg_independent_inspection_error"])
+            self.assertFalse(report["controller_enrollment_candidate"])
+            self.assertFalse(report["automatic_publication_authorized"])
+            self.assertFalse(report["existing_clients_changed"])
+            self.assertTrue(all(not service["ready"] for service in
+                                report["services"].values()))
+
     def test_active_awg_manifest_with_false_flags_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             node = pathlib.Path(tmp) / audit.NODE_REVIEWED
