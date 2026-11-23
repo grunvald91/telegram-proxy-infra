@@ -125,7 +125,20 @@ def assess(node: Path, host: str, identity_sha: str, controller_sha: str = "") -
     telemt_path = node / "telemt-stage"
     # Corrupt or symlinked candidates must fail closed, never appear as missing.
     telemt = inspect_telemt(node, host) if (telemt_path.exists() or telemt_path.is_symlink()) else None
-    awg = awg_controller_inspect(node, host, identity_sha, controller_sha)
+    # Personal DNS and Telegram readiness must be independently observable.
+    # A broken/mismatched AWG control-plane cannot turn either service READY,
+    # but it also must not hide their own read-only candidate status.
+    awg_error = False
+    try:
+        awg = awg_controller_inspect(node, host, identity_sha, controller_sha)
+    except (OSError, ValueError, TypeError):
+        awg_error = True
+        awg = {
+            "control_plane_prerequisites_met": False,
+            "watchdog_unit_installed": False,
+            "egress_unit_installed": False,
+            "controller_public_key_independently_pinned": False,
+        }
 
     # AWG readiness is a controller enrollment *candidate*, not a release.
     enroll_candidate = bool(awg["control_plane_prerequisites_met"])
@@ -182,8 +195,10 @@ def assess(node: Path, host: str, identity_sha: str, controller_sha: str = "") -
                 "signed_grant_expiry_revoke_e2e_verified": False,
                 "mobile_client_e2e_verified": False,
                 "ready": False,
-                "blockers": ["controller_enrollment_and_signed_grant_e2e_missing",
-                             "independent_mobile_and_expiry_e2e_missing"],
+                "blockers": (["awg_independent_inspection_error"]
+                             if awg_error else [
+                             "controller_enrollment_and_signed_grant_e2e_missing",
+                             "independent_mobile_and_expiry_e2e_missing"]),
             },
         },
         "automatic_publication_authorized": False,
