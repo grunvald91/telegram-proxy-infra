@@ -3,6 +3,8 @@ on:
   push:
     branches: [main]
     paths: ['.github/workflows/fi-regional-dns01-first-stage.yml']
+  pull_request:
+    paths: ['.github/workflows/fi-regional-dns01-first-stage.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -10,7 +12,39 @@ concurrency:
   group: mnebyvpn-fi-regional-acme-stage
   cancel-in-progress: false
 jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Parse exact live ACME shell step and validate isolated FI domain
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          lines=Path('.github/workflows/fi-regional-dns01-first-stage.yml').read_text().splitlines()
+          marker='      - name: Generate isolated FI personal wildcard SAN DNS-01 TXT challenge using pinned ACME client'
+          start=lines.index(marker)
+          start=next(i for i in range(start+1,len(lines)) if lines[i]=='        run: |')+1
+          body=[]
+          for line in lines[start:]:
+              if line and not line.startswith('          '):
+                  break
+              body.append(line[10:] if line.startswith('          ') else '')
+          data='\n'.join(body)+'\n'
+          assert "domain='*.fi.dns.mnebyvpn.site'" in data
+          assert 'home=/var/lib/mnebydns/acme-fi-regional' in data
+          assert 'acme-personal\n' not in data
+          assert '--install-cert' not in data
+          assert "EXISTING_DOT_853_UNCHANGED=true" in data
+          Path('/tmp/fi-regional-dns01-live-step.sh').write_text(data)
+          PY
+          bash -n /tmp/fi-regional-dns01-live-step.sh
+          rm -f /tmp/fi-regional-dns01-live-step.sh
   prepare:
+    needs: offline
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 12
     env:
