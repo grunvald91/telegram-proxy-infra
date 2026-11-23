@@ -68,3 +68,7 @@ expiry and revoke. It is not yet installed on FI. Do not re-stage/overwrite
 the existing FI v1 manifest to fix this label; add Telemt as a separately
 reviewed schema v2 component after its secure installer is complete.
 See [CONTROLLER188_TELEGRAM_PROXY.md](CONTROLLER188_TELEGRAM_PROXY.md).
+
+## Separate pinned Telemt stage (23 Nov 2026)
+
+New Nodekit option telemt-stage installs an *inert* verified Telemt 3.5.17 candidate (only on an inventory-approved VPS). It is included in auto/bootstrap for future nodes, but no systemd service, user, public listener or RU188 entitlement is enabled. Existing FI AWG can be left running; telemt-stage touches no AWG files. See [TELEMT_STAGE.md](TELEMT_STAGE.md). Telegram production release and personal DoT still require their own signed gates and external E2E.

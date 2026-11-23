@@ -19,6 +19,7 @@ from awg_controller_readiness import inspect as awg_controller_inspect
 from awg_controller_readiness import HOST_REVIEWED, NODE_REVIEWED
 from install_components import node_ready, safe_manifest, safe_dir
 from awg_peer_grants import protected_file
+from telemt_stage import inspect as inspect_telemt
 
 ROOT = Path("/var/lib/mnebyvpn-nodekit")
 SHA256 = re.compile(r"[a-f0-9]{64}\Z")
@@ -113,6 +114,9 @@ def assess(node: Path, host: str, identity_sha: str, controller_sha: str = "") -
 
     candidate = dns_proxy_stage(node)
     tls = tls_stage(node, host)
+    telemt_path = node / "telemt-stage"
+    # Corrupt or symlinked candidates must fail closed, never appear as missing.
+    telemt = inspect_telemt(node, host) if (telemt_path.exists() or telemt_path.is_symlink()) else None
     awg = awg_controller_inspect(node, host, identity_sha, controller_sha)
 
     # AWG readiness is a controller enrollment *candidate*, not a release.
@@ -149,13 +153,14 @@ def assess(node: Path, host: str, identity_sha: str, controller_sha: str = "") -
             # Nodekit-owned service has been staged or verified on FI.
             "telegram_proxy": {
                 "implementation": "telemt_mtproto",
-                "local_candidate_verified": False,
+                "local_candidate_verified": bool(telemt and telemt["staged"]),
                 "telemt_installed_verified": False,
                 "personal_client_grants_verified": False,
                 "expiration_revoke_e2e_verified": False,
                 "independent_telegram_client_e2e_verified": False,
                 "ready": False,
-                "blockers": ["telegram_mtproxy_telemt_stage_missing",
+                "blockers": (["telegram_mtproxy_telemt_stage_missing"] if not telemt
+                             else ["telegram_mtproxy_service_activation_missing"]) + [
                              "telegram_proxy_client_auth_and_revocation_missing",
                              "external_telegram_client_e2e_missing"],
             },
