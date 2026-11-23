@@ -155,6 +155,39 @@ def dot_probe(hostname: str) -> bool:
             return True
 
 
+def compare_presented_certificate(hostname: str) -> str:
+    """Diagnostic-only unverified handshake; NEVER used to grant DNS access.
+
+    Certificate bytes and private-key contents remain on FI217. Report ONLY
+    whether the actual peer leaf equals the approved Nodekit leaf, and whether
+    that peer leaf passes OpenSSL hostname checking.
+    """
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    with socket.create_connection(("127.0.0.1", PORT), timeout=3) as raw:
+        with ctx.wrap_socket(raw, server_hostname=hostname) as tls:
+            peer = tls.getpeercert(binary_form=True)
+    local = subprocess.run([
+        "openssl", "x509", "-in", str(ROOT / "tls/fullchain.pem"),
+        "-outform", "DER"], capture_output=True, timeout=6, check=True).stdout
+    if not peer or not local:
+        raise FiDnsOriginError("Peer certificate unavailable")
+    if peer != local:
+        return "Peer certificate differs from pinned stage"
+    with tempfile.TemporaryDirectory(prefix=".fi-cert-check-", dir=ROOT) as tmp:
+        path = Path(tmp) / "presented.der"
+        path.write_bytes(peer)
+        path.chmod(0o600)
+        checked = subprocess.run([
+            "openssl", "x509", "-inform", "DER", "-in", str(path),
+            "-noout", "-checkhost", hostname],
+            capture_output=True, timeout=6)
+    if checked.returncode:
+        return "Pinned certificate hostname check failed"
+    return "Strict TLS hostname policy differs from file check"
+
+
 def local_test_corefile(original: Path, directory: Path) -> Path:
     """Derive ephemeral local A answer, preserving pinned TLS/loopback config.
 
@@ -203,8 +236,13 @@ def run() -> dict:
                         results[host] = dot_probe(host)
                         break
                     except FiDnsOriginError as error:
-                        # Only a startup TCP-bind race warrants retries.
-                        # TLS/DNS failures must be classified and not masked.
+                        # If strict TLS rejects an otherwise verified file
+                        # name, compare the real presented peer leaf to disk.
+                        # This unverified SECOND handshake is diagnostic only.
+                        if str(error) == "FI TLS verify code: hostname_mismatch":
+                            reason = compare_presented_certificate(host)
+                            raise FiDnsOriginError(reason) from error
+                        # Only startup TCP-bind races warrant retries.
                         if str(error) != "Local TCP connect failed" or attempt == 11:
                             raise
                         time.sleep(0.5)
@@ -254,6 +292,10 @@ def main() -> int:
             "FI TLS verify code: issuer_missing": "tls_verify_issuer_missing",
             "FI TLS verify code: signature_unverified": "tls_verify_signature_unverified",
             "FI TLS verify code: hostname_mismatch": "tls_verify_hostname_mismatch",
+            "Peer certificate differs from pinned stage": "peer_leaf_differs_from_nodekit",
+            "Pinned certificate hostname check failed": "pinned_leaf_hostname_mismatch",
+            "Strict TLS hostname policy differs from file check": "python_ssl_hostname_policy_mismatch",
+            "Peer certificate unavailable": "peer_certificate_unavailable",
             "FI TLS verify code: cert_revoked": "tls_verify_cert_revoked",
             "FI TLS verify code: other_verify_failure": "tls_verify_other",
             "FI TLS signal: tls_remote_internal_alert": "tls_remote_internal_alert",
