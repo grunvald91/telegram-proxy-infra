@@ -1,0 +1,157 @@
+name: MNEBYVPN DE+FI admission signals (read-only)
+"on":
+  pull_request:
+    branches: [main]
+    paths: [.github/workflows/nodekit-vpn-admission-observation.yml]
+  push:
+    branches: [main]
+    paths: [.github/workflows/nodekit-vpn-admission-observation.yml]
+  workflow_dispatch:
+permissions: {contents: read}
+concurrency:
+  group: mnebyvpn-de-fi-admission-observation
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Test read-only script and syntax
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile nodekit/shared_vpn_admission_preflight.py
+          python3 -m unittest discover -s nodekit/tests -p test_shared_vpn_admission_preflight.py -v
+          ruby -e 'require "yaml"; y=YAML.load_file(".github/workflows/nodekit-vpn-admission-observation.yml"); abort unless y["permissions"]=={"contents"=>"read"} && y["on"].key?("pull_request")'
+  live:
+    needs: offline
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 9
+    environment: node-fi
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Install SSH helper on disposable runner
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends sshpass >/dev/null
+      - name: Read-only German and Finnish aggregate signals
+        shell: bash
+        env:
+          DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+          RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+          FI_PASS: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_PASSWORD }}
+          FI_USER: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_USER }}
+        run: |
+          set -Eeuo pipefail
+          set +x
+          umask 077
+          [[ -n "$DE_PASS" && -n "$RU_PASS" && -n "$FI_PASS" && "$FI_USER" == root ]]
+          HOSTKEYS="$GITHUB_WORKSPACE/ops/mnebydns-owner-ssh-known_hosts"
+          grep -q '^89\.125\.90\.101 ssh-ed25519 ' "$HOSTKEYS"
+          grep -q '^188\.120\.254\.223 ssh-ed25519 ' "$HOSTKEYS"
+          WORK="$RUNNER_TEMP/de-fi-admission-observation"
+          mkdir -m 0700 "$WORK"
+          trap 'rm -rf -- "$WORK"' EXIT
+
+          # Exactly one local read-only Python script is sent on stdin.
+          set +e
+          DE_RESULT=$(SSHPASS="$DE_PASS" sshpass -e ssh -T \
+            -o ConnectTimeout=12 -o StrictHostKeyChecking=yes \
+            -o HostKeyAlgorithms=ssh-ed25519 \
+            -o "UserKnownHostsFile=$HOSTKEYS" \
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no \
+            -o PasswordAuthentication=yes -o PubkeyAuthentication=no \
+            -o ForwardAgent=no -o ClearAllForwardings=yes -o LogLevel=ERROR \
+            root@89.125.90.101 'python3 - --country DE' \
+            < nodekit/shared_vpn_admission_preflight.py)
+          DE_RC=$?
+          set -e
+          if [[ "$DE_RC" != 0 && "$DE_RC" != 2 ]]; then
+            echo 'DE_OBSERVER_SSH_UNAVAILABLE'; exit 2
+          fi
+          printf '%s\n' "$DE_RESULT" > "$WORK/de.json"
+          python3 - "$WORK/de.json" <<'PY'
+          import json,sys
+          o=json.load(open(sys.argv[1]))
+          assert o['country']=='DE' and o['enforcement_ready'] is False
+          assert o['assessment'] in ('OBSERVATION_ONLY','BLOCKED')
+          assert len(json.dumps(o))<2000
+          print('DE_OBSERVER='+json.dumps(o,sort_keys=True))
+          PY
+
+          cat > "$WORK/ru.cfg" <<CFG
+          Host controller188
+            HostName 188.120.254.223
+            User root
+            UserKnownHostsFile $HOSTKEYS
+            GlobalKnownHostsFile /dev/null
+            HostKeyAlgorithms ssh-ed25519
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+            PasswordAuthentication yes
+            PubkeyAuthentication no
+            KbdInteractiveAuthentication no
+            ForwardAgent no
+            ClearAllForwardings yes
+            ControlMaster no
+            ProxyCommand none
+            ConnectTimeout 12
+            LogLevel ERROR
+          CFG
+          SSHPASS="$RU_PASS" sshpass -e ssh -T -F "$WORK/ru.cfg" controller188 \
+            'test -f /root/mnebyvpn-controller/fi-known_hosts && test ! -L /root/mnebyvpn-controller/fi-known_hosts && test "$(stat -c "%u:%a" /root/mnebyvpn-controller/fi-known_hosts)" = 0:600 && cat /root/mnebyvpn-controller/fi-known_hosts' \
+            > "$WORK/fi-known"
+          python3 - "$WORK/fi-known" <<'PY'
+          import base64,pathlib,sys
+          raw=pathlib.Path(sys.argv[1]).read_bytes()
+          assert len(raw)<512 and raw.count(b'\n')==1 and raw.endswith(b'\n')
+          host,kind,key=raw.decode('ascii').strip().split()
+          assert (host,kind)==('fi.mnebyvpn.site','ssh-ed25519')
+          decoded=base64.b64decode(key,validate=True)
+          assert len(decoded)==51 and decoded.startswith(
+              b'\x00\x00\x00\x0bssh-ed25519\x00\x00\x00\x20')
+          PY
+          cat > "$WORK/fi.cfg" <<CFG
+          Host finland
+            HostName 217.11.167.91
+            HostKeyAlias fi.mnebyvpn.site
+            User root
+            UserKnownHostsFile $WORK/fi-known
+            GlobalKnownHostsFile /dev/null
+            HostKeyAlgorithms ssh-ed25519
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+            PasswordAuthentication yes
+            PubkeyAuthentication no
+            KbdInteractiveAuthentication no
+            ForwardAgent no
+            ClearAllForwardings yes
+            ControlMaster no
+            ProxyCommand none
+            ConnectTimeout 12
+            LogLevel ERROR
+          CFG
+          set +e
+          FI_RESULT=$(SSHPASS="$FI_PASS" sshpass -e ssh -T \
+            -F "$WORK/fi.cfg" finland 'python3 - --country FI' \
+            < nodekit/shared_vpn_admission_preflight.py)
+          FI_RC=$?
+          set -e
+          if [[ "$FI_RC" != 0 && "$FI_RC" != 2 ]]; then
+            echo 'FI_OBSERVER_SSH_UNAVAILABLE'; exit 2
+          fi
+          printf '%s\n' "$FI_RESULT" > "$WORK/fi.json"
+          python3 - "$WORK/fi.json" <<'PY'
+          import json,sys
+          o=json.load(open(sys.argv[1]))
+          assert o['country']=='FI' and o['enforcement_ready'] is False
+          assert o['assessment'] in ('OBSERVATION_ONLY','BLOCKED')
+          assert len(json.dumps(o))<2000
+          print('FI_OBSERVER='+json.dumps(o,sort_keys=True))
+          PY
+          echo 'SHARED_VPN_ADMISSION_ENABLED=false'
+          echo 'DE_FI_CUSTOMER_CONFIG_CHANGED=false'
