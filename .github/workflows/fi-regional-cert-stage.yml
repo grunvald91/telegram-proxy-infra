@@ -1,5 +1,16 @@
 name: FI217 stage validated regional wildcard TLS from DE (no public DNS)
 "on":
+  pull_request:
+    branches: [main]
+    paths:
+      - nodekit/fi_regional_cert_stage.py
+      - nodekit/tests/test_fi_regional_cert_stage.py
+      - nodekit/fi_dns_origin_canary.py
+      - .github/workflows/fi-regional-cert-stage.yml
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/fi-regional-cert-stage.yml
   workflow_run:
     workflows:
       - FI217 country personal DNS wildcard ACME finalize (gated, no 853 changes)
