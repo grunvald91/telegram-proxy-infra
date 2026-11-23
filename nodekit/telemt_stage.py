@@ -13,6 +13,7 @@ import tempfile
 import tomllib
 import urllib.request
 from install_components import node_ready, safe_dir, safe_manifest
+from nodekit import _promote_stage_noreplace
 
 ROOT = Path("/var/lib/mnebyvpn-nodekit")
 RELEASE = "3.5.17"
@@ -127,7 +128,7 @@ def stage(node, host):
         record.chmod(0o600)
         if target.exists() or target.is_symlink():
             raise TelemtError("Concurrent Telemt stage")
-        candidate.rename(target)
+        _promote_stage_noreplace(candidate, target)
     finally:
         if candidate.exists():
             shutil.rmtree(candidate)
