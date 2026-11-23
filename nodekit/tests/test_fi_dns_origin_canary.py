@@ -71,6 +71,14 @@ class TestFiDnsOrigin(unittest.TestCase):
             self.assertEqual(original.read_text().count("template IN A"), 0)
             self.assertEqual(generated.stat().st_mode & 0o777, 0o600)
 
+    def test_distinguish_tcp_refusal_from_tls_and_dns_failures(self):
+        with patch.object(canary.socket, "create_connection",
+                          side_effect=ConnectionRefusedError):
+            with self.assertRaisesRegex(
+                canary.FiDnsOriginError, "Local TCP connect failed"
+            ):
+                canary.dot_probe(canary.HOSTS[0])
+
     def test_question_is_standard_framed_dns_a(self):
         wire = canary.query_bytes(0x1234)
         self.assertEqual(wire[:2], b"\x12\x34")
