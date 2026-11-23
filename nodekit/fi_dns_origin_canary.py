@@ -1,0 +1,172 @@
+#!/usr/bin/env python3
+"""FI217 local CoreDNS TLS canary, compatible with an already active AWG node.
+
+Starts ONLY a temporary 127.0.0.1:8853 child with the already approved
+root-only staged Corefile. Never listens on public 853/443, edits systemd,
+makes customer grants or touches the running VPN. Always kills the child.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+from pathlib import Path
+import socket
+import ssl
+import struct
+import subprocess
+import sys
+import time
+
+NODE = "fi-test-01"
+ROOT = Path("/var/lib/mnebyvpn-nodekit") / NODE
+COREDNS = Path("/opt/coredns/coredns")
+HOSTS = ("aaaaaaaaaaaa.fi.dns.mnebyvpn.site",
+         "bbbbbbbbbbbb.fi.dns.mnebyvpn.site")
+PORT = 8853
+QUERY = "example.com"
+
+
+class FiDnsOriginError(ValueError):
+    pass
+
+
+def require_file(path: Path, limit=120_000) -> bytes:
+    if path.is_symlink() or not path.is_file():
+        raise FiDnsOriginError("Missing pinned private FI DNS file")
+    st = path.stat()
+    if st.st_uid != 0 or st.st_mode & 0o077 or not 1 <= st.st_size <= limit:
+        raise FiDnsOriginError("Untrusted FI DNS file")
+    return path.read_bytes()
+
+
+def prepare() -> Path:
+    if os.geteuid() != 0:
+        raise FiDnsOriginError("Root required")
+    manifest = json.loads(require_file(ROOT / "manifest.json"))
+    dns = json.loads(require_file(ROOT / "dns-proxy/manifest.json"))
+    components = json.loads(require_file(ROOT / "components-manifest.json"))
+    if (manifest.get("node_id") != NODE or
+            manifest.get("advertise_host") != "fi.mnebyvpn.site" or
+            manifest.get("state") not in ("active", "testing") or
+            dns.get("node_id") != NODE or dns.get("state") != "staged" or
+            dns.get("route_count") != 0 or
+            dns.get("personal_dns_enabled") is not False or
+            dns.get("activation_enabled") is not False):
+        raise FiDnsOriginError("FI staged CoreDNS config not approved")
+    expected_hash = components.get("binaries", {}).get("coredns", {}).get("sha256")
+    if not isinstance(expected_hash, str) or len(expected_hash) != 64:
+        raise FiDnsOriginError("Missing pinned CoreDNS executable hash")
+    if (not COREDNS.is_file() or COREDNS.is_symlink() or
+            hashlib.sha256(COREDNS.read_bytes()).hexdigest() != expected_hash):
+        raise FiDnsOriginError("CoreDNS binary is not approved")
+    core = ROOT / "dns-proxy/Corefile"
+    data = require_file(core)
+    if (hashlib.sha256(data).hexdigest() !=
+            dns.get("config_sha256", {}).get("Corefile")):
+        raise FiDnsOriginError("Staged CoreDNS content drift")
+    content = data.decode("ascii")
+    if ("tls://.:8853 {" not in content or
+            "  bind 127.0.0.1" not in content or
+            "  forward . tls://1.1.1.1 tls://1.0.0.1 {" not in content or
+            "  tls " + str(ROOT / "tls/fullchain.pem") not in content or
+            " 0.0.0.0" in content):
+        raise FiDnsOriginError("CoreDNS loopback-only invariants lost")
+    require_file(ROOT / "tls/fullchain.pem")
+    require_file(ROOT / "tls/privkey.pem")
+    # The host's current CA trust and real TLS chain are verified at handshake.
+    return core
+
+
+def query_bytes(id_: int) -> bytes:
+    labels = QUERY.split(".")
+    qname = b"".join(bytes([len(s)]) + s.encode("ascii")
+                     for s in labels) + b"\0"
+    return struct.pack("!HHHHHH", id_, 0x0100, 1, 0, 0, 0) + qname + b"\0\1\0\1"
+
+
+def read_exact(stream, amount: int) -> bytes:
+    result = bytearray()
+    while len(result) < amount:
+        data = stream.recv(amount - len(result))
+        if not data:
+            raise FiDnsOriginError("CoreDNS closed DoT socket")
+        result.extend(data)
+    return bytes(result)
+
+
+def dot_probe(hostname: str) -> bool:
+    context = ssl.create_default_context()
+    with socket.create_connection(("127.0.0.1", PORT), timeout=4) as raw:
+        with context.wrap_socket(raw, server_hostname=hostname) as tls:
+            tls.settimeout(7)
+            if tls.version() not in ("TLSv1.2", "TLSv1.3"):
+                raise FiDnsOriginError("Unsupported TLS")
+            names = tls.getpeercert().get("subjectAltName", ())
+            if ("DNS", "*.fi.dns.mnebyvpn.site") not in names:
+                raise FiDnsOriginError("FI-specific wildcard SAN missing")
+            query = query_bytes(0x4a71)
+            tls.sendall(struct.pack("!H", len(query)) + query)
+            n = struct.unpack("!H", read_exact(tls, 2))[0]
+            if not 12 < n <= 4096:
+                raise FiDnsOriginError("Invalid DoT reply frame")
+            answer = read_exact(tls, n)
+            ident, flags, qd, count, _, _ = struct.unpack("!HHHHHH", answer[:12])
+            if (ident != 0x4a71 or not flags & 0x8000 or flags & 0xF or
+                    qd != 1 or count <= 0 or
+                    answer[12:len(query)] != query[12:]):
+                raise FiDnsOriginError("CoreDNS failed independent A question")
+            return True
+
+
+def run() -> dict:
+    core = prepare()
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as check:
+        check.bind(("127.0.0.1", PORT))
+    child = subprocess.Popen([str(COREDNS), "-conf", str(core)],
+                             stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+    try:
+        results = {}
+        for host in HOSTS:
+            for attempt in range(12):
+                if child.poll() is not None:
+                    raise FiDnsOriginError("CoreDNS child exited")
+                try:
+                    results[host] = dot_probe(host)
+                    break
+                except (OSError, ssl.SSLError) as error:
+                    if attempt == 11:
+                        raise FiDnsOriginError("CoreDNS local TLS/DoT unavailable") from error
+                    time.sleep(0.5)
+        if not all(results.values()):
+            raise FiDnsOriginError("FI regional DoT probe denied")
+        return {"fi_dns_origin_local_canary": "PASS",
+                "two_distinct_regional_tls_names": True,
+                "dns_a_answer_verified": True,
+                "public_port_opened": False,
+                "customer_grant_issued": False,
+                "awg_changed": False}
+    finally:
+        if child.poll() is None:
+            child.terminate()
+            try:
+                child.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.wait(timeout=5)
+
+
+def main() -> int:
+    try:
+        print(json.dumps(run(), sort_keys=True))
+        return 0
+    except (OSError, ValueError, TypeError, ssl.SSLError,
+            subprocess.SubprocessError):
+        print("FI_DNS_LOOPBACK_CANARY=FAILED", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
