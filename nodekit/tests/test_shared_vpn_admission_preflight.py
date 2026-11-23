@@ -42,7 +42,7 @@ class TestPreflight(unittest.TestCase):
         self.assertNotIn("@example.invalid", str(report))
 
     def test_xray_no_api_missing_email_or_misrouted_does_not_pass(self):
-bad = []
+        bad = []
         a = vless_config(False)
         bad.append(a)
         b = vless_config()
