@@ -98,7 +98,7 @@ def certificate_summary() -> dict:
         san_output = command("openssl", "x509", "-in", str(path),
                              "-noout", "-ext", "subjectAltName")
         san_dns = (
-            re.findall(r"DNS:([^,\\s]+)", san_output.stdout)
+            re.findall(r"DNS:([^,\s]+)", san_output.stdout)
             if san_output.returncode == 0 else []
         )
         results.append({
