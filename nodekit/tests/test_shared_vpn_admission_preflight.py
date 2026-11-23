@@ -101,7 +101,7 @@ class TestPreflight(unittest.TestCase):
         def runner(args, **kwargs):
             calls.append(args)
             return subprocess.CompletedProcess(args, 0,
-                "\t".join(["(hidden)", key(9), "51821", "off"]) + "\n", "")
+                "\t".join(["(hidden)", key(9), "51821"] + ["0"] * 25 + ["off"]) + "\n", "")
         out = audit.observe_fi(now=1900000000, runner=runner)
         self.assertEqual(out["configured_peer_count"], 0)
         self.assertEqual(calls, [[audit.FI_AWG, "show", "awg0", "dump"]])
