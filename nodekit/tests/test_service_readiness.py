@@ -188,6 +188,38 @@ class TestServiceReadiness(unittest.TestCase):
             self.assertTrue(all(not service["ready"] for service in
                                 report["services"].values()))
 
+    def test_corrupt_dns_and_tls_remain_explicit_blockers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            node = pathlib.Path(tmp) / audit.NODE_REVIEWED
+            node.mkdir()
+            manifest = {
+                "state": "active", "node_id": node.name,
+                "advertise_host": audit.HOST_REVIEWED,
+                "activation_enabled": True, "registration_enabled": True,
+            }
+            awg = {
+                "control_plane_prerequisites_met": False,
+                "watchdog_unit_installed": False,
+                "egress_unit_installed": False,
+                "controller_public_key_independently_pinned": False,
+            }
+            with patch.object(audit.os, "geteuid", return_value=0), \
+                 patch.object(audit, "safe_manifest", return_value=manifest), \
+                 patch.object(audit, "protected_file", return_value=PUBLIC), \
+                 patch.object(audit, "dns_proxy_stage",
+                              side_effect=ValueError("invalid DNS checksum")), \
+                 patch.object(audit, "tls_stage",
+                              side_effect=ValueError("bad TLS chain")), \
+                 patch.object(audit, "awg_controller_inspect", return_value=awg):
+                report = audit.assess(node, audit.HOST_REVIEWED, IDENTITY_SHA)
+            self.assertIn("dns_candidate_integrity_error",
+                          report["services"]["personal_dns"]["blockers"])
+            self.assertIn("personal_dns_tls_integrity_error",
+                          report["services"]["personal_dns"]["blockers"])
+            self.assertFalse(report["services"]["dns_sni_transport"]["local_candidate_verified"])
+            self.assertFalse(report["services"]["personal_dns"]["ready"])
+            self.assertFalse(report["automatic_publication_authorized"])
+
     def test_active_awg_manifest_with_false_flags_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             node = pathlib.Path(tmp) / audit.NODE_REVIEWED
