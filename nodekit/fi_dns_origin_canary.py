@@ -19,6 +19,8 @@ import sys
 import tempfile
 import time
 
+from fi_regional_cert_stage import DEST as REGIONAL_TLS, verify_pair, CertStageError
+
 NODE = "fi-test-01"
 ROOT = Path("/var/lib/mnebyvpn-nodekit") / NODE
 COREDNS = Path("/opt/coredns/coredns")
@@ -194,7 +196,20 @@ def local_test_corefile(original: Path, directory: Path) -> Path:
     No forwarder, signed production policy or origin Corefile is edited.
     The synthetic .invalid domain cannot be mistaken for a customer route.
     """
+    # Require the exact FI regional wildcard certificate before any
+    # local DoT canary. The old country-only cert remains untouched.
+    try:
+        verify_pair(REGIONAL_TLS)
+    except (OSError, ValueError):
+        raise FiDnsOriginError("Regional DNS SAN certificate not staged")
     text = original.read_text("ascii")
+    old_tls = ("  tls " + str(ROOT / "tls/fullchain.pem") + " " +
+               str(ROOT / "tls/privkey.pem"))
+    new_tls = ("  tls " + str(REGIONAL_TLS / "fullchain.pem") + " " +
+               str(REGIONAL_TLS / "privkey.pem"))
+    if text.count(old_tls) != 1:
+        raise FiDnsOriginError("Unsupported staged TLS origin")
+    text = text.replace(old_tls, new_tls)
     marker = "  forward . tls://1.1.1.1 tls://1.0.0.1 {"
     if text.count(marker) != 1:
         raise FiDnsOriginError("Unsupported staged forwarder")
@@ -281,6 +296,8 @@ def main() -> int:
             "Staged CoreDNS content drift": "corefile_drift",
             "CoreDNS loopback-only invariants lost": "unsafe_corefile",
             "Unsupported staged forwarder": "forwarder_mismatch",
+            "Regional DNS SAN certificate not staged": "regional_cert_not_staged",
+            "Unsupported staged TLS origin": "tls_config_drift",
             "CoreDNS child exited": "coredns_start_failed",
             "CoreDNS local TLS/DoT unavailable": "local_tls_unavailable",
             "Local TCP connect failed": "loopback_connect_failed",

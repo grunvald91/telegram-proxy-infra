@@ -9,6 +9,7 @@ name: FI217 isolated CoreDNS regional TLS/DoT origin E2E (no public listener)
     branches: [main]
     paths:
       - nodekit/fi_dns_origin_canary.py
+      - nodekit/fi_regional_cert_stage.py
       - nodekit/tests/test_fi_dns_origin_canary.py
       - .github/workflows/fi-dns-origin-local-canary.yml
   push:
@@ -132,7 +133,7 @@ jobs:
           dir=$(fi_node 'umask 077; mktemp -d /run/fi-dns-origin-canary.XXXXXXXX')
           [[ "$dir" =~ ^/run/fi-dns-origin-canary\.[A-Za-z0-9]{8}$ ]] || exit 2
           SSHPASS="$FI_PASSWORD" sshpass -e scp -F "$work/fi.cfg" \
-            nodekit/fi_dns_origin_canary.py "fi-node:$dir/"
+            nodekit/fi_dns_origin_canary.py nodekit/fi_regional_cert_stage.py "fi-node:$dir/"
           fi_node "timeout --signal=TERM --kill-after=8s 80s python3 '$dir/fi_dns_origin_canary.py'"
           echo 'FI_ORIGIN_LOCAL_E2E_COMPLETED=true'
           echo 'FI_PUBLIC_853_UNCHANGED=true'

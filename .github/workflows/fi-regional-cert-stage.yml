@@ -1,0 +1,176 @@
+name: FI217 stage validated regional wildcard TLS from DE (no public DNS)
+"on":
+  pull_request:
+    branches: [main]
+    paths:
+      - nodekit/fi_regional_cert_stage.py
+      - nodekit/tests/test_fi_regional_cert_stage.py
+      - nodekit/fi_dns_origin_canary.py
+      - .github/workflows/fi-regional-cert-stage.yml
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/fi-regional-cert-stage.yml
+  workflow_run:
+    workflows:
+      - FI217 country personal DNS wildcard ACME finalize (gated, no 853 changes)
+    types: [completed]
+  workflow_dispatch:
+permissions: {contents: read}
+concurrency:
+  group: mnebyvpn-fleet-fi
+  cancel-in-progress: false
+jobs:
+  offline:
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.head_repository.full_name == 'grunvald91/telegram-proxy-infra')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Validate FI certificate stage source and exact live shell syntax
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile nodekit/fi_regional_cert_stage.py nodekit/fi_dns_origin_canary.py
+          python3 -m unittest discover -s nodekit/tests -p 'test_fi_regional_cert_stage.py' -v
+          python3 - <<'PY'
+          from pathlib import Path
+          lines=Path('.github/workflows/fi-regional-cert-stage.yml').read_text().splitlines()
+          target='      - name: Transfer approved FI wildcard cert via pinned DE and FI SSH (staging only)'
+          i=lines.index(target)
+          i=next(j for j in range(i+1,len(lines)) if lines[j]=='        run: |')+1
+          body=[]
+          for line in lines[i:]:
+              if line and not line.startswith('          '): break
+              body.append(line[10:] if line.startswith('          ') else '')
+          assert body and 'trap cleanup EXIT' in body
+          assert "fi_regional_cert_stage.py' --mode stage" in '\n'.join(body)
+          assert 'systemctl' not in '\n'.join(body)
+          Path('/tmp/fi-regional-cert-stage.sh').write_text('\n'.join(body)+'\n')
+          PY
+          bash -n /tmp/fi-regional-cert-stage.sh
+          rm -f /tmp/fi-regional-cert-stage.sh
+  stage:
+    needs: offline
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_run'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: node-fi
+    env:
+      RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      FI_PASSWORD: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_PASSWORD }}
+      FI_USER: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_USER }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Transfer approved FI wildcard cert via pinned DE and FI SSH (staging only)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          [[ "$FI_USER" == root && -n "$RU_PASSWORD" && -n "$DE_PASSWORD" && -n "$FI_PASSWORD" ]] || exit 2
+          grep -q '^188\.120\.254\.223 ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts
+          grep -q '^89\.125\.90\.101 ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts
+          work="$RUNNER_TEMP/fi-regional-stage"
+          mkdir -m 0700 "$work"
+          dir=''
+          de() { SSHPASS="$DE_PASSWORD" sshpass -e ssh -T -F "$work/de.cfg" de-node "$@"; }
+          fi_node() { SSHPASS="$FI_PASSWORD" sshpass -e ssh -T -F "$work/fi.cfg" fi-node "$@"; }
+          cleanup() {
+            set +e
+            if [[ "$dir" =~ ^/run/fi-regional-cert-stage\.[A-Za-z0-9]{8}$ ]]; then
+              fi_node "rm -rf -- '$dir'" >/dev/null 2>&1 || true
+            fi
+            rm -rf -- "$work"
+          }
+          trap cleanup EXIT
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends sshpass >/dev/null
+          cat > "$work/de.cfg" <<CFG
+          Host de-node
+            HostName 89.125.90.101
+            User root
+            UserKnownHostsFile $GITHUB_WORKSPACE/ops/mnebydns-owner-ssh-known_hosts
+            GlobalKnownHostsFile /dev/null
+            HostKeyAlgorithms ssh-ed25519
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+            PubkeyAuthentication no
+            PreferredAuthentications password
+            ForwardAgent no
+            ClearAllForwardings yes
+            ControlMaster no
+            ConnectTimeout 12
+            LogLevel ERROR
+          CFG
+          certdir=/var/lib/mnebydns/fi-regional-issued
+          # No FI changes if Jino DNS-01 has not yet been validated.
+          available=$(de "test -s '$certdir/fullchain.pem' && test -s '$certdir/privkey.pem' && printf ready || printf pending")
+          [[ "$available" == ready || "$available" == pending ]] || exit 2
+          if [[ "$available" == pending ]]; then
+            echo 'FI_CERT_ISSUANCE_PENDING_JINO_DNS01=true'
+            echo 'FI_PUBLIC_DOT_UNCHANGED=true'
+            exit 0
+          fi
+          cat > "$work/ru.cfg" <<CFG
+          Host ru-controller
+            HostName 188.120.254.223
+            User root
+            UserKnownHostsFile $GITHUB_WORKSPACE/ops/mnebydns-owner-ssh-known_hosts
+            GlobalKnownHostsFile /dev/null
+            HostKeyAlgorithms ssh-ed25519
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+            PubkeyAuthentication no
+            PreferredAuthentications password
+            ForwardAgent no
+            ClearAllForwardings yes
+            ControlMaster no
+            ConnectTimeout 12
+            LogLevel ERROR
+          CFG
+          SSHPASS="$RU_PASSWORD" sshpass -e ssh -T -F "$work/ru.cfg" ru-controller \
+            'test -f /root/mnebyvpn-controller/fi-known_hosts && test ! -L /root/mnebyvpn-controller/fi-known_hosts && test "$(stat -c "%u:%a" /root/mnebyvpn-controller/fi-known_hosts)" = 0:600 && cat /root/mnebyvpn-controller/fi-known_hosts' > "$work/fi-known"
+          python3 - "$work/fi-known" <<'PY'
+          import base64,pathlib,sys
+          raw=pathlib.Path(sys.argv[1]).read_bytes()
+          assert len(raw)<512 and raw.count(b'\n')==1 and raw.endswith(b'\n')
+          name,kind,encoded=raw.decode('ascii').strip().split()
+          assert (name,kind)==('fi.mnebyvpn.site','ssh-ed25519')
+          key=base64.b64decode(encoded,validate=True)
+          assert len(key)==51 and key.startswith(b'\x00\x00\x00\x0bssh-ed25519\x00\x00\x00\x20')
+          PY
+          cat > "$work/fi.cfg" <<CFG
+          Host fi-node
+            HostName 217.11.167.91
+            User root
+            HostKeyAlias fi.mnebyvpn.site
+            UserKnownHostsFile $work/fi-known
+            GlobalKnownHostsFile /dev/null
+            HostKeyAlgorithms ssh-ed25519
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+            PubkeyAuthentication no
+            PreferredAuthentications password
+            ForwardAgent no
+            ClearAllForwardings yes
+            ControlMaster no
+            ConnectTimeout 12
+            LogLevel ERROR
+          CFG
+          SSHPASS="$DE_PASSWORD" sshpass -e scp -F "$work/de.cfg" \
+            "de-node:$certdir/fullchain.pem" "$work/fullchain.pem"
+          SSHPASS="$DE_PASSWORD" sshpass -e scp -F "$work/de.cfg" \
+            "de-node:$certdir/privkey.pem" "$work/privkey.pem"
+          chmod 0600 "$work/fullchain.pem" "$work/privkey.pem"
+          dir=$(fi_node 'umask 077; mktemp -d /run/fi-regional-cert-stage.XXXXXXXX')
+          [[ "$dir" =~ ^/run/fi-regional-cert-stage\.[A-Za-z0-9]{8}$ ]] || exit 2
+          SSHPASS="$FI_PASSWORD" sshpass -e scp -F "$work/fi.cfg" \
+            nodekit/fi_regional_cert_stage.py "$work/fullchain.pem" "$work/privkey.pem" \
+            "fi-node:$dir/"
+          fi_node "chmod 0600 '$dir/'*.py '$dir/'*.pem; timeout 50s python3 '$dir/fi_regional_cert_stage.py' --mode stage --source-dir '$dir'"
+          echo 'FI_REGIONAL_CERT_STAGE_VERIFIED=true'
+          echo 'FI_PUBLIC_DOT_UNCHANGED=true'
+          echo 'FI_RUNNING_AWG_UNCHANGED=true'
