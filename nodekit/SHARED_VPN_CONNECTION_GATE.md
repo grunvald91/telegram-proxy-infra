@@ -47,3 +47,10 @@ References:
 - https://xtls.github.io/en/config/policy.html
 - https://github.com/XTLS/Xray-core/blob/main/app/stats/command/command.proto
 - https://www.man7.org/linux/man-pages/man8/wg.8.html
+
+Read-only observation fix, 23 Nov 2026: the pinned `amneziawg-tools`
+commit `ee0f0a9aa34ff0a0da4b3433b9512781cfe02843` emits **29**
+interface columns for `awg show <interface> dump` (AWG 3.1 fields), while
+peer rows remain eight columns. A WireGuard four-column parser falsely
+reported BLOCKED for FI217 in [live audit 45182487157](https://github.com/grunvald91/telegram-proxy-infra/actions/runs/45182487157).
+Reference: https://github.com/amnezia-vpn/amneziawg-tools/blob/ee0f0a9aa34ff0a0da4b3433b9512781cfe02843/src/show.c

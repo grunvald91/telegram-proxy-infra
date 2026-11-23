@@ -75,7 +75,7 @@ class TestPreflight(unittest.TestCase):
 
     def test_awg_recent_handshake_is_not_an_active_session_count(self):
         now = 1900000000
-        header = ["(hidden)", key(9), "51821", "off"]
+        header = ["(hidden)", key(9), "51821"] + ["0"] * 25 + ["off"]
         one = [key(1), "(none)", "(none)", "10.0.0.2/32",
                str(now - 20), "100", "200", "off"]
         two = [key(2), "(none)", "(none)", "10.0.0.3/32",
@@ -89,6 +89,9 @@ class TestPreflight(unittest.TestCase):
         self.assertNotIn("10.0.0.2", str(result))
         with self.assertRaises(audit.ObservationError):
             audit.inspect_awg_dump(raw + "\t".join(one) + "\n", now=now)
+        # Raw standard WireGuard 4-field header must not masquerade as AWG 3.1.
+        with self.assertRaises(audit.ObservationError):
+            audit.inspect_awg_dump("\t".join(["(hidden)", key(9), "51821", "off"]) + "\n", now=now)
         with self.assertRaises(audit.ObservationError):
             audit.inspect_awg_dump(raw.replace(str(now - 20), str(now + 120)),
                                    now=now)
@@ -98,7 +101,7 @@ class TestPreflight(unittest.TestCase):
         def runner(args, **kwargs):
             calls.append(args)
             return subprocess.CompletedProcess(args, 0,
-                "\t".join(["(hidden)", key(9), "51821", "off"]) + "\n", "")
+                "\t".join(["(hidden)", key(9), "51821"] + ["0"] * 25 + ["off"]) + "\n", "")
         out = audit.observe_fi(now=1900000000, runner=runner)
         self.assertEqual(out["configured_peer_count"], 0)
         self.assertEqual(calls, [[audit.FI_AWG, "show", "awg0", "dump"]])
