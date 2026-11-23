@@ -23,11 +23,40 @@ import re
 import signal
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
 import uuid
 from typing import Any
+
+UUID_LOG_RE = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', re.I)
+IPV4_LOG_RE = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?\b')
+
+
+def redact_xray_log_line(line: str) -> str:
+    cleaned = UUID_LOG_RE.sub('[redacted-uuid]', line.strip())
+    cleaned = IPV4_LOG_RE.sub('[redacted-ip]', cleaned)
+    if len(cleaned) > 300:
+        cleaned = cleaned[:297] + '...'
+    return cleaned
+
+
+def _drain_xray_stderr(stream: Any) -> None:
+    try:
+        for raw in iter(stream.readline, b''):
+            text = raw.decode('utf-8', errors='replace')
+            redacted = redact_xray_log_line(text)
+            if redacted:
+                sys.stderr.write(f'xray-canary: {redacted}\n')
+                sys.stderr.flush()
+    except Exception:
+        pass
+    finally:
+        try:
+            stream.close()
+        except Exception:
+            pass
 
 ETC = pathlib.Path('/etc/mnebyvpn')
 DATA = pathlib.Path('/var/lib/mnebyvpn-vpn')
@@ -172,9 +201,13 @@ class Agent:
         self.child = subprocess.Popen(
             [XRAY, 'run', '-config', str(CONF)],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             user=user.pw_uid, group=user.pw_gid,
         )
+        if self.child.stderr is not None:
+            threading.Thread(
+                target=_drain_xray_stderr, args=(self.child.stderr,), daemon=True
+            ).start()
         for _ in range(25):
             if self.child.poll() is not None:
                 raise RuntimeError('Isolated Xray child exited')

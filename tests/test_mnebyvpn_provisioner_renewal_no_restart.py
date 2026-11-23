@@ -102,6 +102,19 @@ class NonDisruptiveProvisioningTests(unittest.TestCase):
         agent._shutdown_child.assert_not_called()
         agent._spawn.assert_not_called()
 
+    def test_xray_log_redaction_strips_uuids_and_ips_with_bounded_length(self):
+        line = (
+            "2026/11/23 [Warning] failed client 123e4567-e89b-42d3-a456-426614174000 "
+            "from 95.165.10.20:54321 -> 89.125.90.101:8443 " + ("x" * 400)
+        )
+        redacted = provisioner.redact_xray_log_line(line)
+        self.assertNotIn("123e4567-e89b-42d3-a456-426614174000", redacted)
+        self.assertNotIn("95.165.10.20", redacted)
+        self.assertNotIn("89.125.90.101", redacted)
+        self.assertIn("[redacted-uuid]", redacted)
+        self.assertIn("[redacted-ip]", redacted)
+        self.assertLessEqual(len(redacted), 300)
+
 
 if __name__ == "__main__":
     unittest.main()
