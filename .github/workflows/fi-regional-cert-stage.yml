@@ -22,7 +22,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   offline:
-    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.head_repository.full_name == 'grunvald91/telegram-proxy-infra')
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.head_repository.full_name == 'grunvald91/telegram-proxy-infra')
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
