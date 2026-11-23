@@ -93,7 +93,19 @@ def certificate_summary() -> dict:
                     from_leaf_der.stdout == from_key.stdout)
             except (OSError, subprocess.TimeoutExpired):
                 key_match = False
+        # OpenSSL checkhost can consider legacy common-name matching.
+        # Strict TLS clients require a genuine SAN for per-client FI names.
+        san_output = command("openssl", "x509", "-in", str(path),
+                             "-noout", "-ext", "subjectAltName")
+        san_dns = (
+            re.findall(r"DNS:([^,\s]+)", san_output.stdout)
+            if san_output.returncode == 0 else []
+        )
         results.append({
+            "san_exact_regional_wildcard":
+                "*.fi.dns.mnebyvpn.site" in san_dns,
+            "san_has_any_dns_entry": bool(san_dns),
+            "san_dns_entry_count": len(san_dns),
             "ca_chain_verified": chain_verified,
             "certificate_key_match": key_match,
             "chain_pem_count": path.read_bytes().count(b"-----BEGIN CERTIFICATE-----"),
@@ -112,7 +124,8 @@ def certificate_summary() -> dict:
             for c in results),
         "regional_wildcard_trusted": any(
             c["regional_two_name_match"] and c["unexpired_14d"] and
-            c["ca_chain_verified"] and c["certificate_key_match"]
+            c["ca_chain_verified"] and c["certificate_key_match"] and
+            c["san_exact_regional_wildcard"]
             for c in results),
     }
 
