@@ -1,4 +1,5 @@
 name: FI Nodekit three-service readiness live one-shot (read-only)
+# Audit the existing FI217 active AWG node without enabling DNS or Telemt.
 on:
   push:
     branches: [main]
