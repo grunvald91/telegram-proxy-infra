@@ -73,21 +73,26 @@ def certificate_summary() -> dict:
         private = path.parent / "privkey.pem"
         key_match = False
         if private.exists():
-            from_key = command(
-                "openssl", "pkey", "-in", str(private),
-                "-pubout", "-outform", "DER")
-            from_leaf_pem = command(
-                "openssl", "x509", "-in", str(path),
-                "-pubkey", "-noout")
-            # Use x509 input via subprocess without putting PEM into logs.
-            if from_key.returncode == 0 and from_leaf_pem.returncode == 0:
+            # DER is binary, so do NOT use the text-mode command() wrapper.
+            try:
+                from_key = subprocess.run([
+                    "openssl", "pkey", "-in", str(private),
+                    "-pubout", "-outform", "DER"],
+                    capture_output=True, timeout=6)
+                from_leaf_pem = subprocess.run([
+                    "openssl", "x509", "-in", str(path),
+                    "-pubkey", "-noout"],
+                    capture_output=True, timeout=6)
                 from_leaf_der = subprocess.run([
                     "openssl", "pkey", "-pubin", "-outform", "DER"],
-                    input=from_leaf_pem.stdout.encode(),
+                    input=from_leaf_pem.stdout,
                     capture_output=True, timeout=6)
-                key_match = (
+                key_match = bool(from_key.returncode == 0 and
+                    from_leaf_pem.returncode == 0 and
                     from_leaf_der.returncode == 0 and
-                    from_leaf_der.stdout == from_key.stdout.encode())
+                    from_leaf_der.stdout == from_key.stdout)
+            except (OSError, subprocess.TimeoutExpired):
+                key_match = False
         results.append({
             "ca_chain_verified": chain_verified,
             "certificate_key_match": key_match,
