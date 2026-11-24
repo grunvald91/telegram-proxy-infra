@@ -90,11 +90,10 @@ def ssh(role:str,command:str,timeout=TIMEOUT)->str:
 
 def transfer_to_de()->None:
     ssh("de","test ! -e "+shlex.quote(WORK)+" && mkdir -m 700 "+shlex.quote(WORK))
-    for file in FILES:
-        pwd=os.environ["DE_PASS"]
-        cmd(["sshpass","-e","scp","-q","-o","ConnectTimeout=12",
-             *SSH_TRUST,"-o","LogLevel=ERROR",
-             str(REPO/file),"root@"+EDGE+":"+WORK+"/"+file],pwd)
+    cmd(["sshpass","-e","scp","-q","-o","ConnectTimeout=12",
+         *SSH_TRUST,"-o","LogLevel=ERROR",
+         *(str(REPO/file) for file in FILES),"root@"+EDGE+":"+WORK+"/"],
+        os.environ["DE_PASS"])
     print("owner_domain_verified_scripts_transferred=true",flush=True)
 
 
