@@ -121,8 +121,7 @@ class FiMeteredTlsIntegration(unittest.TestCase):
                     self.assertEqual(len([x for x in m.calls if x[0]=="reserve"]),3)
                     self.assertEqual(len(a.calls),3)
                     self.assertEqual(a.calls,[HOST]*3)
-                    # +1 request above to build identical expected answer
-                    self.assertEqual(len(r.requests),3)
+                    self.assertEqual(len(r.requests),2)
                     with self.assertRaises((OSError,ssl.SSLError,ConnectionError)):
                         await asyncio.wait_for(
                             asyncio.open_connection(
