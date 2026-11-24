@@ -1,0 +1,55 @@
+name: NVIDIA Smart DNS live rollout status
+"on":
+  push:
+    branches: [smartdns/nvidia-exact-hosts-20261124]
+    paths: [.github/workflows/mnebydns-nvidia-rollout-progress.yml]
+permissions:
+  contents: read
+  statuses: write
+jobs:
+  inventory:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Check production catalog and domain path while rollout runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+          DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+        run: |
+          set -Eeuo pipefail
+          if ! command -v sshpass >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -qq -y --no-install-recommends sshpass >/dev/null
+          fi
+          result="$(python3 - <<'PY'
+          import re, runpy
+          script = runpy.run_path("scripts/mnebydns-nvidia-permanent-20261124.py")
+          owner = script["owner"]
+          rules = script["TARGETS"]
+          names = ",".join("'" + name + "'" for name in rules)
+          rows = owner.sql("SELECT domain||'|'||status FROM dns_admin_domains WHERE domain IN (" + names + ") ORDER BY domain")
+          spec = {"ACTIVE", "COVERED"}
+          found = dict(row.split("|", 1) for row in rows.splitlines() if "|" in row)
+          for name in rules:
+              status = found.get(name, "MISSING")
+              if not re.fullmatch("[A-Z_]+", status):
+                  raise RuntimeError("Unexpected DNS catalog value")
+              print(name + "|" + status, file=__import__("sys").stderr)
+          checked = [name for name in rules if found.get(name) in spec and owner.dns_q(name) == (0, [owner.EDGE])]
+          state = "waiting"
+          if rules[0] in checked:
+              state = owner.ssh("ru", "curl --noproxy '*' --silent --max-time 12 --output /dev/null --write-out '%{http_code}' "
+                                "--resolve integrate.api.nvidia.com:443:" + owner.EDGE +
+                                " https://integrate.api.nvidia.com/v1/models", 18).strip()
+              if not re.fullmatch("[0-9]{3}", state):
+                  state = "unverified"
+          print(f"{len(checked)}/{len(rules)} live DNS records verified; NIM API {state}")
+          PY
+          )"
+          printf '%s\n' "$result"
+          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" \
+            -f state=success -f context=mnebydns/nvidia-live-status -f description="$result" \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" >/dev/null
