@@ -75,6 +75,10 @@ def create_role(mode):
     function=("public.fi_dns_meter_verified_apply(text,uuid,text,text,text,timestamptz)" if mode=="meter" else "public.fi_dns_snapshot_next()")
     other=("public.fi_dns_snapshot_next()" if mode=="meter" else "public.fi_dns_meter_verified_apply(text,uuid,text,text,text,timestamptz)")
     check(psql("SELECT has_function_privilege('"+role+"','"+function+"','EXECUTE') AND NOT has_function_privilege('"+role+"','"+other+"','EXECUTE') AND NOT has_function_privilege('"+role+"','public.fi_dns_meter_apply(text,uuid,text)','EXECUTE') AND NOT has_table_privilege('"+role+"','public.entitlements','SELECT,INSERT,UPDATE,DELETE') AND NOT has_table_privilege('"+role+"','public.fi_dns_regional_credentials','SELECT,INSERT,UPDATE,DELETE');")=="t","runtime_privileges_too_broad")
+    # Check ALL SECURITY DEFINER functions in the application schema, not
+    # only the FI RPCs. Public grants in older migrations must not silently
+    # turn a new network-facing login into a general billing operator.
+    check(psql("SELECT NOT EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.prosecdef AND p.oid<>'"+function+"'::regprocedure AND has_function_privilege('"+role+"',p.oid,'EXECUTE'));")=="t","unexpected_security_definer_privilege")
     env=dict(os.environ,DATABASE_URL=prefix.removeprefix("DATABASE_URL=")+password+suffix.strip())
     call(str(RUNTIME/"bin/node"),"--input-type=module","-e",
          "import pg from '/opt/mnebyvpn-controller/current/node_modules/pg/lib/index.js'; const c=new pg.Client({connectionString:process.env.DATABASE_URL,connectionTimeoutMillis:2500}); try{await c.connect();const r=await c.query('SELECT current_user AS role');if(r.rows[0]?.role!=="+repr(role)+")throw Error('wrong role');}finally{await c.end();}",env=env)
