@@ -226,6 +226,31 @@ async def probe():
     finally:
         if bad.returncode is None:
             bad.kill();await bad.wait()
+    # Diagnose one session before starting the pool. Never emit raw SSH
+    # debug output (paths, keys and system configuration are sensitive).
+    import struct
+    from fi_dns_ssh_bridge import PING_OP,PONG
+    verbose=[*args[:1],"-v",*args[1:]]
+    ping=await asyncio.create_subprocess_exec(*verbose,stdin=asyncio.subprocess.PIPE,stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.PIPE)
+    try:
+        output,debug=await asyncio.wait_for(ping.communicate(struct.pack("!I",len(PING_OP))+PING_OP),10)
+        checks={
+            "tcp_connected":b"Connection established" in debug,
+            "host_verified":b"is known and matches" in debug,
+            "key_offered":b"Offering public key" in debug,
+            "key_accepted":b"Server accepts key" in debug,
+            "authenticated":b"Authenticated to " in debug,
+            "command_sent":b"Sending command:" in debug,
+            "permission_denied":b"Permission denied" in debug,
+            "connection_timeout":b"Connection timed out" in debug,
+            "connection_refused":b"Connection refused" in debug,
+            "remote_closed":b"Connection closed" in debug or b"Connection reset" in debug,
+        }
+        print("FI_DNS_SSH_DIAGNOSTIC="+json.dumps(checks,sort_keys=True),flush=True)
+        require(ping.returncode==0 and output==struct.pack("!I",len(PONG))+PONG,"single_ssh_ping_failed")
+    finally:
+        if ping.returncode is None:
+            ping.kill();await ping.wait()
     pool=MeterPool(args)
     try:
         await pool.warm()
@@ -252,7 +277,7 @@ if __name__=="__main__":
             elif sys.argv[1]=="ru":stage_ru(src)
             elif sys.argv[1]=="rollback":rollback_ru(src)
             else:raise RuntimeError("invalid_action")
-    except (OSError,ValueError,TypeError,RuntimeError,subprocess.SubprocessError,asyncio.TimeoutError) as exc:
+    except (OSError,ValueError,TypeError,RuntimeError,subprocess.SubprocessError,asyncio.TimeoutError,asyncio.IncompleteReadError) as exc:
         label=str(exc) if isinstance(exc,RuntimeError) and re.fullmatch("[a-z0-9_]+",str(exc)) else "channel_stage_failed"
         print("FI_DNS_CHANNEL_BLOCKED="+label,file=sys.stderr)
         raise SystemExit(2)
