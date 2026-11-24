@@ -30,13 +30,16 @@ jobs:
           set -Eeuo pipefail
           git diff --check HEAD -- scripts
           bash -n scripts/mnebydns-checkpoint-from-live.sh
+          bash -n scripts/mnebydns-dot-resilience-apply-20261111.sh
+          bash -n scripts/mnebydns-dot-resilience-rollback-20261111.sh
+          python3 scripts/mnebydns-dot-resilience-20261111.py self-test
           python3 scripts/mnebydns-nvidia-permanent-20261124.py self-test
           python3 scripts/mnebydns-owner-domain-controller-20261110.py self-test
           python3 -m unittest discover -s scripts/tests -p 'test_owner_domain_*.py'
           for script in scripts/mnebydns-owner-domain-{stage,confirm,rollback}-20261110.sh; do
             bash -n "$script"
           done
-      - name: Apply NVIDIA routes with active and elapsed rollback timers distinguished
+      - name: Enable CoreDNS hot reload when needed and apply the merged NVIDIA list
         env:
           RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
           DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
@@ -56,12 +59,12 @@ jobs:
 
           rollout = runpy.run_path("scripts/mnebydns-nvidia-permanent-20261124.py")
           owner = rollout["owner"]
+          run_id = os.environ["GITHUB_RUN_ID"]
+          if not re.fullmatch(r"[1-9][0-9]{8,12}", run_id):
+              raise RuntimeError("Unexpected deployment run id")
           if owner.live_checkpoint_unchanged():
               print("nvidia_rollback_snapshot_already_current=true", flush=True)
           else:
-              run_id = os.environ["GITHUB_RUN_ID"]
-              if not re.fullmatch(r"[1-9][0-9]{8,12}", run_id):
-                  raise RuntimeError("Unexpected deployment run id")
               owner.oracle_canary_check("nvidianews.nvidia.com", True)
               owner.tls_public_route("nvidianews.nvidia.com")
               # Refuse a live transaction, even when the resolved files look healthy.
@@ -73,6 +76,26 @@ jobs:
                     flush=True)
               if not owner.live_checkpoint_unchanged():
                   raise RuntimeError("Rollback snapshot no longer matches DE89")
+          reload_check = "if grep -Fxq '    reload 5s 1s' /opt/mnebydns-dot/Corefile; then echo ready; fi"
+          if owner.ssh("de", reload_check) != "ready":
+              work = "/tmp/mnebydns-resilience-" + run_id
+              owner.ssh("de", "mkdir -m 700 " + work)
+              files = [
+                  "mnebydns-dot-resilience-20261111.py",
+                  "mnebydns-dot-resilience-apply-20261111.sh",
+                  "mnebydns-dot-resilience-rollback-20261111.sh",
+              ]
+              owner.cmd(["sshpass", "-e", "scp", "-q", "-o", "ConnectTimeout=12",
+                         *owner.SSH_TRUST, "-o", "LogLevel=ERROR",
+                         *(str(Path("scripts") / file) for file in files),
+                         "root@" + owner.EDGE + ":" + work + "/"], os.environ["DE_PASS"])
+              output = owner.ssh("de", "bash " + work + "/" + files[1] + " "
+                                 + run_id + " " + work + " --reload-only", 180)
+              if "mnebydns_reload_enabled_preserving_route_policy=true" not in output:
+                  raise RuntimeError("CoreDNS reload migration could not be verified")
+              print(output, flush=True)
+              owner.oracle_canary_check("nvidianews.nvidia.com", True)
+              owner.tls_public_route("nvidianews.nvidia.com")
           PY
           python3 scripts/mnebydns-nvidia-permanent-20261124.py run
       - name: Record deployment outcome
