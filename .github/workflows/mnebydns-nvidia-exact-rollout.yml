@@ -39,7 +39,8 @@ jobs:
           for script in scripts/mnebydns-owner-domain-{stage,confirm,rollback}-20261110.sh; do
             bash -n "$script"
           done
-      - name: Run the Python deployment helper and apply the merged NVIDIA list
+      - name: Apply the merged NVIDIA list on DE89
+        id: rollout
         env:
           RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
           DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
@@ -98,6 +99,42 @@ jobs:
               owner.tls_public_route("nvidianews.nvidia.com")
           PY
           python3 scripts/mnebydns-nvidia-permanent-20261124.py run
+      - name: Sync verified DE89 routes into personal DoT
+        if: ${{ !cancelled() && (steps.rollout.outcome == 'success' || steps.rollout.outcome == 'failure') }}
+        env:
+          RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import re
+          import runpy
+
+          rollout = runpy.run_path("scripts/mnebydns-nvidia-permanent-20261124.py")
+          owner = rollout["owner"]
+          catalog = rollout["TARGETS"]
+          names = ",".join("'" + name + "'" for name in catalog)
+          rows = owner.sql("SELECT domain FROM dns_admin_domains WHERE domain IN (" + names
+                           + ") AND status IN ('ACTIVE','COVERED')")
+          verified = [name for name in catalog if name in rows.splitlines()
+                      and owner.dns_q(name) == (0, [owner.EDGE])]
+          if not set(verified) - {"nvidianews.nvidia.com"}:
+              print("nvidia_personal_sync_deferred_no_new_live_routes=true")
+              raise SystemExit(0)
+          run_id = os.environ["GITHUB_RUN_ID"]
+          if not re.fullmatch(r"[1-9][0-9]{8,12}", run_id):
+              raise RuntimeError("Unexpected deployment run identifier")
+          work = "/opt/mnebydns-personal-nvidia-" + run_id
+          script_name = "mnebydns-sync-personal-nvidia.py"
+          owner.ssh("ru", "mkdir -m 700 " + work)
+          owner.cmd(["sshpass", "-e", "scp", "-q", "-o", "ConnectTimeout=12",
+                     *owner.SSH_TRUST, "-o", "LogLevel=ERROR",
+                     str(Path("scripts") / script_name), "root@" + owner.RU + ":" + work + "/"],
+                    os.environ["RU_PASS"])
+          print(owner.ssh("ru", "python3 " + work + "/" + script_name + " "
+                          + " ".join([run_id, *verified]), 190), flush=True)
+          PY
       - name: Record deployment outcome
         if: always()
         continue-on-error: true
