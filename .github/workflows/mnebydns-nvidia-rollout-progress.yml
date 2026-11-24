@@ -70,6 +70,21 @@ jobs:
             echo nvidia_safe_deploy_helper_status=PASS
           renderer=/tmp/mnebydns-owner-domain-454545995151/mnebydns-owner-domain-render-20261110.py
           if test -f "$renderer"; then
+            for domain in integrate.api.nvidia.com build.nvidia.com api.ngc.nvidia.com; do
+              if python3 "$renderer" probe --domain "$domain" >/dev/null 2>&1; then
+                echo "nvidia_de_origin_tls=$domain:PASS"
+              else
+                echo "nvidia_de_origin_tls=$domain:FAILED"
+              fi
+            done
+            printf 'nvidia_de_live_reload_line='
+            grep -Fx '    reload 5s 1s' /opt/mnebydns-dot/Corefile || true
+            set -o pipefail
+            if /opt/mnebydns-dot/coredns -plugins 2>&1 | grep -Eq '(^|[[:space:].])reload([[:space:]]|$)'; then
+              echo nvidia_de_reload_plugin_under_pipefail=PASS
+            else
+              echo nvidia_de_reload_plugin_under_pipefail=FAILED
+            fi
             scratch=$(mktemp -d /tmp/mnebydns-nvidia-render.XXXXXXXX)
             trap 'rm -rf -- "$scratch"' EXIT
             if python3 "$renderer" render-add --domain integrate.api.nvidia.com --ip 1.1.1.1 \\
