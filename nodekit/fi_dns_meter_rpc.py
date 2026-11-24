@@ -117,7 +117,9 @@ class SignedQueryMeter:
             base64.urlsafe_b64encode(signature).rstrip(b"=").decode()},
             separators=(",", ":")).encode())
         decision, proof = validate_decision(raw, request, self.clock())
-        await asyncio.to_thread(self.controller_verify, decision_bytes(decision), proof)
+        verified = await asyncio.to_thread(self.controller_verify, decision_bytes(decision), proof)
+        if verified is not None:
+            raise MeterRpcError("Invalid verifier contract")
         # Check again after the potentially slow verification.
         validate_decision(raw, request, self.clock())
         return decision["result"]
