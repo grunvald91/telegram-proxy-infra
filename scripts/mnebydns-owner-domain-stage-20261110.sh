@@ -43,7 +43,7 @@ done
 test -s "$work/mnebydns-owner-domain-render-20261110.py"
 test -s "$work/mnebydns-owner-domain-rollback-20261110.sh"
 test -s "$work/mnebydns-dot-config-change-20261111.sh"
-test -x /opt/mnebydns-maintenance/mnebydns_safe_deploy.py
+test -s /opt/mnebydns-maintenance/mnebydns_safe_deploy.py
 python3 /opt/mnebydns-maintenance/mnebydns_safe_deploy.py status >/dev/null
 # Refuse any route edit BEFORE touching nginx or Corefile when a non-disruptive
 # CoreDNS reload cannot be verified. Legacy config needs separate maintenance.
