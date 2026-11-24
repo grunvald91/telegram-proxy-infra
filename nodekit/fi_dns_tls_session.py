@@ -13,6 +13,7 @@ import asyncio
 from collections import Counter
 from pathlib import Path
 import ssl
+import threading
 import weakref
 
 from fi_dns_metered_dot import (
@@ -39,12 +40,19 @@ class SignedFiGrantAuthorizer:
     def __init__(self, expected_controller_sha: str):
         self.guard = Guard(expected_controller_sha)
         self._lock = asyncio.Lock()
+        self._worker_lock = threading.Lock()
+
+    def _verify_serialized(self) -> dict:
+        # Cancelling to_thread does not stop its running worker. Keep the
+        # high-water/cache lock inside the worker until verification finishes.
+        with self._worker_lock:
+            return self.guard._verified_policy()
 
     async def allowed(self, hostname: str) -> bool:
         try:
             hostname_digest(hostname)
             async with self._lock:
-                snapshot = await asyncio.to_thread(self.guard._verified_policy)
+                snapshot = await asyncio.to_thread(self._verify_serialized)
             allowed, _ = authorized(snapshot, hostname)
             return bool(allowed)
         except (OSError, ValueError, TypeError, KeyError):

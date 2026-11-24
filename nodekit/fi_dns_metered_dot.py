@@ -24,6 +24,7 @@ MAX_QUESTIONS_PER_SOCKET = 10_000
 IDLE_TIMEOUT_SECONDS = 30.0
 UPSTREAM_TIMEOUT_SECONDS = 8.0
 METER_TIMEOUT_SECONDS = 3.0
+RELEASE_TIMEOUT_SECONDS = 3.0
 WRITE_TIMEOUT_SECONDS = 3.0
 
 
@@ -44,7 +45,11 @@ class QueryMeter(Protocol):
         """Atomically charge one reserved answered question; idempotent."""
 
     async def release(self, request_id: uuid.UUID) -> None:
-        """Release an unanswered reservation, idempotently."""
+        """Idempotently release or tombstone this request, including unknown IDs.
+
+        A late reserve must not resurrect a released ID; a settled charge
+        must never be undone. The durable backend must expire orphan holds.
+        """
 
 
 class Resolver(Protocol):
@@ -84,19 +89,67 @@ def question_end(packet: bytes) -> int:
     kind, qclass = struct.unpack("!HH", packet[p:p+4])
     if kind in (0, 251, 252, 255) or qclass not in (1,):
         raise MeteredDnsError("Unsupported DNS query type or class")
-    return p + 4
+    end = p + 4
+    _validate_records(packet, end, extra)
+    return end
+
+
+def _name_end(packet: bytes, start: int) -> int:
+    """Validate an RR owner name, including bounded backwards compression."""
+    p = start
+    consumed = None
+    expanded = 1
+    visited = set()
+    while True:
+        if p >= len(packet) or p in visited:
+            raise MeteredDnsError("Invalid DNS record name")
+        visited.add(p)
+        size = packet[p]
+        if size == 0:
+            return p + 1 if consumed is None else consumed
+        if size & 0xC0 == 0xC0:
+            if p + 1 >= len(packet):
+                raise MeteredDnsError("Incomplete DNS compression pointer")
+            target = ((size & 0x3F) << 8) | packet[p + 1]
+            if not 12 <= target < p:
+                raise MeteredDnsError("Invalid DNS compression pointer")
+            if consumed is None:
+                consumed = p + 2
+            p = target
+            continue
+        if size > 63 or p + 1 + size > len(packet):
+            raise MeteredDnsError("Invalid DNS record label")
+        expanded += 1 + size
+        if expanded > 255:
+            raise MeteredDnsError("DNS record name too long")
+        p += 1 + size
+
+
+def _validate_records(packet: bytes, offset: int, count: int) -> None:
+    """Check RR envelopes and exact packet length; RDATA remains opaque."""
+    for _ in range(count):
+        offset = _name_end(packet, offset)
+        if offset + 10 > len(packet):
+            raise MeteredDnsError("Incomplete DNS record header")
+        rdlength = int.from_bytes(packet[offset + 8:offset + 10], "big")
+        offset += 10 + rdlength
+        if offset > len(packet):
+            raise MeteredDnsError("Incomplete DNS record data")
+    if offset != len(packet):
+        raise MeteredDnsError("Unexpected trailing DNS bytes")
 
 
 def valid_answer(query: bytes, response: bytes) -> None:
     qend = question_end(query)
     if not isinstance(response, bytes) or not 17 <= len(response) <= MAX_DNS_BYTES:
         raise MeteredDnsError("Invalid DNS answer length")
-    ident, flags, questions, _, _, _ = struct.unpack("!HHHHHH", response[:12])
+    ident, flags, questions, answers, authority, extra = struct.unpack("!HHHHHH", response[:12])
     if (ident != int.from_bytes(query[:2], "big") or
             not flags & 0x8000 or (flags >> 11) & 0xF or
             flags & 0x0200 or questions != 1 or
             len(response) < qend or response[12:qend] != query[12:qend]):
         raise MeteredDnsError("Unrelated or malformed DNS answer")
+    _validate_records(response, qend, answers + authority + extra)
     # NXDOMAIN and SERVFAIL are valid DNS replies, but quota settlement still
     # requires a complete response. We do not fabricate answers locally.
 
@@ -119,37 +172,41 @@ async def charge_one_question(
         token_sha256 = hostname_digest(hostname)
     except ValueError as exc:
         raise MeteredDnsError("Unsupported FI DNS hostname") from exc
-    if not await asyncio.wait_for(
+    if await asyncio.wait_for(
         authorizer.allowed(hostname), timeout=METER_TIMEOUT_SECONDS
-    ):
+    ) is not True:
         raise MeteredDnsError("Inactive or revoked FI entitlement")
 
     request_id = uuid.uuid4()
-    reserved = False
+    attempted = False
     settled = False
     try:
-        if not await asyncio.wait_for(
+        # A timeout is ambiguous: the controller may already have committed.
+        attempted = True
+        if await asyncio.wait_for(
             meter.reserve(token_sha256, request_id),
             timeout=METER_TIMEOUT_SECONDS,
-        ):
+        ) is not True:
             raise MeteredDnsError("FI DNS quota denied")
-        reserved = True
         result = await asyncio.wait_for(
             resolver.resolve(query), timeout=UPSTREAM_TIMEOUT_SECONDS
         )
         valid_answer(query, result)
-        settled = bool(await asyncio.wait_for(
+        settled = (await asyncio.wait_for(
             meter.settle(request_id), timeout=METER_TIMEOUT_SECONDS
-        ))
+        )) is True
         if not settled:
             raise MeteredDnsError("DNS settlement not confirmed")
         return result
     finally:
-        if reserved and not settled:
-            # The central meter must implement idempotent release after an
-            # uncertain timeout. Never send an uncommitted DNS response.
+        if attempted and not settled:
+            # Even a denied or timed-out reserve needs an idempotent cleanup.
+            # The backend must fence late reserves and expire orphan holds;
+            # cleanup must not indefinitely occupy a client stream.
             try:
-                await asyncio.shield(meter.release(request_id))
+                await asyncio.wait_for(
+                    meter.release(request_id), timeout=RELEASE_TIMEOUT_SECONDS
+                )
             except Exception:
                 pass
 

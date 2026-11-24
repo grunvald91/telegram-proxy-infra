@@ -200,6 +200,73 @@ class MeteredFiDotTests(unittest.TestCase):
                 self.assertTrue(any(c[0]=="release" for c in meter.calls))
         asyncio.run(go())
 
+    def test_record_sections_and_trailing_bytes_are_checked(self):
+        q = question()
+        # Legal EDNS OPT with an empty payload; no question bytes changed.
+        opt = b"\x00" + struct.pack("!HHIH", 41, 1232, 0, 0)
+        edns = q[:10] + b"\x00\x01" + q[12:] + opt
+        self.assertEqual(subject.question_end(edns), len(q))
+        for malformed in (edns[:-1], edns + b"x", q + b"x"):
+            with self.assertRaises(subject.MeteredDnsError):
+                subject.question_end(malformed)
+        response = answer(q)
+        for malformed in (
+            response[:-1],
+            response[:6] + b"\x00\x02" + response[8:],
+            response + b"x",
+            response[:len(q)] + b"\xc0\xff" + response[len(q)+2:],
+        ):
+            with self.assertRaises(subject.MeteredDnsError):
+                subject.valid_answer(q, malformed)
+
+    def test_timeout_after_reservation_commit_attempts_cleanup(self):
+        class AmbiguousMeter(Meter):
+            async def reserve(self, digest, request_id):
+                await super().reserve(digest, request_id)
+                await asyncio.sleep(60)
+
+        async def go():
+            meter, resolver = AmbiguousMeter(), Resolver()
+            with patch.object(subject, "METER_TIMEOUT_SECONDS", 0.05):
+                with self.assertRaises(asyncio.TimeoutError):
+                    await charge(meter=meter, resolver=resolver)
+            self.assertFalse(meter.pending)
+            self.assertFalse(resolver.queries)
+            self.assertTrue(any(c[0] == "release" for c in meter.calls))
+        asyncio.run(go())
+
+    def test_cleanup_timeout_is_bounded(self):
+        class SlowRelease(Meter):
+            async def release(self, request_id):
+                await asyncio.sleep(60)
+
+        async def go():
+            with patch.object(subject, "RELEASE_TIMEOUT_SECONDS", 0.05):
+                with self.assertRaisesRegex(ConnectionError, "upstream offline"):
+                    await asyncio.wait_for(
+                        charge(meter=SlowRelease(), resolver=Resolver(broken=True)),
+                        timeout=1)
+        asyncio.run(go())
+
+    def test_non_boolean_authorization_and_settlement_are_denied(self):
+        class AmbiguousSettlement(Meter):
+            async def settle(self, request_id):
+                return "unknown"
+
+        async def go():
+            meter, resolver = Meter(), Resolver()
+            with self.assertRaises(subject.MeteredDnsError):
+                await charge(auth=Auth(active="unknown"), meter=meter,
+                             resolver=resolver)
+            self.assertFalse(meter.calls)
+            self.assertFalse(resolver.queries)
+            meter = AmbiguousSettlement()
+            with self.assertRaises(subject.MeteredDnsError):
+                await charge(meter=meter, resolver=resolver)
+            self.assertFalse(meter.pending)
+            self.assertFalse(meter.settled)
+        asyncio.run(go())
+
     def test_shared_quota_concurrent_clients_cannot_exceed_limit(self):
         async def go():
             m=Meter(budget=2)

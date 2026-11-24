@@ -7,6 +7,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -153,6 +154,48 @@ class FiMeteredTlsIntegration(unittest.TestCase):
                     server.close()
                     await server.wait_closed()
             asyncio.run(go())
+
+    def test_cancelled_authorization_does_not_unlock_running_worker(self):
+        first_started = threading.Event()
+        first_release = threading.Event()
+        second_entered = threading.Event()
+        calls = []
+
+        class FakeGuard:
+            def _verified_policy(self):
+                calls.append(1)
+                if len(calls) == 1:
+                    first_started.set()
+                    if not first_release.wait(3):
+                        raise RuntimeError("test worker stalled")
+                else:
+                    second_entered.set()
+                return {}
+
+        async def go():
+            with patch.object(session, "Guard", return_value=FakeGuard()), \
+                 patch.object(session, "authorized", return_value=(True, 1)):
+                auth = session.SignedFiGrantAuthorizer("test")
+                first = asyncio.create_task(auth.allowed(HOST))
+                second = None
+                try:
+                    self.assertTrue(await asyncio.to_thread(first_started.wait, 2))
+                    first.cancel()
+                    with self.assertRaises(asyncio.CancelledError):
+                        await first
+                    second = asyncio.create_task(auth.allowed(OTHER))
+                    self.assertFalse(await asyncio.to_thread(second_entered.wait, 0.1))
+                    first_release.set()
+                    self.assertTrue(await asyncio.wait_for(second, 2))
+                    self.assertTrue(second_entered.is_set())
+                finally:
+                    first_release.set()
+                    if not first.done():
+                        first.cancel()
+                    if second is not None and not second.done():
+                        second.cancel()
+
+        asyncio.run(go())
 
     def test_no_meter_or_signer_cannot_bind_any_port(self):
         async def go():
