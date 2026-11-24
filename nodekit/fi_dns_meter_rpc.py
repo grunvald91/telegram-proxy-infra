@@ -15,6 +15,7 @@ import json
 from pathlib import Path
 import re
 import secrets
+import tempfile
 import time
 from typing import Awaitable, Callable
 import uuid
@@ -78,7 +79,9 @@ def validate_decision(raw: bytes, request: dict, now: float) -> tuple[dict, byte
         or not SIG.fullmatch(obj["signature"])):
         raise MeterRpcError("Unbound meter response")
     decided = dt.datetime.fromisoformat(obj["decidedAt"].replace("Z", "+00:00")).timestamp()
-    if timestamp(decided) != obj["decidedAt"] or abs(now - decided) > 15:
+    issued = dt.datetime.fromisoformat(request["issuedAt"].replace("Z", "+00:00")).timestamp()
+    if (timestamp(decided) != obj["decidedAt"] or abs(now - decided) > 15
+            or abs(now - issued) > 15):
         raise MeterRpcError("Stale meter response")
     result = obj["result"]
     allowed = {"RESERVED"} if request["op"] == "reserve" else {"SETTLED", "RELEASED"}
@@ -146,7 +149,12 @@ def protected_openssl_meter(transport: Callable[[bytes], Awaitable[bytes]],
             or len(raw) != 44 or not raw.startswith(bytes.fromhex("302a300506032b6570032100"))
             or hashlib.sha256(raw).hexdigest() != controller_pin):
             raise MeterRpcError("Untrusted meter controller key")
-        openssl_verify(controller_public_der, signature, message)
+        # Verify the exact bytes that were pinned, not a reopened source path.
+        with tempfile.TemporaryDirectory(prefix="fi-meter-pinned-") as tmp:
+            pinned = Path(tmp) / "controller.der"
+            pinned.write_bytes(raw)
+            pinned.chmod(0o600)
+            openssl_verify(pinned, signature, message)
     def sign_node(message: bytes) -> bytes:
         private_file(node_private_der)
         return openssl_sign(node_private_der, message)
