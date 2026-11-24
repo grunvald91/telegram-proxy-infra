@@ -1,4 +1,4 @@
-name: FI217 NVIDIA Smart DNS candidate and personal policy inventory
+name: Verify NVIDIA through the staged FI217 resolver and proxy
 "on":
   push:
     branches: [smartdns/nvidia-exact-hosts-20261124]
@@ -22,7 +22,7 @@ jobs:
           set -Eeuo pipefail
           python3 nodekit/fi_dns_nvidia_candidate.py self-test
           python3 -m unittest discover -s nodekit/tests -p 'test_dns_proxy_stage.py'
-      - name: Check personal policy and stage verified FI origins without publishing DNS
+      - name: Exercise the staged FI resolver and NVIDIA HTTPS proxy on loopback
         env:
           RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
           FI_PASSWORD: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_PASSWORD }}
@@ -142,57 +142,3 @@ jobs:
             scripts/mnebydns-owner-domain-{controller,render}-20261110.py "fi-node:$stage/"
           fi_node "python3 '$stage/fi_dns_nvidia_candidate.py' stage"
 
-  de-checkpoint:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    concurrency:
-      group: mnebydns-google-public-443-change
-      cancel-in-progress: false
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Identify mismatched checkpoint components without changing DE89
-        env:
-          DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
-        run: |
-          set -Eeuo pipefail
-          test -n "$DE_PASS"
-          if ! command -v sshpass >/dev/null; then
-            sudo apt-get update -qq
-            sudo apt-get install -qq -y --no-install-recommends sshpass >/dev/null
-          fi
-          SSHPASS="$DE_PASS" sshpass -e ssh -T \
-            -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 \
-            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" \
-            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR \
-            root@89.125.90.101 'python3 -' <<'PY'
-          import filecmp, pathlib, re, subprocess
-          base = pathlib.Path("/opt/mnebydns-stable-checkpoints")
-          root = pathlib.Path((base / "current").read_text().strip())
-          if root.parent != base or not root.is_dir():
-              raise SystemExit("DE89 unexpected checkpoint pointer")
-          paths = {
-              "dns.stable": pathlib.Path("/opt/mnebydns-dot/Corefile"),
-              "nginx.stable": pathlib.Path("/etc/nginx/nginx.conf"),
-              "proxy.stable": pathlib.Path("/etc/mnebydns-googlepilot/nginx.conf"),
-          }
-          def matches(checkpoint, config, live):
-              return (checkpoint / config).is_file() and live.is_file() and filecmp.cmp(
-                  checkpoint / config, live, shallow=False)
-          def verified(checkpoint):
-              return subprocess.run(["sha256sum", "--strict", "-c", "stable-manifest.sha256"],
-                                    cwd=checkpoint, capture_output=True, timeout=5).returncode == 0
-          print("de89_selected_checkpoint_manifest_valid=" + str(verified(root)).lower())
-          for config, live in paths.items():
-              print("de89_checkpoint_match_" + config + "=" + str(matches(root, config, live)).lower())
-          candidates = 0
-          for candidate in sorted(base.iterdir()):
-              if (candidate == root or candidate.is_symlink() or not candidate.is_dir()
-                  or not re.fullmatch(r"[A-Za-z0-9_.-]+", candidate.name)):
-                  continue
-              if all(matches(candidate, config, live) for config, live in paths.items()) and verified(candidate):
-                  print("de89_matching_verified_checkpoint=" + candidate.name)
-                  candidates += 1
-          print("de89_matching_verified_checkpoint_count=" + str(candidates))
-          PY
