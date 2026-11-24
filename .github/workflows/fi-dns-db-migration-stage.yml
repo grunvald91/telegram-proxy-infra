@@ -1,0 +1,225 @@
+name: FI Smart DNS guarded database migration stage (gate OFF)
+"on":
+  pull_request:
+    paths: [".github/workflows/fi-dns-db-migration-stage.yml", "nodekit/fi_dns_db_stage.py", "nodekit/tests/test_fi_dns_db_stage.py"]
+  push:
+    branches: [main]
+    paths: [".github/workflows/fi-dns-db-migration-stage.yml", "nodekit/fi_dns_db_stage.py", "nodekit/tests/test_fi_dns_db_stage.py"]
+  workflow_dispatch:
+permissions: {contents: read, actions: read}
+concurrency:
+  group: mnebyvpn-fleet-fi
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/checkout@v4
+        with:
+          repository: grunvald91/Mnebyvpn
+          ref: 758f43222ce2aae53e67c8f27103b991100de193
+          path: source
+          persist-credentials: false
+      - name: Verify migration assembly and backup staging code
+        run: |
+          set -Eeuo pipefail
+          python3 -m unittest discover -s nodekit/tests -p 'test_fi_dns_db_stage.py' -v
+          PYTHONPATH=nodekit python3 - <<'PY'
+          from pathlib import Path
+          from fi_dns_db_stage import compose,MIGRATIONS
+          sql=compose({n:(Path('source/db/migrations')/n).read_bytes() for n in MIGRATIONS})
+          assert sql.splitlines().count('BEGIN;')==1
+          assert sql.splitlines().count('COMMIT;')==1
+          assert sql.count('INSERT INTO public.deployment_schema_migrations')==3
+          lines=Path('.github/workflows/fi-dns-db-migration-stage.yml').read_text().splitlines()
+          i=lines.index('      - name: Stage only FI schema after local and offsite backup verification')
+          i=next(j for j in range(i+1,len(lines)) if lines[j]=='        run: |')+1
+          rows=[]
+          for line in lines[i:]:
+              if line and not line.startswith('          '): break
+              rows.append(line[10:] if line.startswith('          ') else '')
+          text='\n'.join(rows)+'\n'
+          assert 'FI_DB_BACKUP_RESTORE_AND_OFFSITE_VERIFIED=true' in text
+          Path('/tmp/fi-db-stage.sh').write_text(text)
+          PY
+          bash -n /tmp/fi-db-stage.sh
+      - name: Rehearse atomic migration and backup restore on disposable PostgreSQL
+        timeout-minutes: 4
+        run: |
+          set -Eeuo pipefail
+          name=mnebyvpn-stage-postgres
+          docker run -d --name "$name" -e POSTGRES_USER=mnebyvpn_stage -e POSTGRES_DB=mnebyvpn_stage -e POSTGRES_PASSWORD=test postgres:17.6-alpine >/dev/null
+          trap 'docker rm -f "$name" >/dev/null' EXIT
+          for i in $(seq 1 30); do
+            if docker exec "$name" pg_isready -U mnebyvpn_stage -d mnebyvpn_stage >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          docker exec "$name" pg_isready -U mnebyvpn_stage -d mnebyvpn_stage
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          rows=Path('source/.github/workflows/offline-contracts.yml').read_text().splitlines()
+          output=[]
+          for line in rows:
+              match=re.fullmatch(r'          psql -v ON_ERROR_STOP=1 -f (db/migrations/\d{4}_[A-Za-z0-9_]+\.sql) >/dev/null',line)
+              if match:
+                  path=match.group(1)
+                  if path.startswith('db/migrations/0150_'): break
+                  output.append(path)
+              elif line.strip()=='psql -v ON_ERROR_STOP=1 -c "CREATE ROLE mnebyvpn_awg_delivery NOLOGIN NOINHERIT" >/dev/null':
+                  output.append('CREATE_ROLE')
+          assert len(output)>40 and output[-1].startswith('db/migrations/0149_')
+          Path('/tmp/fi-migration-baseline').write_text('\n'.join(output)+'\n')
+          PY
+          while IFS= read -r path; do
+            if [[ "$path" == CREATE_ROLE ]]; then
+              printf '%s\n' 'CREATE ROLE mnebyvpn_awg_delivery NOLOGIN NOINHERIT;' | docker exec -i "$name" psql -qX -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage >/dev/null
+            else
+              docker exec -i "$name" psql -qX -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage < "source/$path" >/dev/null
+            fi
+          done < /tmp/fi-migration-baseline
+          sudo mkdir -p /opt/mnebyvpn
+          sudo env PYTHONPATH="$PWD/nodekit" python3 - <<'PY'
+          from pathlib import Path
+          import tempfile,shutil
+          import fi_dns_db_stage as m
+          with tempfile.TemporaryDirectory() as tmp:
+              root=Path(tmp)
+              m.BASE=root/'backups';m.BASE.mkdir(mode=0o700)
+              m.OFFSITE=root/'offsite'
+              stage=root/'canary';stage.mkdir(mode=0o700)
+              m.psql("CREATE TABLE deployment_schema_migrations(file_name text PRIMARY KEY,applied_at timestamptz NOT NULL DEFAULT clock_timestamp());")
+              m.psql("INSERT INTO vpn_node_enrollment_inventory(node_id,endpoint_host,identity_public_spki) VALUES('fi-test-01','ci-fi.example.org','AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'); UPDATE vpn_node_enrollment_inventory SET status='approved',approved_at=clock_timestamp() WHERE node_id='fi-test-01'; INSERT INTO vpn_node_enrollment_challenges(challenge_id,node_id,nonce_sha256,issued_at,expires_at,consumed_at) VALUES(gen_random_uuid(),'fi-test-01',repeat('e',64),clock_timestamp()-interval '1 second',clock_timestamp()+interval '1 minute',clock_timestamp()); UPDATE vpn_node_enrollment_inventory SET status='enrolled',enrolled_at=clock_timestamp() WHERE node_id='fi-test-01';")
+              for name in m.MIGRATIONS:
+                  m.exclusive(stage/name,(Path('source/db/migrations')/name).read_bytes())
+              m.backup_identity(stage)
+              m.prepare(stage)
+              proof=(stage/'proof').read_text().strip().split('|')
+              m.store(stage,proof[1],proof[2])
+              m.apply(stage,proof[2])
+              assert m.preflight()=='applied'
+              print('DISPOSABLE_FI_DB_BACKUP_AND_MIGRATION_PASS')
+          PY
+  stage:
+    needs: offline
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: node-fi
+    env:
+      RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      FI_PASSWORD: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_PASSWORD }}
+      FI_USER: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_USER }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/checkout@v4
+        with:
+          repository: grunvald91/Mnebyvpn
+          ref: 758f43222ce2aae53e67c8f27103b991100de193
+          path: source
+          persist-credentials: false
+      - name: Confirm exact main source CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          test "$(git -C source rev-parse HEAD)" = 758f43222ce2aae53e67c8f27103b991100de193
+          gh api repos/grunvald91/Mnebyvpn/actions/runs/45413592393 --jq '[.head_sha,.head_branch,.status,.conclusion] | join(" ")' | grep -qx '758f43222ce2aae53e67c8f27103b991100de193 main completed success'
+      - name: Stage only FI schema after local and offsite backup verification
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          [[ "$FI_USER" == root && -n "$RU_PASSWORD" && -n "$FI_PASSWORD" ]] || exit 2
+          grep -q '^188\.120\.254\.223 ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends sshpass >/dev/null
+          work="$RUNNER_TEMP/fi-dns-canary"
+          mkdir -m 0700 "$work"
+          cat > "$work/ru.cfg" <<CFG
+          Host ru-controller
+            HostName 188.120.254.223
+            User root
+            UserKnownHostsFile $GITHUB_WORKSPACE/ops/mnebydns-owner-ssh-known_hosts
+            GlobalKnownHostsFile /dev/null
+            HostKeyAlgorithms ssh-ed25519
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+            PubkeyAuthentication no
+            PreferredAuthentications password
+            ForwardAgent no
+            ClearAllForwardings yes
+            ControlMaster no
+            ConnectTimeout 12
+            LogLevel ERROR
+          CFG
+          SSHPASS="$RU_PASSWORD" sshpass -e ssh -T -F "$work/ru.cfg" ru-controller \
+            'test -f /root/mnebyvpn-controller/fi-known_hosts && test ! -L /root/mnebyvpn-controller/fi-known_hosts && test "$(stat -c "%u:%a" /root/mnebyvpn-controller/fi-known_hosts)" = 0:600 && cat /root/mnebyvpn-controller/fi-known_hosts' > "$work/fi-known"
+          python3 - "$work/fi-known" <<'PY'
+          import base64,pathlib,sys
+          data=pathlib.Path(sys.argv[1]).read_bytes()
+          assert len(data)<512 and data.count(b'\n')==1 and data.endswith(b'\n')
+          name,kind,key=data.decode('ascii').strip().split()
+          assert (name,kind)==('fi.mnebyvpn.site','ssh-ed25519')
+          raw=base64.b64decode(key,validate=True)
+          assert len(raw)==51 and raw.startswith(b'\x00\x00\x00\x0bssh-ed25519\x00\x00\x00\x20')
+          PY
+          cat > "$work/fi.cfg" <<CFG
+          Host fi-node
+            HostName 217.11.167.91
+            User root
+            HostKeyAlias fi.mnebyvpn.site
+            UserKnownHostsFile $work/fi-known
+            GlobalKnownHostsFile /dev/null
+            HostKeyAlgorithms ssh-ed25519
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+            PubkeyAuthentication no
+            PreferredAuthentications password
+            ForwardAgent no
+            ClearAllForwardings yes
+            ControlMaster no
+            ConnectTimeout 12
+            LogLevel ERROR
+          CFG
+          fi_node() { SSHPASS="$FI_PASSWORD" sshpass -e ssh -T -F "$work/fi.cfg" fi-node "$@"; }
+          ru_node() { SSHPASS="$RU_PASSWORD" sshpass -e ssh -T -F "$work/ru.cfg" ru-controller "$@"; }
+          ru_copy() { SSHPASS="$RU_PASSWORD" sshpass -e scp -F "$work/ru.cfg" "$@"; }
+          fi_copy() { SSHPASS="$FI_PASSWORD" sshpass -e scp -F "$work/fi.cfg" "$@"; }
+          stage="/run/fi-dns-db-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          [[ "$stage" =~ ^/run/fi-dns-db-[0-9]+-[0-9]+$ ]] || exit 2
+          ru_created=no
+          fi_created=no
+          cleanup() {
+            set +e
+            if [[ "$ru_created" == yes ]]; then ru_node "rm -rf -- '$stage'" >/dev/null 2>&1; fi
+            if [[ "$fi_created" == yes ]]; then fi_node "rm -rf -- '$stage'" >/dev/null 2>&1; fi
+            rm -rf "$work"
+          }
+          trap cleanup EXIT
+          ru_node "umask 077; mkdir -m 0700 '$stage'"
+          ru_created=yes
+          fi_node "umask 077; mkdir -m 0700 '$stage'"
+          fi_created=yes
+          ru_copy nodekit/fi_dns_db_stage.py source/db/migrations/0150_fi_regional_dns_query_meter.sql source/db/migrations/0151_fi_dns_meter_verified_rpc.sql source/db/migrations/0152_fi_dns_snapshot_source.sql "ru-controller:$stage/"
+          fi_copy nodekit/fi_dns_db_stage.py "fi-node:$stage/"
+          ru_node "chmod 600 '$stage'/*.sql '$stage/fi_dns_db_stage.py'"
+          fi_node "chmod 600 '$stage/fi_dns_db_stage.py'; python3 '$stage/fi_dns_db_stage.py' identity '$stage'"
+          fi_copy "fi-node:$stage/backup-cert.pem" "$work/backup-cert.pem"
+          ru_copy "$work/backup-cert.pem" "ru-controller:$stage/backup-cert.pem"
+          ru_node "chmod 600 '$stage/backup-cert.pem'; python3 '$stage/fi_dns_db_stage.py' prepare '$stage'" > "$work/proof"
+          grep -qx 'FI_DB_BACKUP_RESTORE_VERIFIED=true' "$work/proof"
+          plain=$(sed -n 's/^FI_DB_BACKUP_PLAIN_SHA=//p' "$work/proof")
+          cipher=$(sed -n 's/^FI_DB_BACKUP_CIPHER_SHA=//p' "$work/proof")
+          [[ "$plain" =~ ^[0-9a-f]{64}$ && "$cipher" =~ ^[0-9a-f]{64}$ ]] || exit 2
+          ru_copy "ru-controller:$stage/backup.cms" "$work/backup.cms"
+          [[ "$(sha256sum "$work/backup.cms" | cut -d' ' -f1)" == "$cipher" ]] || exit 2
+          fi_copy "$work/backup.cms" "fi-node:$stage/backup.cms"
+          receipt=$(fi_node "chmod 600 '$stage/backup.cms'; python3 '$stage/fi_dns_db_stage.py' store '$stage' '$plain' '$cipher'")
+          [[ "$receipt" == "FI_DB_OFFSITE_BACKUP_VERIFIED=$cipher" ]] || exit 2
+          echo 'FI_DB_BACKUP_RESTORE_AND_OFFSITE_VERIFIED=true'
+          ru_node "python3 '$stage/fi_dns_db_stage.py' apply '$stage' '$cipher'"
