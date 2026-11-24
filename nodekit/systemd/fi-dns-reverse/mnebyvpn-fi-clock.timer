@@ -1,0 +1,11 @@
+[Unit]
+Description=Check FI clock when native NTP is unsynchronized
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+AccuracySec=10s
+Unit=mnebyvpn-fi-clock.service
+
+[Install]
+WantedBy=timers.target
