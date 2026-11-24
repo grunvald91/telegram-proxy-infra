@@ -38,6 +38,16 @@ while read -r unit _; do
       echo "nvidia_live_checkpoint_busy=$unit" >&2
       exit 4 ;;
     mnebydns-*rollback*.timer|mnebydns-*revert*.timer|mnebydns-*watchdog*.timer)
+      timer_substate="$(systemctl show "$unit" -p SubState --value)"
+      rollback_service="$(systemctl show "$unit" -p Unit --value)"
+      [[ "$rollback_service" =~ ^mnebydns-[a-z0-9.-]+[.]service$ ]]
+      service_state="$(systemctl show "$rollback_service" -p ActiveState --value)"
+      echo "nvidia_live_checkpoint_timer=$unit:$timer_substate:$service_state" >&2
+      # A completed one-shot calendar timer is still ActiveState=active
+      # (elapsed), with no future event. Treat only that terminal state as inert.
+      if [[ "$timer_substate" == elapsed && ( "$service_state" == inactive || "$service_state" == failed ) ]]; then
+        continue
+      fi
       echo "nvidia_live_checkpoint_busy=$unit" >&2
       exit 4 ;;
   esac
