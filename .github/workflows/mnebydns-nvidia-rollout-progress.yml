@@ -51,7 +51,7 @@ jobs:
           )"
           printf '%s\n' "$result"
           python3 - <<'PY'
-          import runpy, shlex
+          import runpy, shlex, time
           owner = runpy.run_path("scripts/mnebydns-nvidia-permanent-20261124.py")["owner"]
           remote = '''set -u
           for id in 454545995151 454545995152 454545995153; do
@@ -87,31 +87,14 @@ jobs:
             fi
             scratch=$(mktemp -d /tmp/mnebydns-nvidia-render.XXXXXXXX)
             trap 'rm -rf -- "$scratch"' EXIT
+
             stage=/tmp/mnebydns-owner-domain-454545995151/mnebydns-owner-domain-stage-20261110.sh
             if test -f "$stage"; then
               awk '/^exec 9>/{ print "echo nvidia_owner_guard_passed_before_first_write=true"; exit } { print }' "$stage" > "$scratch/preflight.sh"
-              if grep -q '^echo nvidia_owner_guard_passed_before_first_write=true "$renderer" render-add --domain integrate.api.nvidia.com --ip 1.1.1.1 \\
-               --core /opt/mnebydns-dot/Corefile --nginx /etc/nginx/nginx.conf --out "$scratch"; then
-              echo nvidia_render_live_policy=PASS
-              nginx -t -q -c "$scratch/nginx.pilot" >/dev/null 2>"$scratch/nginx-check"
-              echo "nvidia_rendered_nginx_status=$?"
-            else
-              echo nvidia_render_live_policy=FAILED
-            fi
-          fi
-          '''
-          try:
-              print(owner.ssh("de", "bash -c " + shlex.quote(remote), 25))
-          except RuntimeError as exc:
-              print("nvidia_candidate_diagnostics=" + str(exc))
-          PY
-          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" \
-            -f state=success -f context=mnebydns/nvidia-live-status -f description="$result" \
-            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" >/dev/null
- "$scratch/preflight.sh"; then
+              if grep -q '^echo nvidia_owner_guard_passed_before_first_write=true$' "$scratch/preflight.sh"; then
                 origin=$(python3 "$renderer" probe --domain integrate.api.nvidia.com)
                 deadline=$(date -u -d '+59 minutes' '+%Y-%m-%d %H:%M:%S UTC')
-                bash -x "$scratch/preflight.sh" "/tmp/mnebydns-owner-domain-454545995151" 454545995151 integrate.api.nvidia.com "$origin" "$deadline" 2>&1 | tail -40
+                bash -x "$scratch/preflight.sh" "/tmp/mnebydns-owner-domain-454545995151" 454545995151 integrate.api.nvidia.com "$origin" "$deadline" 2>&1 | tail -44
               fi
             fi
             if python3 "$renderer" render-add --domain integrate.api.nvidia.com --ip 1.1.1.1 \\
@@ -125,7 +108,10 @@ jobs:
           fi
           '''
           try:
-              print(owner.ssh("de", "bash -c " + shlex.quote(remote), 25))
+              start = int(time.time())
+              server = int(owner.ssh("de", "date +%s"))
+              print("nvidia_clock_offset_seconds=" + str(server - start))
+              print(owner.ssh("de", "bash -c " + shlex.quote(remote), 65))
           except RuntimeError as exc:
               print("nvidia_candidate_diagnostics=" + str(exc))
           PY
