@@ -2,6 +2,7 @@
 """Add the verified NVIDIA catalog entries to the existing RU188 DoT containers."""
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import fcntl
 import hashlib
 import http.client
@@ -25,6 +26,7 @@ SHA_KEY = "MNEBYDNS_PERSONAL_DOT_ROUTE_POLICY_SHA256"
 EDGE = "89.125.90.101"
 SERVICES = ("mnebydns-personal-dot-private", "mnebydns-personal-dot")
 DOMAIN = re.compile(r"(?:[a-z0-9][a-z0-9-]{0,62}\.)*(?:nvidia\.com|nvcr\.io)\Z")
+EXACT_DOMAIN = re.compile(r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}\Z")
 
 
 def docker(*args, check=True):
@@ -129,7 +131,7 @@ def rollback(service, backup, old_id, stage):
         docker("start", service)
 
 
-def update(service, domains, run_id):
+def update(service, domains, run_id, *, research_queue=False):
     live = inspect(service)
     if not live or not live["State"]["Running"]:
         print("nvidia_personal_service_not_running=" + service, flush=True)
@@ -157,15 +159,20 @@ def update(service, domains, run_id):
     if not additions:
         print("nvidia_personal_policy_already_current=" + service, flush=True)
         return
-    verified = set()
-    for domain in sorted(additions):
+    def verify(domain):
         try:
-            if mapped_answer(env, domain):
-                verified.add(domain)
-                continue
+            return mapped_answer(env, domain)
         except (OSError, RuntimeError):
-            pass
-        print(f"nvidia_personal_mapped_route_deferred={service}:{domain}", flush=True)
+            return False
+
+    ordered = sorted(additions)
+    verified = set()
+    with ThreadPoolExecutor(max_workers=12 if research_queue else 1) as pool:
+        for domain, mapped in zip(ordered, pool.map(verify, ordered)):
+            if mapped:
+                verified.add(domain)
+            else:
+                print(f"personal_mapped_route_deferred={service}:{domain}", flush=True)
     if not verified:
         print("nvidia_personal_no_new_verified_routes=" + service, flush=True)
         return
@@ -231,10 +238,16 @@ def main():
         if len(sys.argv) < 3 or not re.fullmatch(r"[1-9][0-9]{8,12}", sys.argv[1]):
             raise RuntimeError("Missing production run identifier")
         run_id, *domains = sys.argv[1:]
-        if any(not DOMAIN.fullmatch(domain) for domain in domains) or len(set(domains)) != len(domains):
+        research_queue = domains[0] == "--research-queue"
+        if research_queue:
+            domains = domains[1:]
+        allowed = EXACT_DOMAIN if research_queue else DOMAIN
+        if not domains or len(domains) > 600 or len(set(domains)) != len(domains) or any(
+            len(domain) > 253 or not allowed.fullmatch(domain) for domain in domains
+        ):
             raise RuntimeError("Unexpected domains in verified NVIDIA catalog")
         for service in SERVICES:
-            update(service, domains, run_id)
+            update(service, domains, run_id, research_queue=research_queue)
 
 
 if __name__ == "__main__":
