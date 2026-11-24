@@ -1,0 +1,143 @@
+name: FI DNS dedicated persistent SSH channel (private)
+"on":
+  pull_request:
+    paths: ["nodekit/fi_dns_ssh*.py","nodekit/tests/test_fi_dns_ssh_bridge.py",".github/workflows/fi-dns-private-ssh-channel.yml"]
+  push:
+    branches: [main]
+    paths: ["nodekit/fi_dns_ssh*.py","nodekit/tests/test_fi_dns_ssh_bridge.py",".github/workflows/fi-dns-private-ssh-channel.yml"]
+  workflow_dispatch:
+permissions: {contents: read}
+concurrency:
+  group: mnebyvpn-fleet-fi
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Test persistent bridge and exact live stage shell
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile nodekit/fi_dns_ssh_{bridge,client,stage}.py
+          python3 -m unittest discover -s nodekit/tests -p 'test_fi_dns_ssh_bridge.py' -v
+          python3 - <<'PY'
+          from pathlib import Path
+          lines=Path('.github/workflows/fi-dns-private-ssh-channel.yml').read_text().splitlines()
+          i=lines.index('      - name: Install dedicated private channel and prove the actual signed RPC')
+          i=next(j for j in range(i+1,len(lines)) if lines[j]=='        run: |')+1
+          rows=[]
+          for line in lines[i:]:
+              if line and not line.startswith('          '): break
+              rows.append(line[10:] if line.startswith('          ') else '')
+          text='\n'.join(rows)+'\n'
+          assert 'StrictHostKeyChecking yes' in text and 'rollback' in text
+          assert 'fi_dns_ssh_stage.py\' probe' in text
+          Path('/tmp/fi-dns-bridge-live.sh').write_text(text)
+          PY
+          bash -n /tmp/fi-dns-bridge-live.sh
+  stage:
+    needs: offline
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: node-fi
+    env:
+      RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      FI_PASSWORD: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_PASSWORD }}
+      FI_USER: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_USER }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Install dedicated private channel and prove the actual signed RPC
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          [[ "$FI_USER" == root && -n "$RU_PASSWORD" && -n "$FI_PASSWORD" ]] || exit 2
+          grep -q '^188\.120\.254\.223 ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends sshpass >/dev/null
+          work="$RUNNER_TEMP/fi-dns-canary"
+          mkdir -m 0700 "$work"
+          cat > "$work/ru.cfg" <<CFG
+          Host ru-controller
+            HostName 188.120.254.223
+            User root
+            UserKnownHostsFile $GITHUB_WORKSPACE/ops/mnebydns-owner-ssh-known_hosts
+            GlobalKnownHostsFile /dev/null
+            HostKeyAlgorithms ssh-ed25519
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+            PubkeyAuthentication no
+            PreferredAuthentications password
+            ForwardAgent no
+            ClearAllForwardings yes
+            ControlMaster no
+            ConnectTimeout 12
+            LogLevel ERROR
+          CFG
+          SSHPASS="$RU_PASSWORD" sshpass -e ssh -T -F "$work/ru.cfg" ru-controller \
+            'test -f /root/mnebyvpn-controller/fi-known_hosts && test ! -L /root/mnebyvpn-controller/fi-known_hosts && test "$(stat -c "%u:%a" /root/mnebyvpn-controller/fi-known_hosts)" = 0:600 && cat /root/mnebyvpn-controller/fi-known_hosts' > "$work/fi-known"
+          python3 - "$work/fi-known" <<'PY'
+          import base64,pathlib,sys
+          data=pathlib.Path(sys.argv[1]).read_bytes()
+          assert len(data)<512 and data.count(b'\n')==1 and data.endswith(b'\n')
+          name,kind,key=data.decode('ascii').strip().split()
+          assert (name,kind)==('fi.mnebyvpn.site','ssh-ed25519')
+          raw=base64.b64decode(key,validate=True)
+          assert len(raw)==51 and raw.startswith(b'\x00\x00\x00\x0bssh-ed25519\x00\x00\x00\x20')
+          PY
+          cat > "$work/fi.cfg" <<CFG
+          Host fi-node
+            HostName 217.11.167.91
+            User root
+            HostKeyAlias fi.mnebyvpn.site
+            UserKnownHostsFile $work/fi-known
+            GlobalKnownHostsFile /dev/null
+            HostKeyAlgorithms ssh-ed25519
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+            PubkeyAuthentication no
+            PreferredAuthentications password
+            ForwardAgent no
+            ClearAllForwardings yes
+            ControlMaster no
+            ConnectTimeout 12
+            LogLevel ERROR
+          CFG
+          fi_node() { SSHPASS="$FI_PASSWORD" sshpass -e ssh -T -F "$work/fi.cfg" fi-node "$@"; }
+          ru_node() { SSHPASS="$RU_PASSWORD" sshpass -e ssh -T -F "$work/ru.cfg" ru-controller "$@"; }
+          ru_copy() { SSHPASS="$RU_PASSWORD" sshpass -e scp -F "$work/ru.cfg" "$@"; }
+          fi_copy() { SSHPASS="$FI_PASSWORD" sshpass -e scp -F "$work/fi.cfg" "$@"; }
+          stage="/run/fi-dns-bridge-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          [[ "$stage" =~ ^/run/fi-dns-bridge-[0-9]+-[0-9]+$ ]]
+          ru_created=no
+          fi_created=no
+          verified=no
+          cleanup() {
+            set +e
+            if [[ "$ru_created" == yes ]]; then
+              if [[ "$verified" != yes ]]; then
+                ru_node "if test -f '$stage/new-authorized-key'; then python3 '$stage/fi_dns_ssh_stage.py' rollback '$stage'; fi" || echo 'FI_DNS_RESTRICTED_KEY_ROLLBACK_UNVERIFIED'
+              fi
+              ru_node "rm -rf -- '$stage'" >/dev/null 2>&1
+            fi
+            if [[ "$fi_created" == yes ]]; then fi_node "rm -rf -- '$stage'" >/dev/null 2>&1; fi
+            rm -rf "$work"
+          }
+          trap cleanup EXIT
+          ru_node "umask 077; mkdir -m 0700 '$stage'"
+          ru_created=yes
+          fi_node "umask 077; mkdir -m 0700 '$stage'"
+          fi_created=yes
+          cp ops/mnebydns-owner-ssh-known_hosts "$work/ru-known_hosts"
+          chmod 600 "$work/ru-known_hosts"
+          fi_copy nodekit/fi_dns_ssh_stage.py nodekit/fi_dns_ssh_bridge.py nodekit/fi_dns_ssh_client.py nodekit/fi_dns_meter_rpc.py nodekit/fi_enrollment_ssh.py nodekit/fi_dns_signed_grants.py "$work/ru-known_hosts" "fi-node:$stage/"
+          fi_node "chmod 600 '$stage'/*; python3 '$stage/fi_dns_ssh_stage.py' fi '$stage'"
+          fi_copy "fi-node:$stage/fi-public.key" "$work/fi-public.key"
+          ru_copy nodekit/fi_dns_ssh_stage.py nodekit/fi_dns_ssh_bridge.py "$work/fi-public.key" "ru-controller:$stage/"
+          ru_node "chmod 600 '$stage'/*; python3 '$stage/fi_dns_ssh_stage.py' ru '$stage'"
+          fi_node "python3 '$stage/fi_dns_ssh_stage.py' probe"
+          verified=yes
