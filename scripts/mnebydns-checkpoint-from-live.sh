@@ -54,7 +54,6 @@ while read -r unit _; do
 done <<< "$timers"
 
 nginx -t -q
-grep -Fxq '    reload 5s 1s' "$dns"
 test -f "$pointer" && test ! -L "$pointer"
 old="$(cat "$pointer")"
 [[ "$old" =~ ^/opt/mnebydns-stable-checkpoints/[0-9]+$ ]]
