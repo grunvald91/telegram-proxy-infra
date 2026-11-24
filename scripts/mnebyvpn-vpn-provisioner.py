@@ -97,13 +97,43 @@ def atomic_json(path: pathlib.Path, obj: Any, mode: int = 0o600) -> None:
     finally:
         temp.unlink(missing_ok=True)
 
+XHTTP_PORT = 18945
+
+def _is_valid_loopback_xhttp_inbound(inbound: dict) -> bool:
+    if not isinstance(inbound, dict):
+        return False
+    stream = inbound.get('streamSettings') or {}
+    return (
+        inbound.get('tag') == 'mnebyvpn-xhttp-inbound'
+        and inbound.get('listen') == '127.0.0.1'
+        and inbound.get('port') == XHTTP_PORT
+        and inbound.get('protocol') == 'vless'
+        and stream.get('security') == 'none'
+        and stream.get('network') == 'xhttp'
+    )
+
 def verified_reality_public(template: dict) -> dict | None:
     inbounds = template.get('inbounds', [])
-    if not isinstance(inbounds, list) or len(inbounds) not in (1, 2):
+    if not isinstance(inbounds, list) or not inbounds:
         raise RuntimeError('Unexpected Xray inbounds')
-    if len(inbounds) == 1:
+    extra = inbounds[1:]
+    xhttp_count = sum(1 for ib in extra if isinstance(ib, dict) and ib.get('tag') == 'mnebyvpn-xhttp-inbound')
+    if xhttp_count > 1:
+        raise RuntimeError('Duplicate XHTTP inbound')
+    non_xhttp = []
+    for ib in extra:
+        if isinstance(ib, dict) and ib.get('tag') == 'mnebyvpn-xhttp-inbound':
+            if not _is_valid_loopback_xhttp_inbound(ib):
+                raise RuntimeError('Unexpected XHTTP inbound')
+        else:
+            non_xhttp.append(ib)
+    if len(non_xhttp) > 1:
+        raise RuntimeError('Unexpected Xray inbounds')
+    if not non_xhttp:
         return None
-    candidate = inbounds[1]
+    candidate = non_xhttp[0]
+    if not isinstance(candidate, dict):
+        raise RuntimeError('Unexpected Xray inbounds')
     stream = candidate.get('streamSettings', {})
     settings = stream.get('realitySettings', {})
     if (candidate.get('tag') != 'mnebyvpn-reality-inbound' or
@@ -175,10 +205,17 @@ class Agent:
         for item in table.values():
             if item.get('enabled') and normalized_datetime(item['expiresAt']) > utcnow():
                 clients.append({'id': item['credential'], 'level': 0})
-        cfg['inbounds'][0]['settings']['clients'] = clients
-        if self.reality_public is not None:
-            cfg['inbounds'][1]['settings']['clients'] = [
-                {**item, 'flow': 'xtls-rprx-vision'} for item in clients]
+        for inbound in cfg.get('inbounds', []):
+            if inbound.get('protocol') != 'vless':
+                continue
+            settings = inbound.setdefault('settings', {})
+            security = (inbound.get('streamSettings') or {}).get('security')
+            if security == 'reality':
+                if self.reality_public is not None:
+                    settings['clients'] = [
+                        {**item, 'flow': 'xtls-rprx-vision'} for item in clients]
+            else:
+                settings['clients'] = copy.deepcopy(clients)
         atomic_json(CONF, cfg, 0o640)
         checked = subprocess.run(
             [XRAY, 'run', '-test', '-config', str(CONF)],

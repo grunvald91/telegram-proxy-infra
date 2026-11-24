@@ -115,6 +115,31 @@ class NonDisruptiveProvisioningTests(unittest.TestCase):
         self.assertIn("[redacted-ip]", redacted)
         self.assertLessEqual(len(redacted), 300)
 
+    def test_rewrite_populates_clients_for_ws_and_xhttp_inbounds(self):
+        agent = provisioner.Agent.__new__(provisioner.Agent)
+        agent.reality_public = None
+        agent.template = {
+            "inbounds": [
+                {"protocol": "vless", "settings": {"clients": []}, "streamSettings": {"network": "ws", "security": "none"}},
+                {"protocol": "vless", "settings": {"clients": []}, "streamSettings": {"network": "tcp", "security": "reality"}},
+                {"protocol": "vless", "settings": {"clients": []}, "streamSettings": {"network": "xhttp", "security": "none"}},
+            ]
+        }
+        written = {}
+
+        def fake_atomic(path, data, mode=0o600):
+            written["data"] = data
+
+        fake_run = Mock(return_value=Mock(returncode=0))
+        with patch.object(provisioner, "atomic_json", side_effect=fake_atomic), \
+             patch.object(provisioner.subprocess, "run", fake_run):
+            agent._rewrite({"c1": self.item()})
+
+        inbounds = written["data"]["inbounds"]
+        self.assertEqual(inbounds[0]["settings"]["clients"], [{"id": "123e4567-e89b-42d3-a456-426614174000", "level": 0}])
+        self.assertEqual(inbounds[1]["settings"]["clients"], [])
+        self.assertEqual(inbounds[2]["settings"]["clients"], [{"id": "123e4567-e89b-42d3-a456-426614174000", "level": 0}])
+
 
 if __name__ == "__main__":
     unittest.main()

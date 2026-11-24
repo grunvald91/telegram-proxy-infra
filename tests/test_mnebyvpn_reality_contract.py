@@ -78,6 +78,18 @@ class RealityMetadataTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             agent.verified_reality_public(self.template)
 
+    def test_valid_loopback_xhttp_inbound_is_allowed_strictly(self):
+        tpl = {"inbounds": [
+            {"tag": "mnebyvpn-inbound"},
+            {"tag": "mnebyvpn-xhttp-inbound", "listen": "127.0.0.1",
+             "port": 18945, "protocol": "vless",
+             "streamSettings": {"network": "xhttp", "security": "none"}},
+        ]}
+        self.assertIsNone(agent.verified_reality_public(tpl))
+        tpl["inbounds"][1]["listen"] = "0.0.0.0"
+        with self.assertRaises(RuntimeError):
+            agent.verified_reality_public(tpl)
+
 
 if __name__ == "__main__":
     unittest.main()
