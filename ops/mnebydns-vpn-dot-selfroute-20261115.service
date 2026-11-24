@@ -1,8 +1,8 @@
 [Unit]
 Description=MNEBYDNS VPN-only local DoT SNI self-route to existing TCP 8854
 Documentation=https://github.com/grunvald91/telegram-proxy-infra/pull/194
-Wants=network-online.target mnebydns-personal-sni-stream.service mnebydns-personal-sni-redirect.service mnebydns-dot.service mnebyvpn-vpn-provisioner.service
-After=network-online.target mnebydns-personal-sni-stream.service mnebydns-personal-sni-redirect.service mnebydns-dot.service mnebyvpn-vpn-provisioner.service
+Wants=network-online.target mneby-awg-tg-relay.service mnebydns-personal-sni-stream.service mnebydns-personal-sni-redirect.service mnebydns-dot.service mnebyvpn-vpn-provisioner.service
+After=network-online.target mneby-awg-tg-relay.service mnebydns-personal-sni-stream.service mnebydns-personal-sni-redirect.service mnebydns-dot.service mnebyvpn-vpn-provisioner.service
 
 [Service]
 Type=oneshot

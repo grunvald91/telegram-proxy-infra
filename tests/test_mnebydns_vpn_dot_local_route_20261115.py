@@ -36,7 +36,7 @@ class VPNLocalDNSRoute(unittest.TestCase):
         self.assertIn('tcp_probe 127.0.0.1 8854 aaaaaaaaaaaa.dns.mnebyvpn.site valid',SOURCE)
 
     def test_personal_and_legacy_dns_configuration_is_guarded(self):
-        for s in ("default 89.125.90.101:853;","10.66.77.2:8856;",
+        for s in ("default 89.125.90.101:853;","10.66.77.2:8858;","10.66.77.2:8856;",
                   "listen 0.0.0.0:8854;","mnebydns-dot.service",
                   "mnebyvpn-vpn-provisioner.service"):
             self.assertIn(s,SOURCE)
@@ -49,7 +49,8 @@ class VPNLocalDNSRoute(unittest.TestCase):
                   'systemctl stop "$TIMER"'):
             self.assertIn(s,SOURCE)
         for s in ("Type=oneshot","RemainAfterExit=yes","/manage.sh ensure",
-                  "/manage.sh rollback-rule","WantedBy=multi-user.target"):
+                  "/manage.sh rollback-rule","mneby-awg-tg-relay.service",
+                  "WantedBy=multi-user.target"):
             self.assertIn(s,SERVICE)
 
     def test_cannot_restart_critical_services(self):
@@ -86,6 +87,54 @@ class VPNLocalDNSRoute(unittest.TestCase):
                          capture_output=True,text=True,timeout=5)
         self.assertEqual(p.returncode,2)
         self.assertIn("usage:",p.stderr)
+
+    def test_rollback_rule_preserves_mark_while_rollback_clears_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            td=Path(tmp)
+            state=td/"state"
+            state.mkdir()
+            mark=state/"installed"
+            mark.write_text("")
+            rule_flag=td/"rule_present"
+            rule_flag.write_text("1")
+            script_copy=td/"manage.sh"
+            patched=SOURCE.replace(
+                "ROOT=/var/lib/mnebydns-vpn-dot-selfroute-20261115",
+                f"ROOT={state}",
+                1,
+            )
+            self.assertNotEqual(patched,SOURCE)
+            script_copy.write_text(patched)
+            script_copy.chmod(0o755)
+            commands={
+                "id":'#!/bin/sh\n[ "$1" = "-u" ] || exit 3\n[ "$2" = "mnebyvpn-xray" ] || exit 4\necho 992\n',
+                "iptables":(
+                    '#!/bin/sh\n'
+                    'if [ "$3" = "nat" ] && [ "$4" = "-C" ]; then [ -f "$RULE_FLAG" ]; exit $?; fi\n'
+                    'if [ "$3" = "nat" ] && [ "$4" = "-D" ]; then rm -f "$RULE_FLAG"; exit 0; fi\n'
+                    'exit 1\n'
+                ),
+                "systemctl":'#!/bin/sh\nexit 0\n',
+            }
+            for name,body in commands.items():
+                p=td/name;p.write_text(body);p.chmod(0o755)
+            env=dict(os.environ)
+            env.update(PATH=str(td)+os.pathsep+env["PATH"],RULE_FLAG=str(rule_flag))
+
+            p1=subprocess.run(["bash",str(script_copy),"rollback-rule"],env=env,
+                              capture_output=True,text=True,timeout=6)
+            self.assertEqual(p1.returncode,0,p1.stderr)
+            self.assertIn("VPN_DOT_SELFROUTE_RULE_REMOVED=YES",p1.stdout)
+            self.assertFalse(rule_flag.exists())
+            self.assertTrue(mark.exists(),"rollback-rule on shutdown/reboot must keep ownership marker")
+
+            rule_flag.write_text("1")
+            p2=subprocess.run(["bash",str(script_copy),"rollback"],env=env,
+                              capture_output=True,text=True,timeout=6)
+            self.assertEqual(p2.returncode,0,p2.stderr)
+            self.assertIn("VPN_DOT_SELFROUTE_ROLLBACK=COMPLETE",p2.stdout)
+            self.assertFalse(rule_flag.exists())
+            self.assertFalse(mark.exists(),"explicit rollback must remove ownership marker")
 
 if __name__=="__main__":
     unittest.main(verbosity=2)

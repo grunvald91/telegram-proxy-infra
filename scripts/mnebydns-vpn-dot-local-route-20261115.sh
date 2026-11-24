@@ -60,7 +60,7 @@ preflight() {
   done
   grep -Fq 'listen 0.0.0.0:8854;' /etc/mnebydns/personal-sni/nginx.conf
   grep -Fq 'default 89.125.90.101:853;' /etc/mnebydns/personal-sni/nginx.conf
-  grep -Fq '10.66.77.2:8856;' /etc/mnebydns/personal-sni/nginx.conf
+  { grep -Fq '10.66.77.2:8858;' /etc/mnebydns/personal-sni/nginx.conf || grep -Fq '10.66.77.2:8856;' /etc/mnebydns/personal-sni/nginx.conf; }
   ss -H -lntp | grep -E ':8854[[:space:]]' | grep -q nginx
   iptables -w -t nat -C PREROUTING -i eth0 -d "$IP" -p tcp --dport 853 -j REDIRECT --to-ports "$ROUTER_PORT"
 }
@@ -70,13 +70,13 @@ rollback_rule() {
   if present; then
     iptables -w -t nat -D OUTPUT "${RULE[@]}"
   fi
-  rm -f "$MARK"
   log RULE_REMOVED YES
 }
 rollback() {
   # systemd ExecStop invokes rollback-rule, so do not recurse into service stop.
   systemctl disable --now "$SERVICE" >/dev/null 2>&1 || true
   rollback_rule
+  rm -f "$MARK"
   log ROLLBACK COMPLETE
 }
 ensure() {
