@@ -1,0 +1,198 @@
+name: FI217 NVIDIA Smart DNS candidate and personal policy inventory
+"on":
+  push:
+    branches: [smartdns/nvidia-exact-hosts-20261124]
+    paths: [.github/workflows/fi-dns-nvidia-candidate.yml]
+permissions:
+  contents: read
+concurrency:
+  group: mnebyvpn-fleet-fi
+  cancel-in-progress: false
+jobs:
+  stage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    environment: node-fi
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate closed FI candidate renderer
+        run: |
+          set -Eeuo pipefail
+          python3 nodekit/fi_dns_nvidia_candidate.py self-test
+          python3 -m unittest discover -s nodekit/tests -p 'test_dns_proxy_stage.py'
+      - name: Check personal policy and stage verified FI origins without publishing DNS
+        env:
+          RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+          FI_PASSWORD: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_PASSWORD }}
+          FI_USER: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_USER }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          [[ "$FI_USER" == root && -n "$RU_PASSWORD" && -n "$FI_PASSWORD" ]]
+          if ! command -v sshpass >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -qq -y --no-install-recommends sshpass >/dev/null
+          fi
+          work="$RUNNER_TEMP/fi-dns-canary"
+          mkdir -m 0700 "$work"
+          cat > "$work/ru.cfg" <<CFG
+          Host ru-controller
+            HostName 188.120.254.223
+            User root
+            UserKnownHostsFile $GITHUB_WORKSPACE/ops/mnebydns-owner-ssh-known_hosts
+            GlobalKnownHostsFile /dev/null
+            HostKeyAlgorithms ssh-ed25519
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+            PubkeyAuthentication no
+            PreferredAuthentications password
+            ForwardAgent no
+            ClearAllForwardings yes
+            ControlMaster no
+            ConnectTimeout 12
+            LogLevel ERROR
+          CFG
+          SSHPASS="$RU_PASSWORD" sshpass -e ssh -T -F "$work/ru.cfg" ru-controller \
+            'test -f /root/mnebyvpn-controller/fi-known_hosts && test ! -L /root/mnebyvpn-controller/fi-known_hosts && test "$(stat -c "%u:%a" /root/mnebyvpn-controller/fi-known_hosts)" = 0:600 && cat /root/mnebyvpn-controller/fi-known_hosts' > "$work/fi-known"
+          python3 - "$work/fi-known" <<'PY'
+          import base64,pathlib,sys
+          data=pathlib.Path(sys.argv[1]).read_bytes()
+          assert len(data)<512 and data.count(b'\n')==1 and data.endswith(b'\n')
+          name,kind,key=data.decode('ascii').strip().split()
+          assert (name,kind)==('fi.mnebyvpn.site','ssh-ed25519')
+          raw=base64.b64decode(key,validate=True)
+          assert len(raw)==51 and raw.startswith(b'\x00\x00\x00\x0bssh-ed25519\x00\x00\x00\x20')
+          PY
+          cat > "$work/fi.cfg" <<CFG
+          Host fi-node
+            HostName 217.11.167.91
+            User root
+            HostKeyAlias fi.mnebyvpn.site
+            UserKnownHostsFile $work/fi-known
+            GlobalKnownHostsFile /dev/null
+            HostKeyAlgorithms ssh-ed25519
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+            PubkeyAuthentication no
+            PreferredAuthentications password
+            ForwardAgent no
+            ClearAllForwardings yes
+            ControlMaster no
+            ConnectTimeout 12
+            LogLevel ERROR
+          CFG
+          python3 - <<'PY' > "$work/nvidia-domains"
+          import ast
+          from pathlib import Path
+          module = ast.parse(Path("scripts/mnebydns-nvidia-permanent-20261124.py").read_text())
+          target = next(n for n in module.body if isinstance(n, ast.Assign)
+                        and any(isinstance(t, ast.Name) and t.id == "TARGETS" for t in n.targets))
+          print(" ".join(ast.literal_eval(target.value)))
+          PY
+          read -r -a domains < "$work/nvidia-domains"
+          [[ "${#domains[@]}" == 23 ]]
+          for domain in "${domains[@]}"; do [[ "$domain" =~ ^[a-z0-9.-]+$ ]]; done
+          SSHPASS="$RU_PASSWORD" sshpass -e ssh -T -F "$work/ru.cfg" ru-controller \
+            python3 - "${domains[@]}" <<'PY' || echo personal_nvidia_policy_inventory=unavailable
+          import hashlib, json, pathlib, re, subprocess, sys
+          for name in ("mnebydns-personal-dot-private", "mnebydns-personal-dot"):
+              state = subprocess.run(["docker", "inspect", name], capture_output=True, timeout=7)
+              if state.returncode:
+                  continue
+              service = json.loads(state.stdout)[0]
+              if not service["State"]["Running"]:
+                  continue
+              config = dict(e.split("=", 1) for e in service["Config"]["Env"] if "=" in e)
+              name_match = re.fullmatch(r"/run/mnebydns-personal/([a-zA-Z0-9_.-]+[.]json)",
+                                       config.get("MNEBYDNS_PERSONAL_DOT_ROUTE_POLICY_FILE", ""))
+              if not name_match:
+                  continue
+              path = pathlib.Path("/etc/mnebydns/personal-dot") / name_match[1]
+              if path.is_symlink() or not path.is_file() or path.stat().st_size > 1024 * 1024:
+                  continue
+              raw = path.read_bytes()
+              declared = config.get("MNEBYDNS_PERSONAL_DOT_ROUTE_POLICY_SHA256")
+              if hashlib.sha256(raw).hexdigest() != declared:
+                  continue
+              rules = json.loads(raw)
+              if not isinstance(rules, list) or not all(isinstance(r, str) for r in rules):
+                  continue
+              hosts = {h for h in sys.argv[1:] if h in rules or
+                       any(r.startswith("*.") and h.endswith(r[1:]) for r in rules)}
+              print(f"personal_nvidia_catalog_membership={name}:{len(hosts)}/{len(sys.argv[1:])}")
+          PY
+          fi_node() { SSHPASS="$FI_PASSWORD" sshpass -e ssh -T -F "$work/fi.cfg" fi-node "$@"; }
+          stage="/run/fi-dns-nvidia-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          [[ "$stage" =~ ^/run/fi-dns-nvidia-[0-9]+-[0-9]+$ ]]
+          created=no
+          cleanup() {
+            if [[ "$created" == yes ]]; then
+              fi_node "rm -rf -- '$stage'" >/dev/null 2>&1 || true
+            fi
+            rm -rf -- "$work"
+          }
+          trap cleanup EXIT
+          fi_node "umask 077; mkdir -m 0700 '$stage'"
+          created=yes
+          SSHPASS="$FI_PASSWORD" sshpass -e scp -F "$work/fi.cfg" \
+            nodekit/{fi_dns_nvidia_candidate,dns_proxy_stage,install_components,nodekit,fi_dns_origin_canary,fi_regional_cert_stage}.py \
+            scripts/mnebydns-nvidia-permanent-20261124.py \
+            scripts/mnebydns-owner-domain-{controller,render}-20261110.py "fi-node:$stage/"
+          fi_node "python3 '$stage/fi_dns_nvidia_candidate.py' stage"
+
+  de-checkpoint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    concurrency:
+      group: mnebydns-google-public-443-change
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Identify mismatched checkpoint components without changing DE89
+        env:
+          DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS"
+          if ! command -v sshpass >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -qq -y --no-install-recommends sshpass >/dev/null
+          fi
+          SSHPASS="$DE_PASS" sshpass -e ssh -T \
+            -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 \
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR \
+            root@89.125.90.101 'python3 -' <<'PY'
+          import filecmp, pathlib, re, subprocess
+          base = pathlib.Path("/opt/mnebydns-stable-checkpoints")
+          root = pathlib.Path((base / "current").read_text().strip())
+          if root.parent != base or not root.is_dir():
+              raise SystemExit("DE89 unexpected checkpoint pointer")
+          paths = {
+              "dns.stable": pathlib.Path("/opt/mnebydns-dot/Corefile"),
+              "nginx.stable": pathlib.Path("/etc/nginx/nginx.conf"),
+              "proxy.stable": pathlib.Path("/etc/mnebydns-googlepilot/nginx.conf"),
+          }
+          def matches(checkpoint, config, live):
+              return (checkpoint / config).is_file() and live.is_file() and filecmp.cmp(
+                  checkpoint / config, live, shallow=False)
+          def verified(checkpoint):
+              return subprocess.run(["sha256sum", "--strict", "-c", "stable-manifest.sha256"],
+                                    cwd=checkpoint, capture_output=True, timeout=5).returncode == 0
+          print("de89_selected_checkpoint_manifest_valid=" + str(verified(root)).lower())
+          for config, live in paths.items():
+              print("de89_checkpoint_match_" + config + "=" + str(matches(root, config, live)).lower())
+          candidates = 0
+          for candidate in sorted(base.iterdir()):
+              if (candidate == root or candidate.is_symlink() or not candidate.is_dir()
+                  or not re.fullmatch(r"[A-Za-z0-9_.-]+", candidate.name)):
+                  continue
+              if all(matches(candidate, config, live) for config, live in paths.items()) and verified(candidate):
+                  print("de89_matching_verified_checkpoint=" + candidate.name)
+                  candidates += 1
+          print("de89_matching_verified_checkpoint_count=" + str(candidates))
+          PY
