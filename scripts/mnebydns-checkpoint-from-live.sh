@@ -13,8 +13,16 @@ proxy=/etc/mnebydns-googlepilot/nginx.conf
 
 exec 9>/run/lock/mnebyvpn-public-route.lock
 flock -w 35 9
-for service in nginx mnebydns-dot.service mnebydns-googlepilot.service xray.service; do
-  systemctl is-active --quiet "$service"
+trap 'echo "nvidia_live_checkpoint_failed_at_line=$LINENO" >&2' ERR
+for service in nginx mnebydns-dot.service; do
+  if ! systemctl is-active --quiet "$service"; then
+    echo "nvidia_live_checkpoint_required_service_inactive=$service" >&2
+    exit 3
+  fi
+done
+for service in mnebydns-googlepilot.service xray.service; do
+  state="$(systemctl is-active "$service" || true)"
+  echo "nvidia_live_checkpoint_other_service=$service:$state"
 done
 # Confirmed owner timers are deliberately kept armed as no-ops. Any
 # other timed rollback could replace a live config during the batch.
