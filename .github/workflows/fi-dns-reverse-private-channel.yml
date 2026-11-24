@@ -110,6 +110,21 @@ jobs:
           ru_node() { SSHPASS="$RU_PASSWORD" sshpass -e ssh -T -F "$work/ru.cfg" ru-controller "$@"; }
           ru_copy() { SSHPASS="$RU_PASSWORD" sshpass -e scp -F "$work/ru.cfg" "$@"; }
           fi_copy() { SSHPASS="$FI_PASSWORD" sshpass -e scp -F "$work/fi.cfg" "$@"; }
+          # Independently compare both remote clocks against a bracketed
+          # runner clock. Only numeric offsets and sync status are emitted.
+          clock_probe() {
+            local label="$1" func="$2" before after remote offset rtt
+            before=$(date +%s%3N)
+            remote=$("$func" 'date +%s%3N')
+            after=$(date +%s%3N)
+            [[ "$remote" =~ ^[0-9]{13}$ && "$before" =~ ^[0-9]{13}$ && "$after" =~ ^[0-9]{13}$ ]] || return 2
+            offset=$((remote - (before + after) / 2))
+            rtt=$((after - before))
+            printf 'FI_DNS_CLOCK_%s_OFFSET_MS=%s;RTT_MS=%s\n' "$label" "$offset" "$rtt"
+            "$func" 'printf "NTP_SYNC="; timedatectl show -p NTPSynchronized --value 2>/dev/null || true; printf "NTP_ENABLED="; timedatectl show -p NTP --value 2>/dev/null || true; for svc in systemd-timesyncd chrony chronyd ntp ntpsec; do if systemctl is-active --quiet "$svc.service"; then printf "ACTIVE_TIME_SERVICE=%s\n" "$svc"; fi; done'
+          }
+          clock_probe RU ru_node
+          clock_probe FI fi_node
           stage="/run/fi-dns-reverse-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           [[ "$stage" =~ ^/run/fi-dns-reverse-[0-9]+-[0-9]+$ ]]
           ru_created=no
