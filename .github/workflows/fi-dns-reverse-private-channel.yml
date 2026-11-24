@@ -136,5 +136,8 @@ jobs:
           fi_copy nodekit/fi_dns_reverse_stage.py nodekit/fi_dns_reverse_channel.py nodekit/fi_dns_ssh_stage.py nodekit/fi_dns_ssh_bridge.py "$work/ru-public.key" "fi-node:$stage/"
           fi_node "chmod 600 '$stage'/*; python3 '$stage/fi_dns_reverse_stage.py' fi '$stage'"
           ru_node "python3 '$stage/fi_dns_reverse_stage.py' start '$stage'"
-          fi_node "python3 '$stage/fi_dns_reverse_stage.py' probe"
+          if ! fi_node "python3 '$stage/fi_dns_reverse_stage.py' probe"; then
+            ru_node 'for name in mnebyvpn-fi-dns-meter mnebyvpn-fi-dns-publisher mnebyvpn-fi-dns-reverse; do systemctl show "$name" -p Id -p ActiveState -p SubState -p Result -p ExecMainStatus -p NRestarts; done; journalctl -u mnebyvpn-fi-dns-meter -u mnebyvpn-fi-dns-publisher -u mnebyvpn-fi-dns-reverse -n 80 --no-pager -o cat | grep -E "^FI_DNS_(METER_LOOPBACK_READY|SIGNED_OUTBOX_READY|CONTROLLER_WORKER_STOPPED|DB_IDLE_ERROR|REVERSE_CHANNEL_CLOSED)$" | sort | uniq -c' || true
+            exit 2
+          fi
           verified=yes
