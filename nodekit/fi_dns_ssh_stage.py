@@ -113,6 +113,7 @@ def prepare_fi(src):
     private_dir(FI_ROOT);private_dir(FI_ROOT/"identity")
     verify_pin(FI_ROOT/"identity/node-public.spki",NODE_PIN)
     verify_pin(FI_ROOT/"controller-access.spki",CONTROLLER_PIN)
+    read(FI_ROOT/"identity/node-private.pk8",256)
     require(command("/usr/bin/openssl","pkey","-inform","DER","-in",str(FI_ROOT/"identity/node-private.pk8"),"-pubout","-outform","DER")==read(FI_ROOT/"identity/node-public.spki",100),"node_private_pin_mismatch")
     manifest=json.loads(read(FI_ROOT/"manifest.json",10000))
     require(manifest.get("node_id")=="fi-test-01" and manifest.get("state")=="active","unexpected_fi_manifest")
@@ -157,6 +158,7 @@ def stage_ru(src):
         if matching:
             require(matching==[entry],"conflicting_authorized_key")
         else:
+            immutable(src/"new-authorized-key",entry+b"\n")
             data=current+(b"\n" if current and not current.endswith(b"\n") else b"")+entry+b"\n"
             fd,tmp=tempfile.mkstemp(prefix=".fi-dns-auth-",dir=directory)
             try:
@@ -171,6 +173,43 @@ def stage_ru(src):
     finally:os.close(lock)
     print("RU_FI_DNS_FORCED_COMMAND_READY=true")
 
+def rollback_ru(src):
+    host(RU)
+    marker=src/"new-authorized-key"
+    if not marker.exists():
+        return
+    entry=read(marker,2000).rstrip(b"\n")
+    key=parse_pub(read(src/"fi-public.key",1000))
+    expected=('restrict,from="'+FI+'",command="/usr/bin/python3 '+str(RU_RUNTIME/"fi_dns_ssh_bridge.py")+'" ssh-ed25519 '+key+' '+COMMENT).encode()
+    require(entry==expected,"rollback_entry_mismatch")
+    directory=Path("/root/.ssh")
+    private_dir(directory)
+    path=directory/"authorized_keys"
+    lock=os.open(directory/".fi-dns-channel.lock",os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
+    try:
+        s=os.fstat(lock)
+        require(stat.S_ISREG(s.st_mode) and s.st_uid==0 and not s.st_mode&0o077,"unsafe_lock")
+        fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        current=read(path,256000)
+        matches=[line for line in current.splitlines() if line==entry]
+        if not matches:
+            return
+        require(len(matches)==1,"duplicate_rollback_entry")
+        rows=current.splitlines(keepends=True)
+        data=b"".join(line for line in rows if line.rstrip(b"\r\n")!=entry)
+        fd,tmp=tempfile.mkstemp(prefix=".fi-dns-rollback-",dir=directory)
+        try:
+            with os.fdopen(fd,"wb") as f:
+                f.write(data);f.flush();os.fsync(f.fileno())
+            require(read(path,256000)==current,"authorized_keys_changed")
+            os.replace(tmp,path)
+            dfd=os.open(directory,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+            try:os.fsync(dfd)
+            finally:os.close(dfd)
+        finally:Path(tmp).unlink(missing_ok=True)
+    finally:os.close(lock)
+    print("FI_DNS_NEW_SSH_AUTH_ROLLED_BACK=true")
+
 
 async def probe():
     host(FI)
@@ -181,8 +220,12 @@ async def probe():
     import time
     args=ssh_args(FI_CHANNEL/"identity",FI_CHANNEL/"known_hosts")
     bad=await asyncio.create_subprocess_exec(*args[:-1],"false",stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.DEVNULL)
-    output,_=await asyncio.wait_for(bad.communicate(),8)
-    require(bad.returncode!=0 and output==b"","forced_command_not_restricted")
+    try:
+        output,_=await asyncio.wait_for(bad.communicate(),8)
+        require(bad.returncode!=0 and output==b"","forced_command_not_restricted")
+    finally:
+        if bad.returncode is None:
+            bad.kill();await bad.wait()
     pool=MeterPool(args)
     try:
         await pool.warm()
@@ -207,6 +250,7 @@ if __name__=="__main__":
             src=Path(sys.argv[2]);private_dir(src)
             if sys.argv[1]=="fi":prepare_fi(src)
             elif sys.argv[1]=="ru":stage_ru(src)
+            elif sys.argv[1]=="rollback":rollback_ru(src)
             else:raise RuntimeError("invalid_action")
     except (OSError,ValueError,TypeError,RuntimeError,subprocess.SubprocessError,asyncio.TimeoutError) as exc:
         label=str(exc) if isinstance(exc,RuntimeError) and re.fullmatch("[a-z0-9_]+",str(exc)) else "channel_stage_failed"
