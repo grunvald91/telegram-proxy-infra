@@ -87,7 +87,7 @@ async def make_metered_loopback_server(
     """
     if authorizer is None or meter is None or resolver is None:
         raise ValueError("FI DNS meter, signed authorizer and resolver required")
-    if not isinstance(listen_port, int) or not 1024 <= listen_port <= 65535:
+    if not isinstance(listen_port, int) or not (listen_port == 0 or 1024 <= listen_port <= 65535):
         raise ValueError("Invalid private FI DoT listener port")
     verify_pair(REGIONAL_CERT_DIR)
     binding = SniBindings(
