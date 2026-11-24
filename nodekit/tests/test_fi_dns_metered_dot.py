@@ -102,7 +102,7 @@ class Writer:
 
 async def charge(q=None, **kw):
     return await subject.charge_one_question(
-        kw.pop("host", HOST), q or question(),
+        kw.pop("host", HOST), question() if q is None else q,
         authorizer=kw.pop("auth", Auth()),
         meter=kw.pop("meter", Meter()),
         resolver=kw.pop("resolver", Resolver()),
