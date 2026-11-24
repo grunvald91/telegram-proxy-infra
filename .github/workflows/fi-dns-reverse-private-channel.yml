@@ -1,10 +1,10 @@
 name: FI DNS controller-initiated private channel (gate OFF)
 "on":
   pull_request:
-    paths: ["nodekit/fi_dns_reverse*.py","nodekit/tests/test_fi_dns_reverse_channel.py","nodekit/systemd/mnebyvpn-fi-dns-reverse.service",".github/workflows/fi-dns-reverse-private-channel.yml"]
+    paths: ["nodekit/fi_dns_reverse*.py","nodekit/tests/test_fi_dns_reverse_channel.py","nodekit/systemd/fi-dns-reverse/mnebyvpn-fi-dns-reverse.service",".github/workflows/fi-dns-reverse-private-channel.yml"]
   push:
     branches: [main]
-    paths: ["nodekit/fi_dns_reverse*.py","nodekit/tests/test_fi_dns_reverse_channel.py","nodekit/systemd/mnebyvpn-fi-dns-reverse.service",".github/workflows/fi-dns-reverse-private-channel.yml"]
+    paths: ["nodekit/fi_dns_reverse*.py","nodekit/tests/test_fi_dns_reverse_channel.py","nodekit/systemd/fi-dns-reverse/mnebyvpn-fi-dns-reverse.service",".github/workflows/fi-dns-reverse-private-channel.yml"]
   workflow_dispatch:
 permissions: {contents: read}
 concurrency:
@@ -130,7 +130,7 @@ jobs:
           ru_created=yes
           fi_node "umask 077; mkdir -m 0700 '$stage'"
           fi_created=yes
-          ru_copy nodekit/fi_dns_reverse_stage.py nodekit/fi_dns_reverse_channel.py nodekit/fi_dns_ssh_stage.py nodekit/fi_dns_ssh_bridge.py nodekit/systemd/mnebyvpn-fi-dns-reverse.service "ru-controller:$stage/"
+          ru_copy nodekit/fi_dns_reverse_stage.py nodekit/fi_dns_reverse_channel.py nodekit/fi_dns_ssh_stage.py nodekit/fi_dns_ssh_bridge.py nodekit/systemd/fi-dns-reverse/mnebyvpn-fi-dns-reverse.service "ru-controller:$stage/"
           ru_node "chmod 600 '$stage'/*; python3 '$stage/fi_dns_reverse_stage.py' ru '$stage'"
           ru_copy "ru-controller:$stage/ru-public.key" "$work/ru-public.key"
           fi_copy nodekit/fi_dns_reverse_stage.py nodekit/fi_dns_reverse_channel.py nodekit/fi_dns_ssh_stage.py nodekit/fi_dns_ssh_bridge.py "$work/ru-public.key" "fi-node:$stage/"
