@@ -1,0 +1,39 @@
+name: MNEBYDNS NVIDIA exact-host rollout (DE89)
+"on":
+  push:
+    branches: [smartdns/nvidia-exact-hosts-20261124]
+    paths: [.github/workflows/mnebydns-nvidia-exact-rollout.yml]
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-google-public-443-change
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify exact-host deployment and rollback contracts
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/mnebydns-nvidia-permanent-20261124.py self-test
+          python3 scripts/mnebydns-owner-domain-controller-20261110.py self-test
+          python3 -m unittest discover -s scripts/tests -p 'test_owner_domain_*.py'
+          for script in scripts/mnebydns-owner-domain-{stage,confirm,rollback}-20261110.sh; do
+            bash -n "$script"
+          done
+      - name: Apply NVIDIA routes on DE89 with DNS, TLS and API verification
+        env:
+          RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+          DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          if ! command -v sshpass >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -qq -y --no-install-recommends sshpass >/dev/null
+          fi
+          python3 scripts/mnebydns-nvidia-permanent-20261124.py run
