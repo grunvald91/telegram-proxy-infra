@@ -122,6 +122,28 @@ class FiMeteredTlsIntegration(unittest.TestCase):
                     self.assertEqual(len(a.calls),3)
                     self.assertEqual(a.calls,[HOST]*3)
                     self.assertEqual(len(r.requests),2)
+                    # Hold four idle TLS sessions for the same bearer.
+                    # A fifth must be closed independently of query budget.
+                    holding=[]
+                    try:
+                        for _ in range(session.PER_CREDENTIAL_CONNECTIONS):
+                            held=await asyncio.wait_for(
+                                asyncio.open_connection(
+                                    "127.0.0.1",port,ssl=client,
+                                    server_hostname=HOST),timeout=4)
+                            holding.append(held)
+                        fifth_reader,fifth_writer=await asyncio.wait_for(
+                            asyncio.open_connection(
+                                "127.0.0.1",port,ssl=client,
+                                server_hostname=HOST),timeout=4)
+                        self.assertEqual(
+                            await asyncio.wait_for(fifth_reader.read(1),3),b"")
+                        fifth_writer.close()
+                        await fifth_writer.wait_closed()
+                    finally:
+                        for _,held_writer in holding:
+                            held_writer.close()
+                            await held_writer.wait_closed()
                     with self.assertRaises((OSError,ssl.SSLError,ConnectionError)):
                         await asyncio.wait_for(
                             asyncio.open_connection(
@@ -149,6 +171,7 @@ class FiMeteredTlsIntegration(unittest.TestCase):
         self.assertEqual(session.LISTEN_HOST,"127.0.0.1")
         self.assertNotEqual(session.LISTEN_PORT,853)
         self.assertGreaterEqual(session.GLOBAL_CONNECTIONS,1)
+        self.assertEqual(session.PER_CREDENTIAL_CONNECTIONS,4)
 
 
 if __name__ == "__main__":
