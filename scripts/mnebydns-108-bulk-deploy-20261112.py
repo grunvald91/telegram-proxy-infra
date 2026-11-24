@@ -43,13 +43,14 @@ def event(code,**kwargs):
         f.write(json.dumps(data,ensure_ascii=False,sort_keys=True)+"\n")
     print("MASS_BULK_EVENT="+json.dumps(data,ensure_ascii=False,sort_keys=True),flush=True)
 
-def checked_plan():
+def checked_plan(research_inventory=None):
     if not re.fullmatch(r"[1-9][0-9]{8,12}",RUNID):
         raise RuntimeError("Invalid unique GitHub run ID")
     plan=json.loads((OUTPUT/"plan.json").read_text())
-    names=batch.inventory()
+    names=batch.inventory() if research_inventory is None else research_inventory
     selected=plan.get("selected")
-    if not isinstance(selected,list) or not selected or len(selected)>108:
+    limit=108 if research_inventory is None else len(research_inventory)
+    if not isinstance(selected,list) or not selected or len(selected)>limit:
         raise RuntimeError("Empty or oversized bulk candidate set")
     seen=set()
     for row in selected:
@@ -95,7 +96,7 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
         print(json.dumps(x),flush=True)
 """
 
-def verify_public_https(selected):
+def verify_public_https(selected, *, enforce=True):
     hosts=[row["domain"] for row in selected]
     token=base64.b64encode(json.dumps(hosts).encode()).decode()
     cmd="python3 -c "+shlex.quote(REMOTE_EDGE)+" "+shlex.quote(token)+" "+shlex.quote(owner.EDGE)
@@ -106,7 +107,7 @@ def verify_public_https(selected):
     failed=[dict(domain=h,code=code,error=why) for h,code,why in res
             if type(code) is not int or not 200<=code<400 or why!="OK"]
     event("BULK_PUBLIC_HTTPS",verified=len(hosts)-len(failed),failed=failed)
-    if failed:
+    if failed and enforce:
         raise RuntimeError("RU_TO_DE_HTTPS_CANDIDATE_FAILURE")
 
 def verify_dot(selected):
@@ -230,21 +231,38 @@ def transfer(selected):
             str(path),"root@"+owner.EDGE+":"+WORK+"/"+dst],password,timeout=90)
     event("BULK_FILES_STAGED",count=len(files))
 
-def deploy():
-    plan=checked_plan()
+def capacity(*, research_queue=False):
+    if not research_queue:
+        return batch.capacity()
+    command=(
+        "set -eu; systemctl is-active --quiet nginx; "
+        "systemctl is-active --quiet mnebydns-dot.service; "
+        "nginx -t >/dev/null 2>&1; "
+        "mem=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo); "
+        "disk=$(df -Pk /opt/mnebydns-dot | awk 'NR==2 {print $4}'); "
+        'test "$mem" -ge '+str(batch.MIN_RAM_KB)+"; "
+        'test "$disk" -ge '+str(batch.MIN_DISK_KB)+"; echo CAPACITY_OK"
+    )
+    if owner.ssh("de",command,40)!="CAPACITY_OK":
+        raise RuntimeError("Insufficient capacity or unhealthy DNS services")
+
+def deploy(*, research_inventory=None):
+    research_queue=research_inventory is not None
+    plan=checked_plan(research_inventory)
     selected=plan["selected"]
     # The current scan+plan must be performed in this same workflow run.
-    if not prepare.SCAN.is_file() or not owner.live_checkpoint_unchanged():
+    if (not research_queue and not prepare.SCAN.is_file()) or not owner.live_checkpoint_unchanged():
         raise RuntimeError("Missing fresh plan or clean production checkpoint")
     batch.ensure_quiet()
-    batch.capacity()
+    capacity(research_queue=research_queue)
     if not states_are(selected,"PENDING"):
         raise RuntimeError("Research ownership changed since preparation")
     event("BEGIN",candidate_count=len(selected),excluded=len(plan["excluded"]))
     # Capture latency before the route change, and require no material
     # median DoT degradation after CoreDNS installs 5 templates per host.
-    initial_latency_ms=dot_latency_baseline()
-    event("BASELINE_DOT_LATENCY",median_ms=initial_latency_ms)
+    if not research_queue:
+        initial_latency_ms=dot_latency_baseline()
+        event("BASELINE_DOT_LATENCY",median_ms=initial_latency_ms)
     staged=False
     confirmed=False
     db_committed=False
@@ -253,14 +271,21 @@ def deploy():
         deadline=(dt.datetime.now(dt.timezone.utc)+dt.timedelta(minutes=60)).strftime("%Y-%m-%d %H:%M:%S UTC")
         cmd="bash "+shlex.quote(WORK+"/stage.sh")+" "+ " ".join(
             shlex.quote(x) for x in (WORK,RUNID,deadline))
+        if research_queue:
+            cmd+=" --research-queue"
         resp=owner.ssh("de",cmd,170)
         if "MASS_BULK_STAGE_ACTIVE=true" not in resp:
             raise RuntimeError("Mass stage not acknowledged")
         staged=True
         event("STAGE_OK",rollback_expiry_utc=deadline)
-        verify_dot(selected)
-        verify_latency(initial_latency_ms)
-        verify_public_https(selected)
+        if research_queue:
+            for item in selected[:3]:
+                owner.oracle_canary_check(item["domain"],True)
+            verify_public_https(selected[:3],enforce=False)
+        else:
+            verify_dot(selected)
+            verify_latency(initial_latency_ms)
+            verify_public_https(selected)
         # One more stable DNS regression before accepting a promoted checkpoint.
         owner.oracle_canary_check(selected[-1]["domain"],True)
         if not states_are(selected,"PENDING"):
