@@ -1,40 +1,77 @@
 #!/usr/bin/env bash
-# Bulk-only wrapper for the established independent rollback.
-# If CoreDNS died during an invalid pilot reload, the original rollback
-# restores the old Corefile but its reload helper intentionally refuses to
-# restart an inactive service. Recover ONLY that exact old-file state.
+# Restore only the exact before/pilot pair created by the bulk transaction.
 set -Eeuo pipefail
 (( EUID == 0 )) || exit 2
 [[ $# == 1 && "$1" =~ ^/opt/mnebydns-owner-domain/[1-9][0-9]{8,12}$ ]] || exit 2
 base="$1"
-test -s "$base/rollback-original.sh"
-test -s "$base/dns.before"
-test -s "$base/nginx.before"
-if bash "$base/rollback-original.sh" "$base"; then
+id="$(basename "$base")"
+name="mnebydns-owner-rollback-$id"
+dns=/opt/mnebydns-dot/Corefile
+nginx=/etc/nginx/nginx.conf
+proxy=/etc/mnebydns-googlepilot/nginx.conf
+pointer=/opt/mnebydns-stable-checkpoints/current
+
+exec 9>/run/lock/mnebyvpn-public-route.lock
+flock -w 50 9
+[[ "$(cat "$base/mode")" == bulk-add ]]
+checkpoint="$(cat "$pointer")"
+[[ "$checkpoint" =~ ^/opt/mnebydns-stable-checkpoints/[0-9]+$ ]]
+(cd "$checkpoint" && sha256sum --strict -c stable-manifest.sha256 >/dev/null)
+
+disarm() {
+  systemctl disable --now "$name.timer" >/dev/null 2>&1 || true
+  rm -f -- "/etc/systemd/system/$name.timer"
+  systemctl daemon-reload
+}
+
+if test -f "$base/confirmed" || (
+  cmp -s "$checkpoint/dns.stable" "$base/dns.pilot" &&
+  cmp -s "$checkpoint/nginx.stable" "$base/nginx.pilot"
+); then
+  disarm
+  echo 'owner_domain_canary_confirmed_no_rollback=true'
   exit 0
 fi
-test ! -f "$base/confirmed" || { echo 'BULK_ROLLBACK_CONFIRMED_NOT_RECOVERABLE=true' >&2; exit 4; }
-live_dns=/opt/mnebydns-dot/Corefile
-live_nginx=/etc/nginx/nginx.conf
-checkpoint="$(cat /opt/mnebydns-stable-checkpoints/current)"
-[[ "$checkpoint" =~ ^/opt/mnebydns-stable-checkpoints/[0-9]+$ ]] || exit 4
-(cd "$checkpoint" && sha256sum -c stable-manifest.sha256 >/dev/null)
-# Reject any concurrent change, any unrecognized file, or a promoted checkpoint.
+
 cmp -s "$checkpoint/dns.stable" "$base/dns.before"
 cmp -s "$checkpoint/nginx.stable" "$base/nginx.before"
-cmp -s "$checkpoint/dns.stable" "$live_dns"
-cmp -s "$checkpoint/nginx.stable" "$live_nginx"
-cmp -s "$checkpoint/proxy.stable" /etc/mnebydns-googlepilot/nginx.conf
-nginx -t >/dev/null 2>&1
-systemctl is-active --quiet nginx
-# Only an unhealthy/missing DoT listener justifies a single recovery restart.
-if ! systemctl is-active --quiet mnebydns-dot.service ||
-   ! ss -H -lnt 'sport = :853' | grep -Fq '89.125.90.101:853'; then
-  echo 'MASS_BULK_RECOVERING_INACTIVE_DOT_WITH_VERIFIED_OLD_COREFILE=true'
+cmp -s "$checkpoint/proxy.stable" "$proxy"
+for pair in "dns:$dns" "nginx:$nginx"; do
+  IFS=: read -r kind live <<< "$pair"
+  if ! cmp -s "$base/$kind.before" "$live" && ! cmp -s "$base/$kind.pilot" "$live"; then
+    echo "MASS_BULK_ROLLBACK_UNKNOWN_CONFIG=$kind" >&2
+    exit 4
+  fi
+done
+
+if cmp -s "$base/dns.pilot" "$dns"; then
+  cp -p "$base/dns.before" "$dns.mass-rollback-$id"
+  mv -f "$dns.mass-rollback-$id" "$dns"
+  if systemctl is-active --quiet mnebydns-dot.service; then
+    bash "$base/reload.sh" "$dns"
+  else
+    systemctl restart mnebydns-dot.service
+  fi
+elif ! systemctl is-active --quiet mnebydns-dot.service; then
   systemctl restart mnebydns-dot.service
 fi
+if cmp -s "$base/nginx.pilot" "$nginx"; then
+  cp -p "$base/nginx.before" "$nginx.mass-rollback-$id"
+  mv -f "$nginx.mass-rollback-$id" "$nginx"
+  nginx -t -q
+  systemctl reload nginx
+fi
+for attempt in $(seq 1 45); do
+  if systemctl is-active --quiet mnebydns-dot.service &&
+     ss -H -lnt 'sport = :853' | grep -Fq '89.125.90.101:853'; then
+    break
+  fi
+  sleep .2
+done
 systemctl is-active --quiet mnebydns-dot.service
+systemctl is-active --quiet nginx
 ss -H -lnt 'sport = :853' | grep -Fq '89.125.90.101:853'
-# The original rollback owns timer disarm and confirms both old config files.
-bash "$base/rollback-original.sh" "$base"
-echo 'MASS_BULK_DEAD_DOT_RECOVERY_VERIFIED=true'
+cmp -s "$base/dns.before" "$dns"
+cmp -s "$base/nginx.before" "$nginx"
+disarm
+echo 'owner_domain_canary_rollback_verified=true'
