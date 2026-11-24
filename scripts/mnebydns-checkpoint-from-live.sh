@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# Record the current DE89 DNS and proxy configs as the NVIDIA rollout's rollback point.
+set -Eeuo pipefail
+umask 077
+(( EUID == 0 ))
+[[ $# == 1 && "$1" =~ ^[1-9][0-9]{8,12}$ ]]
+base=/opt/mnebydns-stable-checkpoints
+pointer="$base/current"
+target="$base/$1"
+dns=/opt/mnebydns-dot/Corefile
+nginx=/etc/nginx/nginx.conf
+proxy=/etc/mnebydns-googlepilot/nginx.conf
+
+exec 9>/run/lock/mnebyvpn-public-route.lock
+flock -w 35 9
+for service in nginx mnebydns-dot.service mnebydns-googlepilot.service xray.service; do
+  systemctl is-active --quiet "$service"
+done
+# Confirmed owner timers are deliberately kept armed as no-ops. Any
+# other timed rollback could replace a live config during the batch.
+timers="$(systemctl list-units --type=timer --state=active --plain --no-legend)"
+while read -r unit _; do
+  case "$unit" in
+    mnebydns-owner-rollback-*.timer)
+      id="${unit#mnebydns-owner-rollback-}"
+      id="${id%.timer}"
+      if [[ "$id" =~ ^[1-9][0-9]{8,12}$ && -f "/opt/mnebydns-owner-domain/$id/confirmed" ]]; then
+        continue
+      fi
+      echo "nvidia_live_checkpoint_busy=$unit" >&2
+      exit 4 ;;
+    mnebydns-*rollback*.timer|mnebydns-*revert*.timer|mnebydns-*watchdog*.timer)
+      echo "nvidia_live_checkpoint_busy=$unit" >&2
+      exit 4 ;;
+  esac
+done <<< "$timers"
+
+nginx -t -q
+grep -Fxq '    reload 5s 1s' "$dns"
+test -f "$pointer" && test ! -L "$pointer"
+old="$(cat "$pointer")"
+[[ "$old" =~ ^/opt/mnebydns-stable-checkpoints/[0-9]+$ ]]
+tmp="$(mktemp -d "$base/.nvidia-baseline.XXXXXXXX")"
+cleanup() { rm -rf -- "$tmp"; }
+trap cleanup EXIT
+for pair in "dns:$dns" "nginx:$nginx" "proxy:$proxy"; do
+  IFS=: read -r name source <<< "$pair"
+  test -s "$source" && test ! -L "$source"
+  cp --preserve=mode,ownership,timestamps -- "$source" "$tmp/$name.stable"
+done
+(cd "$tmp" && sha256sum dns.stable nginx.stable proxy.stable > stable-manifest.sha256)
+cmp -s "$tmp/dns.stable" "$dns"
+cmp -s "$tmp/nginx.stable" "$nginx"
+cmp -s "$tmp/proxy.stable" "$proxy"
+test "$(cat "$pointer")" = "$old"
+test ! -e "$target"
+printf '%s\n' "$old" > "$tmp/previous-pointer"
+mkdir -m 700 "$target"
+for name in dns.stable nginx.stable proxy.stable stable-manifest.sha256 previous-pointer; do
+  mv -- "$tmp/$name" "$target/$name"
+done
+(cd "$target" && sha256sum --strict -c stable-manifest.sha256 >/dev/null)
+printf '%s\n' "$target" > "$tmp/current"
+chmod --reference="$pointer" "$tmp/current"
+chown --reference="$pointer" "$tmp/current"
+mv -T -- "$tmp/current" "$pointer"
+echo 'nvidia_rollback_snapshot_from_current_live_files=true'
