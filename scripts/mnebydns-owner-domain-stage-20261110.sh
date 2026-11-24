@@ -29,7 +29,12 @@ for pair in "dns:$dns" "nginx:$nginx" "proxy:/etc/mnebydns-googlepilot/nginx.con
     exit 3
   }
 done
-for service in nginx mnebydns-dot.service mnebydns-googlepilot.service xray.service; do
+services=(nginx mnebydns-dot.service)
+case "$domain" in
+  nvidia.com|*.nvidia.com|nvcr.io|*.nvcr.io) ;;
+  *) services+=(mnebydns-googlepilot.service xray.service) ;;
+esac
+for service in "${services[@]}"; do
   systemctl is-active --quiet "$service" || {
     echo "owner_domain_preflight_service_unhealthy=$service" >&2
     exit 3
