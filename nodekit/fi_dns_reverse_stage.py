@@ -114,6 +114,37 @@ def prepare_fi(src):
     change_auth(src)
 
 
+def repair_fi_clock(src):
+    host(FI);private_dir(FI_RUNTIME)
+    script=FI_RUNTIME/"fi_dns_reverse_clock.py"
+    immutable(script,read(src/script.name,100000))
+    # Native NTP is preferred. Restart only the existing time service,
+    # never network/VPN services. Independently verify HTTPS time afterward.
+    sync=command("timedatectl","show","-p","NTPSynchronized","--value").strip()
+    if sync!=b"yes":
+        command("systemctl","is-active","--quiet","systemd-timesyncd.service")
+        command("systemctl","restart","systemd-timesyncd.service")
+        for _ in range(10):
+            if command("timedatectl","show","-p","NTPSynchronized","--value").strip()==b"yes":break
+            time.sleep(2)
+    result=subprocess.run(["/usr/bin/python3",str(script),"--repair"],timeout=35)
+    require(result.returncode==0,"fi_clock_repair_failed")
+    # Keep native NTP active. A bounded independent HTTPS fallback checks
+    # every two minutes only while NTP is unsynchronized.
+    unitdir=Path("/etc/systemd/system")
+    names=("mnebyvpn-fi-clock.service","mnebyvpn-fi-clock.timer")
+    for name in names:
+        for base in (unitdir,Path("/run/systemd/system"),Path("/usr/lib/systemd/system"),Path("/lib/systemd/system")):
+            require(not (base/(name+".d")).exists() and not (base/(name+".d")).is_symlink(),"foreign_clock_override")
+            if base!=unitdir:require(not (base/name).exists() and not (base/name).is_symlink(),"foreign_clock_unit")
+        immutable(unitdir/name,read(src/name,10000))
+    command("systemd-analyze","verify",*(str(unitdir/name) for name in names))
+    command("systemctl","daemon-reload")
+    command("systemctl","enable","--now","mnebyvpn-fi-clock.timer")
+    command("systemctl","is-active","--quiet","mnebyvpn-fi-clock.timer")
+    print("FI_CLOCK_FALLBACK_TIMER_ACTIVE=true",flush=True)
+
+
 def start_ru(src):
     host(RU)
     for base in (Path("/etc/systemd/system"),Path("/run/systemd/system"),Path("/usr/lib/systemd/system"),Path("/lib/systemd/system")):
@@ -215,6 +246,7 @@ if __name__=="__main__":
             action=sys.argv[1]
             if action=="ru":prepare_ru(src)
             elif action=="fi":prepare_fi(src)
+            elif action=="clock":repair_fi_clock(src)
             elif action=="start":start_ru(src)
             elif action=="rollback-fi":change_auth(src,True)
             elif action=="rollback-ru":
