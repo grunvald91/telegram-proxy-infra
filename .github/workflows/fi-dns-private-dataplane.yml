@@ -1,0 +1,141 @@
+name: FI DNS private CoreDNS and metered DoT data plane (gate OFF)
+"on":
+  pull_request:
+    paths: ["nodekit/fi_dns_private*.py","nodekit/tests/test_fi_dns_private_runtime.py","nodekit/systemd/fi-dns-private/*",".github/workflows/fi-dns-private-dataplane.yml"]
+  push:
+    branches: [main]
+    paths: ["nodekit/fi_dns_private*.py","nodekit/tests/test_fi_dns_private_runtime.py","nodekit/systemd/fi-dns-private/*",".github/workflows/fi-dns-private-dataplane.yml"]
+  workflow_dispatch:
+permissions: {contents: read}
+concurrency:
+  group: mnebyvpn-fleet-fi
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Check private data plane and actual TLS regression tests
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile nodekit/fi_dns_private_{runtime,stage}.py
+          sudo python3 -m unittest discover -s nodekit/tests -p 'test_fi_dns_private_runtime.py' -v
+          sudo python3 -m unittest discover -s nodekit/tests -p 'test_fi_dns_tls_session.py' -v
+          sudo python3 -m unittest discover -s nodekit/tests -p 'test_fi_dns_metered_dot.py' -v
+          python3 - <<'PY'
+          from pathlib import Path
+          lines=Path('.github/workflows/fi-dns-private-dataplane.yml').read_text().splitlines()
+          i=lines.index('      - name: Install and verify private FI DNS data plane')
+          i=next(j for j in range(i+1,len(lines)) if lines[j]=='        run: |')+1
+          rows=[]
+          for line in lines[i:]:
+              if line and not line.startswith('          '):break
+              rows.append(line[10:] if line.startswith('          ') else '')
+          text='\n'.join(rows)+'\n'
+          assert 'StrictHostKeyChecking yes' in text and 'rollback' in text
+          Path('/tmp/fi-dns-private-live.sh').write_text(text)
+          PY
+          bash -n /tmp/fi-dns-private-live.sh
+  stage:
+    needs: offline
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    environment: node-fi
+    env:
+      RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      FI_PASSWORD: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_PASSWORD }}
+      FI_USER: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_USER }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Install and verify private FI DNS data plane
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          [[ "$FI_USER" == root && -n "$RU_PASSWORD" && -n "$FI_PASSWORD" ]] || exit 2
+          grep -q '^188\.120\.254\.223 ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends sshpass >/dev/null
+          work="$RUNNER_TEMP/fi-dns-canary"
+          mkdir -m 0700 "$work"
+          cat > "$work/ru.cfg" <<CFG
+          Host ru-controller
+            HostName 188.120.254.223
+            User root
+            UserKnownHostsFile $GITHUB_WORKSPACE/ops/mnebydns-owner-ssh-known_hosts
+            GlobalKnownHostsFile /dev/null
+            HostKeyAlgorithms ssh-ed25519
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+            PubkeyAuthentication no
+            PreferredAuthentications password
+            ForwardAgent no
+            ClearAllForwardings yes
+            ControlMaster no
+            ConnectTimeout 12
+            LogLevel ERROR
+          CFG
+          SSHPASS="$RU_PASSWORD" sshpass -e ssh -T -F "$work/ru.cfg" ru-controller \
+            'test -f /root/mnebyvpn-controller/fi-known_hosts && test ! -L /root/mnebyvpn-controller/fi-known_hosts && test "$(stat -c "%u:%a" /root/mnebyvpn-controller/fi-known_hosts)" = 0:600 && cat /root/mnebyvpn-controller/fi-known_hosts' > "$work/fi-known"
+          python3 - "$work/fi-known" <<'PY'
+          import base64,pathlib,sys
+          data=pathlib.Path(sys.argv[1]).read_bytes()
+          assert len(data)<512 and data.count(b'\n')==1 and data.endswith(b'\n')
+          name,kind,key=data.decode('ascii').strip().split()
+          assert (name,kind)==('fi.mnebyvpn.site','ssh-ed25519')
+          raw=base64.b64decode(key,validate=True)
+          assert len(raw)==51 and raw.startswith(b'\x00\x00\x00\x0bssh-ed25519\x00\x00\x00\x20')
+          PY
+          cat > "$work/fi.cfg" <<CFG
+          Host fi-node
+            HostName 217.11.167.91
+            User root
+            HostKeyAlias fi.mnebyvpn.site
+            UserKnownHostsFile $work/fi-known
+            GlobalKnownHostsFile /dev/null
+            HostKeyAlgorithms ssh-ed25519
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+            PubkeyAuthentication no
+            PreferredAuthentications password
+            ForwardAgent no
+            ClearAllForwardings yes
+            ControlMaster no
+            ConnectTimeout 12
+            LogLevel ERROR
+          CFG
+          fi_node() { SSHPASS="$FI_PASSWORD" sshpass -e ssh -T -F "$work/fi.cfg" fi-node "$@"; }
+          stage="/run/fi-dns-private-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          [[ "$stage" =~ ^/run/fi-dns-private-[0-9]+-[0-9]+$ ]]
+          created=no
+          verified=no
+          cleanup() {
+            set +e
+            if [[ "$created" == yes ]]; then
+              if [[ "$verified" != yes ]]; then
+                fi_node "if test -f '$stage/started'; then python3 '$stage/fi_dns_private_stage.py' rollback '$stage'; fi" || echo 'FI_PRIVATE_ROLLBACK_UNVERIFIED'
+              fi
+              fi_node "rm -rf -- '$stage'" >/dev/null 2>&1
+            fi
+            rm -rf "$work"
+          }
+          trap cleanup EXIT
+          fi_node "umask 077; mkdir -m 0700 '$stage'"
+          created=yes
+          SSHPASS="$FI_PASSWORD" sshpass -e scp -F "$work/fi.cfg" \
+            nodekit/fi_dns_private_stage.py nodekit/fi_dns_private_runtime.py nodekit/fi_dns_ssh_stage.py \
+            nodekit/fi_dns_origin_canary.py nodekit/fi_regional_cert_stage.py nodekit/fi_dns_guarded_ingress.py \
+            nodekit/fi_dns_highwater.py nodekit/fi_dns_signed_grants.py nodekit/fi_dns_meter_rpc.py \
+            nodekit/fi_enrollment_ssh.py nodekit/fi_dns_reverse_channel.py nodekit/fi_dns_ssh_bridge.py \
+            nodekit/fi_dns_metered_dot.py nodekit/fi_dns_tls_session.py \
+            nodekit/systemd/fi-dns-private/mnebyvpn-fi-dns-private.service "fi-node:$stage/"
+          fi_node "chmod 600 '$stage'/*; python3 '$stage/fi_dns_private_stage.py' install '$stage'"
+          if ! fi_node "python3 '$stage/fi_dns_private_stage.py' probe"; then
+            fi_node 'systemctl show mnebyvpn-fi-dns-private -p ActiveState -p SubState -p Result -p ExecMainStatus -p NRestarts; journalctl -u mnebyvpn-fi-dns-private -n 40 --no-pager -o cat | grep -E "^FI_PRIVATE_(DATAPLANE_READY=true|DATAPLANE_STOPPED|SNAPSHOT_REFRESH_FAILED)$" | sort | uniq -c' || true
+            exit 2
+          fi
+          verified=yes
