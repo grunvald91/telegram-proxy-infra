@@ -1,0 +1,38 @@
+name: Apply remaining Smart DNS research domains as one batch
+"on":
+  push:
+    branches: [smartdns/research-queue-bulk-20261124]
+    paths: [.github/workflows/mnebydns-research-queue-bulk.yml]
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-google-public-443-change
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 26
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Verify the known queue, exact-host rendering and guarded rollback
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/mnebydns-research-queue-bulk.py self-test
+          python3 scripts/mnebydns-108-bulk-prepare-20261112.py self-test
+          python3 scripts/mnebydns-108-bulk-deploy-20261112.py self-test
+          for file in scripts/mnebydns-108-bulk-{stage,compensate,rollback}-20261112.sh; do
+            bash -n "$file"
+          done
+      - name: Apply the pending research queue to DE89 and personal DoT
+        env:
+          RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+          DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          if ! command -v sshpass >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -qq -y --no-install-recommends sshpass >/dev/null
+          fi
+          python3 scripts/mnebydns-research-queue-bulk.py
