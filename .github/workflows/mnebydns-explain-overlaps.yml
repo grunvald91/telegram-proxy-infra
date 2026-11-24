@@ -1,0 +1,44 @@
+name: Explain 24 pre-existing Smart DNS route overlaps (read only)
+"on":
+  push:
+    branches: [smartdns/explain-24-overlaps-20261124]
+    paths: [.github/workflows/mnebydns-explain-overlaps.yml]
+permissions: {contents: read}
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Read matching rule selectors and check rewritten live DNS answers
+        env:
+          DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+        run: |
+          set -Eeuo pipefail
+          if ! command -v sshpass >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -qq -y --no-install-recommends sshpass >/dev/null
+          fi
+          python3 - <<'PY'
+          import concurrent.futures, os, runpy
+          from pathlib import Path
+          names = ["accounts.x.ai","anthropic.com","api.openai.com","auth0.openai.com","bard.google.com","chat.openai.com","chatgpt.com","claude.ai","claude.com","claudeusercontent.com","console.anthropic.com","console.x.ai","discord.com","files.oaiusercontent.com","gemini.google.com","googleapis.com","grok.com","lookerstudio.google.com","openai.com","tiktok.com","tiktokv.com","x.ai","x.com","youtube.com"]
+          body = "\nimport re, types\nfrom pathlib import Path\nmod = types.ModuleType(\"owner_domain_render\")\nexec(compile(renderer, \"owner-render.py\", \"exec\"), mod.__dict__)\ncore = Path(\"/opt/mnebydns-dot/Corefile\").read_text()\nnginx = Path(\"/etc/nginx/nginx.conf\").read_text()\nheader = re.compile(r\"(?m)^[ \\t]*template[ \\t]+(?:IN|ANY)[ \\t]+A[ \\t]+([^ \\t\\r\\n{}]+)[ \\t]*\\{\")\ntemplates = []\nfor match in header.finditer(core):\n    depth, end = 1, match.end()\n    while depth and end < len(core):\n        depth += (core[end] == \"{\") - (core[end] == \"}\")\n        end += 1\n    body = core[match.end():end-1]\n    options = re.findall(r\"(?m)^[ \\t]*match[ \\t]+([^\\r\\n}]+)\", body)\n    templates.append((match[1], options))\nstart = nginx.index(mod.NGINX_ANCHOR)+len(mod.NGINX_ANCHOR)\nsection = re.split(r\"(?m)^[ \\t]*}[ \\t]*(?:#.*)?$\", nginx[start:], maxsplit=1)[0]\nkeys = [line.strip().split()[0] for line in section.splitlines()\n        if line.strip() and not line.lstrip().startswith(\"#\") and len(line.split()) >= 2]\ndef error(check, data, name):\n    try:\n        check(data, name)\n    except (ValueError, AssertionError) as exc:\n        return str(exc)\n    return \"no overlap\"\nfor name in names:\n    dns = []\n    for zone, options in templates:\n        z = zone.rstrip(\".\").lower()\n        if z and name != z and not name.endswith(\".\" + z):\n            continue\n        if not options:\n            dns.append(zone)\n        else:\n            for pattern in options:\n                pattern = pattern.strip().strip('\"')\n                try:\n                    if re.search(pattern, name + \".\"):\n                        dns.append(pattern)\n                except re.error:\n                    pass\n    matches = []\n    for key in keys:\n        if key.startswith(\"~\"):\n            ignore_case = key.startswith(\"~*\")\n            pattern = key[2:] if ignore_case else key[1:]\n            try:\n                if re.search(pattern, name, re.I if ignore_case else 0):\n                    matches.append(key)\n            except re.error:\n                pass\n        elif key == name or key.startswith(\"*.\") and name.endswith(key[1:]) or (\n                key.startswith(\".\") and (name == key[1:] or name.endswith(key))):\n            matches.append(key)\n    print(\"OVERLAP_RULE|\" + \"|\".join([name, error(mod._assert_no_existing_core_route, core, name),\n        error(mod._assert_no_existing_nginx_route, nginx, name), \",\".join(dns), \",\".join(matches)]))\n"
+          owner = runpy.run_path("scripts/mnebydns-owner-domain-controller-20261110.py")
+          source = Path("scripts/mnebydns-owner-domain-render-20261110.py").read_text()
+          script = f"names = {names!r}\nrenderer = {source!r}\n" + body
+          print(owner["cmd"](["sshpass", "-e", "ssh", "-T", "-o", "ConnectTimeout=12",
+              *owner["SSH_TRUST"], "-o", "LogLevel=ERROR", "root@" + owner["EDGE"], "python3 -"],
+              os.environ["DE_PASS"], timeout=35, input_bytes=script.encode()), flush=True)
+          def probe(name):
+              try:
+                  code, ips = owner["dns_q"](name)
+                  state = "SMART_DNS" if code == 0 and set(ips) & {owner["EDGE"], owner["RU"]} else "OTHER_ANSWER"
+              except Exception:
+                  state = "UNVERIFIED"
+              return f"OVERLAP_DNS|{name}|{state}"
+          with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+              for result in pool.map(probe, names):
+                  print(result, flush=True)
+          PY
