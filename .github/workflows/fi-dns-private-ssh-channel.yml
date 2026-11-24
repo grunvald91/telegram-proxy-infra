@@ -33,7 +33,7 @@ jobs:
               rows.append(line[10:] if line.startswith('          ') else '')
           text='\n'.join(rows)+'\n'
           assert 'StrictHostKeyChecking yes' in text and 'rollback' in text
-          assert 'fi_dns_ssh_stage.py\' probe' in text
+          assert "fi_dns_ssh_stage.py' probe" in text
           Path('/tmp/fi-dns-bridge-live.sh').write_text(text)
           PY
           bash -n /tmp/fi-dns-bridge-live.sh
