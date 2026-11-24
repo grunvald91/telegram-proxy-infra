@@ -147,6 +147,8 @@ def prepare(stage):
     temp="fi_dns_restore_"+secrets.token_hex(8)
     run(["docker","exec",CONTAINER,"createdb","-U",DB,"-T","template0",temp])
     try:
+        # Never let application roles connect to a temporary copy of subscriber data.
+        psql("REVOKE CONNECT ON DATABASE "+temp+" FROM PUBLIC;")
         with backup.open("rb") as f:
             run(["docker","exec","-i",CONTAINER,"pg_restore","--exit-on-error",
                  "--no-owner","--no-acl","-U",DB,"-d",temp],stdin=f,timeout=120)
