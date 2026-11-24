@@ -157,9 +157,19 @@ def update(service, domains, run_id):
     if not additions:
         print("nvidia_personal_policy_already_current=" + service, flush=True)
         return
+    verified = set()
     for domain in sorted(additions):
-        if not mapped_answer(env, domain):
-            raise RuntimeError("Mapped DoT did not return the DE89 route for " + domain)
+        try:
+            if mapped_answer(env, domain):
+                verified.add(domain)
+                continue
+        except (OSError, RuntimeError):
+            pass
+        print(f"nvidia_personal_mapped_route_deferred={service}:{domain}", flush=True)
+    if not verified:
+        print("nvidia_personal_no_new_verified_routes=" + service, flush=True)
+        return
+    additions = verified
 
     new = (json.dumps(sorted(set(before) | additions), separators=(",", ":")) + "\n").encode()
     checksum = hashlib.sha256(new).hexdigest()
