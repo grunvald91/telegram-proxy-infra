@@ -22,6 +22,7 @@ spec.loader.exec_module(bulk)
 prepare, batch, owner = bulk.prepare, bulk.batch, bulk.owner
 INTAKE = ROOT / "scripts/mnebydns-geoblock-research-queue-20261110.sql"
 MAX_QUEUE = 600
+ORIGIN_INVENTORY = ROOT / "research-queue-origins.json"
 
 PIN_ORIGINS = """
 import concurrent.futures
@@ -78,7 +79,17 @@ def make_plan(names, rows):
     if not pending:
         return None
     candidates, exclusions = [], []
-    for name, ip in pinned_origins(pending):
+    if ORIGIN_INVENTORY.is_file():
+        snapshot = dict(json.loads(ORIGIN_INVENTORY.read_text()))
+        # The live pending set may shrink while another rollout is running.
+        # Only unmodified pending rows in the frozen intake can be published.
+        missing = [name for name in pending if name not in snapshot]
+        if missing:
+            snapshot.update(pinned_origins(missing))
+        origin_records = [(name, snapshot[name]) for name in pending]
+    else:
+        origin_records = pinned_origins(pending)
+    for name, ip in origin_records:
         if ip is None:
             exclusions.append({"domain": name, "reason": "ORIGIN_TLS_UNVERIFIED"})
         else:
@@ -138,8 +149,16 @@ def main():
         assert select_pending(names, {a: ("PENDING", "Oracle", "")}) == []
         print(f"RESEARCH_QUEUE_SOURCE_SELF_TEST=PASS names={len(names)}")
         return
+    if sys.argv[1:] == ["prepare-origins"]:
+        pending = select_pending(names, batch.table())
+        print(f"RESEARCH_QUEUE_ORIGIN_PREPARATION_STARTED={len(pending)}", flush=True)
+        origin_records = pinned_origins(pending) if pending else []
+        with ORIGIN_INVENTORY.open("x") as snapshot:
+            json.dump(origin_records, snapshot)
+        print("RESEARCH_QUEUE_ORIGIN_PREPARATION_COMPLETE=" + str(len(origin_records)), flush=True)
+        return
     if sys.argv[1:]:
-        raise SystemExit("Usage: mnebydns-research-queue-bulk.py [self-test]")
+        raise SystemExit("Usage: mnebydns-research-queue-bulk.py [self-test|prepare-origins]")
     batch.ensure_quiet()
     bulk.capacity(research_queue=True)
     plan = make_plan(names, batch.table())
