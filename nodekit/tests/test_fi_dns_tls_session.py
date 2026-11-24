@@ -110,7 +110,8 @@ class FiMeteredTlsIntegration(unittest.TestCase):
                     for _ in range(2):
                         length=struct.unpack("!H",await reader.readexactly(2))[0]
                         responses.append(await reader.readexactly(length))
-                    self.assertEqual(responses,[await r.resolve(query())]*2)
+                    expected = (query()[:2] + struct.pack("!HHHHH",0x8183,1,0,0,0) + query()[12:])
+                    self.assertEqual(responses,[expected]*2)
                     # Third query is denied on same TLS session; no free
                     # cached response, no extra database settlement.
                     self.assertEqual(await asyncio.wait_for(reader.read(),4),b"")
