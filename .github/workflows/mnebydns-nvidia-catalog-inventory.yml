@@ -1,0 +1,81 @@
+name: MNEBYDNS NVIDIA catalog inventory (read-only)
+"on":
+  push:
+    branches: [smartdns/nvidia-exact-hosts-20261124]
+    paths: [.github/workflows/mnebydns-nvidia-catalog-inventory.yml]
+permissions:
+  contents: read
+jobs:
+  inventory:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Collect NVIDIA names only from live, checkpoint and personal DNS policies
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          if ! command -v sshpass >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -qq -y --no-install-recommends sshpass >/dev/null
+          fi
+          script="$RUNNER_TEMP/nvidia-inventory.py"
+          cat > "$script" <<'PY'
+          import collections
+          from pathlib import Path
+          import re
+          import sys
+
+          mode = sys.argv[1]
+          pattern = re.compile(
+              r"(?<![a-z0-9_.*-])(?:\*\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*"
+              r"(?:nvidia\.com|nvcr\.io)(?![a-z0-9_-]|\.[a-z0-9-])"
+          )
+
+          def inventory(paths, label):
+              counts = collections.Counter()
+              read = 0
+              for path in paths:
+                  if not path.is_file() or path.stat().st_size > 4 * 1024 * 1024:
+                      continue
+                  document = path.read_text(errors="replace").lower()
+                  # CoreDNS match expressions may escape literal dots.
+                  document = document.replace(r"\.", ".").replace("[.]", ".")
+                  counts.update(set(pattern.findall(document)))
+                  read += 1
+              print(f"NVIDIA_COPY_GROUP {label} files={read} names={len(counts)}")
+              for name in sorted(counts):
+                  print(f"NVIDIA_COPY_NAME {label} {name}")
+
+          if mode == "de":
+              base = Path("/opt/mnebydns-stable-checkpoints")
+              selected = Path((base / "current").read_text().strip())
+              inventory([
+                  Path("/opt/mnebydns-dot/Corefile"), Path("/etc/nginx/nginx.conf"),
+                  Path("/etc/mnebydns-googlepilot/nginx.conf")
+              ], "DE89-live")
+              names = ("dns.stable", "nginx.stable", "proxy.stable")
+              if selected.parent == base:
+                  inventory([selected / name for name in names], "DE89-selected-checkpoint")
+              inventory([folder / name for folder in sorted(base.iterdir())
+                         if folder.is_dir() and not folder.is_symlink()
+                         for name in names], "DE89-saved-checkpoints")
+          elif mode == "ru":
+              base = Path("/etc/mnebydns/personal-dot")
+              inventory(sorted(base.glob("policy*.json")), "RU188-personal-catalog-copies")
+          elif mode == "repo":
+              inventory([Path("scripts/mnebydns-nvidia-permanent-20261124.py")], "repository-candidate")
+          else:
+              raise SystemExit("Unknown source")
+          PY
+          python3 "$script" repo
+          options=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          SSHPASS="$DE_PASS" sshpass -e ssh "${options[@]}" root@89.125.90.101 'python3 - de' < "$script"
+          SSHPASS="$RU_PASS" sshpass -e ssh "${options[@]}" root@188.120.254.223 'python3 - ru' < "$script"
