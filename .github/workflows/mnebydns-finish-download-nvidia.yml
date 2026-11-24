@@ -1,0 +1,67 @@
+name: Resolve interrupted download.nvidia.com confirmation
+"on":
+  push:
+    branches: [smartdns/research-queue-bulk-20261124]
+    paths: [.github/workflows/mnebydns-finish-download-nvidia.yml]
+permissions: {contents: read}
+concurrency:
+  group: mnebydns-google-public-443-change
+  cancel-in-progress: false
+jobs:
+  recover:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Verify and recover only the known interrupted NVIDIA route
+        env:
+          RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+          DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+        run: |
+          set -Eeuo pipefail
+          if ! command -v sshpass >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -qq -y --no-install-recommends sshpass >/dev/null
+          fi
+          python3 - <<'PY'
+          import runpy,time
+          nvidia = runpy.run_path("scripts/mnebydns-nvidia-permanent-20261124.py")
+          owner = nvidia["owner"]
+          name, run = "download.nvidia.com", "4545772427623"
+          row = nvidia["row"](name)
+          if row["status"] in ("ACTIVE", "FAILED", "CANCELLED") and owner.live_checkpoint_unchanged():
+              print("nvidia_download_recovery_already_terminal="+row["status"],flush=True)
+              raise SystemExit(0)
+          if row["status"] != "CONFIRMING" or row["run"] != run or row["product"] != "NVIDIA":
+              raise RuntimeError("Unexpected production state for this one-time recovery")
+          for attempt in range(2):
+              try:
+                  owner.confirm(row)
+                  break
+              except RuntimeError as exc:
+                  if "EXCLUDED_DOMAIN_REWRITTEN_api.telegram.org" not in str(exc):
+                      raise
+                  if attempt == 0:
+                      time.sleep(3)
+                      continue
+                  # Restore a still-unconfirmed exact canary. Keep any
+                  # independently committed checkpoint intact.
+                  if owner.is_confirmed(run):
+                      raise
+                  owner.rollback(run)
+                  if not owner.live_checkpoint_unchanged():
+                      raise RuntimeError("Original DNS checkpoint could not be verified")
+                  rc, addresses = owner.dns_q(name)
+                  if rc != 0 or owner.EDGE in addresses or owner.RU in addresses:
+                      raise RuntimeError("Rolled-back hostname still uses a Smart DNS route")
+                  owner.update_error(row,"UNRELATED_CONTROL_CHANGED_DURING_CONFIRMATION")
+                  if nvidia["row"](name)["status"] != "FAILED":
+                      raise RuntimeError("Restored NVIDIA transaction did not reach a terminal state")
+                  print("nvidia_download_recovery_rolled_back=true",flush=True)
+                  raise SystemExit(0)
+          result=nvidia["row"](name)["status"]
+          if result not in ("ACTIVE","FAILED") or not owner.live_checkpoint_unchanged():
+              raise RuntimeError("NVIDIA recovery could not verify final route state")
+          print("nvidia_download_recovery_terminal="+result,flush=True)
+          PY
