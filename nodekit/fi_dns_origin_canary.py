@@ -28,6 +28,7 @@ HOSTS = ("aaaaaaaaaaaa.fi.dns.mnebyvpn.site",
          "bbbbbbbbbbbb.fi.dns.mnebyvpn.site")
 PORT = 8853
 QUERY = "fi-dns-canary.invalid"
+EXTERNAL_QUERY = "example.com"
 
 
 class FiDnsOriginError(ValueError):
@@ -81,8 +82,12 @@ def prepare() -> Path:
     return core
 
 
-def query_bytes(id_: int) -> bytes:
-    labels = QUERY.split(".")
+def query_bytes(id_: int, name: str = QUERY) -> bytes:
+    # Explicitly restricted to two fixed public/non-sensitive test names:
+    # no user request, token, or arbitrary domain is sent upstream.
+    if name not in (QUERY, EXTERNAL_QUERY):
+        raise FiDnsOriginError("Unapproved DNS canary name")
+    labels = name.split(".")
     qname = b"".join(bytes([len(s)]) + s.encode("ascii")
                      for s in labels) + b"\0"
     return struct.pack("!HHHHHH", id_, 0x0100, 1, 0, 0, 0) + qname + b"\0\1\0\1"
@@ -98,7 +103,7 @@ def read_exact(stream, amount: int) -> bytes:
     return bytes(result)
 
 
-def dot_probe(hostname: str) -> bool:
+def dot_probe(hostname: str, name: str = QUERY) -> bool:
     context = ssl.create_default_context()
     try:
         raw = socket.create_connection(("127.0.0.1", PORT), timeout=3)
@@ -140,7 +145,7 @@ def dot_probe(hostname: str) -> bool:
             names = tls.getpeercert().get("subjectAltName", ())
             if ("DNS", "*.fi.dns.mnebyvpn.site") not in names:
                 raise FiDnsOriginError("FI-specific wildcard SAN missing")
-            query = query_bytes(0x4a71)
+            query = query_bytes(0x4a71, name)
             try:
                 tls.sendall(struct.pack("!H", len(query)) + query)
                 n = struct.unpack("!H", read_exact(tls, 2))[0]
@@ -171,7 +176,7 @@ def compare_presented_certificate(hostname: str) -> str:
         with ctx.wrap_socket(raw, server_hostname=hostname) as tls:
             peer = tls.getpeercert(binary_form=True)
     local = subprocess.run([
-        "openssl", "x509", "-in", str(ROOT / "tls/fullchain.pem"),
+        "openssl", "x509", "-in", str(REGIONAL_TLS / "fullchain.pem"),
         "-outform", "DER"], capture_output=True, timeout=6, check=True).stdout
     if not peer or not local:
         raise FiDnsOriginError("Peer certificate unavailable")
@@ -263,10 +268,19 @@ def run() -> dict:
                         time.sleep(0.5)
             if not all(results.values()):
                 raise FiDnsOriginError("FI regional DoT probe denied")
+            # The real Cloudflare upstream configured in FI's SHA-verified
+            # staged Corefile must also return a public A record over DoT.
+            # This is a SECOND test, isolated from synthetic local answers.
+            try:
+                forwarded = dot_probe(HOSTS[0], EXTERNAL_QUERY)
+            except (OSError, FiDnsOriginError, ssl.SSLError) as error:
+                raise FiDnsOriginError("FI external upstream DoT failed") from error
+            if not forwarded:
+                raise FiDnsOriginError("FI external upstream DoT failed")
             return {"fi_dns_origin_local_canary": "PASS",
                     "two_distinct_regional_tls_names": True,
                     "dns_local_a_answer_verified": True,
-                    "external_upstream_verified": False,
+                    "external_upstream_verified": True,
                     "public_port_opened": False,
                     "customer_grant_issued": False,
                     "awg_changed": False}
@@ -325,6 +339,8 @@ def main() -> int:
             "Invalid DoT reply frame": "invalid_dns_frame",
             "Unsupported TLS": "unsupported_tls",
             "FI regional DoT probe denied": "regional_dot_denied",
+            "FI external upstream DoT failed": "external_upstream_failed",
+            "Unapproved DNS canary name": "unapproved_test_query",
             "CoreDNS failed independent A question": "local_dns_answer_failed",
             "FI-specific wildcard SAN missing": "regional_wildcard_missing",
         }

@@ -83,6 +83,20 @@ class TestFiDnsOrigin(unittest.TestCase):
             ):
                 canary.dot_probe(canary.HOSTS[0])
 
+    def test_public_query_is_distinct_from_local_canary_and_unapproved_denied(self):
+        local = canary.query_bytes(0x1234)
+        public = canary.query_bytes(0x1234, canary.EXTERNAL_QUERY)
+        self.assertNotEqual(local, public)
+        self.assertIn(b"\x07example\x03com\x00", public)
+        with self.assertRaises(canary.FiDnsOriginError):
+            canary.query_bytes(0x1234, "private.customer.example")
+
+    def test_canary_report_only_after_real_upstream_result(self):
+        # A failed public upstream cannot be mistaken for the successful
+        # synthetic local A reply; no customer release is asserted.
+        self.assertNotEqual(canary.QUERY, canary.EXTERNAL_QUERY)
+        self.assertEqual(canary.EXTERNAL_QUERY, "example.com")
+
     def test_question_is_standard_framed_dns_a(self):
         wire = canary.query_bytes(0x1234)
         self.assertEqual(wire[:2], b"\x12\x34")
