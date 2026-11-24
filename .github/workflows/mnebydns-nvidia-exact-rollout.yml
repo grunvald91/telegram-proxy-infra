@@ -36,7 +36,7 @@ jobs:
           for script in scripts/mnebydns-owner-domain-{stage,confirm,rollback}-20261110.sh; do
             bash -n "$script"
           done
-      - name: Apply NVIDIA routes after checking the live DE89 DNS path
+      - name: Apply NVIDIA routes with active and elapsed rollback timers distinguished
         env:
           RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
           DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
