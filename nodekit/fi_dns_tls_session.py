@@ -10,6 +10,7 @@ unit or customer provisioning is created by importing this module.
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 from pathlib import Path
 import ssl
 import weakref
@@ -24,6 +25,7 @@ from fi_regional_cert_stage import DEST as REGIONAL_CERT_DIR, verify_pair
 LISTEN_HOST = "127.0.0.1"
 LISTEN_PORT = 18854
 GLOBAL_CONNECTIONS = 48
+PER_CREDENTIAL_CONNECTIONS = 4
 PER_HANDSHAKE_TIMEOUT_SEC = 5.0
 
 
@@ -95,21 +97,34 @@ async def make_metered_loopback_server(
         REGIONAL_CERT_DIR / "privkey.pem",
     )
     active = 0
+    per_credential: Counter[str] = Counter()
 
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         nonlocal active
         active += 1
+        digest: str | None = None
+        counted = False
         try:
-            # Even a fully verified TLS handshake cannot bypass an absent
-            # region SNI or exceed the global connection ceiling.
+            # SNI always comes from the actual TLS ClientHello; this mapping
+            # is NOT user-supplied metadata. Count each credential in addition
+            # to the global maximum, without leaking its bearer hostname.
             name = binding.from_writer(writer)
             if name is None or active > GLOBAL_CONNECTIONS:
                 return
+            digest = hostname_digest(name)
+            if per_credential[digest] >= PER_CREDENTIAL_CONNECTIONS:
+                return
+            per_credential[digest] += 1
+            counted = True
             await serve_one_tls_stream(
                 reader, writer, name, authorizer=authorizer,
                 meter=meter, resolver=resolver,
             )
         finally:
+            if counted and digest is not None:
+                per_credential[digest] -= 1
+                if per_credential[digest] == 0:
+                    del per_credential[digest]
             active -= 1
             if not writer.is_closing():
                 writer.close()
