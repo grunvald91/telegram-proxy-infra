@@ -1,0 +1,24 @@
+[Unit]
+Description=MNEBYVPN FI bounded authenticated HTTPS clock fallback
+After=network-online.target systemd-timesyncd.service
+Wants=network-online.target
+ConditionPathExists=/opt/mnebyvpn-fi-dns-node/fi_dns_reverse_clock.py
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/bin/python3 /opt/mnebyvpn-fi-dns-node/fi_dns_reverse_clock.py --fallback
+TimeoutStartSec=40
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_SYS_TIME
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=yes
+LockPersonality=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+UMask=0077
