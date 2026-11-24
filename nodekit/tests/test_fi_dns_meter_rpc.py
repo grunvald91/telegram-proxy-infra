@@ -83,3 +83,16 @@ class MeterClientTests(unittest.IsolatedAsyncioTestCase):
             await meter.reserve("bad",uuid.uuid4())
         with self.assertRaises(rpc.MeterRpcError):
             await meter.settle(uuid.uuid1())
+
+    def test_fresh_decision_does_not_revive_stale_original(self):
+        now=1795521600.0
+        request={"version":1,"nodeId":"fi-test-01","countryCode":"FI",
+                 "op":"reserve","requestId":str(uuid.uuid4()),
+                 "tokenSha256":"a"*64,"issuedAt":rpc.timestamp(now),"nonce":"b"*64}
+        decision={"version":1,"requestSha256":hashlib.sha256(rpc.request_bytes(request)).hexdigest(),
+                  "result":"RESERVED","decidedAt":rpc.timestamp(now+14),
+                  "signature":base64.urlsafe_b64encode(bytes(64)).rstrip(b"=").decode()}
+        raw=json.dumps(decision).encode()
+        rpc.validate_decision(raw,request,now+14)
+        with self.assertRaises(rpc.MeterRpcError):
+            rpc.validate_decision(raw,request,now+16)
