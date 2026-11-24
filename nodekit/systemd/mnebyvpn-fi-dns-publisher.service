@@ -1,0 +1,37 @@
+[Unit]
+Description=MNEBYVPN FI DNS publisher private controller
+After=network-online.target
+ConditionPathExists=/root/mnebyvpn-controller/config/fi-dns-publisher.env
+ConditionPathExists=/root/mnebyvpn-controller/approvals/fi-dns-private.enable
+
+[Service]
+Type=exec
+User=root
+Group=root
+WorkingDirectory=/opt/mnebyvpn-fi-dns-controller
+EnvironmentFile=/root/mnebyvpn-controller/config/fi-dns-publisher.env
+ExecStart=/opt/mnebyvpn-controller/current/bin/node --experimental-strip-types /opt/mnebyvpn-fi-dns-controller/fi_dns_controller_worker.mjs publisher
+Restart=on-failure
+RestartSec=5s
+ProtectHome=read-only
+ProtectSystem=strict
+ReadWritePaths=/var/lib/mnebyvpn-fi-dns-controller
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET
+IPAddressDeny=any
+IPAddressAllow=127.0.0.0/8
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+UMask=0077
+TasksMax=48
+MemoryMax=160M
+TimeoutStopSec=10s
