@@ -6,6 +6,12 @@ on:
   pull_request:
     paths: ['.github/workflows/fi-regional-dns01-finalize.yml']
   workflow_dispatch:
+  # Check the already-created DNS-01 TXT four times a day; do not regenerate
+  # ACME orders. Once authoritative Jino DNS shows the challenge, the
+  # existing guarded finalize runs and triggers separate FI-only certificate
+  # staging + isolated CoreDNS E2E. No 853/public service changes.
+  schedule:
+    - cron: '41 */6 * * *'
 permissions:
   contents: read
 concurrency:
@@ -38,6 +44,8 @@ jobs:
           assert 'fi.dns.mnebyvpn.site' in script
           assert 'systemctl' not in script
           assert 'DE_FI_853_CONFIGURATION_UNCHANGED=true' in script
+          assert "domain='*.fi.dns.mnebyvpn.site'" in script
+          assert 'systemctl' not in script
           Path('/tmp/fi-regional-dns01-finalize-check.sh').write_text(script)
           PY
           bash -n /tmp/fi-regional-dns01-finalize-check.sh

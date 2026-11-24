@@ -33,6 +33,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           python3 -m py_compile nodekit/fi_regional_cert_stage.py nodekit/fi_dns_origin_canary.py
+          python3 -m unittest discover -s nodekit/tests -p 'test_fi_dns_origin_canary.py' -v
           python3 -m unittest discover -s nodekit/tests -p 'test_fi_regional_cert_stage.py' -v
           python3 - <<'PY'
           from pathlib import Path
@@ -46,6 +47,8 @@ jobs:
               body.append(line[10:] if line.startswith('          ') else '')
           assert body and 'trap cleanup EXIT' in body
           assert "fi_regional_cert_stage.py' --mode stage" in '\n'.join(body)
+          assert "fi_dns_origin_canary.py'" in '\n'.join(body)
+          assert 'FI_REGIONAL_TLS_LOOPBACK_E2E=PASS' in '\n'.join(body)
           assert 'systemctl' not in '\n'.join(body)
           Path('/tmp/fi-regional-cert-stage.sh').write_text('\n'.join(body)+'\n')
           PY
@@ -168,9 +171,14 @@ jobs:
           dir=$(fi_node 'umask 077; mktemp -d /run/fi-regional-cert-stage.XXXXXXXX')
           [[ "$dir" =~ ^/run/fi-regional-cert-stage\.[A-Za-z0-9]{8}$ ]] || exit 2
           SSHPASS="$FI_PASSWORD" sshpass -e scp -F "$work/fi.cfg" \
-            nodekit/fi_regional_cert_stage.py "$work/fullchain.pem" "$work/privkey.pem" \
+            nodekit/fi_regional_cert_stage.py nodekit/fi_dns_origin_canary.py "$work/fullchain.pem" "$work/privkey.pem" \
             "fi-node:$dir/"
           fi_node "chmod 0600 '$dir/'*.py '$dir/'*.pem; timeout 50s python3 '$dir/fi_regional_cert_stage.py' --mode stage --source-dir '$dir'"
+          # Immediately verify the newly staged cert through REAL local CoreDNS
+          # and two strictly verified FI personal SNI names. No public listener.
+          # A failed canary is a hard failure: do not claim customer readiness.
+          fi_node "timeout --signal=TERM --kill-after=8s 80s python3 '$dir/fi_dns_origin_canary.py'"
+          echo 'FI_REGIONAL_TLS_LOOPBACK_E2E=PASS'
           echo 'FI_REGIONAL_CERT_STAGE_VERIFIED=true'
           echo 'FI_PUBLIC_DOT_UNCHANGED=true'
           echo 'FI_RUNNING_AWG_UNCHANGED=true'
