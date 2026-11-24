@@ -14,7 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: {persist-credentials: false}
-      - name: Confirm NVIDIA API works through DE89, then update existing personal rules
+      - name: Sync NVIDIA API using the corrected DNS A-record parser
         env:
           RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
         run: |
