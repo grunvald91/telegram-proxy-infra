@@ -46,6 +46,18 @@ def render(source: str) -> str:
     return result
 
 
+def render_reload_only(source: str) -> str:
+    import re
+
+    directive = "    reload 5s 1s"
+    if re.search(r"(?m)^\s*reload(?:[ \t]|$)", source):
+        raise ValueError("A reload directive already exists with an unfamiliar layout")
+    anchor = "    bind 89.125.90.101\n"
+    if source.count(anchor) != 1 or source.count("tls://.:853 {") != 1:
+        raise ValueError("Unrecognized DE89 public DoT listener")
+    return source.replace(anchor, anchor + directive + "\n", 1)
+
+
 def self_test() -> None:
     base = (
         "tls://.:853 {\n"
@@ -55,6 +67,8 @@ def self_test() -> None:
         '        answer "{{ .Name }} 20 IN A 89.125.90.101"\n'
         "    }\n" + OLD + "}\n"
     )
+    reload_only = render_reload_only(base)
+    assert reload_only.replace("    reload 5s 1s\n", "", 1) == base
     out = render(base)
     assert render(out) == out
     assert out.replace(NEW, OLD, 1) == base
@@ -75,6 +89,7 @@ def main() -> None:
     parser.add_argument("command", choices=("self-test", "render", "verify"))
     parser.add_argument("--input")
     parser.add_argument("--output")
+    parser.add_argument("--reload-only", action="store_true")
     args = parser.parse_args()
     if args.command == "self-test":
         self_test()
@@ -83,7 +98,9 @@ def main() -> None:
         parser.error("--input is required")
     path = pathlib.Path(args.input)
     original = path.read_text()
-    new = render(original)
+    if args.reload_only and args.command != "render":
+        parser.error("--reload-only requires render")
+    new = render_reload_only(original) if args.reload_only else render(original)
     if args.command == "verify":
         if original != new or NEW not in original:
             raise SystemExit("MNEBYDNS_RESILIENCE_NOT_YET_APPLIED")
