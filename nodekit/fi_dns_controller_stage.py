@@ -55,6 +55,9 @@ def exact_file(path,data):
 def create_role(mode):
     group="mnebyvpn_fi_dns_"+mode
     role=group+"_runtime"
+    function=("public.fi_dns_meter_verified_apply(text,uuid,text,text,text,timestamptz)" if mode=="meter" else "public.fi_dns_snapshot_next()")
+    other=("public.fi_dns_snapshot_next()" if mode=="meter" else "public.fi_dns_meter_verified_apply(text,uuid,text,text,text,timestamptz)")
+    check(psql("SELECT NOT EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.prosecdef AND p.oid<>'"+function+"'::regprocedure AND has_function_privilege('"+group+"',p.oid,'EXECUTE'));")=="t","unexpected_group_security_definer_privilege")
     path=ROOT/"config"/("fi-dns-"+mode+".env")
     prefix="DATABASE_URL=postgresql://"+role+":"
     suffix="@127.0.0.1:55433/mnebyvpn_stage\n"
@@ -72,8 +75,6 @@ def create_role(mode):
     if exists=="f":
         psql("BEGIN; CREATE ROLE "+role+" LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT "+("8" if mode=="meter" else "1")+" PASSWORD '"+password+"'; GRANT "+group+" TO "+role+"; GRANT CONNECT ON DATABASE mnebyvpn_stage TO "+role+"; COMMIT;")
     check(psql("SELECT rolcanlogin AND rolinherit AND NOT(rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls) AND (SELECT count(*) FROM pg_auth_members WHERE member=r.oid)=1 AND pg_has_role(rolname,'"+group+"','USAGE') FROM pg_roles r WHERE rolname='"+role+"';")=="t","unexpected_runtime_role")
-    function=("public.fi_dns_meter_verified_apply(text,uuid,text,text,text,timestamptz)" if mode=="meter" else "public.fi_dns_snapshot_next()")
-    other=("public.fi_dns_snapshot_next()" if mode=="meter" else "public.fi_dns_meter_verified_apply(text,uuid,text,text,text,timestamptz)")
     check(psql("SELECT has_function_privilege('"+role+"','"+function+"','EXECUTE') AND NOT has_function_privilege('"+role+"','"+other+"','EXECUTE') AND NOT has_function_privilege('"+role+"','public.fi_dns_meter_apply(text,uuid,text)','EXECUTE') AND NOT has_table_privilege('"+role+"','public.entitlements','SELECT,INSERT,UPDATE,DELETE') AND NOT has_table_privilege('"+role+"','public.fi_dns_regional_credentials','SELECT,INSERT,UPDATE,DELETE');")=="t","runtime_privileges_too_broad")
     # Check ALL SECURITY DEFINER functions in the application schema, not
     # only the FI RPCs. Public grants in older migrations must not silently
