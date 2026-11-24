@@ -1,0 +1,36 @@
+[Unit]
+Description=MNEBYVPN FI private controller-initiated DNS RPC
+After=network-online.target mnebyvpn-fi-dns-meter.service mnebyvpn-fi-dns-publisher.service
+Wants=network-online.target
+Requires=mnebyvpn-fi-dns-meter.service mnebyvpn-fi-dns-publisher.service
+ConditionPathExists=/root/mnebyvpn-controller/approvals/fi-dns-private.enable
+
+[Service]
+Type=exec
+User=root
+Group=root
+WorkingDirectory=/opt/mnebyvpn-fi-dns-controller
+ExecStart=/usr/bin/python3 /opt/mnebyvpn-fi-dns-controller/fi_dns_reverse_channel.py ru
+Restart=always
+RestartSec=3s
+ProtectHome=read-only
+ProtectSystem=strict
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=127.0.0.0/8
+IPAddressAllow=217.11.167.91/32
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectKernelLogs=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+UMask=0077
+TasksMax=16
+MemoryMax=64M
+TimeoutStopSec=8s
