@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
+import runpy
 import shlex
 import sys
 
@@ -106,11 +107,19 @@ def make_plan(names, rows):
 
 
 def sync_personal(selected):
-    if not bulk.states_are(selected, "ACTIVE"):
+    if selected and not bulk.states_are(selected, "ACTIVE"):
         raise RuntimeError("Bulk route activation could not be verified before personal sync")
+    nvidia = runpy.run_path(str(ROOT / "scripts/mnebydns-nvidia-permanent-20261124.py"))["TARGETS"]
+    declared = ",".join("'" + name + "'" for name in nvidia)
+    ready_nvidia = set(owner.sql(
+        "SELECT domain FROM dns_admin_domains WHERE domain IN (" + declared
+        + ") AND status IN ('ACTIVE','COVERED')"
+    ).splitlines()) & set(nvidia)
+    domains = sorted({item["domain"] for item in selected} | ready_nvidia)
+    if not domains:
+        return
     target = "/opt/mnebydns-personal-research-" + bulk.RUNID
     helper = "mnebydns-sync-personal-nvidia.py"
-    domains = [item["domain"] for item in selected]
     owner.ssh("ru", "install -d -m 700 " + target)
     owner.cmd(["sshpass", "-e", "scp", "-q", "-o", "ConnectTimeout=12",
                *owner.SSH_TRUST, "-o", "LogLevel=ERROR", str(ROOT / "scripts" / helper),
@@ -136,6 +145,7 @@ def main():
     plan = make_plan(names, batch.table())
     if plan is None:
         print("RESEARCH_QUEUE_NO_APPLICABLE_CHANGES=true")
+        sync_personal([])
         return
     bulk.deploy(research_inventory=names)
     sync_personal(plan["selected"])
