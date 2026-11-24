@@ -1,4 +1,6 @@
 name: FI217 country personal DNS wildcard ACME finalize (gated, no 853 changes)
+# 2026-11-24: user confirmed adding the FI DNS-01 TXT in Jino; immediately
+# recheck authoritative DNS and continue the existing guarded finalize flow.
 on:
   push:
     branches: [main]
@@ -71,7 +73,9 @@ jobs:
           check=1
           for ns in ns1.jino.ru ns2.jino.ru ns3.jino.ru ns4.jino.ru; do
             response="$(dig +short +time=3 +tries=1 @"$ns" TXT "$DNS_NAME" || true)"
-            if [[ "$response" == *"$TXT_EXPECTED"* ]]; then
+            # Exact TXT RR match; a partial token, error text, or unrelated
+            # TXT must never permit a wildcard certificate finalization.
+            if printf '%s\n' "$response" | grep -Fxq "\"$TXT_EXPECTED\""; then
               echo "AUTHORITATIVE_$ns=MATCH"
             else
               echo "AUTHORITATIVE_$ns=PENDING"
