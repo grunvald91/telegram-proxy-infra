@@ -144,15 +144,36 @@ async def probe_fi():
         except (OSError,ValueError,TimeoutError,asyncio.IncompleteReadError):pass
         await asyncio.sleep(.5)
     else:raise RuntimeError("reverse_ping_failed")
-    snapshot=validate(json.loads(await transport.snapshot(),object_pairs_hook=unique_object),time.time())
-    verify_signature(snapshot,FI_ROOT/"controller-access.spki",CONTROLLER_PIN)
-    require(snapshot["grants"]==[],"unexpected_live_grants")
-    meter=protected_openssl_meter(transport,FI_ROOT/"identity/node-private.pk8",FI_ROOT/"controller-access.spki",CONTROLLER_PIN)
+    print("FI_DNS_REVERSE_PING=PASS",flush=True)
+    phase="snapshot_transport"
+    try:
+        raw=await transport.snapshot()
+        print("FI_DNS_REVERSE_SNAPSHOT_FRAME=PASS",flush=True)
+        phase="snapshot_schema"
+        snapshot=validate(json.loads(raw,object_pairs_hook=unique_object),time.time())
+        print("FI_DNS_REVERSE_SNAPSHOT_SCHEMA=PASS",flush=True)
+        phase="snapshot_signature"
+        verify_signature(snapshot,FI_ROOT/"controller-access.spki",CONTROLLER_PIN)
+        require(snapshot["grants"]==[],"unexpected_live_grants")
+        print("FI_DNS_REVERSE_SNAPSHOT_SIGNATURE=PASS",flush=True)
+        phase="meter_key"
+        meter=protected_openssl_meter(transport,FI_ROOT/"identity/node-private.pk8",FI_ROOT/"controller-access.spki",CONTROLLER_PIN)
+        # Separate local signing from transport and decision verification.
+        require(len(meter.node_sign(b"FI_DNS_PRIVATE_LOCAL_KEY_CHECK"))==64,"node_local_sign_failed")
+        print("FI_DNS_REVERSE_NODE_SIGN=PASS",flush=True)
+    except (OSError,ValueError,TypeError,RuntimeError,subprocess.SubprocessError,asyncio.IncompleteReadError) as exc:
+        print("FI_DNS_REVERSE_PROBE_FAILURE="+phase+":"+type(exc).__name__,flush=True)
+        raise RuntimeError(phase+"_failed") from None
     started=time.monotonic()
     values=[]
     for _ in range(5):
         t=time.monotonic()
-        require(await meter._apply("reserve",uuid.uuid4(),secrets.token_hex(32))=="DENY_DISABLED","wrong_meter_gate")
+        try:
+            decision=await meter._apply("reserve",uuid.uuid4(),secrets.token_hex(32))
+            require(decision=="DENY_DISABLED","wrong_meter_gate")
+        except (OSError,ValueError,TypeError,RuntimeError,subprocess.SubprocessError,asyncio.IncompleteReadError) as exc:
+            print("FI_DNS_REVERSE_METER_FAILURE="+type(exc).__name__,flush=True)
+            raise RuntimeError("signed_meter_probe_failed") from None
         values.append(round((time.monotonic()-t)*1000))
     print("FI_DNS_REVERSE_SIGNED_RPC_MS="+json.dumps(values),flush=True)
     print("FI_DNS_REVERSE_CHANNEL_VERIFIED=true;SIGNED_EMPTY_SNAPSHOT=true;SIGNED_METER_DENIAL=true;PUBLIC_DNS_UNCHANGED=true")
