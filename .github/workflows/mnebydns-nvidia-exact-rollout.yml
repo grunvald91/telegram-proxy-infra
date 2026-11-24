@@ -5,6 +5,7 @@ name: MNEBYDNS NVIDIA exact-host rollout (DE89)
     paths: [.github/workflows/mnebydns-nvidia-exact-rollout.yml]
 permissions:
   contents: read
+  statuses: write
 concurrency:
   group: mnebydns-google-public-443-change
   cancel-in-progress: false
@@ -13,12 +14,21 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 55
     steps:
+      - name: Record the production workflow link
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" \
+            -f state=pending -f context=mnebydns/nvidia-de89 \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" >/dev/null
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
       - name: Verify exact-host deployment and rollback contracts
         run: |
           set -Eeuo pipefail
+          bash -n scripts/mnebydns-checkpoint-from-live.sh
           python3 scripts/mnebydns-nvidia-permanent-20261124.py self-test
           python3 scripts/mnebydns-owner-domain-controller-20261110.py self-test
           python3 -m unittest discover -s scripts/tests -p 'test_owner_domain_*.py'
@@ -36,4 +46,42 @@ jobs:
             sudo apt-get update -qq
             sudo apt-get install -qq -y --no-install-recommends sshpass >/dev/null
           fi
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import re
+          import runpy
+          import shlex
+
+          rollout = runpy.run_path("scripts/mnebydns-nvidia-permanent-20261124.py")
+          owner = rollout["owner"]
+          if owner.live_checkpoint_unchanged():
+              print("nvidia_rollback_snapshot_already_current=true", flush=True)
+          else:
+              run_id = os.environ["GITHUB_RUN_ID"]
+              if not re.fullmatch(r"[1-9][0-9]{8,12}", run_id):
+                  raise RuntimeError("Unexpected deployment run id")
+              owner.oracle_canary_check("nvidianews.nvidia.com", True)
+              owner.tls_public_route("nvidianews.nvidia.com")
+              # Refuse a live transaction, even when the resolved files look healthy.
+              states = ",".join("'" + state + "'" for state in rollout["ACTIVE_TRANSITIONS"])
+              if owner.sql("SELECT count(*) FROM dns_admin_domains WHERE status IN (" + states + ")") != "0":
+                  raise RuntimeError("Another DNS route transaction is already active")
+              snapshot = Path("scripts/mnebydns-checkpoint-from-live.sh").read_text()
+              print(owner.ssh("de", "bash -c " + shlex.quote(snapshot) + " snapshot " + run_id, 60),
+                    flush=True)
+              if not owner.live_checkpoint_unchanged():
+                  raise RuntimeError("Rollback snapshot no longer matches DE89")
+          PY
           python3 scripts/mnebydns-nvidia-permanent-20261124.py run
+      - name: Record deployment outcome
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEPLOYMENT_RESULT: ${{ job.status }}
+        run: |
+          case "$DEPLOYMENT_RESULT" in success|failure) state="$DEPLOYMENT_RESULT";; *) state=error;; esac
+          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" \
+            -f state="$state" -f context=mnebydns/nvidia-de89 \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" >/dev/null
