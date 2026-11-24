@@ -26,8 +26,20 @@ REQUIRED_DIRECTIVES = (
     ("proxy_buffering", "proxy_buffering off;"),
     ("proxy_request_buffering", "proxy_request_buffering off;"),
     ("tcp_nodelay", "tcp_nodelay on;"),
+    ("tcp_nopush", "tcp_nopush off;"),
     ("proxy_socket_keepalive", "proxy_socket_keepalive on;"),
 )
+TLS_8443_DIRECTIVES = (
+    ("ssl_session_cache", "ssl_session_cache shared:MNEBY8443:10m;"),
+    ("ssl_session_timeout", "ssl_session_timeout 10m;"),
+    ("ssl_session_tickets", "ssl_session_tickets on;"),
+    ("ssl_buffer_size", "ssl_buffer_size 4k;"),
+)
+LISTEN_8443_RE = re.compile(
+    r"(?m)^(?P<prefix>[ \t]*listen\s+[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:8443\b(?P<params>[^;]*));"
+)
+TLS_ANCHOR_RE = re.compile(r"(?m)^(?P<indent>[ \t]*)ssl_protocols\b[^\n]*;\n")
+SERVER_NAME_ANCHOR_RE = re.compile(r"(?m)^(?P<indent>[ \t]*)server_name\s+cdn\.servgo\.ru;\n")
 
 
 class TuneError(RuntimeError):
@@ -74,6 +86,48 @@ def render_ws_tune(source: str) -> tuple[str, bool]:
         + match.group("footer")
     )
     return source[: match.start()] + updated_block + source[match.end() :], True
+
+
+def render_tls_8443_tune(source: str) -> tuple[str, bool]:
+    """Tune public :8443 TLS session reuse, record sizing, and TCP keepalive."""
+    updated = source
+    changed = False
+
+    listen_matches = list(LISTEN_8443_RE.finditer(updated))
+    if len(listen_matches) != 1:
+        raise TuneError("Expected exactly one IPv4:8443 listen directive in site config")
+    lm = listen_matches[0]
+    if "so_keepalive=" not in lm.group("params"):
+        replacement = f"{lm.group('prefix').rstrip()} so_keepalive=30s:10s:3;"
+        updated = updated[: lm.start()] + replacement + updated[lm.end() :]
+        changed = True
+
+    anchor = TLS_ANCHOR_RE.search(updated) or SERVER_NAME_ANCHOR_RE.search(updated)
+    if not anchor:
+        raise TuneError("Expected ssl_protocols or server_name cdn.servgo.ru anchor in site config")
+    indent = anchor.group("indent")
+
+    additions: list[str] = []
+    for key, directive in TLS_8443_DIRECTIVES:
+        if re.search(rf"(?m)^\s*{re.escape(key)}\b", updated):
+            if directive not in updated:
+                raise TuneError(f"Conflicting existing directive for {key}")
+        else:
+            additions.append(f"{indent}{directive}")
+
+    if additions:
+        insert_text = "\n".join(additions) + "\n"
+        updated = updated[: anchor.end()] + insert_text + updated[anchor.end() :]
+        changed = True
+
+    return updated, changed
+
+
+def render_all_tunes(source: str) -> tuple[str, bool]:
+    """Apply both /mnebyvpn-vpn/ws stream tuning and :8443 TLS tuning."""
+    after_ws, ws_changed = render_ws_tune(source)
+    after_tls, tls_changed = render_tls_8443_tune(after_ws)
+    return after_tls, (ws_changed or tls_changed)
 
 
 def atomic_write(path: pathlib.Path, content: str) -> None:
@@ -138,7 +192,7 @@ def main(argv: list[str] | None = None) -> int:
 
     current = args.site.read_text(encoding="utf-8")
     if args.mode == "dry-run":
-        updated, changed = render_ws_tune(current)
+        updated, changed = render_all_tunes(current)
         print(f"ws_tune_changed={str(changed).lower()}")
         print(f"ws_tune_sha256={hashlib.sha256(updated.encode('utf-8')).hexdigest()}")
         return 0
@@ -158,7 +212,7 @@ def main(argv: list[str] | None = None) -> int:
         print("ws_tune_rolled_back=true")
         return 0
 
-    updated, changed = render_ws_tune(current)
+    updated, changed = render_all_tunes(current)
     if not changed:
         verify_live_health(listen_ip)
         print("ws_tune_already_present=true")

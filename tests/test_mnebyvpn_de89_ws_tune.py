@@ -37,6 +37,7 @@ class De89WsTuneTests(unittest.TestCase):
             "proxy_buffering off;",
             "proxy_request_buffering off;",
             "tcp_nodelay on;",
+            "tcp_nopush off;",
             "proxy_socket_keepalive on;",
         ):
             self.assertIn(directive, updated)
@@ -49,6 +50,28 @@ class De89WsTuneTests(unittest.TestCase):
         # Does not touch webhook block.
         webhook_section = updated.split("location = /mnebyvpn-telegram/webhook")[1]
         self.assertNotIn("tcp_nodelay on;", webhook_section)
+        self.assertNotIn("tcp_nopush off;", webhook_section)
+
+    def test_adds_tls_8443_session_cache_buffer_and_so_keepalive(self):
+        updated, changed = ws_tune.render_all_tunes(SAMPLE_CONF)
+        self.assertTrue(changed)
+        self.assertEqual(ws_tune.extract_listen_ip_8443(updated), "89.125.90.101")
+        for directive in (
+            "listen 89.125.90.101:8443 ssl so_keepalive=30s:10s:3;",
+            "ssl_session_cache shared:MNEBY8443:10m;",
+            "ssl_session_timeout 10m;",
+            "ssl_session_tickets on;",
+            "ssl_buffer_size 4k;",
+            "tcp_nopush off;",
+        ):
+            self.assertIn(directive, updated)
+
+        second, changed_again = ws_tune.render_all_tunes(updated)
+        self.assertFalse(changed_again)
+        self.assertEqual(second, updated)
+
+        webhook_section = updated.split("location = /mnebyvpn-telegram/webhook")[1]
+        self.assertNotIn("ssl_buffer_size 4k;", webhook_section)
 
     def test_refuses_missing_or_unexpected_ws_block(self):
         with self.assertRaises(ws_tune.TuneError):
