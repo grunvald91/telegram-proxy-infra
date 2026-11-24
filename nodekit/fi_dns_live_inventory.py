@@ -23,6 +23,7 @@ REGIONAL_PROBES = (
     "bbbbbbbbbbbb.fi.dns.mnebyvpn.site",
 )
 CERT_CANDIDATES = (
+    ROOT / "fi-regional-tls/fullchain.pem",
     ROOT / "tls/fullchain.pem",
     ROOT / "dns-auth/fullchain.pem",
     Path("/etc/letsencrypt/live/fi.dns.mnebyvpn.site/fullchain.pem"),
@@ -109,9 +110,10 @@ def certificate_summary() -> dict:
             "ca_chain_verified": chain_verified,
             "certificate_key_match": key_match,
             "chain_pem_count": path.read_bytes().count(b"-----BEGIN CERTIFICATE-----"),
-            "source": "nodekit_tls" if path == CERT_CANDIDATES[0]
-            else "regional_dns_auth" if path == CERT_CANDIDATES[1]
-            else "regional_acme" if path == CERT_CANDIDATES[2]
+            "source": "regional_staged" if path == ROOT / "fi-regional-tls/fullchain.pem"
+            else "nodekit_tls" if path == ROOT / "tls/fullchain.pem"
+            else "regional_dns_auth" if path == ROOT / "dns-auth/fullchain.pem"
+            else "regional_acme" if path == Path("/etc/letsencrypt/live/fi.dns.mnebyvpn.site/fullchain.pem")
             else "country_acme",
             "regional_two_name_match": all(valid_names),
             "unexpired_14d": command("openssl", "x509", "-in", str(path),
@@ -143,7 +145,7 @@ def listening_tcp_ports() -> list[int]:
         candidate = bound.rsplit(":", 1)[-1]
         if candidate.isdigit():
             number = int(candidate)
-            if number in (53, 80, 443, 853, 8853, 18853):
+            if number in (53, 80, 443, 853, 8853, 18853, 18854):
                 ports.add(number)
     return sorted(ports)
 
