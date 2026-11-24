@@ -123,6 +123,7 @@ def compose(migrations):
         chunks.extend(lines[:starts[0]]+lines[starts[0]+1:-1])
         chunks.append("INSERT INTO public.deployment_schema_migrations(file_name) VALUES('"+name+"');")
     chunks.append("DO $guard$ BEGIN IF (SELECT enabled FROM public.fi_dns_meter_gate WHERE singleton) IS DISTINCT FROM false THEN RAISE EXCEPTION 'FI gate must remain off'; END IF; END $guard$;")
+    chunks.append("DO $acl$ BEGIN IF NOT has_function_privilege('mnebyvpn_fi_dns_meter','public.fi_dns_meter_verified_apply(text,uuid,text,text,text,timestamptz)','EXECUTE') OR has_function_privilege('mnebyvpn_fi_dns_meter','public.fi_dns_meter_apply(text,uuid,text)','EXECUTE') OR NOT has_function_privilege('mnebyvpn_fi_dns_publisher','public.fi_dns_snapshot_next()','EXECUTE') THEN RAISE EXCEPTION 'unexpected FI ACL'; END IF; IF EXISTS(SELECT 1 FROM pg_roles WHERE rolname IN ('mnebyvpn_fi_dns_meter','mnebyvpn_fi_dns_publisher','mnebyvpn_fi_dns_maintenance') AND (rolcanlogin OR rolinherit OR rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls)) THEN RAISE EXCEPTION 'unsafe FI role'; END IF; END $acl$;")
     chunks.append("COMMIT;")
     return "\n".join(chunks)+"\n"
 
