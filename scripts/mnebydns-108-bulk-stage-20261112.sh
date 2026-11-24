@@ -3,7 +3,7 @@
 # Reuses the existing independent owner-domain 60-minute rollback service.
 set -Eeuo pipefail
 (( EUID == 0 )) || exit 2
-[[ $# == 3 ]] || exit 2
+[[ $# == 3 || ( $# == 4 && "$4" == --research-queue ) ]] || exit 2
 work="$1"; id="$2"; deadline="$3"
 [[ "$id" =~ ^[1-9][0-9]{8,12}$ ]] || exit 2
 [[ "$work" == "/tmp/mnebydns-mass-$id" ]] || exit 2
@@ -36,7 +36,11 @@ cmp -s "$work/nginx.before" "$nginx"
 test -s "$work/dns.pilot" && test -s "$work/nginx.pilot"
 ! cmp -s "$work/dns.before" "$work/dns.pilot"
 ! cmp -s "$work/nginx.before" "$work/nginx.pilot"
-for service in nginx mnebydns-dot.service mnebydns-googlepilot.service xray.service; do
+services=(nginx mnebydns-dot.service)
+if [[ "${4:-}" != --research-queue ]]; then
+  services+=(mnebydns-googlepilot.service xray.service)
+fi
+for service in "${services[@]}"; do
   systemctl is-active --quiet "$service" || exit 3
 done
 nginx -t -c "$work/nginx.pilot" >/dev/null 2>&1
