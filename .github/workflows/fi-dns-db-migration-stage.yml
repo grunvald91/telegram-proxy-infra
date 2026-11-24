@@ -46,6 +46,63 @@ jobs:
           Path('/tmp/fi-db-stage.sh').write_text(text)
           PY
           bash -n /tmp/fi-db-stage.sh
+      - name: Rehearse atomic migration and backup restore on disposable PostgreSQL
+        timeout-minutes: 4
+        run: |
+          set -Eeuo pipefail
+          name=mnebyvpn-stage-postgres
+          docker run -d --name "$name" -e POSTGRES_USER=mnebyvpn_stage -e POSTGRES_DB=mnebyvpn_stage -e POSTGRES_PASSWORD=test postgres:17.6-alpine >/dev/null
+          trap 'docker rm -f "$name" >/dev/null' EXIT
+          for i in $(seq 1 30); do
+            if docker exec "$name" pg_isready -U mnebyvpn_stage -d mnebyvpn_stage >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          docker exec "$name" pg_isready -U mnebyvpn_stage -d mnebyvpn_stage
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          rows=Path('source/.github/workflows/offline-contracts.yml').read_text().splitlines()
+          output=[]
+          for line in rows:
+              match=re.fullmatch(r'          psql -v ON_ERROR_STOP=1 -f (db/migrations/\d{4}_[A-Za-z0-9_]+\.sql) >/dev/null',line)
+              if match:
+                  path=match.group(1)
+                  if path.startswith('db/migrations/0150_'): break
+                  output.append(path)
+              elif line.strip()=='psql -v ON_ERROR_STOP=1 -c "CREATE ROLE mnebyvpn_awg_delivery NOLOGIN NOINHERIT" >/dev/null':
+                  output.append('CREATE_ROLE')
+          assert len(output)>40 and output[-1].startswith('db/migrations/0149_')
+          Path('/tmp/fi-migration-baseline').write_text('\n'.join(output)+'\n')
+          PY
+          while IFS= read -r path; do
+            if [[ "$path" == CREATE_ROLE ]]; then
+              printf '%s\n' 'CREATE ROLE mnebyvpn_awg_delivery NOLOGIN NOINHERIT;' | docker exec -i "$name" psql -qX -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage >/dev/null
+            else
+              docker exec -i "$name" psql -qX -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage < "source/$path" >/dev/null
+            fi
+          done < /tmp/fi-migration-baseline
+          sudo mkdir -p /opt/mnebyvpn
+          sudo env PYTHONPATH="$PWD/nodekit" python3 - <<'PY'
+          from pathlib import Path
+          import tempfile,shutil
+          import fi_dns_db_stage as m
+          with tempfile.TemporaryDirectory() as tmp:
+              root=Path(tmp)
+              m.BASE=root/'backups';m.BASE.mkdir(mode=0o700)
+              m.OFFSITE=root/'offsite'
+              stage=root/'canary';stage.mkdir(mode=0o700)
+              m.psql("CREATE TABLE deployment_schema_migrations(file_name text PRIMARY KEY,applied_at timestamptz NOT NULL DEFAULT clock_timestamp());")
+              m.psql("INSERT INTO vpn_node_enrollment_inventory(node_id,endpoint_host,identity_public_spki) VALUES('fi-test-01','ci-fi.example.org','AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'); UPDATE vpn_node_enrollment_inventory SET status='approved',approved_at=clock_timestamp() WHERE node_id='fi-test-01'; INSERT INTO vpn_node_enrollment_challenges(challenge_id,node_id,nonce_sha256,issued_at,expires_at,consumed_at) VALUES(gen_random_uuid(),'fi-test-01',repeat('e',64),clock_timestamp()-interval '1 second',clock_timestamp()+interval '1 minute',clock_timestamp()); UPDATE vpn_node_enrollment_inventory SET status='enrolled',enrolled_at=clock_timestamp() WHERE node_id='fi-test-01';")
+              for name in m.MIGRATIONS:
+                  m.exclusive(stage/name,(Path('source/db/migrations')/name).read_bytes())
+              m.backup_identity(stage)
+              m.prepare(stage)
+              proof=(stage/'proof').read_text().strip().split('|')
+              m.store(stage,proof[1],proof[2])
+              m.apply(stage,proof[2])
+              assert m.preflight()=='applied'
+              print('DISPOSABLE_FI_DB_BACKUP_AND_MIGRATION_PASS')
+          PY
   stage:
     needs: offline
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
