@@ -60,6 +60,18 @@ class TestFiDnsInventory(unittest.TestCase):
             file.symlink_to("/etc/hosts")
             self.assertIsNone(audit.secure_json(file))
 
+    def test_inventory_includes_real_regional_tls_stage(self):
+        from fi_regional_cert_stage import DEST
+        self.assertIn(DEST / "fullchain.pem", audit.CERT_CANDIDATES)
+
+    def test_inventory_includes_metered_loopback_port(self):
+        result = type("Result", (), {
+            "returncode": 0,
+            "stdout": "LISTEN 0 128 127.0.0.1:18854 0.0.0.0:*\n",
+        })()
+        with patch.object(audit, "command", return_value=result):
+            self.assertEqual(audit.listening_tcp_ports(), [18854])
+
     def test_certificate_reports_two_distinct_regional_hosts(self):
         self.assertNotEqual(audit.REGIONAL_PROBES[0],
                             audit.REGIONAL_PROBES[1])
