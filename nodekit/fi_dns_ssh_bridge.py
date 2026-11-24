@@ -72,7 +72,7 @@ def snapshot():
             raise ValueError("outbox changed")
     # The receiver verifies the actual controller signature and validity.
     obj=json.loads(data)
-    if obj.get("nodeId")!="fi-test-01" or obj.get("countryCode")!="FI":
+    if not isinstance(obj,dict) or obj.get("nodeId")!="fi-test-01" or obj.get("countryCode")!="FI":
         raise ValueError("wrong snapshot")
     return data
 
