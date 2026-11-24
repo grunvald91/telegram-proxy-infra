@@ -219,6 +219,8 @@ async def probe():
     from fi_dns_signed_grants import validate,verify_signature
     import time
     args=ssh_args(FI_CHANNEL/"identity",FI_CHANNEL/"known_hosts")
+    route=subprocess.run(["ip","-4","route","get",RU],capture_output=True,text=True,timeout=5)
+    print("FI_DNS_ROUTE_SOURCE_MATCH="+str(route.returncode==0 and re.search(r"\bsrc "+re.escape(FI)+r"\b",route.stdout) is not None).lower(),flush=True)
     bad=await asyncio.create_subprocess_exec(*args[:-1],"false",stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.DEVNULL)
     try:
         output,_=await asyncio.wait_for(bad.communicate(),8)
@@ -230,7 +232,7 @@ async def probe():
     # debug output (paths, keys and system configuration are sensitive).
     import struct
     from fi_dns_ssh_bridge import PING_OP,PONG
-    verbose=[*args[:1],"-v",*args[1:]]
+    verbose=[*args[:1],"-v",*(x if x!="LogLevel=ERROR" else "LogLevel=DEBUG1" for x in args[1:])]
     ping=await asyncio.create_subprocess_exec(*verbose,stdin=asyncio.subprocess.PIPE,stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.PIPE)
     try:
         output,debug=await asyncio.wait_for(ping.communicate(struct.pack("!I",len(PING_OP))+PING_OP),10)
