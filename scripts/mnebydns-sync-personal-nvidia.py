@@ -87,7 +87,7 @@ def mapped_answer(env, name):
     # response. The request carries no EDNS OPT and asks for a single record.
     return (len(reply) >= 28 and reply[:2] == query[:2] and not reply[3] & 15
             and reply[6:12] == b"\x00\x01\x00\x00\x00\x00"
-            and reply[-10:-8] == b"\x00\x01" and reply[-6:-4] == b"\x00\x04"
+            and reply[-14:-10] == b"\x00\x01\x00\x01" and reply[-6:-4] == b"\x00\x04"
             and reply[-4:] == socket.inet_aton(EDGE))
 
 
