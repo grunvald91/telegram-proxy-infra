@@ -136,7 +136,7 @@ async def probe_fi():
     host(FI);sys.path.insert(0,str(FI_RUNTIME))
     from fi_dns_reverse_channel import ReverseTransport,SOCKET,PING_OP,PONG
     from fi_dns_meter_rpc import protected_openssl_meter,unique_object
-    from fi_dns_signed_grants import validate,verify_signature
+    from fi_dns_signed_grants import validate,verify_signature,utc_seconds,ENVELOPE_KEYS,NODE,COUNTRY,SIGNATURE
     transport=ReverseTransport()
     for _ in range(20):
         try:
@@ -150,7 +150,33 @@ async def probe_fi():
         raw=await transport.snapshot()
         print("FI_DNS_REVERSE_SNAPSHOT_FRAME=PASS",flush=True)
         phase="snapshot_schema"
-        snapshot=validate(json.loads(raw,object_pairs_hook=unique_object),time.time())
+        candidate=json.loads(raw,object_pairs_hook=unique_object)
+        # Report only structural booleans, and signed timing deltas. Never
+        # disclose the snapshot, grant list, signature or credential digest.
+        now=time.time()
+        shape=isinstance(candidate,dict) and set(candidate)==ENVELOPE_KEYS
+        require(shape,"snapshot_envelope_shape")
+        checks={
+            "schema_version":type(candidate["schemaVersion"]) is int and candidate["schemaVersion"]==1,
+            "node":candidate["nodeId"]==NODE,
+            "country":candidate["countryCode"]==COUNTRY,
+            "revision":type(candidate["revision"]) is int and 1<=candidate["revision"]<=1000000000,
+            "empty_grants":candidate["grants"]==[],
+            "signature_shape":isinstance(candidate["signature"],str) and SIGNATURE.fullmatch(candidate["signature"]) is not None,
+        }
+        print("FI_DNS_SNAPSHOT_SHAPE="+json.dumps(checks,sort_keys=True),flush=True)
+        require(all(checks.values()),"snapshot_shape_mismatch")
+        issued=utc_seconds(candidate["issuedAt"])
+        until=utc_seconds(candidate["validUntil"])
+        # Verify the signed transcript before trusting time fields. This does
+        # not authorize any grant or relax the real receiver's time check.
+        verify_signature(candidate,FI_ROOT/"controller-access.spki",CONTROLLER_PIN)
+        print("FI_DNS_SNAPSHOT_TIMING="+json.dumps({
+            "age_ms":round((now-issued)*1000),
+            "remaining_ms":round((until-now)*1000),
+            "signed_ttl_ms":round((until-issued)*1000),
+        },sort_keys=True),flush=True)
+        snapshot=validate(candidate,now)
         print("FI_DNS_REVERSE_SNAPSHOT_SCHEMA=PASS",flush=True)
         phase="snapshot_signature"
         verify_signature(snapshot,FI_ROOT/"controller-access.spki",CONTROLLER_PIN)
