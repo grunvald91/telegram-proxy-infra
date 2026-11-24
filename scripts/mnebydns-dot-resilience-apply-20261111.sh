@@ -75,11 +75,19 @@ chown --reference="$dns" "$base/dns.candidate"
 # The installed CoreDNS 1.15.0 binary has no -validate option.
 # Parse and serve the complete candidate in a private loopback-only DoT
 # instance. Neither the public listener nor any live file is touched.
-python3 - "$base/dns.candidate" "$base/dns.preflight" <<'PY'
-import pathlib,sys
+python3 - "$base/dns.candidate" "$base/dns.preflight" "${3:-}" <<'PY'
+import pathlib,re,sys
 original=pathlib.Path(sys.argv[1]).read_text()
 port="tls://.:853 {"
 bind="    bind 89.125.90.101"
+if sys.argv[3] == "--reload-only":
+    # Other server blocks are byte-identical and already serving. Validate
+    # the changed public block in isolation without binding sibling listeners.
+    start=original.index(port)
+    ending=re.search(r"(?m)^}[ \t]*(?:#.*)?$", original[start:])
+    if not ending:
+        raise SystemExit("MNEBYDNS_PREFLIGHT_PUBLIC_BLOCK_NOT_CLOSED")
+    original=original[start:start+ending.end()]+"\n"
 if original.count(port)!=1 or original.count(bind)!=1:
     raise SystemExit("MNEBYDNS_PREFLIGHT_UNEXPECTED_LISTENER")
 replacement=original.replace(port,"tls://.:18553 {",1).replace(
