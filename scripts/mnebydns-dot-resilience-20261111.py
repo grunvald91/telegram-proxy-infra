@@ -50,12 +50,34 @@ def render_reload_only(source: str) -> str:
     import re
 
     directive = "    reload 5s 1s"
-    if re.search(r"(?m)^\s*reload(?:[ \t]|$)", source):
-        raise ValueError("A reload directive already exists with an unfamiliar layout")
+    listener = "tls://.:853 {\n"
     anchor = "    bind 89.125.90.101\n"
-    if source.count(anchor) != 1 or source.count("tls://.:853 {") != 1:
+    if source.count(listener) != 1:
         raise ValueError("Unrecognized DE89 public DoT listener")
-    return source.replace(anchor, anchor + directive + "\n", 1)
+    start = source.index(listener) + len(listener)
+    tail = source[start:]
+    closing = re.search(r"(?m)^}[ \t]*(?:#.*)?$", tail)
+    if not closing:
+        raise ValueError("Cannot locate end of the public DoT server block")
+    block = tail[:closing.start()]
+    if block.count(anchor) != 1:
+        raise ValueError("Unrecognized DE89 public DoT bind")
+    existing = list(re.finditer(r"(?m)^[ \t]*reload\b[^\n]*$", block))
+    if len(existing) > 1:
+        raise ValueError("Ambiguous reload configuration")
+    if existing:
+        entry = existing[0]
+        args, sep, comment = entry.group().partition("#")
+        if len(args.split()) > 3 or any(not re.fullmatch(r"(?:\d+(?:\.\d+)?(?:ns|us|µs|ms|s|m|h))+", part)
+                                      for part in args.split()[1:]):
+            raise ValueError("Invalid reload arguments in the live Corefile")
+        # Put inline comments on their own line so the deployment can verify
+        # the canonical directive exactly.
+        normalized = ("    #"+comment+"\n" if sep else "") + directive
+        updated = block[:entry.start()] + normalized + block[entry.end():]
+    else:
+        updated = block.replace(anchor, anchor + directive + "\n", 1)
+    return source[:start] + updated + tail[closing.start():]
 
 
 def self_test() -> None:
@@ -69,6 +91,8 @@ def self_test() -> None:
     )
     reload_only = render_reload_only(base)
     assert reload_only.replace("    reload 5s 1s\n", "", 1) == base
+    alternative = base.replace("    cache 30\n", "\treload 30s 15s # live\n    cache 30\n")
+    assert "    # live\n    reload 5s 1s\n" in render_reload_only(alternative)
     out = render(base)
     assert render(out) == out
     assert out.replace(NEW, OLD, 1) == base
