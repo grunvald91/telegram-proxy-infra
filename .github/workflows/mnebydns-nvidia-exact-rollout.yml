@@ -39,7 +39,7 @@ jobs:
           for script in scripts/mnebydns-owner-domain-{stage,confirm,rollback}-20261110.sh; do
             bash -n "$script"
           done
-      - name: Validate the public resolver block and apply the merged NVIDIA list
+      - name: Run the Python deployment helper and apply the merged NVIDIA list
         env:
           RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
           DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
