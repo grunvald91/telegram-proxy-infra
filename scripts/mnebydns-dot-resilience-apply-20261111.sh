@@ -3,8 +3,10 @@
 # Never rewrites SNI routing, nginx, proxy credentials, or hostname templates.
 set -Eeuo pipefail
 (( EUID == 0 )) || exit 2
-[[ $# == 2 && "$1" =~ ^[0-9]{9,13}$ ]] || exit 2
+[[ ( $# == 2 || ( $# == 3 && "$3" == --reload-only ) ) && "$1" =~ ^[0-9]{9,13}$ ]] || exit 2
 runid="$1"; stagedir="$2"
+render_options=()
+if [[ "${3:-}" == --reload-only ]]; then render_options+=(--reload-only); fi
 [[ "$stagedir" == "/tmp/mnebydns-resilience-$runid" ]] || exit 2
 test -s "$stagedir/mnebydns-dot-resilience-20261111.py"
 test -s "$stagedir/mnebydns-dot-resilience-rollback-20261111.sh"
@@ -47,10 +49,12 @@ cmp -s "$current/nginx.stable" "$nginx"
 cmp -s "$current/proxy.stable" "$proxy"
 shopt -s nullglob
 owner_timers=(/etc/systemd/system/mnebydns-owner-rollback-*.timer)
-(( ${#owner_timers[@]} == 0 )) || {
+if [[ "${3:-}" != --reload-only ]]; then
+  (( ${#owner_timers[@]} == 0 )) || {
   echo 'resilience_denied_active_owner_rollback_timer=true'
-  exit 4
-}
+    exit 4
+  }
+fi
 systemctl is-active --quiet mnebydns-dot.service
 systemctl is-active --quiet nginx.service
 nginx -t >/dev/null 2>&1
@@ -65,7 +69,7 @@ grep -Eq '(^|[[:space:].])cache([[:space:]]|$)' <<< "$plugins"
 cp -p "$dns" "$base/dns.before"
 printf '%s\n' "$current" > "$base/checkpoint.before"
 python3 "$stagedir/mnebydns-dot-resilience-20261111.py" render \
-   --input "$base/dns.before" --output "$base/dns.candidate"
+   --input "$base/dns.before" --output "$base/dns.candidate" "${render_options[@]}"
 chmod --reference="$dns" "$base/dns.candidate"
 chown --reference="$dns" "$base/dns.candidate"
 # The installed CoreDNS 1.15.0 binary has no -validate option.
@@ -215,6 +219,10 @@ completed=1
 # The timer also refuses rollback once it sees the new committed checkpoint.
 systemctl stop "$unit.timer" >/dev/null 2>&1 || true
 echo "mnebydns_resilience_checkpoint=$next"
-echo 'mnebydns_resilience_redundant_upstream_live=true'
+if [[ "${3:-}" == --reload-only ]]; then
+  echo 'mnebydns_reload_enabled_preserving_route_policy=true'
+else
+  echo 'mnebydns_resilience_redundant_upstream_live=true'
+fi
 trap - EXIT
 flock -u 9
