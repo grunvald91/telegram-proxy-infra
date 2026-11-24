@@ -5,16 +5,44 @@ name: Apply remaining Smart DNS research domains as one batch
     paths: [.github/workflows/mnebydns-research-queue-bulk.yml]
 permissions:
   contents: read
-concurrency:
-  group: mnebydns-google-public-443-change
-  cancel-in-progress: false
 jobs:
+  origins:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Resolve the queue and verify upstream certificates on DE89
+        env:
+          RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+          DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+        run: |
+          set -Eeuo pipefail
+          if ! command -v sshpass >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -qq -y --no-install-recommends sshpass >/dev/null
+          fi
+          python3 scripts/mnebydns-research-queue-bulk.py self-test
+          python3 scripts/mnebydns-research-queue-bulk.py prepare-origins
+      - uses: actions/upload-artifact@v4
+        with:
+          name: research-queue-origins
+          path: research-queue-origins.json
+          if-no-files-found: error
+          retention-days: 1
   deploy:
+    needs: origins
+    concurrency:
+      group: mnebydns-google-public-443-change
+      cancel-in-progress: false
     runs-on: ubuntu-24.04
     timeout-minutes: 26
     steps:
       - uses: actions/checkout@v4
         with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: research-queue-origins
       - name: Verify the known queue, exact-host rendering and guarded rollback
         run: |
           set -Eeuo pipefail
