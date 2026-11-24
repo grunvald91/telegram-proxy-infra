@@ -1,0 +1,46 @@
+name: Sync active NVIDIA API into the personal Smart DNS
+"on":
+  push:
+    branches: [smartdns/research-queue-bulk-20261124]
+    paths: [.github/workflows/mnebydns-nvidia-api-personal-now.yml]
+permissions: {contents: read}
+concurrency:
+  group: mnebydns-personal-nvidia-api
+  cancel-in-progress: false
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Confirm NVIDIA API works through DE89, then update existing personal rules
+        env:
+          RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if ! command -v sshpass >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -qq -y --no-install-recommends sshpass >/dev/null
+          fi
+          python3 - <<'PY'
+          import os,re,runpy,shlex
+          m=runpy.run_path("scripts/mnebydns-nvidia-permanent-20261124.py")
+          owner=m["owner"]
+          domain=m["TARGETS"][0]
+          if m["row"](domain)["status"] not in ("ACTIVE","COVERED"):
+              raise RuntimeError("NVIDIA API route is not active")
+          m["health"](domain)
+          run=os.environ["GITHUB_RUN_ID"]
+          if not re.fullmatch(r"[1-9][0-9]{8,12}",run):
+              raise RuntimeError("Invalid release identifier")
+          stage="/opt/mnebydns-personal-nvidia-"+run
+          name="mnebydns-sync-personal-nvidia.py"
+          owner.ssh("ru","mkdir -m 700 "+stage)
+          owner.cmd(["sshpass","-e","scp","-q","-o","ConnectTimeout=12",*owner.SSH_TRUST,
+                     "-o","LogLevel=ERROR","scripts/"+name,"root@"+owner.RU+":"+stage+"/"],os.environ["RU_PASS"])
+          output=owner.ssh("ru","python3 "+stage+"/"+name+" "+run+" "+shlex.quote(domain),150)
+          print(output,flush=True)
+          if "nvidia_personal_policy_applied=mnebydns-personal-dot-private " not in output and              "nvidia_personal_policy_already_current=mnebydns-personal-dot-private" not in output:
+              raise RuntimeError("Primary personal DNS did not confirm NVIDIA API routing")
+          PY
