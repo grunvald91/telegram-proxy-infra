@@ -57,3 +57,28 @@ class SharedRouteTests(unittest.TestCase):
         self.assertEqual(decode_pattern('"^api[.]example[.]net[.]$"'),({"api.example.net"},set()))
         for pattern in (r"(?i)^(?:.*|api\.example\.net)\.$",r"^api.example[.]net[.]$",r"(?i)^(?:[a-z0-9-]+[.])*(?:api[.]example[.]net|.*)[.]$"):
             with self.assertRaises(ValueError):decode_pattern(pattern)
+
+    def test_single_family_and_capturing_groups(self):
+        for pattern in (
+            r"(?i)^(?:[a-z0-9-]+[.])*googlevideo[.]com[.]$",
+            r"(?i)^([a-z0-9-]+[.])*googlevideo[.]com[.]$",
+            r"(?i)^(?:[0-9a-z-]{1,63}\.)*googlevideo\.com\.$",
+            r"(?i)^((?:[a-z0-9-]+[.])*)(googlevideo[.]com)[.]$",
+        ):
+            self.assertEqual(decode_pattern(pattern),(set(),{"googlevideo.com"}))
+        self.assertEqual(decode_pattern(r"(?i)^(?:api[.]example[.](?:net|com))[.]$"),({"api.example.net","api.example.com"},set()))
+        self.assertEqual(decode_pattern(r"(?i)^(?:api[.]example[.]net|(?:[a-z0-9-]+[.])*video[.]example[.]net)[.]$"),({"api.example.net"},{"video.example.net"}))
+    def test_semantic_parser_rejects_widening(self):
+        for pattern in (
+            r"(?i)^.*example[.]net[.]$",
+            r"(?i)^(?:[a-z0-9-]+[.])?example[.]net[.]$",
+            r"(?i)^(?:[a-z]+[.])*example[.]net[.]$",
+            r"(?i)^api[.]example[.]net[.]$(?=x)",
+            r"(?i)^api[.]example[.]net[.]$|^.*$",
+            r"(?i)^api[.]example[.]net[.]$|^foo[.]example[.]net[.]$",
+            r"(?i)^(?:[a-z0-9-]+[.])*mnebyvpn[.]site[.]$",
+            r"(?i)^(?:[a-z0-9-]+[.])*api[.](?:[a-z0-9-]+[.])*example[.]net[.]$",
+            r"(?i)^api[.]example[.](?s:net)[.]$",
+        ):
+            with self.subTest(pattern=pattern):
+                with self.assertRaises(ValueError):decode_pattern(pattern)
