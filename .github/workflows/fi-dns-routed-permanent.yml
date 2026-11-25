@@ -1,10 +1,10 @@
 name: FI permanent routed DNS and SNI (private)
 "on":
   pull_request:
-    paths: ["nodekit/fi_routed*.py","nodekit/systemd/fi-routed/*",".github/workflows/fi-dns-routed-permanent.yml"]
+    paths: ["nodekit/fi_routed*.py","nodekit/tests/test_fi_routed_stage.py","nodekit/systemd/fi-routed/*",".github/workflows/fi-dns-routed-permanent.yml"]
   push:
     branches: [main]
-    paths: ["nodekit/fi_routed*.py","nodekit/systemd/fi-routed/*",".github/workflows/fi-dns-routed-permanent.yml"]
+    paths: ["nodekit/fi_routed*.py","nodekit/tests/test_fi_routed_stage.py","nodekit/systemd/fi-routed/*",".github/workflows/fi-dns-routed-permanent.yml"]
   workflow_dispatch:
 permissions: {contents: read}
 concurrency:
@@ -21,6 +21,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           python3 -m py_compile nodekit/fi_routed*.py
+          sudo python3 -m unittest discover -s nodekit/tests -p 'test_fi_routed_stage.py' -v
           python3 -m unittest discover -s nodekit/tests -p 'test_fi_shared_routes.py' -v
           sudo python3 -m unittest discover -s nodekit/tests -p 'test_fi_dns_private_runtime.py' -v
           sudo python3 -m unittest discover -s nodekit/tests -p 'test_fi_dns_metered_dot.py' -v
