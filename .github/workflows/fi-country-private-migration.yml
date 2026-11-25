@@ -49,7 +49,7 @@ jobs:
           body='\n'.join(line[10:] for line in lines[i:] if line.startswith('          '))+'\n'
           Path(os.environ['RUNNER_TEMP'],'fi-live.sh').write_text(body)
           PY
-          PYTHONPATH="$RUNNER_TEMP/fi-country-runtime:nodekit" python3 -B nodekit/tests/test_fi_country_sni_wire.py -v
+          FI_COUNTRY_GENERATED_TEST=1 PYTHONPATH="$RUNNER_TEMP/fi-country-runtime:nodekit" python3 -B nodekit/tests/test_fi_country_sni_wire.py -v
           bash -n "$RUNNER_TEMP/fi-live.sh"
           python3 -B -m py_compile nodekit/fi_country_stage.py nodekit/fi_country_transaction.py
   stage:
