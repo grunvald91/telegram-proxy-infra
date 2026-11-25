@@ -2,7 +2,6 @@
 """Switch the verified FI route bundle into permanent private DNS and SNI services.
 No public 853/443, grant, billing, firewall, RU or DE changes.
 """
-import asyncio
 import hashlib
 import json
 import os
@@ -18,7 +17,7 @@ import time
 
 from fi_dns_ssh_stage import FI,FI_ROOT,FI_RUNTIME,CONTROLLER_PIN,host,private_dir,read,immutable,command,require
 from fi_shared_routes import render_core,render_nginx,covered,hostname
-from fi_shared_routes_stage import dns_query,proxy_probe
+from fi_shared_routes_stage import proxy_probe
 from fi_dns_private_runtime import corefile_bytes,prepare
 from fi_dns_origin_canary import HOSTS,EXTERNAL_QUERY,dot_probe,query_bytes
 from fi_dns_guarded_ingress import SNAPSHOT,CONTROLLER
@@ -113,6 +112,7 @@ def rollback(src):
         time.sleep(1)
     else:raise RuntimeError("legacy_restore_failed")
     denied();check_public()
+    (src/"switch-started").unlink(missing_ok=True)
     print("FI_ROUTED_ROLLBACK_VERIFIED=true",flush=True)
 
 def stage(src):
@@ -142,6 +142,7 @@ def stage(src):
         probe(p)
         ctl("enable",DNS,PROXY)
         require(ctl("is-enabled",DNS).strip()==b"enabled" and ctl("is-enabled",PROXY).strip()==b"enabled","enable_failed")
+        require(active(DNS) and active(PROXY),"service_stopped_after_enable")
     except BaseException:
         rollback(src)
         raise
