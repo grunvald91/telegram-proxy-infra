@@ -149,16 +149,16 @@ def parse(core):
         zone=m[2].rstrip(".") if m[2]!="." else "."
         matches=re.findall(r"(?m)^[ \t]*match[ \t]+(.+?)\s*$",m[3])
         answers=re.findall(r'(?m)^[ \t]*answer[ \t]+"{{ \.Name }} [0-9]+ IN A ([0-9.]+)"[ \t]*$',m[3])
-        need(len(matches)==1 and answers==[DE],"unexpected_shared_A_template")
-        # Fail on extra answer/rcode instead of silently omitting behavior.
-        need(len(re.findall(r"(?m)^[ \t]*answer[ \t]+",m[3]))==1 and not re.search(r"(?m)^[ \t]*rcode[ \t]+",m[3]),"unsupported_shared_A_behavior")
         try:
+            need(len(matches)==1 and answers==[DE],"unexpected_shared_A_template")
+            # Fail on extra answer/rcode instead of silently omitting behavior.
+            need(len(re.findall(r"(?m)^[ \t]*answer[ \t]+",m[3]))==1 and not re.search(r"(?m)^[ \t]*rcode[ \t]+",m[3]),"unsupported_shared_A_behavior")
             names,families=decode_pattern(matches[0])
             if zone!=".":
                 need(not families and names=={hostname(zone)},"exact_zone_mismatch")
         except ValueError as exc:
             # Structural diagnostic only; no live hostnames or raw rules.
-            pattern=matches[0]
+            pattern=matches[0] if len(matches)==1 else ""
             print("FI_SHARED_ROUTE_PARSE_ERROR="+json.dumps({
                 "reason":str(exc),"block_index":block_index,
                 "root_zone":zone==".","length":len(pattern),
