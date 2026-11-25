@@ -1,0 +1,128 @@
+name: Restore existing Google UDP443 relay (guarded)
+on:
+  push:
+    branches: [ops/restore-google-udp443-20261125]
+    paths: ['.github/workflows/restore-google-udp443-20261125.yml']
+permissions: {contents: read}
+concurrency:
+  group: mnebydns-google-tcp-only-20261117
+  cancel-in-progress: false
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Restore only previous approved relay and reject guard; verify or roll back
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get install -qq -y sshpass >/dev/null
+          tmp=$(mktemp); trap 'rm -f "$tmp"' EXIT
+          cat > "$tmp" <<'REMOTE'
+          set -Eeuo pipefail
+          role="$1"; phase="$2"; expected="$3"
+          guard=mnebydns-google-tcp-only-20261117.service
+          base=/opt/mnebydns-google-tcp-only-20261117
+          tag=MNEBYDNS_GOOGLE_TCP_ONLY_20261117
+          case "$role" in
+          de) addr=89.125.90.101; units=(mnebydns-youtube-quic-de-43612369808.service mnebydns-de89-public-quic-20261115.service); listen=89.125.90.101:443;;
+          ru) addr=188.120.254.223; units=(mnebydns-youtube-quic-ru-43612369808.service); listen=0.0.0.0:443;;
+          *) exit 2;;
+          esac
+          rule=(-d "$addr" -p udp --dport 443 -m comment --comment "$tag" -j REJECT --reject-with icmp-port-unreachable)
+          exec 9>/run/lock/mnebyvpn-public-route.lock
+          flock -w 45 9
+          test "$(sha256sum "$base/manager.sh" | cut -d' ' -f1)" = "$expected"
+          test -f "$base/COMMITTED"
+          test -f "/etc/systemd/system/$guard"
+          health() {
+            systemctl is-active --quiet nginx
+            test -n "$(ss -Hlnpt 'sport = :443')"
+            test -n "$(ss -Hlnpt 'sport = :853')"
+            if [[ "$role" = de ]]; then
+              systemctl is-active --quiet mnebydns-dot
+              systemctl is-active --quiet mnebydns-googlepilot
+              python3 - <<'PY'
+          import ssl,socket
+          for h in ("gemini.google.com","jnn-pa.googleapis.com","www.youtube.com"):
+              with socket.create_connection(("89.125.90.101",443),timeout=7) as s:
+                  with ssl.create_default_context().wrap_socket(s,server_hostname=h): pass
+              print("TCP_TLS_OK",h,flush=True)
+          PY
+            fi
+          }
+          before() {
+            health
+            systemctl is-active --quiet "$guard"
+            test "$(systemctl is-enabled "$guard")" = enabled
+            iptables -w 10 -C INPUT "${rule[@]}"
+            test -z "$(ss -Hlun 'sport = :443')"
+            for unit in "${units[@]}"; do
+              test "$(systemctl is-enabled "$unit")" = disabled
+              ! systemctl is-active --quiet "$unit" || return 1
+            done
+            test "$(systemctl is-active mnebydns-google-tcp-only-revert-20261117.timer || true)" = inactive
+          }
+          verify() {
+            health
+            test "$(systemctl is-enabled "$guard" || true)" = disabled
+            ! systemctl is-active --quiet "$guard" || return 1
+            if iptables -w 10 -C INPUT "${rule[@]}" 2>/dev/null; then return 1; fi
+            for unit in "${units[@]}"; do
+              systemctl is-active --quiet "$unit"
+              test "$(systemctl is-enabled "$unit")" = enabled
+            done
+            ss -Hlun 'sport = :443' | grep -F "$listen" >/dev/null
+            if [[ "$role" = de ]]; then ss -Hlun 'sport = :19444' | grep -F '10.66.77.1:19444' >/dev/null; fi
+            echo "UDP443_RESTORED role=$role guard=disabled tagged_reject=absent listener=$listen"
+            echo "UDP443_CURRENT_FILTER role=$role"
+            iptables -w 10 -S INPUT | grep -E '^-P INPUT|--dport 443' || true
+          }
+          rollback() {
+            for unit in "${units[@]}"; do systemctl disable --now "$unit"; done
+            systemctl enable --now "$guard"
+            if ! iptables -w 10 -C INPUT "${rule[@]}" 2>/dev/null; then iptables -w 10 -I INPUT 1 "${rule[@]}"; fi
+            before
+            echo "UDP443_ROLLBACK_VERIFIED role=$role"
+          }
+          case "$phase" in
+          preflight) before; echo "UDP443_PREFLIGHT_PASS role=$role";;
+          apply)
+            before
+            trap 'rc=$?; trap - ERR; rollback || echo "UDP443_ROLLBACK_FAILED role=$role"; exit "$rc"' ERR
+            systemctl disable --now "$guard"
+            for n in 1 2 3 4; do
+              if iptables -w 10 -C INPUT "${rule[@]}" 2>/dev/null; then iptables -w 10 -D INPUT "${rule[@]}"; else break; fi
+            done
+            if iptables -w 10 -C INPUT "${rule[@]}" 2>/dev/null; then false; fi
+            for unit in "${units[@]}"; do systemctl enable --now "$unit"; done
+            verify
+            trap - ERR
+            ;;
+          verify) verify;;
+          rollback) rollback;;
+          *) exit 2;;
+          esac
+          REMOTE
+          bash -n "$tmp"
+          expected=$(sha256sum scripts/mnebydns-google-tcp-only-20261117.sh | cut -d' ' -f1)
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          call() { local role="$1" phase="$2" host pass; if [[ "$role" = de ]]; then host=89.125.90.101; pass="$DE_PASS"; else host=188.120.254.223; pass="$RU_PASS"; fi; SSHPASS="$pass" sshpass -e ssh "${opts[@]}" "root@$host" "bash -s -- $role $phase $expected" < "$tmp"; }
+          call de preflight
+          call ru preflight
+          de_started=no; ru_started=no
+          recover() { local rc=$?; trap - EXIT; if ((rc!=0)); then if [[ "$ru_started" = yes ]]; then call ru rollback || echo RU_ROLLBACK_FAILED; fi; if [[ "$de_started" = yes ]]; then call de rollback || echo DE_ROLLBACK_FAILED; fi; fi; rm -f "$tmp"; exit "$rc"; }
+          trap recover EXIT
+          de_started=yes; call de apply
+          ru_started=yes; call ru apply
+          call de verify
+          call ru verify
+          echo UDP443_BOTH_NODES_VERIFIED=true
+          trap 'rm -f "$tmp"' EXIT
