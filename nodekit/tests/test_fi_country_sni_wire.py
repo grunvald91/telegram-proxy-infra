@@ -7,6 +7,14 @@ import subprocess
 import tempfile
 import threading
 import unittest
+import os
+
+# The generated country runtime is deliberately separate from the legacy
+# modules imported by the general bootstrap unittest discovery.
+if os.environ.get('FI_COUNTRY_GENERATED_TEST') != '1':
+    if __name__ == '__main__':
+        raise RuntimeError('generated runtime test must be launched by its dedicated CI step')
+    raise unittest.SkipTest('covered by the mandatory generated country runtime CI')
 from fi_country_stage import deny_old_name, OLD_NAME
 from fi_dns_tls_session import SniBindings
 
