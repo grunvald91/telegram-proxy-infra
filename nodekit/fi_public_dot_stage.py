@@ -20,7 +20,6 @@ from fi_dns_signed_grants import load
 from fi_dns_reverse_channel import ReverseTransport
 from fi_dns_meter_rpc import protected_openssl_meter
 from fi_dns_origin_canary import HOSTS,EXTERNAL_QUERY,query_bytes
-from fi_routed_stage import ctl,active,listeners,no_override
 from fi_sni_egress_guard import verify,uid,FINGERPRINT
 from fi_regional_cert_stage import verify_pair,DEST as CERT
 
@@ -28,8 +27,25 @@ STATE=FI_ROOT/"dns-auth"
 MARKER=STATE/"public-dot.enable"
 SOCKET="mnebyvpn-fi-public-dot.socket"
 SERVICE="mnebyvpn-fi-public-dot.service"
-UNITS=("mnebyvpn-fi-dns-routed.service","mnebyvpn-fi-sni-routed-v3.service","mnebyvpn-fi-sni-egress-guard.service")
+UNITS=("mnebyvpn-fi-dns-country.service","mnebyvpn-fi-sni-routed-v3.service","mnebyvpn-fi-sni-egress-guard.service")
 UNIT_DIR=Path("/etc/systemd/system")
+
+def ctl(*args):
+    return command("systemctl",*args,timeout=30)
+
+def active(unit):
+    return subprocess.run(["systemctl","is-active","--quiet",unit],capture_output=True,timeout=8).returncode==0
+
+def listeners(port):
+    return [line.split()[3] for line in command("ss","-H","-lnt","sport = :"+str(port)).decode().splitlines()]
+
+def no_override(unit):
+    for base in (UNIT_DIR,Path("/run/systemd/system"),Path("/usr/lib/systemd/system"),Path("/lib/systemd/system")):
+        drop=base/(unit+".d")
+        require(not drop.exists() and not drop.is_symlink(),"unit_override")
+        if base!=UNIT_DIR:
+            path=base/unit
+            require(not path.exists() and not path.is_symlink(),"foreign_unit")
 
 async def meter_closed():
     meter=protected_openssl_meter(ReverseTransport(),FI_ROOT/"identity/node-private.pk8",CONTROLLER,CONTROLLER_PIN)
@@ -40,6 +56,9 @@ def guard():
     require(len(parts)==2 and parts[0]==str(n),"guard_uid_mismatch")
     verify(n,parts[1])
     require(all(active(u) for u in UNITS),"required_service_inactive")
+    require(FI_RUNTIME==Path("/opt/mnebyvpn-fi-dns-country-v2"),"wrong_country_runtime")
+    require(not active("mnebyvpn-fi-dns-routed.service"),"obsolete_runtime_active")
+    require(read(STATE/"country-dataplane.enable",100)==b"fi-dns-country-v2\n","country_runtime_marker_missing")
     require(load(SNAPSHOT,CONTROLLER,CONTROLLER_PIN)["grants"]==[],"unexpected_grants")
     require(listeners(8853)==["127.0.0.1:8853"] and listeners(18854)==["127.0.0.1:18854"] and listeners(14443)==["127.0.0.1:14443"],"private_listener_drift")
     require(not command("ss","-H","-lnu","sport = :853").strip(),"udp_853_conflict")
@@ -95,6 +114,7 @@ def commit(src):
     require(read(src/"public-started",100)==b"fi-public-dot-v1\n","public_stage_missing")
     require(read(MARKER,100)==b"fi-public-dot-v1\n","public_marker_missing")
     require(active(SOCKET) and active(SERVICE) and listeners(853)==[FI+":853"],"public_relay_not_ready")
+    asyncio.run(meter_closed())
     ctl("enable",SOCKET)
     require(ctl("is-enabled",SOCKET).strip()==b"enabled","public_enable_failed")
     print("FI_PUBLIC_DOT_LISTENER_VERIFIED=true;TCP_853=true;GRANTS=0;METER_GATE=OFF;PUBLIC_HTTPS_UNCHANGED=true",flush=True)
