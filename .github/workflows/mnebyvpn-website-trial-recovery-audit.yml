@@ -54,6 +54,10 @@ jobs:
             const counts={PENDING:0,WAITING:0,SENT:0,REJECTED:0};
             for(const row of q.rows)if(Object.hasOwn(counts,row.status))counts[row.status]=row.n;
             for(const [key,value] of Object.entries(counts))console.log('trial_queue_'+key.toLowerCase()+'='+value);
+            const invites=await pool.query(`SELECT status,count(*)::int AS n FROM website_vpn_trial_recovery_invites GROUP BY status`);
+            const inviteCounts={SENDING:0,SENT:0,FAILED:0};
+            for(const row of invites.rows)if(Object.hasOwn(inviteCounts,row.status))inviteCounts[row.status]=row.n;
+            for(const [key,value] of Object.entries(inviteCounts))console.log('recovery_invites_'+key.toLowerCase()+'='+value);
             const overdue=await pool.query(`SELECT count(*)::int AS n FROM website_vpn_trial_requests
               WHERE status IN ('PENDING','WAITING') AND next_attempt_at<clock_timestamp()-interval '10 minutes'
                 AND (locked_until IS NULL OR locked_until<clock_timestamp())`);
@@ -68,5 +72,7 @@ jobs:
           curl --noproxy '*' -fsS --max-time 10 http://127.0.0.1:8792/api/plans | python3 -c 'import json,sys; p=json.load(sys.stdin); assert p["emailLoginEnabled"] is True and "vpn" in p["trialOffers"]; print("live_trial_offer=verified")'
           test "$(curl --noproxy '*' -sS --max-time 10 -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"product":"vpn"}' http://127.0.0.1:8792/api/trial)" = 401
           echo 'unauthenticated_trial=denied'
+          test "$(curl --noproxy '*' -sS --max-time 10 -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{}' http://127.0.0.1:8792/api/support/operator-trial-invite)" = 403
+          echo 'unsigned_recovery_invite=denied'
           docker logs --since 30m mnebyvpn-public-web 2>&1 | python3 -c 'import re,sys,collections; c=collections.Counter(re.findall(r"MNEBYVPN_WEB_TRIAL_(?:QUEUE_)?(?:SQLSTATE_[A-Z0-9]{5}|SERVICE_ERROR|RECOVERY_LOOP_ERROR|RECOVERY_ERROR|QUEUE_ERROR)",sys.stdin.read())); print("recent_trial_errors="+str(sum(c.values()))); [print(k+"="+str(v)) for k,v in sorted(c.items())]'
           SH
