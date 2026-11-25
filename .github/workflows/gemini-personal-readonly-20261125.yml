@@ -1,0 +1,126 @@
+name: Gemini personal Smart DNS read-only diagnostic
+on:
+  push:
+    branches: [diagnostics/gemini-personal-20261125]
+    paths: ['.github/workflows/gemini-personal-readonly-20261125.yml']
+permissions: {contents: read}
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Read live pinned policy and test official Google hostnames
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$RU_PASS" && test -n "$DE_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get install -qq -y sshpass >/dev/null
+          tmp=$(mktemp); trap 'rm -f "$tmp"' EXIT
+          cat > "$tmp" <<'PY'
+          import concurrent.futures as cf, hashlib, json, os, pathlib, re, socket, ssl, struct, subprocess, sys
+          HOSTS = "lh5.googleusercontent.com www.googleapis.com ssl.gstatic.com fonts.googleapis.com play.google.com ogs.google.com www.google.com apis.google.com jnn-pa.googleapis.com waa-pa.clients6.google.com i.ytimg.com yt3.ggpht.com lh3.googleusercontent.com maps.gstatic.com lh3.google.com ogads-pa.clients6.google.com csp.withgoogle.com www.googletagmanager.com www.youtube.com fonts.gstatic.com maps.googleapis.com static.doubleclick.net www.gstatic.com gemini.google.com td.doubleclick.net googleads.g.doubleclick.net www.google-analytics.com optimizationguide-pa.googleapis.com encrypted-tbn0.gstatic.com encrypted-tbn1.gstatic.com encrypted-tbn2.gstatic.com encrypted-tbn3.gstatic.com streetviewpixels-pa.googleapis.com content-autofill.googleapis.com".split()
+          EDGE = "89.125.90.101"
+          def cmd(a):
+              return subprocess.run(a, check=True, capture_output=True, text=True, timeout=12).stdout
+          def readn(s,n):
+              out=b""
+              while len(out)<n:
+                  data=s.recv(n-len(out))
+                  if not data: raise EOFError()
+                  out+=data
+              return out
+          def skipname(b,p):
+              while p<len(b):
+                  v=b[p]; p+=1
+                  if v==0: return p
+                  if v & 192 == 192: return p+1
+                  if v>63: raise ValueError("bad label")
+                  p+=v
+              raise ValueError("bad name")
+          def query(ep,h,qtype):
+              ip,port,sni=ep
+              ident=os.urandom(2)
+              q=ident+b"\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00"+b"".join(bytes([len(x)])+x.encode() for x in h.split("."))+b"\x00"+struct.pack("!HH",qtype,1)
+              with socket.create_connection((ip,port),timeout=5) as raw:
+                  with ssl.create_default_context().wrap_socket(raw,server_hostname=sni) as s:
+                      s.sendall(struct.pack("!H",len(q))+q)
+                      b=readn(s,struct.unpack("!H",readn(s,2))[0])
+              if len(b)<12 or b[:2]!=ident or not b[2]&128: raise ValueError("bad response")
+              flags,qd,an,ns,ar=struct.unpack_from("!HHHHH",b,2)
+              if qd!=1: raise ValueError("question count")
+              p=skipname(b,12)+4; aa=[]
+              for i in range(an):
+                  p=skipname(b,p)
+                  t,cl,ttl,ln=struct.unpack_from("!HHIH",b,p);p+=10
+                  if p+ln>len(b): raise ValueError("truncated")
+                  if t==1 and cl==1 and ln==4: aa.append(socket.inet_ntoa(b[p:p+4]))
+                  p+=ln
+              return ("RCODE_"+str(flags&15)) if flags&15 else ("EDGE_A" if EDGE in aa else "OTHER_A" if aa else "NODATA_OR_ALIAS" if an==0 else "OTHER_RR")
+          def getpolicy(service):
+              d=json.loads(cmd(["docker","inspect","--type","container",service]))[0]
+              if not d["State"]["Running"]: raise RuntimeError("not running")
+              e=dict(x.split("=",1) for x in d["Config"]["Env"])
+              p=pathlib.PurePosixPath(e["MNEBYDNS_PERSONAL_DOT_ROUTE_POLICY_FILE"])
+              if p.parent!=pathlib.PurePosixPath("/run/mnebydns-personal"): raise ValueError("policy path")
+              m=[x for x in d["Mounts"] if x["Destination"]==str(p.parent) and not x["RW"]]
+              if len(m)!=1: raise ValueError("policy mount")
+              src=pathlib.Path(m[0]["Source"])/p.name
+              if src.is_symlink() or src.stat().st_size>1048576: raise ValueError("policy file")
+              raw=src.read_bytes()
+              if hashlib.sha256(raw).hexdigest()!=e["MNEBYDNS_PERSONAL_DOT_ROUTE_POLICY_SHA256"]: raise ValueError("policy digest")
+              pol=json.loads(raw)
+              if not isinstance(pol,list) or not all(isinstance(x,str) for x in pol): raise ValueError("policy syntax")
+              def ep(kind):
+                  prefix="MNEBYDNS_PERSONAL_"+kind+"_DOT_"
+                  return (e[prefix+"IP"],int(e[prefix+"PORT"]),e[prefix+"NAME"])
+              return set(pol),ep("MAPPED"),ep("DIRECT")
+          def mapped(h,p):
+              return h in p or any(x.startswith("*.") and h.endswith("."+x[2:]) for x in p)
+          def safequery(ep,h,t):
+              try:return query(ep,h,t)
+              except Exception as e:return "ERROR_"+type(e).__name__
+          def ru():
+              for service in ("mnebydns-personal-dot-private","mnebydns-personal-dot"):
+                  p,m,d=getpolicy(service)
+                  def probe(h):
+                      route=mapped(h,p)
+                      return h, "MAPPED" if route else "DIRECT", safequery(m if route else d,h,1)
+                  with cf.ThreadPoolExecutor(max_workers=6) as ex: results=list(ex.map(probe,HOSTS))
+                  for h,route,a in results:print("PERSONAL_POLICY",service,h,route,a,flush=True)
+                  print("PERSONAL_SUMMARY",service,"MAPPED",sum(r[1]=="MAPPED" for r in results),"EDGE_A",sum(r[2]=="EDGE_A" for r in results),"TOTAL",len(results),flush=True)
+          def de():
+              def probe(h):
+                  a=safequery((EDGE,853,"dns.mnebyvpn.site"),h,1)
+                  try:
+                      with socket.create_connection((EDGE,443),timeout=5) as s:
+                          with ssl.create_default_context().wrap_socket(s,server_hostname=h): pass
+                      t="TLS_OK"
+                  except Exception as e:t="TLS_"+type(e).__name__
+                  return h,a,t
+              with cf.ThreadPoolExecutor(max_workers=6) as ex: results=list(ex.map(probe,HOSTS))
+              for h,a,t in results:print("DE_COMMON",h,a,t,flush=True)
+              print("DE_SUMMARY","EDGE_A",sum(r[1]=="EDGE_A" for r in results),"TLS_OK",sum(r[2]=="TLS_OK" for r in results),"TOTAL",len(results),flush=True)
+          def transport():
+              for label,args in [("UDP443_LISTEN",["ss","-Hlun","sport = :443"]),("INPUT",["iptables","-w","-S","INPUT"]),("OUTPUT",["iptables","-w","-S","OUTPUT"])]:
+                  try:
+                      lines=cmd(args).splitlines()
+                      selected=lines if label=="UDP443_LISTEN" else [l for l in lines if ("-p udp" in l and ("--dport 443" in l or "--sport 443" in l)) or "MNEBYDNS_GOOGLE_TCP_ONLY" in l]
+                      print("TRANSPORT",label,"MATCHES",len(selected),flush=True)
+                      if label!="UDP443_LISTEN":
+                          for l in selected: print("TRANSPORT_RULE",l[:300],flush=True)
+                  except Exception as e:print("TRANSPORT",label,"ERROR",type(e).__name__,flush=True)
+          if sys.argv[1]=="ru":ru()
+          elif sys.argv[1]=="de":de()
+          else:raise SystemExit(2)
+          transport()
+          PY
+          python3 -m py_compile "$tmp"
+          opts=(-T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR)
+          SSHPASS="$RU_PASS" sshpass -e ssh "${opts[@]}" root@188.120.254.223 'python3 - ru' < "$tmp"
+          SSHPASS="$DE_PASS" sshpass -e ssh "${opts[@]}" root@89.125.90.101 'python3 - de' < "$tmp"
