@@ -10,6 +10,7 @@ import hashlib
 import ipaddress
 import json
 import re
+from re import _parser as regex_parser, _constants as rx
 import sys
 from pathlib import Path
 
@@ -58,27 +59,83 @@ def alternatives(body):
     need(values and len(values)==len(set(values)),"duplicate_alternative")
     return set(values)
 
+def _plain_nodes(nodes):
+    # Capturing vs noncapturing groups must not change the route language.
+    result=[]
+    for op,arg in nodes:
+        if op==rx.SUBPATTERN:
+            _,add,remove,body=arg
+            need(not add and not remove,"scoped_regex_flags")
+            result.extend(_plain_nodes(body))
+        else:result.append((op,arg))
+    return result
+
+def _label_chars(nodes):
+    nodes=_plain_nodes(nodes)
+    if len(nodes)!=1 or nodes[0][0]!=rx.IN:return False
+    chars=set()
+    for op,value in nodes[0][1]:
+        if op==rx.LITERAL:chars.add(chr(value))
+        elif op==rx.RANGE and 0<=value[0]<=value[1]<128:
+            chars.update(map(chr,range(value[0],value[1]+1)))
+        else:return False
+    return chars==set("abcdefghijklmnopqrstuvwxyz0123456789-")
+
+def _label_prefix(op,arg):
+    if op!=rx.MAX_REPEAT:return False
+    lo,hi,body=arg
+    if lo!=0 or hi!=rx.MAXREPEAT:return False
+    body=_plain_nodes(body)
+    if len(body)!=2 or body[0][0]!=rx.MAX_REPEAT or body[1]!=(rx.LITERAL,46):return False
+    a,b,chars=body[0][1]
+    return a==1 and b in (63,rx.MAXREPEAT) and _label_chars(chars)
+
+def _expand(nodes):
+    """Expand only finite literal alternatives and a full DNS-label prefix.
+
+    A sentinel represents zero or more complete DNS labels. No generic
+    wildcard, arbitrary repetition, lookaround, backreferences or Unicode
+    character classes may silently broaden the catalog.
+    """
+    values=[""]
+    for op,arg in _plain_nodes(nodes):
+        if op==rx.LITERAL and chr(arg) in "abcdefghijklmnopqrstuvwxyz0123456789-.":
+            parts=[chr(arg)]
+        elif op==rx.BRANCH:
+            parts=[]
+            for branch in arg[1]:
+                parts.extend(_expand(branch))
+                need(len(parts)<=MAX_ROUTES,"route_expansion_bound")
+        elif op==rx.IN:
+            # Python factors alternatives with identical length into IN.
+            need(all(k==rx.LITERAL and chr(v) in "abcdefghijklmnopqrstuvwxyz0123456789-." for k,v in arg),"unsupported_literal_class")
+            parts=[chr(v) for k,v in arg]
+        elif _label_prefix(op,arg):parts=["*."]
+        else:raise ValueError("unsupported_regex_operation")
+        need(len(values)*len(parts)<=MAX_ROUTES,"route_expansion_bound")
+        values=[left+right for left in values for right in parts]
+        need(all(len(v)<=256 for v in values),"route_name_bound")
+    return values
+
 def decode_pattern(raw):
-    # Known repository renderers emit grouped exact/family alternatives,
-    # including the Meta renderer's mixed union. Decode the grammar, never
-    # execute arbitrary regex or treat a broad regex as a literal.
     pattern=raw.strip()
     if pattern.startswith('"') and pattern.endswith('"'):
         pattern=pattern[1:-1]
-    pattern=pattern.replace(r"\.","[.]").replace(r"\-","-")
-    if pattern.startswith(MIXED_START) and pattern.endswith(MIXED_END):
-        inner=pattern[len(MIXED_START):-len(MIXED_END)]
-        parts=inner.split(MIXED_SEPARATOR)
-        need(len(parts)==2,"unknown_mixed_route")
-        return alternatives(parts[1]),alternatives(parts[0])
-    if pattern.startswith(FAMILY_START):
-        return set(),set(family(pattern))
-    prefix=pattern.removeprefix("(?i)")
-    if prefix.startswith("^(?:") and prefix.endswith(")[.]$"):
-        return alternatives(prefix[4:-5]),set()
-    if prefix.startswith("^(") and prefix.endswith(")[.]$"):
-        return alternatives(prefix[2:-5]),set()
-    return {literal(pattern)},set()
+    need(len(pattern)<=200000 and pattern.isascii(),"pattern_size_or_encoding")
+    try:tree=regex_parser.parse(pattern,re.ASCII)
+    except (re.error,OverflowError,RecursionError) as exc:
+        raise ValueError("invalid_regex_syntax") from exc
+    need(not tree.state.flags & ~(re.ASCII|re.IGNORECASE),"unsupported_regex_flags")
+    nodes=_plain_nodes(tree)
+    need(len(nodes)>=3 and nodes[0]==(rx.AT,rx.AT_BEGINNING) and nodes[-1]==(rx.AT,rx.AT_END),"unanchored_route")
+    exact=set();roots=set()
+    for value in _expand(nodes[1:-1]):
+        need(value.endswith("."),"missing_dns_root")
+        body=value[:-1]
+        if body.startswith("*."):roots.add(hostname(body[2:]))
+        else:exact.add(hostname(body))
+    need(exact or roots,"empty_route")
+    return exact,roots
 
 def parse(core):
     need(isinstance(core,str) and len(core)<=2_000_000,"source_size")
@@ -87,7 +144,8 @@ def parse(core):
     total=len(re.findall(r"(?m)^[ \t]*template[ \t]+IN[ \t]+A[ \t]+\S+[ \t]+\{",core))
     need(len(blocks)==total and total>=264,"source_a_template_coverage")
     exact=set();roots=set()
-    for m in blocks:
+    failures=[]
+    for block_index,m in enumerate(blocks):
         zone=m[2].rstrip(".") if m[2]!="." else "."
         matches=re.findall(r"(?m)^[ \t]*match[ \t]+(.+?)\s*$",m[3])
         answers=re.findall(r'(?m)^[ \t]*answer[ \t]+"{{ \.Name }} [0-9]+ IN A ([0-9.]+)"[ \t]*$',m[3])
@@ -102,16 +160,18 @@ def parse(core):
             # Structural diagnostic only; no live hostnames or raw rules.
             pattern=matches[0]
             print("FI_SHARED_ROUTE_PARSE_ERROR="+json.dumps({
-                "reason":str(exc),"block_index":len(exact)+len(roots),
+                "reason":str(exc),"block_index":block_index,
                 "root_zone":zone==".","length":len(pattern),
                 "alternatives":pattern.count("|"),"groups":pattern.count("("),
                 "quoted":pattern.startswith('"'),"casefold":pattern.startswith("(?i)"),
                 "repetition":any(x in pattern for x in ("*","+","?")),
                 "escaped_dot":r"\." in pattern,"dot_class":"[.]" in pattern
             },sort_keys=True),file=sys.stderr,flush=True)
-            raise
+            failures.append(str(exc))
+            continue
         exact.update(names)
         roots.update(families)
+    need(not failures,"unsupported_source_rules_count_"+str(len(failures)))
     need(len(exact)>=262 and len(roots)>=75 and len(exact|roots)<=MAX_ROUTES,"source_catalog_bounds")
     return {"exact":sorted(exact),"families":sorted(roots)}
 
