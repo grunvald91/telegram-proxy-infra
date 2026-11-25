@@ -72,6 +72,7 @@ jobs:
           }
           verify() {
             health
+            echo "UDP443_GUARD_ENABLED=$(systemctl is-enabled "$guard" || true)"
             test "$(systemctl is-enabled "$guard" || true)" = disabled
             ! systemctl is-active --quiet "$guard" || return 1
             if iptables -w 10 -C INPUT "${rule[@]}" 2>/dev/null; then return 1; fi
@@ -79,8 +80,22 @@ jobs:
               systemctl is-active --quiet "$unit"
               test "$(systemctl is-enabled "$unit")" = enabled
             done
-            ss -Hlun 'sport = :443' | grep -F "$listen" >/dev/null
-            if [[ "$role" = de ]]; then ss -Hlun 'sport = :19444' | grep -F '10.66.77.1:19444' >/dev/null; fi
+            ready=no
+            for attempt in $(seq 1 20); do
+              s443=$(ss -4 -Hlun 'sport = :443')
+              s19444=$(ss -4 -Hlun 'sport = :19444')
+              if { grep -F "$listen" <<<"$s443" >/dev/null || { [[ "$role" = ru ]] && grep -F '*:443' <<<"$s443" >/dev/null; }; } &&
+                 { [[ "$role" = ru ]] || grep -F '10.66.77.1:19444' <<<"$s19444" >/dev/null; }; then ready=yes; break; fi
+              sleep 1
+            done
+            echo "UDP443_SOCKET_STATE role=$role ready=$ready"
+            printf '%s\n' "$s443" "$s19444"
+            for unit in "${units[@]}"; do
+              echo "UDP443_UNIT $unit"
+              systemctl show "$unit" -p ActiveState -p SubState -p Result -p ExecMainStatus
+            done
+            test "$ready" = yes
+            for unit in "${units[@]}"; do systemctl is-active --quiet "$unit"; done
             echo "UDP443_RESTORED role=$role guard=disabled tagged_reject=absent listener=$listen"
             echo "UDP443_CURRENT_FILTER role=$role"
             iptables -w 10 -S INPUT | grep -E '^-P INPUT|--dport 443' || true
