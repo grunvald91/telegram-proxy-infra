@@ -38,9 +38,11 @@ def wait_local(unit):
         if active(unit) and listeners(8853)==["127.0.0.1:8853"] and listeners(18854)==["127.0.0.1:18854"]:return
         time.sleep(1)
     raise RuntimeError("private_runtime_not_ready")
-def deny_unknown(name):
+def deny_unknown(name,*,tls12=False):
+    ctx=ssl.create_default_context()
+    if tls12:ctx.minimum_version=ctx.maximum_version=ssl.TLSVersion.TLSv1_2
     with socket.create_connection(("127.0.0.1",18854),timeout=5) as raw:
-        with ssl.create_default_context().wrap_socket(raw,server_hostname=name) as tls:
+        with ctx.wrap_socket(raw,server_hostname=name) as tls:
             q=query_bytes(0x4a71,EXTERNAL_QUERY)
             tls.sendall(struct.pack("!H",len(q))+q)
             require(tls.recv(2)==b"","unknown_credential_accepted")
@@ -61,14 +63,16 @@ def verify_old_origin():
             require(ident==0x4a71 and flags&0x8000 and not flags&15 and qd==1 and an>0 and answer[12:len(q)]==q[12:],"old_origin_bad_answer")
     deny_unknown(OLD_NAME)
 def deny_old_name(port=18854):
-    """Require an explicit fatal unrecognized_name TLS alert on the wire.
+    """Observe pre-handshake refusal, not a client-side certificate failure.
 
-    Use a TLS 1.2 ClientHello so the pre-handshake alert is plaintext.
-    No CA/hostname failure, timeout, EOF, generic handshake error, or
-    successfully negotiated TLS is accepted as proof of SNI rejection.
+    asyncio's SSLProtocol can abort the TCP transport before flushing the
+    pending fatal alert. Accept a clean zero-byte EOF, or the exact fatal
+    unrecognized_name alert. No timeout, partial record, arbitrary alert,
+    ServerHello or negotiated TLS qualifies. The caller must prove same-port
+    trusted TLS and unknown-credential denial before and after this probe.
     """
     ctx=ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    ctx.maximum_version=ssl.TLSVersion.TLSv1_2
+    ctx.minimum_version=ctx.maximum_version=ssl.TLSVersion.TLSv1_2
     incoming,outgoing=ssl.MemoryBIO(),ssl.MemoryBIO()
     hello=ctx.wrap_bio(incoming,outgoing,server_hostname=OLD_NAME)
     try:hello.do_handshake()
@@ -80,16 +84,28 @@ def deny_old_name(port=18854):
         result=b""
         while len(result)<size:
             part=raw.recv(size-len(result))
-            require(bool(part),"old_sni_early_eof")
+            require(bool(part),"old_sni_partial_record")
             result+=part
         return result
     with socket.create_connection(("127.0.0.1",port),timeout=5) as raw:
         raw.sendall(data)
-        kind,major,minor,size=struct.unpack("!BBBH",exact(raw,5))
+        first=raw.recv(1)
+        if not first:return "PRE_HANDSHAKE_EOF"
+        kind,major,minor,size=struct.unpack("!BBBH",first+exact(raw,4))
         require(kind==21 and major==3 and minor in (1,2,3) and size==2,"old_sni_not_explicit_alert")
         alert=exact(raw,size)
         require(alert==bytes((2,ssl.ALERT_DESCRIPTION_UNRECOGNIZED_NAME)),"old_sni_wrong_alert")
-    print("FI_COUNTRY_OLD_SNI_FATAL_ALERT_VERIFIED=true",flush=True)
+    return "FATAL_UNRECOGNIZED_NAME"
+
+def verify_old_sni_denial():
+    from fi_dns_signed_grants import RegionalDnsGrantError
+    try:hostname_digest(OLD_NAME)
+    except RegionalDnsGrantError:pass
+    else:raise RuntimeError("obsolete_hostname_digest_accepted")
+    deny_unknown(HOSTS[0],tls12=True)
+    result=deny_old_name()
+    deny_unknown(HOSTS[0],tls12=True)
+    print("FI_COUNTRY_OLD_SNI_DENIAL_VERIFIED="+result+";POSITIVE_CONTROLS=2",flush=True)
 def route_samples(policy):
     exact=set(policy["exact"]);families=set(policy["families"])
     def covers(name):return name in exact or any(name==x or name.endswith("."+x) for x in families)
@@ -114,7 +130,7 @@ class Ops:
         require(not active(OLD),"old_runtime_still_active")
         for name in HOSTS:
             hostname_digest(name);require(dot_probe(name,EXTERNAL_QUERY),"country_origin_failed");deny_unknown(name)
-        deny_old_name()
+        verify_old_sni_denial()
         names=route_samples(json.loads(read(STATE/"shared-routes/policy.json",500000)))
         for name in names:
             for kind in (1,28,5,64,65):routed_dns_query(name,kind)
