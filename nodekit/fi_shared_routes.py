@@ -20,6 +20,9 @@ HOST=re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{
 A_BLOCK=re.compile(r"(?ms)^([ \t]*)template[ \t]+IN[ \t]+A[ \t]+(\S+)[ \t]+\{(.*?)^\1\}")
 FAMILY_START="(?i)^(?:[a-z0-9-]+[.])*(?:"
 FAMILY_END=")[.]$"
+MIXED_START="(?i)^(?:(?:[a-z0-9-]+[.])*(?:"
+MIXED_SEPARATOR=")|(?:"
+MIXED_END="))[.]$"
 
 def need(ok,label):
     if not ok:raise ValueError(label)
@@ -50,6 +53,33 @@ def family(pattern):
     need(roots and len(roots)==len(set(roots)),"duplicate_family_root")
     return roots
 
+def alternatives(body):
+    values=[literal("^"+part+"[.]$") for part in body.split("|")]
+    need(values and len(values)==len(set(values)),"duplicate_alternative")
+    return set(values)
+
+def decode_pattern(raw):
+    # Known repository renderers emit grouped exact/family alternatives,
+    # including the Meta renderer's mixed union. Decode the grammar, never
+    # execute arbitrary regex or treat a broad regex as a literal.
+    pattern=raw.strip()
+    if pattern.startswith('"') and pattern.endswith('"'):
+        pattern=pattern[1:-1]
+    pattern=pattern.replace(r"\.","[.]").replace(r"\-","-")
+    if pattern.startswith(MIXED_START) and pattern.endswith(MIXED_END):
+        inner=pattern[len(MIXED_START):-len(MIXED_END)]
+        parts=inner.split(MIXED_SEPARATOR)
+        need(len(parts)==2,"unknown_mixed_route")
+        return alternatives(parts[1]),alternatives(parts[0])
+    if pattern.startswith(FAMILY_START):
+        return set(),set(family(pattern))
+    prefix=pattern.removeprefix("(?i)")
+    if prefix.startswith("^(?:") and prefix.endswith(")[.]$"):
+        return alternatives(prefix[4:-5]),set()
+    if prefix.startswith("^(") and prefix.endswith(")[.]$"):
+        return alternatives(prefix[2:-5]),set()
+    return {literal(pattern)},set()
+
 def parse(core):
     need(isinstance(core,str) and len(core)<=2_000_000,"source_size")
     need(not re.search(r"(?m)^\s*import\s+",core),"unexpanded_source_import")
@@ -64,14 +94,24 @@ def parse(core):
         need(len(matches)==1 and answers==[DE],"unexpected_shared_A_template")
         # Fail on extra answer/rcode instead of silently omitting behavior.
         need(len(re.findall(r"(?m)^[ \t]*answer[ \t]+",m[3]))==1 and not re.search(r"(?m)^[ \t]*rcode[ \t]+",m[3]),"unsupported_shared_A_behavior")
-        pattern=matches[0]
-        if pattern.startswith(FAMILY_START):
-            need(zone==".","family_zone_mismatch")
-            roots.update(family(pattern))
-        else:
-            name=literal(pattern)
-            need(zone=="." or hostname(zone)==name,"exact_zone_mismatch")
-            exact.add(name)
+        try:
+            names,families=decode_pattern(matches[0])
+            if zone!=".":
+                need(not families and names=={hostname(zone)},"exact_zone_mismatch")
+        except ValueError as exc:
+            # Structural diagnostic only; no live hostnames or raw rules.
+            pattern=matches[0]
+            print("FI_SHARED_ROUTE_PARSE_ERROR="+json.dumps({
+                "reason":str(exc),"block_index":len(exact)+len(roots),
+                "root_zone":zone==".","length":len(pattern),
+                "alternatives":pattern.count("|"),"groups":pattern.count("("),
+                "quoted":pattern.startswith('"'),"casefold":pattern.startswith("(?i)"),
+                "repetition":any(x in pattern for x in ("*","+","?")),
+                "escaped_dot":r"\." in pattern,"dot_class":"[.]" in pattern
+            },sort_keys=True),file=sys.stderr,flush=True)
+            raise
+        exact.update(names)
+        roots.update(families)
     need(len(exact)>=262 and len(roots)>=75 and len(exact|roots)<=MAX_ROUTES,"source_catalog_bounds")
     return {"exact":sorted(exact),"families":sorted(roots)}
 
