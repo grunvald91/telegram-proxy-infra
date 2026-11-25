@@ -182,16 +182,29 @@ def render_core(policy,base):
     marker="  forward . tls://1.1.1.1 tls://1.0.0.1 {"
     need(base.count(marker)==1 and "tls://.:8853 {" in base and "  bind 127.0.0.1" in base,"private_base_drift")
     need("template IN " not in base,"private_base_already_routed")
-    # Combine exact and family patterns to avoid thousands of repeated blocks.
-    def esc(name):return name.replace(".","[.]")
-    exact="(?i)^(?:"+ "|".join(map(esc,policy["exact"])) +")[.]$"
-    family_pattern=FAMILY_START+"|".join(map(esc,policy["families"]))+FAMILY_END
+    # CoreDNS v1.15.0 template/setup.go limits EACH match regex to
+    # 10000 bytes. Keep a margin below that limit, with multiple match
+    # directives in one template (OR), rather than one giant expression.
+    def chunks(names,prefix,suffix):
+        groups=[];parts=[];size=len(prefix)+len(suffix)
+        for name in names:
+            value=name.replace(".","[.]")
+            extra=len(value)+bool(parts)
+            if parts and size+extra>8000:
+                groups.append(prefix+"|".join(parts)+suffix)
+                parts=[];size=len(prefix)+len(suffix);extra=len(value)
+            need(size+extra<=8000,"route_pattern_bound")
+            parts.append(value);size+=extra
+        if parts:groups.append(prefix+"|".join(parts)+suffix)
+        return groups
+    patterns=chunks(policy["exact"],"(?i)^(?:",")[.]$")
+    patterns+=chunks(policy["families"],FAMILY_START,FAMILY_END)
     rows=[]
-    for pattern in (exact,family_pattern):
-        for kind in ("A","AAAA","CNAME","HTTPS","SVCB"):
-            rows.extend(["  template IN "+kind+" . {","    match "+pattern,
-                '    answer "{{ .Name }} 30 IN A '+FI+'"' if kind=="A" else "    rcode NOERROR",
-                "    fallthrough","  }"])
+    for kind in ("A","AAAA","CNAME","HTTPS","SVCB"):
+        rows.append("  template IN "+kind+" . {")
+        rows.extend("    match "+pattern for pattern in patterns)
+        rows.extend(['    answer "{{ .Name }} 30 IN A '+FI+'"' if kind=="A" else "    rcode NOERROR",
+                     "    fallthrough","  }"])
     return base.replace("tls://.:8853 {","tls://.:18855 {").replace(marker,"\n".join(rows)+"\n"+marker)
 
 def render_nginx(policy):
