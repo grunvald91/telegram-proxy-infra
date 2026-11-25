@@ -17,6 +17,7 @@ name: FI217 isolated CoreDNS regional TLS/DoT origin E2E (no public listener)
   push:
     branches: [main]
     paths:
+      - nodekit/fi_dns_origin_canary.py
       - .github/workflows/fi-dns-origin-local-canary.yml
   workflow_dispatch:
 permissions: {contents: read}
