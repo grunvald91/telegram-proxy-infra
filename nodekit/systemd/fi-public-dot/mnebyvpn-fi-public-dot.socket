@@ -1,8 +1,8 @@
 [Unit]
 Description=MNEBYVPN FI public personal DoT socket
-After=network-online.target mnebyvpn-fi-dns-routed.service mnebyvpn-fi-sni-routed-v3.service
+After=network-online.target mnebyvpn-fi-dns-country.service mnebyvpn-fi-sni-routed-v3.service
 Wants=network-online.target
-BindsTo=mnebyvpn-fi-dns-routed.service mnebyvpn-fi-sni-routed-v3.service mnebyvpn-fi-sni-egress-guard.service
+BindsTo=mnebyvpn-fi-dns-country.service mnebyvpn-fi-sni-routed-v3.service mnebyvpn-fi-sni-egress-guard.service
 ConditionPathExists=/var/lib/mnebyvpn-nodekit/fi-test-01/dns-auth/public-dot.enable
 
 [Socket]
