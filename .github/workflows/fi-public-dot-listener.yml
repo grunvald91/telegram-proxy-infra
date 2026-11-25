@@ -21,6 +21,19 @@ jobs:
         run: |
           set -Eeuo pipefail
           python3 -m py_compile nodekit/fi_public_dot*.py
+          python3 -B nodekit/fi_country_build.py nodekit "$RUNNER_TEMP/fi-country-runtime"
+          PYTHONPATH="$RUNNER_TEMP/fi-country-runtime:nodekit" python3 -B - <<'PY'
+          from pathlib import Path
+          from fi_country_cert_stage import DEST, PROBES
+          from fi_public_dot_stage import CERT, HOSTS, COUNTRY_DNS, LEGACY_DNS, UNITS
+
+          assert CERT == DEST and HOSTS == PROBES and UNITS[0] == COUNTRY_DNS
+          for kind in ("socket", "service"):
+              unit = Path(f"nodekit/systemd/fi-public-dot/mnebyvpn-fi-public-dot.{kind}").read_text()
+              for directive in ("After", "BindsTo"):
+                  dependencies = next(line for line in unit.splitlines() if line.startswith(directive + "="))
+                  assert COUNTRY_DNS in dependencies and LEGACY_DNS not in dependencies
+          PY
           sudo python3 nodekit/fi_public_dot_ci.py
           python3 - <<'PY'
           from pathlib import Path
@@ -48,6 +61,24 @@ jobs:
         run: |
           set -Eeuo pipefail
           umask 077
+          hosts=(aaaaaaaaaaaa.fi.mnebyvpn.site bbbbbbbbbbbb.fi.mnebyvpn.site)
+          for ns in ns1.jino.ru ns2.jino.ru ns3.jino.ru ns4.jino.ru; do
+            for name in '*.fi.mnebyvpn.site' "${hosts[@]}"; do
+              for type in A AAAA; do
+                result=$(dig "@$ns" "$name" "$type" +norecurse +noall +comments +answer +time=4 +tries=1)
+                if ! grep -q 'status: NOERROR,' <<< "$result" || ! grep -qE '^;; flags: .*\baa\b' <<< "$result"; then
+                  echo "FI_PUBLIC_DOT_DNS_NOT_AUTHORITATIVE=$ns:$name:$type"
+                  exit 2
+                fi
+                answers=$(awk '/^[^;]/ && NF {print $4, $5}' <<< "$result")
+                if [[ "$type" == A && "$answers" != 'A 217.11.167.91' ]] || [[ "$type" == AAAA && -n "$answers" ]]; then
+                  echo "FI_PUBLIC_DOT_DNS_UNEXPECTED_ANSWER=$ns:$name:$type"
+                  exit 2
+                fi
+              done
+            done
+          done
+          echo 'FI_PUBLIC_DOT_AUTHORITATIVE_WILDCARD_VERIFIED=true'
           [[ "$FI_USER" == root && -n "$RU_PASSWORD" && -n "$FI_PASSWORD" ]] || exit 2
           grep -q '^188\.120\.254\.223 ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts
           sudo apt-get update -qq
@@ -103,13 +134,17 @@ jobs:
           fi_node() { SSHPASS="$FI_PASSWORD" sshpass -e ssh -T -F "$work/fi.cfg" fi-node "$@"; }
           stage="/run/fi-public-dot-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           [[ "$stage" =~ ^/run/fi-public-dot-[0-9]+-[0-9]+$ ]]
+          runtime=/opt/mnebyvpn-fi-dns-country-v2
           created=no
           verified=no
           cleanup() {
             set +e
             if [[ "$created" == yes ]]; then
               if [[ "$verified" != yes ]]; then
-                fi_node "if test -f '$stage/public-started'; then PYTHONPATH=/opt/mnebyvpn-fi-dns-node python3 '$stage/fi_public_dot_stage.py' rollback '$stage'; fi" || echo FI_PUBLIC_DOT_ROLLBACK_UNCONFIRMED=true
+                if ! fi_node "if test -f '$stage/public-started'; then PYTHONPATH='$runtime' python3 -B '$stage/fi_public_dot_stage.py' rollback '$stage'; fi"; then
+                  echo FI_PUBLIC_DOT_ROLLBACK_UNCONFIRMED=true
+                  return
+                fi
               fi
               fi_node "rm -rf -- '$stage'" >/dev/null 2>&1
             fi
@@ -118,7 +153,7 @@ jobs:
           trap cleanup EXIT
           python3 - <<'PY'
           import socket
-          for host in ("aaaaaaaaaaaa.fi.dns.mnebyvpn.site","bbbbbbbbbbbb.fi.dns.mnebyvpn.site"):
+          for host in ("aaaaaaaaaaaa.fi.mnebyvpn.site","bbbbbbbbbbbb.fi.mnebyvpn.site"):
               try:ips={row[4][0] for row in socket.getaddrinfo(host,853,type=socket.SOCK_STREAM)}
               except OSError:raise SystemExit("FI_PUBLIC_DOT_DNS_WILDCARD_UNRESOLVED") from None
               if ips!={"217.11.167.91"}:raise SystemExit("FI_PUBLIC_DOT_DNS_WILDCARD_WRONG_ADDRESS")
@@ -127,13 +162,14 @@ jobs:
           fi_node "umask 077; mkdir -m 0700 '$stage'"
           created=yes
           SSHPASS="$FI_PASSWORD" sshpass -e scp -F "$work/fi.cfg" \
-            nodekit/fi_public_dot_relay.py nodekit/fi_public_dot_stage.py nodekit/fi_routed_stage.py \
+            nodekit/fi_public_dot_relay.py nodekit/fi_public_dot_stage.py nodekit/fi_country_stage.py \
+            nodekit/fi_country_transaction.py nodekit/fi_sni_egress_guard.py \
             nodekit/systemd/fi-public-dot/* "fi-node:$stage/"
-          fi_node "chmod 600 '$stage'/*; PYTHONPATH=/opt/mnebyvpn-fi-dns-node timeout --signal=TERM --kill-after=60s 180s python3 '$stage/fi_public_dot_stage.py' stage '$stage'"
+          fi_node "chmod 600 '$stage'/*; PYTHONPATH='$runtime' timeout --signal=TERM --kill-after=60s 180s python3 -B '$stage/fi_public_dot_stage.py' stage '$stage'"
           python3 - <<'PY'
           import socket,ssl,struct
           q=struct.pack("!HHHHHH",0x4a71,256,1,0,0,0)+b"\x07example\x03com\0\0\1\0\1"
-          for name in ("aaaaaaaaaaaa.fi.dns.mnebyvpn.site","bbbbbbbbbbbb.fi.dns.mnebyvpn.site"):
+          for name in ("aaaaaaaaaaaa.fi.mnebyvpn.site","bbbbbbbbbbbb.fi.mnebyvpn.site"):
               try:
                   with socket.create_connection((name,853),timeout=8) as raw:
                       with ssl.create_default_context().wrap_socket(raw,server_hostname=name) as tls:
@@ -142,5 +178,5 @@ jobs:
               except (OSError,ssl.SSLError) as e:raise SystemExit("FI_PUBLIC_DOT_EXTERNAL_PROBE_FAILED="+type(e).__name__) from None
           print("FI_PUBLIC_DOT_EXTERNAL_TLS_AND_UNENTITLED_DENIAL=true")
           PY
-          fi_node "PYTHONPATH=/opt/mnebyvpn-fi-dns-node python3 '$stage/fi_public_dot_stage.py' commit '$stage'"
+          fi_node "PYTHONPATH='$runtime' python3 -B '$stage/fi_public_dot_stage.py' commit '$stage'"
           verified=yes

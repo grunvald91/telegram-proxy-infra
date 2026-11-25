@@ -1,6 +1,6 @@
 [Unit]
 Description=MNEBYVPN FI bounded public DoT relay to authenticated meter
-After=mnebyvpn-fi-public-dot.socket mnebyvpn-fi-dns-country.service
+After=mnebyvpn-fi-public-dot.socket mnebyvpn-fi-dns-country.service mnebyvpn-fi-sni-egress-guard.service
 Requires=mnebyvpn-fi-public-dot.socket
 BindsTo=mnebyvpn-fi-dns-country.service mnebyvpn-fi-sni-egress-guard.service
 PartOf=mnebyvpn-fi-public-dot.socket

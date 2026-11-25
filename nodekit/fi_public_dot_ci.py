@@ -37,7 +37,8 @@ def main():
         for suffix,path in zip((".socket",".service"),paths):
             text=(units/("mnebyvpn-fi-public-dot"+suffix)).read_text().replace("mnebyvpn-fi-public-dot",base).replace("217.11.167.91:853","127.0.0.1:18530").replace("/var/lib/mnebyvpn-nodekit/fi-test-01/dns-auth/public-dot.enable",str(marker)).replace("/var/lib/mnebyvpn-nodekit/fi-test-01/dns-auth/PublicDotRelay.py",str(relay))
             text="\n".join(line for line in text.splitlines() if not line.startswith("BindsTo="))
-            text=text.replace(" mnebyvpn-fi-dns-country.service","").replace(" mnebyvpn-fi-sni-routed-v3.service","")
+            for dependency in ("mnebyvpn-fi-dns-country.service", "mnebyvpn-fi-sni-routed-v3.service", "mnebyvpn-fi-sni-egress-guard.service"):
+                text = text.replace(" " + dependency, "")
             path.write_text(text+"\n")
         try:
             run("systemctl","daemon-reload")
