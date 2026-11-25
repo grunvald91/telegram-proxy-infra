@@ -1,3 +1,4 @@
+# 2026-11-25 reviewed recovery invitation owner menu: Mnebyvpn main e2b934784401c763b4092009583415a69fe8b065, exact main CI 45697683013 success, existing mail gateway release 45697663112 success. Existing serialized guarded bot canary and rollback only; no credential, payment, subscription or network changes.
 # 2026-11-21 bot review fix: exact one-time source 71b58bb65e1604e41452c5d8f9a1b4b04251abea, successful push CI 44910976849, repair stale anonymous GitHub CI response without allowing any unknown revision.
 # 2026-11-21 review follow-up: deploy green Mnebyvpn main 71b58bb65e1604e41452c5d8f9a1b4b04251abea, CI 44910976849 success. Owner sale card fails closed independently for VPN and Telemt; preserve private direct-only flags.
 # 2026-11-21 reviewed direct-only owner Telemt link source Mnebyvpn main 5c1f7a3398ceae3888cbf4ba3d3ba86b2367d640, CI 44910088686 success. Canary deploy before private feature activation; preserve public proxy flag and existing clients.
