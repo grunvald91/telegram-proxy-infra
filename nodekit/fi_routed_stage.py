@@ -17,7 +17,6 @@ import time
 
 from fi_dns_ssh_stage import FI,FI_ROOT,FI_RUNTIME,CONTROLLER_PIN,host,private_dir,read,immutable,command,require
 from fi_shared_routes import render_core,render_nginx,covered,hostname
-from fi_shared_routes_stage import proxy_probe
 from fi_dns_private_runtime import corefile_bytes,prepare
 from fi_dns_origin_canary import HOSTS,EXTERNAL_QUERY,dot_probe,query_bytes
 from fi_dns_guarded_ingress import SNAPSHOT,CONTROLLER
@@ -77,22 +76,78 @@ def denied():
             tls.sendall(struct.pack("!H",len(q))+q)
             require(tls.recv(2)==b"","unknown_personal_token_accepted")
 
+def phase(name,fn,*,attempts=1):
+    """Only retry explicitly transient network failures, not invalid answers."""
+    for attempt in range(attempts):
+        try:
+            result=fn()
+            print("FI_ROUTED_PHASE_OK="+name,flush=True)
+            return result
+        except ssl.SSLCertVerificationError:
+            print("FI_ROUTED_PHASE_FAILED="+name+":certificate",flush=True)
+            raise
+        except (OSError,TimeoutError) as exc:
+            print("FI_ROUTED_PHASE_RETRY="+name+":"+type(exc).__name__+":"+str(attempt+1),flush=True)
+            if attempt+1==attempts:raise
+            time.sleep(.5*(attempt+1))
+        except (ValueError,RuntimeError,struct.error) as exc:
+            label=str(exc) if re.fullmatch(r"[a-z0-9_]+",str(exc)) else type(exc).__name__
+            print("FI_ROUTED_PHASE_FAILED="+name+":"+label,flush=True)
+            raise
+
+def proxy_tls(name):
+    with socket.create_connection(("127.0.0.1",14443),timeout=5) as raw:
+        raw.settimeout(8)
+        with ssl.create_default_context().wrap_socket(raw,server_hostname=name) as tls:
+            require(bool(tls.getpeercert()),"origin_cert_missing")
+
+def denied_proxy():
+    # Require successful TCP connect to the service, then an explicit TLS
+    # rejection/EOF, not a timeout or missing proxy listener.
+    with socket.create_connection(("127.0.0.1",14443),timeout=5) as raw:
+        raw.settimeout(5)
+        try:
+            with ssl.create_default_context().wrap_socket(raw,server_hostname="example.org"):
+                raise RuntimeError("unknown_proxy_sni_accepted")
+        except ssl.SSLCertVerificationError:
+            raise RuntimeError("unknown_proxy_sni_reached_tls") from None
+        except (ssl.SSLEOFError,ConnectionResetError):
+            return
+        except ssl.SSLError as e:
+            if e.reason in ("UNEXPECTED_EOF_WHILE_READING","TLSV1_ALERT_INTERNAL_ERROR"):return
+            raise
+
+def service_diagnostics():
+    # Do not expose raw journal/config lines or client names to public CI.
+    for unit in (DNS,PROXY):
+        r=subprocess.run(["systemctl","show",unit,"-p","ActiveState","-p","SubState","-p","Result","-p","ExecMainStatus","-p","NRestarts"],capture_output=True,text=True,timeout=8)
+        fields=[line for line in r.stdout.splitlines() if re.fullmatch(r"(ActiveState|SubState|Result|ExecMainStatus|NRestarts)=[a-zA-Z0-9_-]+",line)]
+        print("FI_ROUTED_UNIT_STATUS="+unit+":"+",".join(fields),flush=True)
+        j=subprocess.run(["journalctl","-u",unit,"-n","30","--no-pager","-o","cat"],capture_output=True,timeout=8)
+        data=j.stdout[-65536:].lower()
+        categories=((b"permission denied","permission"),(b"read-only file system","readonly"),
+                    (b"address already in use","bind_conflict"),(b"regex pattern too long","regex_length"),
+                    (b"dataplane_stopped","runtime_stop"),(b"snapshot_refresh_failed","snapshot_refresh"),
+                    (b"no such file","missing_file"),(b"operation not permitted","capability"))
+        print("FI_ROUTED_UNIT_DIAG="+unit+":"+",".join(label for marker,label in categories if marker in data),flush=True)
+
 def probe(p):
     for _ in range(30):
         if active(DNS) and active(PROXY) and listeners(8853)==["127.0.0.1:8853"] and listeners(18854)==["127.0.0.1:18854"] and listeners(14443)==["127.0.0.1:14443"]:break
         time.sleep(1)
     else:raise RuntimeError("routed_services_not_ready")
-    require(dot_probe(HOSTS[0],EXTERNAL_QUERY),"ordinary_dns_failed")
-    # The staged probe uses fixed loopback port 18855. Reuse its DNS protocol
-    # and strict verification with a port argument, never an external origin.
+    print("FI_ROUTED_LISTENERS_READY=true",flush=True)
+    phase("ordinary_dns",lambda:require(dot_probe(HOSTS[0],EXTERNAL_QUERY),"ordinary_dns_failed"))
     from fi_routed_probe import routed_dns_query
     names=[x for x in ("www.youtube.com","gemini.google.com","api.openai.com","claude.ai","integrate.api.nvidia.com") if covered(p,x)]
     require(len(names)>=3,"sample_missing")
-    for name in names:
-        for kind in (1,28,5,64,65):routed_dns_query(name,kind,port=8853)
-        proxy_probe(name,True)
-    proxy_probe("example.org",False)
-    denied()
+    for idx,name in enumerate(names):
+        for kind in (1,28,5,64,65):
+            phase("dns_"+str(idx)+"_"+str(kind),lambda:routed_dns_query(name,kind,port=8853),attempts=3)
+    for idx,name in enumerate(names):
+        phase("tls_"+str(idx),lambda:proxy_tls(name),attempts=3)
+    phase("unknown_sni",denied_proxy)
+    phase("unknown_personal",denied,attempts=2)
     policy=load(SNAPSHOT,CONTROLLER,CONTROLLER_PIN)
     require(policy["grants"]==[],"unexpected_grants")
     check_public()
@@ -144,7 +199,8 @@ def stage(src):
         require(ctl("is-enabled",DNS).strip()==b"enabled" and ctl("is-enabled",PROXY).strip()==b"enabled","enable_failed")
         require(active(DNS) and active(PROXY),"service_stopped_after_enable")
     except BaseException:
-        rollback(src)
+        try:service_diagnostics()
+        finally:rollback(src)
         raise
     print("FI_ROUTED_PERMANENT_VERIFIED=true;EXACT="+str(len(p["exact"]))+";FAMILIES="+str(len(p["families"]))+";PUBLIC_DNS=false;GRANTS=0",flush=True)
 
@@ -160,6 +216,6 @@ if __name__=="__main__":
         elif sys.argv[1]=="rollback":rollback(src)
         else:raise RuntimeError("invalid_action")
     except (OSError,ValueError,RuntimeError,TypeError,KeyError,subprocess.SubprocessError) as e:
-        label=str(e) if type(e) is RuntimeError and re.fullmatch(r"[a-z0-9_]+",str(e)) else type(e).__name__
+        label=str(e) if isinstance(e,(RuntimeError,ValueError)) and re.fullmatch(r"[a-z0-9_]+",str(e)) else type(e).__name__
         print("FI_ROUTED_STAGE_BLOCKED="+label,file=sys.stderr,flush=True)
         raise SystemExit(2)
