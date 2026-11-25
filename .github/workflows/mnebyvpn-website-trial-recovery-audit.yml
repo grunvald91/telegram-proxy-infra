@@ -1,0 +1,70 @@
+name: MNEBYVPN website trial recovery production audit (read-only)
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/mnebyvpn-website-trial-recovery-audit.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebyvpn-website-trial-recovery-audit
+  cancel-in-progress: false
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      SSH_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - name: Verify deployed website, trial grant permissions and queue health
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$SSH_PASSWORD"
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+          export SSHPASS="$SSH_PASSWORD"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@188.120.254.223 'docker exec -i mnebyvpn-public-web node -' <<'JS'
+          const {Pool}=require('pg');
+          const assert=require('node:assert/strict');
+          const pool=new Pool({connectionString:process.env.WEB_BILLING_DATABASE_URL,max:1,connectionTimeoutMillis:5000});
+          (async()=>{
+            assert.ok(process.env.WEB_BILLING_DATABASE_URL);
+            assert.equal(process.env.WEB_TRIAL_ENABLED,'yes');
+            assert.equal(process.env.WEB_EMAIL_LOGIN_ENABLED,'yes');
+            assert.equal(process.env.WEB_NETWORK_PROVISIONING_VERIFIED,'yes');
+            assert.ok((process.env.MNEBYVPN_MAIL_GATEWAY_SECRET||'').length>=32);
+            const base=await pool.query(`SELECT current_user='mnebyvpn_site_pay' AS scoped,
+              to_regclass('public.website_vpn_trial_requests') IS NOT NULL AS queue,
+              EXISTS(SELECT 1 FROM trial_offers WHERE product='vpn' AND enabled AND duration_seconds=86400) AS offered`);
+            for(const [key,value] of Object.entries(base.rows[0])){
+              console.log('trial_'+key+'='+value);assert.equal(value,true);
+            }
+            const rights=await pool.query(`SELECT
+              has_column_privilege(current_user,'trial_grants','account_id','INSERT') AS grant_insert,
+              has_column_privilege(current_user,'trial_device_claims','device_hash','INSERT') AS device_insert,
+              has_table_privilege(current_user,'website_vpn_trial_requests','SELECT') AS queue_read,
+              has_table_privilege(current_user,'website_vpn_trial_requests','INSERT') AS queue_insert,
+              has_table_privilege(current_user,'website_vpn_trial_requests','UPDATE') AS queue_update,
+              NOT has_column_privilege(current_user,'accounts','email_address','UPDATE') AS identity_write_denied`);
+            for(const [key,value] of Object.entries(rights.rows[0])){
+              console.log('trial_'+key+'='+value);assert.equal(value,true);
+            }
+            const q=await pool.query(`SELECT status,count(*)::int AS n FROM website_vpn_trial_requests GROUP BY status`);
+            const counts={PENDING:0,WAITING:0,SENT:0,REJECTED:0};
+            for(const row of q.rows)if(Object.hasOwn(counts,row.status))counts[row.status]=row.n;
+            for(const [key,value] of Object.entries(counts))console.log('trial_queue_'+key.toLowerCase()+'='+value);
+            const overdue=await pool.query(`SELECT count(*)::int AS n FROM website_vpn_trial_requests
+              WHERE status IN ('PENDING','WAITING') AND next_attempt_at<clock_timestamp()-interval '10 minutes'
+                AND (locked_until IS NULL OR locked_until<clock_timestamp())`);
+            console.log('trial_queue_overdue='+overdue.rows[0].n);
+            assert.equal(overdue.rows[0].n,0);
+            console.log('production_trial_database_audit=pass');
+          })().catch(e=>{console.log('trial_database_audit_failed='+String(e.code||e.name).replace(/[^a-zA-Z0-9_]/g,''));process.exitCode=2;}).finally(()=>pool.end());
+          JS
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@188.120.254.223 'bash -s' <<'SH'
+          set -Eeuo pipefail
+          curl --noproxy '*' -fsS --max-time 10 http://127.0.0.1:8792/api/plans | python3 -c 'import json,sys; p=json.load(sys.stdin); assert p["emailLoginEnabled"] is True and "vpn" in p["trialOffers"]; print("live_trial_offer=verified")'
+          test "$(curl --noproxy '*' -sS --max-time 10 -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"product":"vpn"}' http://127.0.0.1:8792/api/trial)" = 401
+          echo 'unauthenticated_trial=denied'
+          docker logs --since 30m mnebyvpn-public-web 2>&1 | python3 -c 'import re,sys,collections; c=collections.Counter(re.findall(r"MNEBYVPN_WEB_TRIAL_(?:QUEUE_)?(?:SQLSTATE_[A-Z0-9]{5}|SERVICE_ERROR|RECOVERY_LOOP_ERROR|RECOVERY_ERROR|QUEUE_ERROR)",sys.stdin.read())); print("recent_trial_errors="+str(sum(c.values()))); [print(k+"="+str(v)) for k,v in sorted(c.items())]'
+          SH
