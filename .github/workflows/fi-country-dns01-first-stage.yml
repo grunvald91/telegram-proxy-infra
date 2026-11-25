@@ -1,0 +1,119 @@
+name: FI217 corrected country wildcard DNS-01 challenge (no service changes)
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/fi-country-dns01-first-stage.yml']
+  pull_request:
+    paths: ['.github/workflows/fi-country-dns01-first-stage.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebyvpn-fi-country-acme-stage
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Parse exact live ACME shell step and validate isolated FI domain
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          lines=Path('.github/workflows/fi-country-dns01-first-stage.yml').read_text().splitlines()
+          marker='      - name: Generate isolated FI personal wildcard SAN DNS-01 TXT challenge using pinned ACME client'
+          start=lines.index(marker)
+          start=next(i for i in range(start+1,len(lines)) if lines[i]=='        run: |')+1
+          body=[]
+          for line in lines[start:]:
+              if line and not line.startswith('          '):
+                  break
+              body.append(line[10:] if line.startswith('          ') else '')
+          data='\n'.join(body)+'\n'
+          assert "domain='*.fi.mnebyvpn.site'" in data
+          assert 'home=/var/lib/mnebydns/acme-fi-country-v2' in data
+          assert 'acme-personal\n' not in data
+          assert '--install-cert' not in data
+          assert "EXISTING_DOT_853_UNCHANGED=true" in data
+          Path('/tmp/fi-regional-dns01-live-step.sh').write_text(data)
+          PY
+          bash -n /tmp/fi-regional-dns01-live-step.sh
+          rm -f /tmp/fi-regional-dns01-live-step.sh
+  prepare:
+    needs: offline
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      DE_PASSWORD: ${{ secrets.RELAY89_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Generate isolated FI personal wildcard SAN DNS-01 TXT challenge using pinned ACME client
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASSWORD"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass >/dev/null
+          export SSHPASS="$DE_PASSWORD"
+          sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" \
+            -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR \
+            root@89.125.90.101 'bash -se' <<'REMOTE'
+          set -Eeuo pipefail
+          umask 077
+          domain='*.fi.mnebyvpn.site'
+          client=/opt/mnebydns/acme-client-3.1.6
+          home=/var/lib/mnebydns/acme-fi-country-v2
+          if [[ ! -f "$client/acme.sh" ]]; then
+            command -v git >/dev/null
+            mkdir -p /opt/mnebydns
+            tmp="$(mktemp -d /opt/mnebydns/.acme-install.XXXXXXXX)"
+            trap 'rm -rf "$tmp"' EXIT
+            git clone -q --depth 1 --branch 3.1.6 https://github.com/acmesh-official/acme.sh.git "$tmp/repo"
+            git -C "$tmp/repo" config gpg.ssh.allowedSignersFile "$tmp/repo/allowed_signers"
+            git -C "$tmp/repo" verify-tag 3.1.6 >/dev/null
+            mv "$tmp/repo" "$client"
+            trap - EXIT
+            rm -rf "$tmp"
+          fi
+          chmod 700 "$client"
+          "$client/acme.sh" --version | grep -F 'v3.1.6' >/dev/null
+          install -d -m 700 "$home"
+          if find "$home" -type f -name '*.cer' -print -quit | grep -q .; then
+            echo 'EXISTING_ACME_CERT_PRESENT=CHECK_BEFORE_REISSUE'
+            exit 3
+          fi
+          log="$(mktemp "$home/manual-first-stage.XXXXXXXX")"
+          chmod 600 "$log"
+          # Isolated ACME order for FINLAND personal DoT zone only. No existing certificate is touched.
+          # Manual first stage creates an ACME order and prints a TXT value.
+          # A pending DNS authorization is NOT a trusted certificate.
+          set +e
+          "$client/acme.sh" --home "$home" --issue --dns \
+            -d "$domain" --server letsencrypt \
+            --yes-I-know-dns-manual-mode-enough-go-ahead-please \
+            > "$log" 2>&1
+          rc=$?
+          set -e
+          echo "ACME_STAGE_RETURN_CODE=$rc"
+          grep -E 'Add the following TXT record|Domain:|TXT value:|Txt value:|Please add|Please run.*renew|challenge is pending' "$log" | tail -n 16 || true
+          if grep -qE 'TXT value:|Txt value:' "$log"; then
+            echo 'ACME_DNS01_CHALLENGE_GENERATED=true'
+          else
+            echo 'ACME_DNS01_CHALLENGE_GENERATED=false'
+            # Do not reveal full private ACME account logs.
+            echo 'ACME_FAILURE_CLASS=NO_MANUAL_CHALLENGE'
+            exit 3
+          fi
+          echo 'DNS01_RECORD_NAME=_acme-challenge.fi.mnebyvpn.site'
+          echo 'DNS01_TXT_MUST_BE_SET_IN_JINO=true'
+          echo 'REGIONAL_WILDCARD_SAN_ISSUANCE_PENDING_DNS01=true'
+          echo 'EXISTING_DOT_853_UNCHANGED=true'
+          echo 'NO_CERTIFICATE_INSTALLED=true'
+          REMOTE
