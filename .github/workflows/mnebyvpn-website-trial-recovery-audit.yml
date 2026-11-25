@@ -1,3 +1,4 @@
+# 2026-11-25 final production read-only check: verify current website revision and aggregate queue delivery state.
 name: MNEBYVPN website trial recovery production audit (read-only)
 on:
   push:
@@ -63,6 +64,7 @@ jobs:
           JS
           sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR root@188.120.254.223 'bash -s' <<'SH'
           set -Eeuo pipefail
+          printf 'active_website_sha='; cat /opt/mnebyvpn/public/active_sha
           curl --noproxy '*' -fsS --max-time 10 http://127.0.0.1:8792/api/plans | python3 -c 'import json,sys; p=json.load(sys.stdin); assert p["emailLoginEnabled"] is True and "vpn" in p["trialOffers"]; print("live_trial_offer=verified")'
           test "$(curl --noproxy '*' -sS --max-time 10 -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"product":"vpn"}' http://127.0.0.1:8792/api/trial)" = 401
           echo 'unauthenticated_trial=denied'
