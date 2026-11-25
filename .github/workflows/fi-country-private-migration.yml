@@ -2,10 +2,10 @@ name: FI corrected country zone private runtime migration
 "on":
   pull_request:
     branches: [main]
-    paths: ['nodekit/fi_country_*.py', 'nodekit/tests/test_fi_country_transaction.py', 'nodekit/systemd/fi-country/**', '.github/workflows/fi-country-private-migration.yml']
+    paths: ['nodekit/fi_country_*.py', 'nodekit/tests/test_fi_country_*.py', 'nodekit/systemd/fi-country/**', '.github/workflows/fi-country-private-migration.yml']
   push:
     branches: [main]
-    paths: ['nodekit/fi_country_*.py', 'nodekit/tests/test_fi_country_transaction.py', 'nodekit/systemd/fi-country/**', '.github/workflows/fi-country-private-migration.yml']
+    paths: ['nodekit/fi_country_*.py', 'nodekit/tests/test_fi_country_*.py', 'nodekit/systemd/fi-country/**', '.github/workflows/fi-country-private-migration.yml']
   workflow_dispatch:
 permissions: {contents: read}
 concurrency:
@@ -49,6 +49,7 @@ jobs:
           body='\n'.join(line[10:] for line in lines[i:] if line.startswith('          '))+'\n'
           Path(os.environ['RUNNER_TEMP'],'fi-live.sh').write_text(body)
           PY
+          PYTHONPATH="$RUNNER_TEMP/fi-country-runtime:nodekit" python3 -B nodekit/tests/test_fi_country_sni_wire.py -v
           bash -n "$RUNNER_TEMP/fi-live.sh"
           python3 -B -m py_compile nodekit/fi_country_stage.py nodekit/fi_country_transaction.py
   stage:
