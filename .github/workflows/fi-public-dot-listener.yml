@@ -1,0 +1,146 @@
+name: FI public personal DoT listener (no grants)
+"on":
+  pull_request:
+    paths: ["nodekit/fi_public_dot*.py","nodekit/systemd/fi-public-dot/*",".github/workflows/fi-public-dot-listener.yml"]
+  push:
+    branches: [main]
+    paths: ["nodekit/fi_public_dot*.py","nodekit/systemd/fi-public-dot/*",".github/workflows/fi-public-dot-listener.yml"]
+  workflow_dispatch:
+permissions: {contents: read}
+concurrency:
+  group: mnebyvpn-fleet-fi
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Verify actual socket activation and TLS passthrough
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile nodekit/fi_public_dot*.py
+          sudo python3 nodekit/fi_public_dot_ci.py
+          python3 - <<'PY'
+          from pathlib import Path
+          lines=Path('.github/workflows/fi-public-dot-listener.yml').read_text().splitlines()
+          i=lines.index('      - name: Activate externally verified FI personal DoT listener')
+          i=next(j for j in range(i+1,len(lines)) if lines[j]=='        run: |')+1
+          Path('/tmp/fi-public-dot.sh').write_text('\n'.join(line[10:] for line in lines[i:])+'\n')
+          PY
+          bash -n /tmp/fi-public-dot.sh
+  stage:
+    needs: offline
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    environment: node-fi
+    env:
+      RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      FI_PASSWORD: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_PASSWORD }}
+      FI_USER: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_USER }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Activate externally verified FI personal DoT listener
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          [[ "$FI_USER" == root && -n "$RU_PASSWORD" && -n "$FI_PASSWORD" ]] || exit 2
+          grep -q '^188\.120\.254\.223 ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends sshpass >/dev/null
+          work="$RUNNER_TEMP/fi-dns-canary"
+          mkdir -m 0700 "$work"
+          cat > "$work/ru.cfg" <<CFG
+          Host ru-controller
+            HostName 188.120.254.223
+            User root
+            UserKnownHostsFile $GITHUB_WORKSPACE/ops/mnebydns-owner-ssh-known_hosts
+            GlobalKnownHostsFile /dev/null
+            HostKeyAlgorithms ssh-ed25519
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+            PubkeyAuthentication no
+            PreferredAuthentications password
+            ForwardAgent no
+            ClearAllForwardings yes
+            ControlMaster no
+            ConnectTimeout 12
+            LogLevel ERROR
+          CFG
+          SSHPASS="$RU_PASSWORD" sshpass -e ssh -T -F "$work/ru.cfg" ru-controller \
+            'test -f /root/mnebyvpn-controller/fi-known_hosts && test ! -L /root/mnebyvpn-controller/fi-known_hosts && test "$(stat -c "%u:%a" /root/mnebyvpn-controller/fi-known_hosts)" = 0:600 && cat /root/mnebyvpn-controller/fi-known_hosts' > "$work/fi-known"
+          python3 - "$work/fi-known" <<'PY'
+          import base64,pathlib,sys
+          data=pathlib.Path(sys.argv[1]).read_bytes()
+          assert len(data)<512 and data.count(b'\n')==1 and data.endswith(b'\n')
+          name,kind,key=data.decode('ascii').strip().split()
+          assert (name,kind)==('fi.mnebyvpn.site','ssh-ed25519')
+          raw=base64.b64decode(key,validate=True)
+          assert len(raw)==51 and raw.startswith(b'\x00\x00\x00\x0bssh-ed25519\x00\x00\x00\x20')
+          PY
+          cat > "$work/fi.cfg" <<CFG
+          Host fi-node
+            HostName 217.11.167.91
+            User root
+            HostKeyAlias fi.mnebyvpn.site
+            UserKnownHostsFile $work/fi-known
+            GlobalKnownHostsFile /dev/null
+            HostKeyAlgorithms ssh-ed25519
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+            PubkeyAuthentication no
+            PreferredAuthentications password
+            ForwardAgent no
+            ClearAllForwardings yes
+            ControlMaster no
+            ConnectTimeout 12
+            LogLevel ERROR
+          CFG
+          fi_node() { SSHPASS="$FI_PASSWORD" sshpass -e ssh -T -F "$work/fi.cfg" fi-node "$@"; }
+          stage="/run/fi-public-dot-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          [[ "$stage" =~ ^/run/fi-public-dot-[0-9]+-[0-9]+$ ]]
+          created=no
+          verified=no
+          cleanup() {
+            set +e
+            if [[ "$created" == yes ]]; then
+              if [[ "$verified" != yes ]]; then
+                fi_node "if test -f '$stage/public-started'; then PYTHONPATH=/opt/mnebyvpn-fi-dns-node python3 '$stage/fi_public_dot_stage.py' rollback '$stage'; fi" || echo FI_PUBLIC_DOT_ROLLBACK_UNCONFIRMED=true
+              fi
+              fi_node "rm -rf -- '$stage'" >/dev/null 2>&1
+            fi
+            rm -rf "$work"
+          }
+          trap cleanup EXIT
+          python3 - <<'PY'
+          import socket
+          for host in ("aaaaaaaaaaaa.fi.dns.mnebyvpn.site","bbbbbbbbbbbb.fi.dns.mnebyvpn.site"):
+              try:ips={row[4][0] for row in socket.getaddrinfo(host,853,type=socket.SOCK_STREAM)}
+              except OSError:raise SystemExit("FI_PUBLIC_DOT_DNS_WILDCARD_UNRESOLVED") from None
+              if ips!={"217.11.167.91"}:raise SystemExit("FI_PUBLIC_DOT_DNS_WILDCARD_WRONG_ADDRESS")
+          print("FI_PUBLIC_DOT_DNS_WILDCARD_VERIFIED=true")
+          PY
+          fi_node "umask 077; mkdir -m 0700 '$stage'"
+          created=yes
+          SSHPASS="$FI_PASSWORD" sshpass -e scp -F "$work/fi.cfg" \
+            nodekit/fi_public_dot_relay.py nodekit/fi_public_dot_stage.py nodekit/fi_routed_stage.py \
+            nodekit/systemd/fi-public-dot/* "fi-node:$stage/"
+          fi_node "chmod 600 '$stage'/*; PYTHONPATH=/opt/mnebyvpn-fi-dns-node timeout --signal=TERM --kill-after=60s 180s python3 '$stage/fi_public_dot_stage.py' stage '$stage'"
+          python3 - <<'PY'
+          import socket,ssl,struct
+          q=struct.pack("!HHHHHH",0x4a71,256,1,0,0,0)+b"\x07example\x03com\0\0\1\0\1"
+          for name in ("aaaaaaaaaaaa.fi.dns.mnebyvpn.site","bbbbbbbbbbbb.fi.dns.mnebyvpn.site"):
+              try:
+                  with socket.create_connection((name,853),timeout=8) as raw:
+                      with ssl.create_default_context().wrap_socket(raw,server_hostname=name) as tls:
+                          tls.sendall(struct.pack("!H",len(q))+q)
+                          if tls.recv(2)!=b"":raise SystemExit("FI_PUBLIC_DOT_UNENTITLED_QUERY_ACCEPTED")
+              except (OSError,ssl.SSLError) as e:raise SystemExit("FI_PUBLIC_DOT_EXTERNAL_PROBE_FAILED="+type(e).__name__) from None
+          print("FI_PUBLIC_DOT_EXTERNAL_TLS_AND_UNENTITLED_DENIAL=true")
+          PY
+          fi_node "PYTHONPATH=/opt/mnebyvpn-fi-dns-node python3 '$stage/fi_public_dot_stage.py' commit '$stage'"
+          verified=yes
