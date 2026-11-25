@@ -1,3 +1,4 @@
+# Post-release aggregate verification after successful migration 0155 / rollout 45701873435.
 # 2026-11-25 final production read-only check: verify current website revision and aggregate queue delivery state.
 name: MNEBYVPN website trial recovery production audit (read-only)
 on:
