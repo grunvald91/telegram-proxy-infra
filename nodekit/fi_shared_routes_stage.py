@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import signal
 import socket
 import ssl
 import struct
@@ -63,6 +64,33 @@ def stop(child):
         try:child.wait(5)
         except subprocess.TimeoutExpired:child.kill();child.wait(5)
 
+def startup_diagnostic(name,child,log):
+    if child.poll() is None:return
+    # Never print raw config/error lines: regex errors can contain the live
+    # domain catalog. Classify bounded local logs instead.
+    with log.open("rb") as f:
+        f.seek(max(0,log.stat().st_size-65536))
+        detail=f.read(65536).lower()
+    categories=((b"regex pattern too long","regex_length"),
+                (b"could not parse regex","regex_syntax"),
+                (b"address already in use","address_in_use"),
+                (b"permission denied","permission"),
+                (b"unknown directive","unknown_directive"),
+                (b"conflicting","config_conflict"),
+                (b"certificate","certificate"),
+                (b"no such file","missing_file"),
+                (b"bind()","bind_failed"))
+    reason=next((category for marker,category in categories if marker in detail),"unclassified")
+    print("FI_SHARED_ROUTE_CHILD_EXIT="+json.dumps({"service":name,"exit_code":child.returncode,"reason":reason}),flush=True)
+    raise ValueError(name+"_canary_exited")
+
+def start_child(name,args,src,children):
+    log=src/(name+".startup.log")
+    with log.open("xb") as out:
+        child=subprocess.Popen(args,stdout=out,stderr=subprocess.STDOUT)
+    children.append(child)
+    return child,log
+
 def stage(src):
     host(FI);private_dir(STATE);private_dir(src)
     command("systemctl","is-active","--quiet","mnebyvpn-fi-dns-private.service")
@@ -85,22 +113,35 @@ def stage(src):
     command("nginx","-t","-c",str(src/"nginx.conf"),"-p",str(src),timeout=15)
     children=[]
     try:
-        children.append(subprocess.Popen([str(COREDNS),"-conf",str(src/"Corefile")],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL))
-        children.append(subprocess.Popen(["nginx","-c",str(src/"nginx.conf"),"-p",str(src),"-g","daemon off;"],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL))
+        core_child,core_log=start_child("coredns",[str(COREDNS),"-conf",str(src/"Corefile")],src,children)
+        nginx_child,nginx_log=start_child("nginx",["nginx","-c",str(src/"nginx.conf"),"-p",str(src),"-g","daemon off;"],src,children)
         for _ in range(20):
-            need(all(c.poll() is None for c in children),"route_canary_child_exited")
+            startup_diagnostic("coredns",core_child,core_log)
+            startup_diagnostic("nginx",nginx_child,nginx_log)
             try:
                 with socket.create_connection(("127.0.0.1",18855),timeout=.5),socket.create_connection(("127.0.0.1",14443),timeout=.5):pass
                 break
             except OSError:time.sleep(.5)
-        else:raise ValueError("route_canary_not_ready")
+        else:
+            startup_diagnostic("coredns",core_child,core_log)
+            startup_diagnostic("nginx",nginx_child,nginx_log)
+            raise ValueError("route_canary_not_ready")
+        print("FI_SHARED_ROUTE_CHILDREN_READY=true",flush=True)
         # These names are test probes, NOT another route source.
         samples=[x for x in ("www.youtube.com","gemini.google.com","api.openai.com","claude.ai","integrate.api.nvidia.com") if covered(p,x)]
         need(len(samples)>=3,"missing_core_service_samples")
-        for name in samples:
-            for kind in (1,28,5,65,64):dns_query(name,kind)
+        for idx,name in enumerate(samples):
+            for kind in (1,28,5,65,64):
+                try:dns_query(name,kind)
+                except (OSError,ValueError,struct.error) as exc:
+                    print("FI_SHARED_ROUTE_DNS_PROBE_FAILED="+str(idx)+":"+str(kind)+":"+type(exc).__name__,flush=True)
+                    raise
         print("FI_SHARED_ROUTE_DNS_TYPES_VERIFIED="+str(len(samples)*5),flush=True)
-        for name in samples:proxy_probe(name,True)
+        for idx,name in enumerate(samples):
+            try:proxy_probe(name,True)
+            except (OSError,ValueError) as exc:
+                print("FI_SHARED_ROUTE_TLS_PROBE_FAILED="+str(idx)+":"+type(exc).__name__,flush=True)
+                raise
         proxy_probe("example.org",False)
         print("FI_SHARED_ROUTE_TLS_ORIGINS_VERIFIED="+str(len(samples))+";UNKNOWN_SNI_DENIED=true",flush=True)
         need(not public(),"public_dns_changed")
@@ -119,6 +160,9 @@ def stage(src):
 if __name__=="__main__":
     try:
         os.umask(0o077)
+        def interrupted(signum,frame):raise SystemExit(128+signum)
+        signal.signal(signal.SIGTERM,interrupted)
+        signal.signal(signal.SIGHUP,interrupted)
         need(len(sys.argv)==2 and re.fullmatch(r"/run/fi-shared-routes-[0-9]+-[0-9]+",sys.argv[1]),"invalid_stage")
         stage(Path(sys.argv[1]))
     except (OSError,ValueError,RuntimeError,TypeError,IndexError,struct.error,subprocess.SubprocessError) as exc:
