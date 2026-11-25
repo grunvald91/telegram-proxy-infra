@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import socket
 import ssl
@@ -231,8 +232,52 @@ def local_test_corefile(original: Path, directory: Path) -> Path:
     return result
 
 
+def active_origin():
+    """Recognize ONLY our running CoreDNS, never stop or replace its listener."""
+    units=("mnebyvpn-fi-dns-private.service","mnebyvpn-fi-dns-routed.service")
+    active=[u for u in units if subprocess.run(["systemctl","is-active","--quiet",u],capture_output=True,timeout=5).returncode==0]
+    if not active:return None
+    if len(active)!=1:raise FiDnsOriginError("Ambiguous active FI origin")
+    unit=active[0]
+    group=subprocess.check_output(["systemctl","show",unit,"-p","ControlGroup","--value"],text=True,timeout=5).strip()
+    if group!="/system.slice/"+unit:raise FiDnsOriginError("Untrusted active FI origin")
+    lines=subprocess.check_output(["ss","-H","-lntp","sport = :8853"],text=True,timeout=5).splitlines()
+    if len(lines)!=1 or lines[0].split()[3]!="127.0.0.1:8853":
+        raise FiDnsOriginError("Untrusted active FI origin")
+    pids=set(re.findall(r"pid=(\d+)",lines[0]))
+    if len(pids)!=1:raise FiDnsOriginError("Untrusted active FI origin")
+    proc=Path("/proc")/next(iter(pids))
+    if (proc/"exe").resolve()!=COREDNS or not any(x.split(":",2)[-1]==group for x in (proc/"cgroup").read_text().splitlines()):
+        raise FiDnsOriginError("Untrusted active FI origin")
+    config=ROOT/"dns-auth"/("RoutedCorefile" if unit.endswith("-routed.service") else "PrivateCorefile")
+    if (proc/"cmdline").read_bytes().split(b"\0")[:3]!=[str(COREDNS).encode(),b"-conf",str(config).encode()]:
+        raise FiDnsOriginError("Untrusted active FI origin")
+    require_file(config,limit=500000)
+    return unit
+
+def probe_active_origin(unit):
+    verify_pair(REGIONAL_TLS)
+    # Validate the real peer leaf against current staged cert, using strictly
+    # verified TLS first. No synthetic answer exists on the persistent origin.
+    for name in HOSTS:
+        if not dot_probe(name,EXTERNAL_QUERY):
+            raise FiDnsOriginError("FI external upstream DoT failed")
+        ctx=ssl.create_default_context()
+        with socket.create_connection(("127.0.0.1",PORT),timeout=3) as raw:
+            with ctx.wrap_socket(raw,server_hostname=name) as tls:
+                peer=tls.getpeercert(binary_form=True)
+        leaf=subprocess.check_output(["openssl","x509","-in",str(REGIONAL_TLS/"fullchain.pem"),"-outform","DER"],timeout=6)
+        if peer!=leaf:raise FiDnsOriginError("Active regional certificate differs from stage")
+    return {"fi_dns_origin_local_canary":"PASS","mode":"active_service",
+            "active_service":unit,"two_distinct_regional_tls_names":True,
+            "dns_local_a_answer_verified":False,"external_upstream_verified":True,
+            "active_certificate_matches_stage":True,"public_port_opened":False,
+            "customer_grant_issued":False,"awg_changed":False}
+
 def run() -> dict:
     core = prepare()
+    unit=active_origin()
+    if unit:return probe_active_origin(unit)
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as check:
         check.bind(("127.0.0.1", PORT))
     # Temporary root-only Corefile is a derivative of the approved stage.
@@ -301,6 +346,9 @@ def main() -> int:
     except FiDnsOriginError as exc:
         # Only static, non-secret categories; never print CoreDNS config/key.
         known = {
+            "Ambiguous active FI origin": "ambiguous_origin",
+            "Untrusted active FI origin": "untrusted_origin",
+            "Active regional certificate differs from stage": "active_certificate_drift",
             "Root required": "root_required",
             "Missing pinned private FI DNS file": "missing_file",
             "Untrusted FI DNS file": "file_permissions",

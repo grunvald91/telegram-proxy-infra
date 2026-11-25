@@ -97,6 +97,25 @@ class TestFiDnsOrigin(unittest.TestCase):
         self.assertNotEqual(canary.QUERY, canary.EXTERNAL_QUERY)
         self.assertEqual(canary.EXTERNAL_QUERY, "example.com")
 
+    def test_running_origin_uses_existing_listener_without_child(self):
+        report={"mode":"active_service"}
+        with patch.object(canary,"prepare"), patch.object(canary,"active_origin",return_value="mnebyvpn-fi-dns-routed.service"), patch.object(canary,"probe_active_origin",return_value=report) as probe, patch.object(canary.subprocess,"Popen") as child:
+            self.assertEqual(canary.run(),report)
+            probe.assert_called_once_with("mnebyvpn-fi-dns-routed.service")
+            child.assert_not_called()
+
+    def test_ambiguous_active_origin_fails_closed(self):
+        from types import SimpleNamespace
+        with patch.object(canary.subprocess,"run",return_value=SimpleNamespace(returncode=0)):
+            with self.assertRaisesRegex(canary.FiDnsOriginError,"Ambiguous active FI origin"):
+                canary.active_origin()
+
+    def test_wrong_listener_fails_closed(self):
+        from types import SimpleNamespace
+        with patch.object(canary.subprocess,"run",side_effect=[SimpleNamespace(returncode=1),SimpleNamespace(returncode=0)]), patch.object(canary.subprocess,"check_output",side_effect=["/system.slice/mnebyvpn-fi-dns-routed.service\n","LISTEN 0 128 0.0.0.0:8853 0.0.0.0:* users:((\"coredns\",pid=123,fd=7))\n"]):
+            with self.assertRaisesRegex(canary.FiDnsOriginError,"Untrusted active FI origin"):
+                canary.active_origin()
+
     def test_question_is_standard_framed_dns_a(self):
         wire = canary.query_bytes(0x1234)
         self.assertEqual(wire[:2], b"\x12\x34")
