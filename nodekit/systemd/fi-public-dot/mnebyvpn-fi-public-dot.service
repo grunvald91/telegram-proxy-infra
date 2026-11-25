@@ -1,0 +1,34 @@
+[Unit]
+Description=MNEBYVPN FI bounded public DoT relay to authenticated meter
+After=mnebyvpn-fi-public-dot.socket mnebyvpn-fi-dns-routed.service
+Requires=mnebyvpn-fi-public-dot.socket
+BindsTo=mnebyvpn-fi-dns-routed.service mnebyvpn-fi-sni-egress-guard.service
+PartOf=mnebyvpn-fi-public-dot.socket
+
+[Service]
+Type=exec
+DynamicUser=yes
+User=mnebyvpn-fi-dot
+LoadCredential=relay.py:/var/lib/mnebyvpn-nodekit/fi-test-01/dns-auth/PublicDotRelay.py
+ExecStart=/usr/bin/python3 -I -B %d/relay.py
+Restart=on-failure
+RestartSec=3s
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictAddressFamilies=AF_INET AF_UNIX
+RestrictSUIDSGID=yes
+LockPersonality=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectKernelLogs=yes
+UMask=0077
+TasksMax=16
+MemoryMax=96M
+LimitNOFILE=256
+TimeoutStopSec=10s
