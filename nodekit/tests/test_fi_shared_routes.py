@@ -22,7 +22,7 @@ class SharedRouteTests(unittest.TestCase):
         core=render_core(p,"tls://.:8853 {\n  bind 127.0.0.1\n  forward . tls://1.1.1.1 tls://1.0.0.1 {\n  }\n}\n")
         self.assertIn(FI,core)
         self.assertIn("tls://.:18855 {",core)
-        for kind in ("A","AAAA","CNAME","HTTPS","SVCB"):self.assertEqual(core.count("template IN "+kind+" . {"),2)
+        for kind in ("A","AAAA","CNAME","HTTPS","SVCB"):self.assertEqual(core.count("template IN "+kind+" . {"),1)
         nginx=render_nginx(p)
         self.assertIn("listen 127.0.0.1:14443;",nginx)
         self.assertIn('default "";',nginx)
@@ -82,3 +82,17 @@ class SharedRouteTests(unittest.TestCase):
         ):
             with self.subTest(pattern=pattern):
                 with self.assertRaises(ValueError):decode_pattern(pattern)
+
+    def test_live_size_regex_budget_and_parity(self):
+        import re
+        p={"exact":["service"+str(i)+".long-domain-name.example.net" for i in range(618)],
+           "families":["family"+str(i)+".long-domain-name.example.net" for i in range(75)]}
+        core=render_core(p,"tls://.:8853 {\n  bind 127.0.0.1\n  forward . tls://1.1.1.1 tls://1.0.0.1 {\n  }\n}\n")
+        rules=[line.strip()[6:] for line in core.splitlines() if line.strip().startswith("match ")]
+        self.assertTrue(all(len(x.encode())<=8000 for x in rules))
+        self.assertGreater(len(rules),10)
+        patterns=list(map(re.compile,rules))
+        for name in p["exact"]+p["families"]+["a.b."+name for name in p["families"]]:
+            self.assertTrue(any(x.fullmatch(name+".") for x in patterns),name)
+        for name in ("example.org","not"+p["families"][0],p["exact"][0]+".evil.net"):
+            self.assertFalse(any(x.fullmatch(name+".") for x in patterns),name)
