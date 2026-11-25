@@ -27,7 +27,8 @@ BUNDLE=STATE/"shared-routes"
 MARKER=STATE/"routed-dataplane.enable"
 OLD="mnebyvpn-fi-dns-private.service"
 DNS="mnebyvpn-fi-dns-routed.service"
-PROXY="mnebyvpn-fi-sni-routed.service"
+PROXY_V1="mnebyvpn-fi-sni-routed.service"
+PROXY="mnebyvpn-fi-sni-routed-v2.service"
 UNIT_DIR=Path("/etc/systemd/system")
 
 def ctl(*args):
@@ -59,7 +60,7 @@ def validated_bundle():
     core=render_core(p,base.decode())
     nginx=render_nginx(p)
     require(core.encode()==read(BUNDLE/"Corefile",500000) and nginx.encode()==read(BUNDLE/"nginx.conf",500000),"renderer_drift")
-    return p,core.replace("tls://.:18855 {","tls://.:8853 {").encode(),nginx.replace("/run/mnebyvpn-fi-route-canary.pid","/run/mnebyvpn-fi-route/nginx.pid").encode()
+    return p,core.replace("tls://.:18855 {","tls://.:8853 {").encode(),nginx.replace("/run/mnebyvpn-fi-route-canary.pid","/run/mnebyvpn-fi-route/nginx.pid").replace("error_log stderr crit;","error_log stderr warn;").encode()
 
 def no_override(unit):
     for base in (UNIT_DIR,Path("/run/systemd/system"),Path("/usr/lib/systemd/system"),Path("/lib/systemd/system")):
@@ -137,6 +138,12 @@ def probe(p):
         time.sleep(1)
     else:raise RuntimeError("routed_services_not_ready")
     print("FI_ROUTED_LISTENERS_READY=true",flush=True)
+    pid=int(ctl("show",PROXY,"-p","MainPID","--value").strip())
+    require(pid>1,"proxy_main_pid_missing")
+    proc=Path("/proc")/str(pid)/"status"
+    status=dict(line.split(":",1) for line in proc.read_text().splitlines() if ":" in line)
+    require(all(int(x)>0 for x in status["Uid"].split()) and int(status["CapEff"].strip(),16)==0,"proxy_privilege_not_dropped")
+    print("FI_ROUTED_PROXY_UNPRIVILEGED=true;CAP_EFFECTIVE=0",flush=True)
     phase("ordinary_dns",lambda:require(dot_probe(HOSTS[0],EXTERNAL_QUERY),"ordinary_dns_failed"))
     from fi_routed_probe import routed_dns_query
     names=[x for x in ("www.youtube.com","gemini.google.com","api.openai.com","claude.ai","integrate.api.nvidia.com") if covered(p,x)]
@@ -151,7 +158,7 @@ def probe(p):
     policy=load(SNAPSHOT,CONTROLLER,CONTROLLER_PIN)
     require(policy["grants"]==[],"unexpected_grants")
     check_public()
-    require(not active(OLD),"legacy_still_active")
+    require(not active(OLD) and not active(PROXY_V1),"legacy_still_active")
     print("FI_ROUTED_LOCAL_DNS_AND_SNI_VERIFIED="+str(len(names))+";UNKNOWN_DENIED=true",flush=True)
 
 def rollback(src):
@@ -172,21 +179,22 @@ def rollback(src):
 
 def stage(src):
     host(FI);private_dir(STATE);private_dir(FI_RUNTIME);check_public()
-    require(active(OLD) and not active(DNS) and not active(PROXY),"unexpected_current_services")
+    require(active(OLD) and not active(DNS) and not active(PROXY) and not active(PROXY_V1),"unexpected_current_services")
     require(not MARKER.exists() and not MARKER.is_symlink(),"routed_marker_present")
     require(load(SNAPSHOT,CONTROLLER,CONTROLLER_PIN)["grants"]==[],"gate_not_empty")
     p,core,nginx=validated_bundle()
     for name in ("fi_routed_runtime.py","fi_shared_routes.py","fi_shared_routes_stage.py","fi_routed_probe.py"):
         immutable(FI_RUNTIME/name,read(src/name,200000))
     immutable(STATE/"RoutedCorefile",core)
-    immutable(STATE/"RoutedNginx.conf",nginx)
-    for unit in (OLD,DNS,PROXY):no_override(unit)
+    immutable(STATE/"RoutedNginxV2.conf",nginx)
+    for unit in (OLD,DNS,PROXY_V1,PROXY):no_override(unit)
+    require(not subprocess.run(["systemctl","is-enabled","--quiet",PROXY_V1],capture_output=True,timeout=8).returncode==0,"old_proxy_enabled")
     for unit in (DNS,PROXY):
         immutable(UNIT_DIR/unit,read(src/unit,10000))
     # Nginx validates the exact permanent configuration before cutover.
     nginx_dir=Path("/run/mnebyvpn-fi-route")
     private_dir(nginx_dir,True)
-    command("nginx","-t","-c",str(STATE/"RoutedNginx.conf"),"-p",str(nginx_dir),timeout=15)
+    command("nginx","-t","-c",str(STATE/"RoutedNginxV2.conf"),"-p",str(nginx_dir),timeout=15)
     command("systemd-analyze","verify",str(UNIT_DIR/DNS),str(UNIT_DIR/PROXY),timeout=20)
     ctl("daemon-reload")
     immutable(src/"switch-started",b"fi-routed-v2\n")

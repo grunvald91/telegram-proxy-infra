@@ -1,0 +1,40 @@
+[Unit]
+Description=MNEBYVPN FI verified shared route loopback HTTPS proxy
+After=network-online.target
+Wants=network-online.target
+Conflicts=mnebyvpn-fi-sni-routed.service
+ConditionPathExists=/var/lib/mnebyvpn-nodekit/fi-test-01/dns-auth/routed-dataplane.enable
+
+[Service]
+Type=exec
+DynamicUser=yes
+User=mnebyvpn-fi-sni
+RuntimeDirectory=mnebyvpn-fi-route
+RuntimeDirectoryMode=0700
+LoadCredential=nginx.conf:/var/lib/mnebyvpn-nodekit/fi-test-01/dns-auth/RoutedNginxV2.conf
+ExecStartPre=/usr/sbin/nginx -t -c %d/nginx.conf -p /run/mnebyvpn-fi-route/
+ExecStart=/usr/sbin/nginx -c %d/nginx.conf -p /run/mnebyvpn-fi-route/ -g "daemon off; master_process off;"
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=12s
+KillMode=control-group
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectKernelLogs=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+UMask=0077
+TasksMax=32
+MemoryMax=128M
+
+[Install]
+WantedBy=multi-user.target
