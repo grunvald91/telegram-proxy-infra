@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 """Dedicated UID egress policy; never flush or replace the host firewall."""
 import hashlib
-import ipaddress
 import json
 import os
 from pathlib import Path
 import pwd
-import re
 import socket
 import subprocess
 import sys
@@ -42,10 +40,10 @@ def rules(number):
  }}
  chain proxy_out {{
   ct direction reply ct state established counter accept
-  ip daddr {{ 1.1.1.1, 1.0.0.1 }} udp dport 53 counter accept
-  ip daddr {{ 1.1.1.1, 1.0.0.1 }} tcp dport 53 counter accept
   fib daddr type local counter reject
   ip daddr {{ {", ".join(DENIED)} }} counter reject
+  ip daddr {{ 1.1.1.1, 1.0.0.1 }} udp dport 53 counter accept
+  ip daddr {{ 1.1.1.1, 1.0.0.1 }} tcp dport 53 counter accept
   ip protocol tcp tcp dport 443 counter accept
   counter reject
  }}
