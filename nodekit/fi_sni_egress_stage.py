@@ -94,6 +94,7 @@ def stage(src):
     host(FI);private_dir(FI_RUNTIME);check_public()
     require(active(DNS) and active(OLD) and enabled(OLD) and not active(NEW) and not active(GUARD),"unexpected_services")
     policy,_,nginx=validated_bundle()
+    require(read(FINGERPRINT.parent/"RoutedNginxV2.conf",500000)==nginx,"active_nginx_config_drift")
     n=account()
     # Syntax/kernel capability preflight with no firewall mutation.
     if table() is None:
