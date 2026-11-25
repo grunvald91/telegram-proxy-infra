@@ -1,0 +1,90 @@
+name: MNEBYDNS Claude voice transport read-only diagnosis
+on:
+  push:
+    branches: [diagnose/claude-voice-smartdns-20261125]
+    paths: ['.github/workflows/mnebydns-claude-voice-readonly-20261125.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mnebydns-claude-voice-readonly
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      DE_PASS: ${{ secrets.RELAY89_SSH_PASSWORD }}
+      RU_PASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Inspect DNS policy, UDP443 state and synthetic TLS without customer data
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$DE_PASS" && test -n "$RU_PASS"
+          test -s ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass >/dev/null
+          for role in de ru; do
+            if [[ "$role" == de ]]; then
+              export SSHPASS="$DE_PASS"
+              addr=89.125.90.101
+            else
+              export SSHPASS="$RU_PASS"
+              addr=188.120.254.223
+            fi
+            timeout 100 sshpass -e ssh -T -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR "root@$addr" python3 - "$role" <<'PY'
+          import concurrent.futures, json, pathlib, re, socket, ssl, subprocess, sys, time
+          role=sys.argv[1]
+          def cmd(args):
+              try:
+                  p=subprocess.run(args,capture_output=True,text=True,timeout=10)
+                  return p.returncode,p.stdout+p.stderr
+              except (OSError,subprocess.TimeoutExpired):
+                  return -1,""
+          def report(kind, **kwargs):
+              print(json.dumps(dict(node=role,kind=kind,**kwargs),sort_keys=True),flush=True)
+          for args in (["iptables","-S"],["nft","list","ruleset"]):
+              rc,raw=cmd(args)
+              matches=[line for line in raw.splitlines() if re.search(r"(?i)(udp|--protocol udp)",line) and re.search(r"\b443\b",line) and re.search(r"(?i)(reject|drop)",line)]
+              report("udp443_filter",tool=args[0],available=rc==0,matching_lines=len(matches) if rc==0 else None,google_guard=any("MNEBYDNS_GOOGLE_TCP_ONLY_20261117" in x for x in matches) if rc==0 else None)
+          rc,out=cmd(["ss","-Hlunp","sport = :443"])
+          report("udp443_listener",available=rc==0,count=len(out.splitlines()) if rc==0 else None)
+          rc,out=cmd(["systemctl","is-active","mnebydns-google-tcp-only-20261117.service"])
+          report("google_tcp_only_guard",active=rc==0)
+          rc,ng=cmd(["nginx","-T"])
+          report("nginx",available=rc==0,timeout_directives=sorted(set(re.findall(r"\b(?:proxy_timeout|proxy_connect_timeout|preread_timeout)\s+[0-9]+(?:ms|s|m|h|d)?\s*;",ng))) if rc==0 else [])
+          hosts=("claude.ai","api.anthropic.com","claude.com","claudeusercontent.com")
+          for name in ("claude.ai","anthropic.com","claude.com","claudeusercontent.com"):
+              p=pathlib.Path("/opt/mnebydns-dot/Corefile")
+              try:
+                  core=p.read_text()
+              except OSError:
+                  core=None
+              def count(s):
+                  return None if s is None else len(re.findall(re.escape(name).replace(r"\.",r"(?:\\)?\."),s,re.I))
+              report("config_mentions",family=name,core=count(core),nginx=count(ng) if rc==0 else None)
+          def probe(task):
+              host,target=task
+              stage="connect"
+              started=time.monotonic()
+              try:
+                  with socket.create_connection((target,443),timeout=5) as raw:
+                      stage="tls"
+                      ctx=ssl.create_default_context()
+                      ctx.set_alpn_protocols(["h2","http/1.1"])
+                      with ctx.wrap_socket(raw,server_hostname=host) as tls:
+                          report("tls",host=host,path="direct" if target==host else "de_edge",ok=True,alpn=tls.selected_alpn_protocol(),elapsed_ms=round((time.monotonic()-started)*1000))
+              except (OSError,ValueError) as exc:
+                  report("tls",host=host,path="direct" if target==host else "de_edge",ok=False,stage=stage,error=type(exc).__name__)
+          targets=[(h,"89.125.90.101") for h in hosts]
+          if role=="de":
+              targets += [(h,h) for h in hosts]
+          with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+              list(pool.map(probe,targets))
+          report("scope",client_voice_verified=False,server_mutation=False)
+          PY
+          done
