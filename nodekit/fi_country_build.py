@@ -2,6 +2,7 @@
 """Build a versioned FI runtime; keep original modules for rollback."""
 from pathlib import Path
 import sys
+import os
 import py_compile
 
 MODULES=("fi_dns_ssh_stage.py","fi_dns_origin_canary.py","fi_dns_guarded_ingress.py",
@@ -17,9 +18,12 @@ def once(text,old,new):
     return text.replace(old,new)
 
 def build(src,dst):
+    os.umask(0o077)
     dst.mkdir(mode=0o700)
     for name in MODULES:
         text=convert((src/name).read_text())
+        if name=="fi_dns_ssh_stage.py":
+            text=once(text,'FI_RUNTIME=Path("/opt/mnebyvpn-fi-dns-node")','FI_RUNTIME=Path("/opt/mnebyvpn-fi-dns-country-v2")')
         if name=="fi_routed_runtime.py":
             text=once(text,'CONFIG=STATE/"RoutedCorefile"','CONFIG=STATE/"CountryRoutedCorefile"')
             text=once(text,'MARKER=STATE/"routed-dataplane.enable"','MARKER=STATE/"country-dataplane.enable"')
@@ -37,6 +41,8 @@ def atomic_snapshot(path,raw):''')
         if name=="fi_dns_origin_canary.py":
             text=once(text,'units=("mnebyvpn-fi-dns-private.service","mnebyvpn-fi-dns-routed.service")','units=("mnebyvpn-fi-dns-country.service",)')
             text=once(text,'("RoutedCorefile" if unit.endswith("-routed.service") else "PrivateCorefile")','"CountryRoutedCorefile"')
+        if "fi.dns.mnebyvpn.site" in text or r"fi\.dns\.mnebyvpn\.site" in text:
+            raise ValueError("obsolete_fi_hostname_in_runtime")
         (dst/name).write_text(text)
     (dst/"fi_regional_cert_stage.py").write_text((src/"fi_country_cert_stage.py").read_text())
     for file in dst.glob("*.py"):
