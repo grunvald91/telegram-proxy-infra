@@ -13,7 +13,7 @@ concurrency:
 jobs:
   offline:
     runs-on: ubuntu-24.04
-    timeout-minutes: 4
+    timeout-minutes: 7
     steps:
       - uses: actions/checkout@v4
         with: {persist-credentials: false}
@@ -34,6 +34,17 @@ jobs:
           Path('/tmp/fi-shared-routes.sh').write_text('\n'.join(rows)+'\n')
           PY
           bash -n /tmp/fi-shared-routes.sh
+      - name: Verify actual CoreDNS 1.15.0 and Nginx with full-size route fixture
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends nginx libnginx-mod-stream
+          dir="$RUNNER_TEMP/fi-route-binaries"
+          mkdir -m 0700 "$dir"
+          curl --fail --location --retry 2 --max-time 90 -o "$dir/coredns.tgz" https://github.com/coredns/coredns/releases/download/v1.15.0/coredns_1.15.0_linux_amd64.tgz
+          echo "2495c5b8f3fab6d0a336c397f1227b75406d86e6ec7125744a29df9e936ab8cd  $dir/coredns.tgz" | sha256sum -c -
+          tar -xzf "$dir/coredns.tgz" -C "$dir" coredns
+          sudo python3 nodekit/fi_shared_routes_binary_ci.py "$dir/coredns"
   stage:
     needs: offline
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
