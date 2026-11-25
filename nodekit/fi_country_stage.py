@@ -60,14 +60,36 @@ def verify_old_origin():
             ident,flags,qd,an,_,_=struct.unpack("!HHHHHH",answer[:12])
             require(ident==0x4a71 and flags&0x8000 and not flags&15 and qd==1 and an>0 and answer[12:len(q)]==q[12:],"old_origin_bad_answer")
     deny_unknown(OLD_NAME)
-def deny_old_name():
-    ctx=ssl.create_default_context();ctx.check_hostname=False
-    with socket.create_connection(("127.0.0.1",18854),timeout=5) as raw:
-        try:
-            with ctx.wrap_socket(raw,server_hostname=OLD_NAME):raise RuntimeError("obsolete_sni_accepted")
-        except ssl.SSLCertVerificationError:raise RuntimeError("obsolete_sni_certificate_error") from None
-        except ssl.SSLError as exc:
-            require(exc.reason in ("TLSV1_UNRECOGNIZED_NAME","TLSV1_ALERT_UNRECOGNIZED_NAME"),"unexpected_old_sni_failure")
+def deny_old_name(port=18854):
+    """Require an explicit fatal unrecognized_name TLS alert on the wire.
+
+    Use a TLS 1.2 ClientHello so the pre-handshake alert is plaintext.
+    No CA/hostname failure, timeout, EOF, generic handshake error, or
+    successfully negotiated TLS is accepted as proof of SNI rejection.
+    """
+    ctx=ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.maximum_version=ssl.TLSVersion.TLSv1_2
+    incoming,outgoing=ssl.MemoryBIO(),ssl.MemoryBIO()
+    hello=ctx.wrap_bio(incoming,outgoing,server_hostname=OLD_NAME)
+    try:hello.do_handshake()
+    except ssl.SSLWantReadError:pass
+    else:raise RuntimeError("unexpected_client_handshake")
+    data=outgoing.read()
+    require(bool(data),"missing_client_hello")
+    def exact(raw,size):
+        result=b""
+        while len(result)<size:
+            part=raw.recv(size-len(result))
+            require(bool(part),"old_sni_early_eof")
+            result+=part
+        return result
+    with socket.create_connection(("127.0.0.1",port),timeout=5) as raw:
+        raw.sendall(data)
+        kind,major,minor,size=struct.unpack("!BBBH",exact(raw,5))
+        require(kind==21 and major==3 and minor in (1,2,3) and size==2,"old_sni_not_explicit_alert")
+        alert=exact(raw,size)
+        require(alert==bytes((2,ssl.ALERT_DESCRIPTION_UNRECOGNIZED_NAME)),"old_sni_wrong_alert")
+    print("FI_COUNTRY_OLD_SNI_FATAL_ALERT_VERIFIED=true",flush=True)
 def route_samples(policy):
     exact=set(policy["exact"]);families=set(policy["families"])
     def covers(name):return name in exact or any(name==x or name.endswith("."+x) for x in families)
