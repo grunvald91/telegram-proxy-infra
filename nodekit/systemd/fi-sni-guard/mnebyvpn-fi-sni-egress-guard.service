@@ -1,0 +1,32 @@
+[Unit]
+Description=MNEBYVPN FI SNI dedicated egress guard
+After=network-online.target nftables.service
+Wants=network-online.target
+ConditionPathExists=/var/lib/mnebyvpn-nodekit/fi-test-01/dns-auth/routed-dataplane.enable
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=root
+Group=root
+ExecStart=/usr/bin/python3 /opt/mnebyvpn-fi-dns-node/fi_sni_egress_guard.py
+TimeoutStartSec=25s
+Restart=no
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/mnebyvpn-nodekit/fi-test-01/dns-auth
+PrivateTmp=yes
+PrivateDevices=yes
+CapabilityBoundingSet=CAP_NET_ADMIN
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_NETLINK
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectKernelLogs=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+UMask=0077
+TasksMax=16
+MemoryMax=64M
