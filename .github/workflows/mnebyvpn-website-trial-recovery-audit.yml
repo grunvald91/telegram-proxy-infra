@@ -89,15 +89,15 @@ jobs:
           SELECT 'legacy_backfill_column='||(EXISTS(SELECT 1 FROM information_schema.columns
             WHERE table_schema='public' AND table_name='website_vpn_trial_requests' AND column_name='request_source'));
           SELECT CASE WHEN EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='website_vpn_trial_requests' AND column_name='request_source')
-            THEN 'true' ELSE 'false' END AS migrated \\gset
-          \\if :migrated
+            THEN 'true' ELSE 'false' END AS migrated \gset
+          \if :migrated
           SELECT 'legacy_queued='||count(*) FROM website_vpn_trial_requests WHERE request_source='LEGACY_EMAIL';
           SELECT 'legacy_granted='||count(*) FROM website_vpn_trial_requests q JOIN trial_grants t ON t.account_id=q.account_id AND t.order_id=q.order_id WHERE q.request_source='LEGACY_EMAIL';
           SELECT 'legacy_active='||count(*) FROM website_vpn_trial_requests q JOIN entitlements e ON e.account_id=q.account_id AND e.source_order_id=q.order_id AND e.product='vpn' JOIN provisioning_state p ON p.entitlement_id=e.id AND p.adapter='vpn' WHERE q.request_source='LEGACY_EMAIL' AND e.state='ACTIVE' AND e.expires_at>clock_timestamp() AND p.applied_revision=e.revision;
           SELECT 'legacy_sent='||count(*) FROM website_vpn_trial_requests WHERE request_source='LEGACY_EMAIL' AND status='SENT';
           SELECT 'legacy_rejected='||count(*) FROM website_vpn_trial_requests WHERE request_source='LEGACY_EMAIL' AND status='REJECTED';
           SELECT 'legacy_reason_'||coalesce(last_error_code,'NONE')||'='||count(*) FROM website_vpn_trial_requests WHERE request_source='LEGACY_EMAIL' GROUP BY last_error_code;
-          \\endif
+          \endif
           SQL
           docker logs --since 30m mnebyvpn-public-web 2>&1 | python3 -c 'import re,sys,collections; c=collections.Counter(re.findall(r"MNEBYVPN_WEB_TRIAL_(?:QUEUE_)?(?:SQLSTATE_[A-Z0-9]{5}|SERVICE_ERROR|RECOVERY_LOOP_ERROR|RECOVERY_ERROR|QUEUE_ERROR)",sys.stdin.read())); print("recent_trial_errors="+str(sum(c.values()))); [print(k+"="+str(v)) for k,v in sorted(c.items())]'
           SH
