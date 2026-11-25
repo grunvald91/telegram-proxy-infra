@@ -74,5 +74,16 @@ jobs:
           echo 'unauthenticated_trial=denied'
           test "$(curl --noproxy '*' -sS --max-time 10 -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{}' http://127.0.0.1:8792/api/support/operator-trial-invite)" = 403
           echo 'unsigned_recovery_invite=denied'
+          docker exec -i mnebyvpn-stage-postgres psql -At -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage <<'SQL'
+          SELECT 'verified_email_accounts_missing_access='||count(*)
+          FROM accounts a
+          WHERE a.email_address IS NOT NULL
+            AND NOT EXISTS(SELECT 1 FROM web_review_login r WHERE r.account_id=a.id OR r.email=a.email_address)
+            AND NOT EXISTS(SELECT 1 FROM trial_grants t WHERE t.account_id=a.id)
+            AND NOT EXISTS(SELECT 1 FROM entitlements e WHERE e.account_id=a.id)
+            AND NOT EXISTS(SELECT 1 FROM orders o WHERE o.account_id=a.id AND o.state IN ('PAID','TRIAL','REFUNDED'))
+            AND NOT EXISTS(SELECT 1 FROM trial_device_claims d WHERE d.account_id=a.id)
+            AND NOT EXISTS(SELECT 1 FROM website_vpn_trial_requests q WHERE q.account_id=a.id);
+          SQL
           docker logs --since 30m mnebyvpn-public-web 2>&1 | python3 -c 'import re,sys,collections; c=collections.Counter(re.findall(r"MNEBYVPN_WEB_TRIAL_(?:QUEUE_)?(?:SQLSTATE_[A-Z0-9]{5}|SERVICE_ERROR|RECOVERY_LOOP_ERROR|RECOVERY_ERROR|QUEUE_ERROR)",sys.stdin.read())); print("recent_trial_errors="+str(sum(c.values()))); [print(k+"="+str(v)) for k,v in sorted(c.items())]'
           SH
