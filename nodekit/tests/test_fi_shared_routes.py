@@ -2,7 +2,7 @@ import sys
 from pathlib import Path
 import unittest
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from fi_shared_routes import parse,render_core,render_nginx,covered,FI,literal
+from fi_shared_routes import parse,render_core,render_nginx,covered,FI,literal,decode_pattern
 
 def exact(name):
     return "    template IN A "+name+" {\n        match ^"+name.replace(".","[.]")+"[.]$\n        answer \"{{ .Name }} 20 IN A 89.125.90.101\"\n    }\n"
@@ -33,3 +33,27 @@ class SharedRouteTests(unittest.TestCase):
         for pattern in ("^abc.example[.]net[.]$","^.*[.]example[.]net[.]$","^mnebyvpn[.]site[.]$"):
             with self.assertRaises(ValueError):literal(pattern)
         self.assertEqual(literal(r"^api\.example\.net\.$"),"api.example.net")
+
+    def test_existing_mixed_renderer(self):
+        import importlib.util
+        path=Path(__file__).resolve().parents[2]/"scripts/mnebydns-meta-foreign-family-render-20261112.py"
+        spec=importlib.util.spec_from_file_location("meta_renderer",path)
+        mod=importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        pattern,_=mod.patterns()
+        names,roots=decode_pattern(pattern)
+        self.assertEqual(names,set(mod.META_EXACT))
+        self.assertEqual(roots,set(mod.META_SUFFIXES))
+        for name in names|roots:
+            self.assertTrue(mod.belongs_to_meta(name))
+        p=parse(source()[:-2]+'    template IN A . {\n        match '+pattern+'\n        answer "{{ .Name }} 20 IN A 89.125.90.101"\n    }\n}\n')
+        self.assertEqual(len(p["exact"]),303)
+        self.assertEqual(len(p["families"]),92)
+        self.assertTrue(covered(p,"video.cdninstagram.com"))
+        self.assertFalse(covered(p,"unrelated.akamaihd.net"))
+    def test_grouped_literals(self):
+        for pattern in (r"(?i)^(?:api\.example\.net|www\.example\.net)\.$",r"^(api[.]example[.]net|www[.]example[.]net)[.]$"):
+            self.assertEqual(decode_pattern(pattern),({"api.example.net","www.example.net"},set()))
+        self.assertEqual(decode_pattern('"^api[.]example[.]net[.]$"'),({"api.example.net"},set()))
+        for pattern in (r"(?i)^(?:.*|api\.example\.net)\.$",r"^api.example[.]net[.]$",r"(?i)^(?:[a-z0-9-]+[.])*(?:api[.]example[.]net|.*)[.]$"):
+            with self.assertRaises(ValueError):decode_pattern(pattern)
