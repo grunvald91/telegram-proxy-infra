@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Release request 2026-11-26: publish CI-verified Mnebyvpn main 021ddd933f25965ddd0c643d35b50c49c35cb620 (PRs #285/#286; main CI 45812683566 success). Existing guarded website staging, migration, canary and rollback unchanged. Finnish paid DNS cabinet and pending-trial fix; no new feature flags or network changes.
 # Release 2026-11-10: PR96 neon Earth halo, remove payment-provider branding from storefront, and own-brand order review; source MNEBYVPN main 1c18c9496f0bb56403c29cd3c3240965115f7aeb, green CI 42852450430, visual QA 42852034965. Retain current signed payment handoff, webhook, VPN/DNS and secrets.
 # Release 2026-11-10: visual-refinement PR95, approved Earth scene and compact viewport; source MNEBYVPN main 211bb06867a19b6995f59bd5af13c6bea2139c1f, green CI 42848737810, visual QA 42848425007. Website-only, preserve DNS/VPN and Prodamus data.
 # Release hotfix 2026-11-10: serve /world-neon.webp on production router; source ec3524d2b2482d447119cf45606cb0fe1cb04e86, green CI 42813275557. Preserve site purchases and VPN/DNS configurations.
