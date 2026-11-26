@@ -47,7 +47,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: {persist-credentials: false}
-      - name: Verify pinned hosts and inspect live deployment gates
+      - name: Verify pinned hosts and test isolated Telemt
         shell: bash
         run: |
           set -Eeuo pipefail
