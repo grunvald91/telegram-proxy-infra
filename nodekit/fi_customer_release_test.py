@@ -25,11 +25,15 @@ class ReleaseTest(unittest.TestCase):
         self.assertFalse(any("rm -f" in c for c in cmds))
 
     def test_failed_closed_gate_removes_only_release_marker(self):
-        cmds = self.exercise(e.Blocked("test"), True)
+        cmds = self.exercise(a.RolledBack("test"), True)
         self.assertTrue(any("rm -f "+e.MARKER in c for c in cmds))
 
     def test_ambiguous_or_open_gate_retains_marker(self):
-        cmds = self.exercise(e.Blocked("test"), False)
+        cmds = self.exercise(a.RolledBack("test"), False)
+        self.assertFalse(any("rm -f" in c for c in cmds))
+
+    def test_ambiguous_transport_does_not_remove_marker_even_if_gate_currently_closed(self):
+        cmds = self.exercise(e.Blocked("transport"), True)
         self.assertFalse(any("rm -f" in c for c in cmds))
 
 
