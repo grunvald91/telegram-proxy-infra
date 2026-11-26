@@ -1,0 +1,41 @@
+name: FI217 public guarded HTTPS rollout
+"on":
+  pull_request:
+    paths: ['nodekit/fi_public_https*', 'nodekit/systemd/fi-public-https/*', '.github/workflows/fi-public-https.yml']
+  push:
+    branches: [main]
+    paths: ['nodekit/fi_public_https*', 'nodekit/systemd/fi-public-https/*', '.github/workflows/fi-public-https.yml']
+  workflow_dispatch:
+permissions: {contents: read}
+concurrency:
+  group: mnebyvpn-fleet-fi
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Validate scripts and isolated relay
+        run: |
+          set -euo pipefail
+          bash -n nodekit/fi_public_https_runner.sh
+          bash -n nodekit/fi_public_https_stage.sh
+          python3 -m py_compile nodekit/fi_public_https_relay.py nodekit/fi_public_https_probe.py
+          python3 -B nodekit/fi_public_https_test.py
+  live:
+    needs: offline
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    environment: node-fi
+    env:
+      RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      FI_PASSWORD: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_PASSWORD }}
+      FI_USER: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_USER }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Promote guarded relay only after external TLS and HTTP verification
+        run: bash nodekit/fi_public_https_runner.sh
