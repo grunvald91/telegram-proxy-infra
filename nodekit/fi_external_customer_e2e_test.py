@@ -5,6 +5,8 @@ import unittest
 from unittest.mock import patch
 import fi_external_customer_e2e as m
 
+RU_READY="mnebyvpn-fi-dns-meter.service=active\nmnebyvpn-fi-dns-publisher.service=active\nbot=active\nissuance=closed"
+
 class CanaryTest(unittest.TestCase):
     def test_a_record(self):
         q=m.question("www.youtube.com")
@@ -29,9 +31,9 @@ class CanaryTest(unittest.TestCase):
             if "DELETE FROM accounts" in s:return "true"
             if "UPDATE fi_dns_meter_gate SET enabled=false" in s:return "true"
             raise AssertionError("Unexpected database call")
-        def ssh(host,command,*args):
+        def ssh(host,command,*args,**kwargs):
             ssh_calls.append((host,command))
-            return ""
+            return RU_READY if kwargs.get("phase")=="PREFLIGHT" and host==m.RU else ""
         with patch.object(m,"sql",side_effect=sql),patch.object(m,"ssh",side_effect=ssh),patch.object(m,"denied",return_value=True),patch.object(m,"await_positive",side_effect=m.Blocked("WIRE_FAIL")):
             with self.assertRaisesRegex(m.Blocked,"WIRE_FAIL"):m.main()
         self.assertTrue(any("UPDATE fi_dns_meter_gate SET enabled=false" in s for s in sql_calls))
@@ -39,7 +41,7 @@ class CanaryTest(unittest.TestCase):
         self.assertTrue(any(h==m.FI and c.startswith("rm -f "+m.MARKER) for h,c in ssh_calls))
         self.assertTrue(any(h==m.RU and c.startswith("systemctl stop ") for h,c in ssh_calls))
     def test_preflight_refuses_open_gate(self):
-        with patch.object(m,"ssh",return_value=""),patch.object(m,"sql",return_value="false") as sql:
+        with patch.object(m,"ssh",return_value=RU_READY),patch.object(m,"sql",return_value="false") as sql:
             with self.assertRaisesRegex(m.Blocked,"RU_GATES"):m.main()
             self.assertEqual(sql.call_count,1)
 

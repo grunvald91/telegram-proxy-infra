@@ -30,7 +30,7 @@ COMMON=["-F","/dev/null","-o","StrictHostKeyChecking=yes","-o","GlobalKnownHosts
 class Blocked(Exception): pass
 def require(condition, reason):
     if not condition: raise Blocked(reason)
-def ssh(node, command, data=None):
+def ssh(node, command, data=None, *, phase="command"):
     fi=node==FI
     env=dict(os.environ, SSHPASS=os.environ["FI_PASSWORD" if fi else "RU_PASSWORD"])
     pin=Path(sys.argv[1]) if fi else Path("ops/mnebydns-owner-ssh-known_hosts").resolve()
@@ -38,10 +38,21 @@ def ssh(node, command, data=None):
     if fi: opts+=["-o","HostKeyAlias=fi.mnebyvpn.site"]
     p=subprocess.run(["sshpass","-e","ssh","-T",*opts,"root@"+node,command],
                      input=data, text=True, capture_output=True,env=env,timeout=35)
-    require(p.returncode==0,"REMOTE_COMMAND_FAILED_"+("FI" if fi else "RU"))
+    if p.returncode:
+        # Return only a fixed stage, numeric exit status and allowlisted category.
+        # Never include the remote stderr, command or private profile.
+        err=p.stderr.lower()
+        category=next((label for needle,label in (
+            ("host key verification failed","HOST_KEY"),("permission denied","PERMISSION"),
+            ("connection timed out","TIMEOUT"),("connection refused","REFUSED"),
+            ("could not resolve","RESOLVE"),("error:  role","DB_ROLE"),
+            ("error:  function","DB_FUNCTION"),("error:  relation","DB_RELATION"),
+            ("error:  column","DB_COLUMN"),("error:  syntax","DB_SYNTAX"),
+            ("error:","REMOTE_ERROR")) if needle in err),"OTHER")
+        raise Blocked(f"REMOTE_{'FI' if fi else 'RU'}_{phase}_{p.returncode}_{category}")
     return p.stdout.strip()
 def sql(statement):
-    return ssh(RU, DB, "SET statement_timeout='8s'; SET lock_timeout='4s';\n"+statement)
+    return ssh(RU, DB, "SET statement_timeout='8s'; SET lock_timeout='4s';\n"+statement,phase="SQL")
 def exactly(stream,n):
     result=b""
     while len(result)<n:
@@ -115,16 +126,25 @@ def main():
     dehost, fihost=de+".dns.mnebyvpn.site",fi+".fi.mnebyvpn.site"
     digest=hashlib.sha256(de.encode()).hexdigest()
     assert de!=fi
-    ssh(RU, "systemctl is-active --quiet mnebyvpn-fi-dns-meter.service && systemctl is-active --quiet mnebyvpn-fi-dns-publisher.service && "
-        "test \"$(docker inspect -f '{{.State.Running}}' mnebyvpn-bot-info)\" = true && "
-        "if docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' mnebyvpn-bot-info | grep -Fxq MNEBYDNS_REGIONAL_DOT_ENABLED=yes; then exit 2; fi")
+    ru_status=ssh(RU, """for unit in mnebyvpn-fi-dns-meter.service mnebyvpn-fi-dns-publisher.service; do
+        if systemctl is-active --quiet "$unit"; then printf '%s=active\\n' "$unit"; else printf '%s=inactive\\n' "$unit"; fi
+      done
+      if test "$(docker inspect -f '{{.State.Running}}' mnebyvpn-bot-info 2>/dev/null)" = true; then echo bot=active; else echo bot=inactive; fi
+      if docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' mnebyvpn-bot-info 2>/dev/null | grep -Fxq MNEBYDNS_REGIONAL_DOT_ENABLED=yes; then echo issuance=enabled; else echo issuance=closed; fi
+    """,phase="PREFLIGHT")
+    expected={"mnebyvpn-fi-dns-meter.service=active","mnebyvpn-fi-dns-publisher.service=active","bot=active","issuance=closed"}
+    safe=expected|{"mnebyvpn-fi-dns-meter.service=inactive","mnebyvpn-fi-dns-publisher.service=inactive","bot=inactive","issuance=enabled"}
+    statuses=set(ru_status.splitlines())
+    for item in sorted(statuses&safe):print("FI_CANARY_RU_"+item,flush=True)
+    require(statuses==expected,"RU_SERVICES_OR_ISSUANCE_NOT_READY")
     require(sql("""SELECT (NOT (SELECT enabled FROM fi_dns_meter_gate WHERE singleton)
       AND NOT EXISTS(SELECT 1 FROM fi_dns_regional_credentials WHERE revoked_at IS NULL)
-      AND has_function_privilege('mnebyvpn_bot','public.telegram_regional_dns_revision(bigint,text)','EXECUTE')
-      AND has_function_privilege('mnebyvpn_bot','public.telegram_issue_regional_dns_credential(bigint,text,text,bigint)','EXECUTE'))::text;""")=="true","RU_GATES_NOT_CLOSED_OR_ISSUER_UNREADY")
+      AND COALESCE(has_function_privilege(to_regrole('mnebyvpn_bot'),to_regprocedure('public.telegram_regional_dns_revision(bigint,text)'),'EXECUTE'),false)
+      AND COALESCE(has_function_privilege(to_regrole('mnebyvpn_bot'),to_regprocedure('public.telegram_issue_regional_dns_credential(bigint,text,text,bigint)'),'EXECUTE'),false))::text;""")=="true","RU_GATES_NOT_CLOSED_OR_ISSUER_UNREADY")
+    print("FI_CANARY_RU_SCHEMA=PASS",flush=True)
     ssh(FI,"systemctl is-active --quiet mnebyvpn-fi-dns-country.service && systemctl is-active --quiet mnebyvpn-fi-public-dot.socket && systemctl is-active --quiet mnebyvpn-fi-public-https.socket && "
         "systemctl show -p ExecStart --value mnebyvpn-fi-dns-country.service | grep -q /opt/mnebyvpn-fi-dns-customers-v1/ && "
-        "test ! -e "+MARKER+" && test ! -L "+MARKER)
+        "test ! -e "+MARKER+" && test ! -L "+MARKER,phase="PREFLIGHT")
     require(denied(secrets.token_hex(6)+".fi.mnebyvpn.site","example.com"),"UNKNOWN_BEFORE")
     print("FI_CANARY_PREFLIGHT=PASS",flush=True)
     attempted=False
