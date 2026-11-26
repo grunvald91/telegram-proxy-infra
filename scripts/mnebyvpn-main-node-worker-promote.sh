@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Release request 2026-11-26: promote node worker to already deployed Mnebyvpn main ba439a080290ba64a7a59bd168e2c482f09fede5 (CI 45834356019; website release 45838105358). Includes pending Smart DNS trial fix #286. Existing same-SHA checks, subscriber protection, canary and rollback unchanged.
 # Isolated Xray HMAC worker on server188. Preserves site, Telegram ingress,
 # shared proxy, nginx, DNS, database, and existing unrelated services.
 set -Eeuo pipefail
