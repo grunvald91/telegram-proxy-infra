@@ -38,6 +38,7 @@ jobs:
               compile(snippet,f'embedded-python-{n}', 'exec')
           assert "base=pathlib.Path('/opt')" in text and "'noexec' not in mount.stdout" in text
           assert "assert not cfg['access']['users']" in text
+          assert "smoke_disabled = false" in text and 'secrets.token_hex(16)' in text
           assert "assert cfg['server']['listeners']==[{'ip':'127.0.0.1'}]" in text
           Path('/tmp/fi-live-readiness.sh').write_text(text)
           PY
@@ -114,7 +115,7 @@ jobs:
           CFG
           fi_node() { SSHPASS="$FI_PASSWORD" sshpass -e ssh -T -F "$work/fi.cfg" fi-node "$@"; }
           fi_node 'python3 -' <<'PY'
-          import hashlib,json,pathlib,stat,subprocess,tomllib,tempfile,shutil,time,os
+          import hashlib,json,pathlib,stat,subprocess,tomllib,tempfile,shutil,time,os,secrets
           folder=pathlib.Path('/var/lib/mnebyvpn-nodekit/fi-test-01/telemt-stage')
           def protected(path,maximum):
               s=path.lstat()
@@ -158,7 +159,17 @@ jobs:
                   binary=work/'telemt'
                   config=work/'config.toml'
                   binary.write_bytes(data['telemt']); binary.chmod(0o555)
-                  config.write_bytes(data['config.toml']); config.chmod(0o444)
+                  # Upstream 3.5.17 rejects an empty users map. Use one random,
+                  # explicitly disabled synthetic entry in this disposable copy.
+                  # Never mutate the stage or publish/log the value.
+                  secret=secrets.token_hex(16)
+                  smoke_config=data['config.toml']+('\nsmoke_disabled = "'+secret+'"\n[access.user_enabled]\nsmoke_disabled = false\n').encode()
+                  parsed=tomllib.loads(smoke_config.decode())
+                  assert parsed['access']['users']=={'smoke_disabled':secret}
+                  assert parsed['access']['user_enabled']=={'smoke_disabled':False}
+                  assert parsed['server']['listeners']==[{'ip':'127.0.0.1'}]
+                  assert parsed['server']['api']['enabled'] is False
+                  config.write_bytes(smoke_config); config.chmod(0o444)
                   mount=run(['findmnt','-n','-o','OPTIONS','-T',str(binary)])
                   assert mount.returncode==0 and mount.stdout.strip() and 'noexec' not in mount.stdout.strip().split(',')
                   print('FI_TELEMT_EXEC_LOCATION=opt')
@@ -188,6 +199,9 @@ jobs:
                   while time.monotonic()<deadline:
                       status=run(['systemctl','show',unit,'--property=MainPID','--value'])
                       pid=status.stdout.strip()
+                      active=run(['systemctl','show',unit,'--property=ActiveState','--value'])
+                      if active.stdout.strip() in ('failed','inactive'):
+                          raise RuntimeError('telemt exited before listener readiness')
                       rows=listeners()
                       owned=[l for l in rows if pid.isdigit() and int(pid)>0 and 'pid='+pid+',' in l]
                       if any(l.split()[3] not in ('127.0.0.1:9447','[::1]:9447') for l in owned):
@@ -226,7 +240,7 @@ jobs:
                   print('FI_TELEMT_SMOKE_CLEANUP=PASS')
           try: main()
           except Exception as exc:
-              reason=str(exc) if isinstance(exc,RuntimeError) and str(exc) in ('transient unit failed','unexpected listener','startup deadline','cleanup socket check failed','socket inspection failed','cleanup unit state not confirmed') else type(exc).__name__
+              reason=str(exc) if isinstance(exc,RuntimeError) and str(exc) in ('transient unit failed','unexpected listener','startup deadline','cleanup socket check failed','socket inspection failed','cleanup unit state not confirmed','telemt exited before listener readiness') else type(exc).__name__
               print('FI_TELEMT_LOOPBACK_SMOKE=FAIL:'+reason)
               raise SystemExit(2)
           PY
