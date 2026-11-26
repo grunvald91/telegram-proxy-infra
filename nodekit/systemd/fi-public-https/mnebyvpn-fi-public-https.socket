@@ -1,0 +1,15 @@
+[Unit]
+Description=MNEBYVPN FI public HTTPS frontend
+After=network-online.target mnebyvpn-fi-sni-routed-v3.service mnebyvpn-fi-sni-egress-guard.service
+Wants=network-online.target
+BindsTo=mnebyvpn-fi-sni-routed-v3.service mnebyvpn-fi-sni-egress-guard.service
+ConditionPathExists=/var/lib/mnebyvpn-nodekit/fi-test-01/dns-auth/public-https.enable
+
+[Socket]
+ListenStream=217.11.167.91:443
+Accept=no
+Backlog=128
+Service=mnebyvpn-fi-public-https.service
+
+[Install]
+WantedBy=sockets.target
