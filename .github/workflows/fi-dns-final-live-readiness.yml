@@ -119,7 +119,17 @@ jobs:
               'ru_snapshot_schema':"SELECT to_regprocedure('public.fi_dns_snapshot_next()') IS NOT NULL",
               'fi_enrolled':"SELECT EXISTS(SELECT 1 FROM vpn_node_enrollment_inventory WHERE node_id='fi-test-01' AND status='enrolled')",
               'fi_meter_enabled':"SELECT COALESCE((SELECT enabled FROM fi_dns_meter_gate WHERE singleton),false)",
-              'fi_region_has_grants':"SELECT EXISTS(SELECT 1 FROM fi_dns_regional_credentials WHERE revoked_at IS NULL)"
+              'fi_region_has_grants':"SELECT EXISTS(SELECT 1 FROM fi_dns_regional_credentials WHERE revoked_at IS NULL)",
+              'fi_has_eligible_paid_profile':"""
+                  SELECT EXISTS (
+                      SELECT 1 FROM personal_dns_credentials c
+                      JOIN entitlements e ON e.id=c.entitlement_id
+                      JOIN orders o ON o.id=e.source_order_id AND o.account_id=e.account_id
+                      WHERE c.revoked_at IS NULL AND e.product='smart_dns' AND e.state='ACTIVE'
+                        AND e.starts_at<=clock_timestamp() AND e.expires_at>clock_timestamp()
+                        AND e.dns_query_quota_per_30d IS NOT NULL AND o.state='PAID'
+                  )
+              """
           }.items():
               try: value=query(sql)
               except Exception: value='unavailable'
@@ -129,5 +139,6 @@ jobs:
           for unit in ('mnebyvpn-fi-dns-meter.service','mnebyvpn-fi-dns-publisher.service'):
               print(unit+'='+str(subprocess.run(['systemctl','is-active','--quiet',unit],capture_output=True,timeout=5).returncode==0).lower())
           PY
+          fi_node 'for unit in mnebyvpn-fi-dns-country.service mnebyvpn-fi-public-dot.socket; do if systemctl is-active --quiet "$unit"; then printf "%s=active\n" "$unit"; else printf "%s=inactive\n" "$unit"; fi; done'
           fi_node 'python3 -' < nodekit/fi_dns_live_inventory.py
           echo 'LIVE_READINESS_READ_ONLY=true'
