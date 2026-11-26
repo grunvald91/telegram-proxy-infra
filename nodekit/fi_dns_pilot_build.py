@@ -34,7 +34,7 @@ def build(source: Path, destination: Path):
     metered = destination / "fi_dns_metered_dot.py"
     text = once(
         metered.read_text(),
-        "        valid_answer(query, result)\n        settled",
+        "        valid_answer(query, result)\n        if chargeable is not None:\n            await still_allowed()\n        settled",
         "        valid_answer(query, result)\n"
         "        if await asyncio.wait_for(authorizer.allowed(hostname), timeout=METER_TIMEOUT_SECONDS) is not True:\n"
         '            raise MeteredDnsError("FI DNS pilot revoked before settlement")\n'

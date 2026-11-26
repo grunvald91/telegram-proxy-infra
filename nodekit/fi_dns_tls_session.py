@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
 import ssl
 import threading
@@ -88,6 +89,7 @@ async def make_metered_loopback_server(
     meter: QueryMeter | None,
     resolver: Resolver | None,
     listen_port: int = LISTEN_PORT,
+    chargeable: Callable[[bytes], bool] | None = None,
 ) -> asyncio.AbstractServer:
     """Bind loopback only after certificate and all accounting gates verified.
 
@@ -126,7 +128,7 @@ async def make_metered_loopback_server(
             counted = True
             await serve_one_tls_stream(
                 reader, writer, name, authorizer=authorizer,
-                meter=meter, resolver=resolver,
+                meter=meter, resolver=resolver, chargeable=chargeable,
             )
         finally:
             if counted and digest is not None:

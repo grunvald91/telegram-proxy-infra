@@ -43,5 +43,7 @@ jobs:
           sudo python3 -m unittest discover -s nodekit/tests -p 'test_fi_public_enrollment_stage.py' -v
           python3 -B nodekit/fi_dns_pilot_build.py nodekit "$RUNNER_TEMP/fi-dns-pilot"
           sudo env FI_DNS_PILOT_TEST=1 PYTHONPATH="$RUNNER_TEMP/fi-dns-pilot" python3 -B -m unittest discover -s nodekit/tests -p 'test_fi_dns_pilot.py' -v
+          python3 -B nodekit/fi_dns_customer_build.py nodekit "$RUNNER_TEMP/fi-dns-customer"
+          PYTHONPATH="$RUNNER_TEMP/fi-dns-customer" python3 -B -c 'import fi_routed_runtime'
           python3 -m unittest discover -s nodekit/tests -v
           node --test nodekit/tests/test_awg_lease_signer.mjs nodekit/tests/test_grant_issuer.mjs nodekit/tests/test_enrollment.mjs nodekit/tests/test_controller_access.mjs nodekit/tests/test_controller_ssh.mjs
