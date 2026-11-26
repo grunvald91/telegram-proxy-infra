@@ -1,0 +1,34 @@
+[Unit]
+Description=MNEBYVPN FI bounded HTTPS relay
+After=mnebyvpn-fi-public-https.socket mnebyvpn-fi-sni-routed-v3.service mnebyvpn-fi-sni-egress-guard.service
+Requires=mnebyvpn-fi-public-https.socket
+BindsTo=mnebyvpn-fi-sni-routed-v3.service mnebyvpn-fi-sni-egress-guard.service
+PartOf=mnebyvpn-fi-public-https.socket
+
+[Service]
+Type=exec
+DynamicUser=yes
+User=mnebyvpn-fi-https
+LoadCredential=relay.py:/var/lib/mnebyvpn-nodekit/fi-test-01/dns-auth/PublicHttpsRelay.py
+ExecStart=/usr/bin/python3 -I -B %d/relay.py
+Restart=on-failure
+RestartSec=3s
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictAddressFamilies=AF_INET AF_UNIX
+RestrictSUIDSGID=yes
+LockPersonality=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectKernelLogs=yes
+UMask=0077
+TasksMax=16
+MemoryMax=256M
+LimitNOFILE=1024
+TimeoutStopSec=10s
