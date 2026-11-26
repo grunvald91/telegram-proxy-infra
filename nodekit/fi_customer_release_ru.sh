@@ -23,6 +23,7 @@ grep -Fxq 'BOT_PUBLIC_INFO_ONLY=no' "$BOT/web.env"
 grep -Eq '^DATABASE_URL=postgresql://' "$BOT/web.env"
 grep -Eq '^TELEGRAM_WEBHOOK_SECRET_SHA256=[a-f0-9]{64}$' "$BOT/web.env"
 if grep -Fxq 'MNEBYDNS_REGIONAL_DOT_ENABLED=yes' "$BOT/web.env"; then exit 2; fi
+if docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$NAME" | grep -Fx 'MNEBYDNS_REGIONAL_DOT_ENABLED=yes' >/dev/null; then exit 2; fi
 if ss -H -lnt | awk '{print $4}' | grep -Eq ':18796$'; then exit 2; fi
 for name in "$CANARY" "$BACKUP"; do
   if docker ps -a --format '{{.Names}}' | grep -qx "$name"; then exit 2; fi
@@ -33,6 +34,7 @@ db() {
 test "$(db -c 'SELECT (NOT enabled)::text FROM public.fi_dns_meter_gate WHERE singleton;')" = true
 test "$(db -c 'SELECT (NOT EXISTS(SELECT 1 FROM public.fi_dns_regional_credentials WHERE revoked_at IS NULL))::text;')" = true
 work="$(mktemp -d "$BOT/fi-release.XXXXXXXX")"
+trap 'rm -rf -- "$work"' EXIT
 cp -p "$BOT/web.env" "$work/original"
 awk '!/^MNEBYDNS_REGIONAL_DOT_ENABLED=/' "$work/original" > "$work/candidate"
 printf '%s\n' 'MNEBYDNS_REGIONAL_DOT_ENABLED=yes' >> "$work/candidate"
