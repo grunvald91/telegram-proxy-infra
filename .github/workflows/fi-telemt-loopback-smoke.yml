@@ -22,6 +22,7 @@ jobs:
           set -Eeuo pipefail
           python3 - <<'PY'
           from pathlib import Path
+          import re
           lines=Path('.github/workflows/fi-telemt-loopback-smoke.yml').read_text().splitlines()
           i=lines.index('      - name: Verify pinned hosts and test isolated Telemt')
           i=next(j for j in range(i+1,len(lines)) if lines[j]=='        run: |')+1
@@ -31,6 +32,14 @@ jobs:
               rows.append(line[10:] if line.startswith('          ') else '')
           text='\n'.join(rows)+'\n'
           assert 'RuntimeMaxSec=65s' in text and 'StrictHostKeyChecking yes' in text and 'DynamicUser=yes' in text
+          snippets=re.findall(r"<<'PY'\n(.*?)\nPY(?:\n|$)",text,re.S)
+          assert len(snippets)==2, 'expected pinned host and live smoke Python blocks'
+          for n,snippet in enumerate(snippets):
+              compile(snippet,f'embedded-python-{n}', 'exec')
+          assert "base=pathlib.Path('/opt')" in text and "'noexec' not in mount.stdout" in text
+          assert "assert not cfg['access']['users']" in text
+          assert "smoke_disabled = false" in text and 'secrets.token_hex(16)' in text
+          assert "assert cfg['server']['listeners']==[{'ip':'127.0.0.1'}]" in text
           Path('/tmp/fi-live-readiness.sh').write_text(text)
           PY
           bash -n /tmp/fi-live-readiness.sh
@@ -106,7 +115,7 @@ jobs:
           CFG
           fi_node() { SSHPASS="$FI_PASSWORD" sshpass -e ssh -T -F "$work/fi.cfg" fi-node "$@"; }
           fi_node 'python3 -' <<'PY'
-          import hashlib,json,pathlib,stat,subprocess,tomllib,tempfile,shutil,time,os
+          import hashlib,json,pathlib,stat,subprocess,tomllib,tempfile,shutil,time,os,secrets
           folder=pathlib.Path('/var/lib/mnebyvpn-nodekit/fi-test-01/telemt-stage')
           def protected(path,maximum):
               s=path.lstat()
@@ -150,7 +159,17 @@ jobs:
                   binary=work/'telemt'
                   config=work/'config.toml'
                   binary.write_bytes(data['telemt']); binary.chmod(0o555)
-                  config.write_bytes(data['config.toml']); config.chmod(0o444)
+                  # Upstream 3.5.17 rejects an empty users map. Use one random,
+                  # explicitly disabled synthetic entry in this disposable copy.
+                  # Never mutate the stage or publish/log the value.
+                  secret=secrets.token_hex(16)
+                  smoke_config=data['config.toml']+('\nsmoke_disabled = "'+secret+'"\n[access.user_enabled]\nsmoke_disabled = false\n').encode()
+                  parsed=tomllib.loads(smoke_config.decode())
+                  assert parsed['access']['users']=={'smoke_disabled':secret}
+                  assert parsed['access']['user_enabled']=={'smoke_disabled':False}
+                  assert parsed['server']['listeners']==[{'ip':'127.0.0.1'}]
+                  assert parsed['server']['api']['enabled'] is False
+                  config.write_bytes(smoke_config); config.chmod(0o444)
                   mount=run(['findmnt','-n','-o','OPTIONS','-T',str(binary)])
                   assert mount.returncode==0 and mount.stdout.strip() and 'noexec' not in mount.stdout.strip().split(',')
                   print('FI_TELEMT_EXEC_LOCATION=opt')
@@ -180,6 +199,9 @@ jobs:
                   while time.monotonic()<deadline:
                       status=run(['systemctl','show',unit,'--property=MainPID','--value'])
                       pid=status.stdout.strip()
+                      active=run(['systemctl','show',unit,'--property=ActiveState','--value'])
+                      if active.stdout.strip() in ('failed','inactive'):
+                          raise RuntimeError('telemt exited before listener readiness')
                       rows=listeners()
                       owned=[l for l in rows if pid.isdigit() and int(pid)>0 and 'pid='+pid+',' in l]
                       if any(l.split()[3] not in ('127.0.0.1:9447','[::1]:9447') for l in owned):
@@ -202,15 +224,23 @@ jobs:
                   raise
               finally:
                   if attempted:
-                      run(['systemctl','stop',unit],15)
+                      stop=run(['systemctl','stop',unit],15)
+                      status=run(['systemctl','show',unit,'--property=LoadState,ActiveState,MainPID'])
+                      fields=dict(line.split('=',1) for line in status.stdout.splitlines() if '=' in line)
+                      absent=fields.get('LoadState')=='not-found' and fields.get('MainPID') in (None,'0')
+                      stopped=stop.returncode==0 and status.returncode==0 and fields.get('ActiveState') in ('inactive','failed') and fields.get('MainPID')=='0'
+                      if not (absent or stopped):
+                          # Retain artifacts for the bounded unit and report failure;
+                          # RuntimeMaxSec still applies. Never stop other services.
+                          raise RuntimeError('cleanup unit state not confirmed')
                       run(['systemctl','reset-failed',unit])
-                  shutil.rmtree(work)
                   if any(l.split()[3].endswith((':9447',':9098')) for l in listeners()):
                       raise RuntimeError('cleanup socket check failed')
+                  shutil.rmtree(work)
                   print('FI_TELEMT_SMOKE_CLEANUP=PASS')
           try: main()
           except Exception as exc:
-              reason=str(exc) if isinstance(exc,RuntimeError) and str(exc) in ('transient unit failed','unexpected listener','startup deadline','cleanup socket check failed','socket inspection failed') else type(exc).__name__
+              reason=str(exc) if isinstance(exc,RuntimeError) and str(exc) in ('transient unit failed','unexpected listener','startup deadline','cleanup socket check failed','socket inspection failed','cleanup unit state not confirmed','telemt exited before listener readiness') else type(exc).__name__
               print('FI_TELEMT_LOOPBACK_SMOKE=FAIL:'+reason)
               raise SystemExit(2)
           PY
