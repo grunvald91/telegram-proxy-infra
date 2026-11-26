@@ -4,23 +4,20 @@ import asyncio
 import os
 from pathlib import Path
 import re
-import secrets
 import signal
 import socket
 import ssl
 import struct
 import subprocess
 import sys
-import time
-import uuid
 
 from fi_dns_ssh_stage import FI,FI_ROOT,FI_RUNTIME,CONTROLLER_PIN,host,private_dir,read,immutable,command,require
+from fi_country_transaction import NEW as COUNTRY_DNS, OLD as LEGACY_DNS
+from fi_country_stage import MARKER as COUNTRY_MARKER, STAMP as COUNTRY_STAMP
+from fi_country_stage import active, ctl, enabled, listeners, meter_closed, verify_old_sni_denial
 from fi_dns_guarded_ingress import SNAPSHOT,CONTROLLER
 from fi_dns_signed_grants import load
-from fi_dns_reverse_channel import ReverseTransport
-from fi_dns_meter_rpc import protected_openssl_meter
 from fi_dns_origin_canary import HOSTS,EXTERNAL_QUERY,query_bytes
-from fi_routed_stage import ctl,active,listeners,no_override
 from fi_sni_egress_guard import verify,uid,FINGERPRINT
 from fi_regional_cert_stage import verify_pair,DEST as CERT
 
@@ -28,21 +25,28 @@ STATE=FI_ROOT/"dns-auth"
 MARKER=STATE/"public-dot.enable"
 SOCKET="mnebyvpn-fi-public-dot.socket"
 SERVICE="mnebyvpn-fi-public-dot.service"
-UNITS=("mnebyvpn-fi-dns-routed.service","mnebyvpn-fi-sni-routed-v3.service","mnebyvpn-fi-sni-egress-guard.service")
+UNITS=(COUNTRY_DNS,"mnebyvpn-fi-sni-routed-v3.service","mnebyvpn-fi-sni-egress-guard.service")
 UNIT_DIR=Path("/etc/systemd/system")
 
-async def meter_closed():
-    meter=protected_openssl_meter(ReverseTransport(),FI_ROOT/"identity/node-private.pk8",CONTROLLER,CONTROLLER_PIN)
-    require(await meter._apply("reserve",uuid.uuid4(),secrets.token_hex(32))=="DENY_DISABLED","meter_gate_not_closed")
+def no_override(unit):
+    for base in (UNIT_DIR, Path("/run/systemd/system"), Path("/usr/lib/systemd/system"), Path("/lib/systemd/system")):
+        drop_in = base / (unit + ".d")
+        require(not drop_in.exists() and not drop_in.is_symlink(), "unit_override")
+        if base != UNIT_DIR:
+            path = base / unit
+            require(not path.exists() and not path.is_symlink(), "foreign_unit")
 
 def guard():
     n=uid();parts=read(FINGERPRINT,100).decode().strip().split(":")
     require(len(parts)==2 and parts[0]==str(n),"guard_uid_mismatch")
     verify(n,parts[1])
     require(all(active(u) for u in UNITS),"required_service_inactive")
+    require(enabled(COUNTRY_DNS) and not active(LEGACY_DNS) and not enabled(LEGACY_DNS),"country_runtime_not_committed")
+    require(FI_RUNTIME == Path("/opt/mnebyvpn-fi-dns-country-v2"),"wrong_country_runtime")
+    require(read(COUNTRY_MARKER,100) == COUNTRY_STAMP,"country_runtime_marker_missing")
     require(load(SNAPSHOT,CONTROLLER,CONTROLLER_PIN)["grants"]==[],"unexpected_grants")
     require(listeners(8853)==["127.0.0.1:8853"] and listeners(18854)==["127.0.0.1:18854"] and listeners(14443)==["127.0.0.1:14443"],"private_listener_drift")
-    require(not command("ss","-H","-lnu","sport = :853").strip(),"udp_853_conflict")
+    require(not listeners(853, udp=True),"udp_853_conflict")
     verify_pair(CERT)
 
 def deny_query(address,hostname):
@@ -69,6 +73,7 @@ def stage(src):
     require(not active(SOCKET) and not active(SERVICE) and not listeners(853),"public_853_already_present")
     require(not MARKER.exists() and not MARKER.is_symlink(),"public_marker_present")
     asyncio.run(meter_closed())
+    verify_old_sni_denial()
     immutable(STATE/"PublicDotRelay.py",read(src/"fi_public_dot_relay.py",200000))
     for unit in (SOCKET,SERVICE):
         no_override(unit)
@@ -92,6 +97,7 @@ def stage(src):
 
 def commit(src):
     host(FI);guard()
+    asyncio.run(meter_closed())
     require(read(src/"public-started",100)==b"fi-public-dot-v1\n","public_stage_missing")
     require(read(MARKER,100)==b"fi-public-dot-v1\n","public_marker_missing")
     require(active(SOCKET) and active(SERVICE) and listeners(853)==[FI+":853"],"public_relay_not_ready")
