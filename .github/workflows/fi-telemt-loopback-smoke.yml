@@ -154,8 +154,9 @@ jobs:
                       '--property=MemoryMax=256M','--property=TasksMax=96',
                       '--property=RuntimeDirectory='+work.name+'-state',
                       '--property=WorkingDirectory=/run/'+work.name+'-state',
-                      '--property=StandardOutput=null','--property=StandardError=null',
+                      '--property=StandardOutput=journal','--property=StandardError=journal',
                       str(binary),str(config)],15)
+                  print('FI_TELEMT_SYSTEMD_RUN_RC='+str(p.returncode))
                   if p.returncode: raise RuntimeError('transient unit failed')
                   deadline=time.monotonic()+45
                   while time.monotonic()<deadline:
@@ -171,6 +172,16 @@ jobs:
                           break
                       time.sleep(1)
                   else: raise RuntimeError('startup deadline')
+              except Exception:
+                  if attempted:
+                      status=run(['systemctl','show',unit,'--property=ActiveState,SubState,Result,ExecMainCode,ExecMainStatus'])
+                      for line in status.stdout.splitlines():
+                          if '=' in line and all(ch.isascii() and (ch.isalnum() or ch in '_-=') for ch in line):
+                              print('FI_TELEMT_SYSTEMD_'+line)
+                      journal=run(['journalctl','--no-pager','-u',unit,'-n','100','-o','cat']).stdout.lower()
+                      for label,terms in {'EXEC_PERMISSION':('permission denied','failed at step exec'),'NO_USERS':('no users','at least one user','empty users','users is empty'),'CONFIG':('config error','configuration error','failed to load config','invalid config','toml','parse error'),'BIND':('address already in use','failed to bind'),'UPSTREAM':('middle proxy','timeout','network is unreachable'),'FILESYSTEM':('read-only file system','no such file or directory'),'OOM':('out of memory','oom-kill')}.items():
+                          print('FI_TELEMT_LOG_'+label+'='+str(any(term in journal for term in terms)).lower())
+                  raise
               finally:
                   if attempted:
                       run(['systemctl','stop',unit],15)
@@ -181,6 +192,7 @@ jobs:
                   print('FI_TELEMT_SMOKE_CLEANUP=PASS')
           try: main()
           except Exception as exc:
-              print('FI_TELEMT_LOOPBACK_SMOKE=FAIL:'+type(exc).__name__)
+              reason=str(exc) if isinstance(exc,RuntimeError) and str(exc) in ('transient unit failed','unexpected listener','startup deadline','cleanup socket check failed','socket inspection failed') else type(exc).__name__
+              print('FI_TELEMT_LOOPBACK_SMOKE=FAIL:'+reason)
               raise SystemExit(2)
           PY
