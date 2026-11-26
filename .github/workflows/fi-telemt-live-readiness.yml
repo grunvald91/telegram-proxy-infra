@@ -1,0 +1,166 @@
+name: FI Telemt readiness after DNS release (read-only)
+"on":
+  pull_request:
+    paths: [".github/workflows/fi-telemt-live-readiness.yml"]
+  push:
+    branches: [main]
+    paths: [".github/workflows/fi-telemt-live-readiness.yml"]
+  workflow_dispatch:
+permissions: {contents: read}
+concurrency:
+  group: mnebyvpn-fleet-fi
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Verify exact read-only live Bash syntax
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          lines=Path('.github/workflows/fi-telemt-live-readiness.yml').read_text().splitlines()
+          i=lines.index('      - name: Verify pinned hosts and inspect live deployment gates')
+          i=next(j for j in range(i+1,len(lines)) if lines[j]=='        run: |')+1
+          rows=[]
+          for line in lines[i:]:
+              if line and not line.startswith('          '): break
+              rows.append(line[10:] if line.startswith('          ') else '')
+          text='\n'.join(rows)+'\n'
+          assert 'BEGIN READ ONLY' in text and 'StrictHostKeyChecking yes' in text
+          Path('/tmp/fi-live-readiness.sh').write_text(text)
+          PY
+          bash -n /tmp/fi-live-readiness.sh
+  live-readiness:
+    needs: offline
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    environment: node-fi
+    env:
+      RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      FI_PASSWORD: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_PASSWORD }}
+      FI_USER: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_USER }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Verify pinned hosts and inspect live deployment gates
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          [[ "$FI_USER" == root && -n "$RU_PASSWORD" && -n "$FI_PASSWORD" ]] || exit 2
+          grep -q '^188\.120\.254\.223 ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends sshpass >/dev/null
+          work="$RUNNER_TEMP/fi-telemt-readiness"
+          mkdir -m 0700 "$work"
+          cat > "$work/ru.cfg" <<CFG
+          Host ru-controller
+            HostName 188.120.254.223
+            User root
+            UserKnownHostsFile $GITHUB_WORKSPACE/ops/mnebydns-owner-ssh-known_hosts
+            GlobalKnownHostsFile /dev/null
+            HostKeyAlgorithms ssh-ed25519
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+            PubkeyAuthentication no
+            PreferredAuthentications password
+            ForwardAgent no
+            ClearAllForwardings yes
+            ControlMaster no
+            ConnectTimeout 12
+            LogLevel ERROR
+          CFG
+          SSHPASS="$RU_PASSWORD" sshpass -e ssh -T -F "$work/ru.cfg" ru-controller \
+            'test -f /root/mnebyvpn-controller/fi-known_hosts && test ! -L /root/mnebyvpn-controller/fi-known_hosts && test "$(stat -c "%u:%a" /root/mnebyvpn-controller/fi-known_hosts)" = 0:600 && cat /root/mnebyvpn-controller/fi-known_hosts' > "$work/fi-known"
+          python3 - "$work/fi-known" <<'PY'
+          import base64,pathlib,sys
+          data=pathlib.Path(sys.argv[1]).read_bytes()
+          assert len(data)<512 and data.count(b'\n')==1 and data.endswith(b'\n')
+          name,kind,key=data.decode('ascii').strip().split()
+          assert (name,kind)==('fi.mnebyvpn.site','ssh-ed25519')
+          raw=base64.b64decode(key,validate=True)
+          assert len(raw)==51 and raw.startswith(b'\x00\x00\x00\x0bssh-ed25519\x00\x00\x00\x20')
+          PY
+          cat > "$work/fi.cfg" <<CFG
+          Host fi-node
+            HostName 217.11.167.91
+            User root
+            HostKeyAlias fi.mnebyvpn.site
+            UserKnownHostsFile $work/fi-known
+            GlobalKnownHostsFile /dev/null
+            HostKeyAlgorithms ssh-ed25519
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+            PubkeyAuthentication no
+            PreferredAuthentications password
+            ForwardAgent no
+            ClearAllForwardings yes
+            ControlMaster no
+            ConnectTimeout 12
+            LogLevel ERROR
+          CFG
+          fi_node() { SSHPASS="$FI_PASSWORD" sshpass -e ssh -T -F "$work/fi.cfg" fi-node "$@"; }
+          # BEGIN READ ONLY: fixed aggregate queries, no customer values.
+          SSHPASS="$RU_PASSWORD" sshpass -e ssh -T -F "$work/ru.cfg" ru-controller 'python3 -' <<'PY'
+          import subprocess
+          def query(sql):
+              try:
+                  p=subprocess.run(['docker','exec','mnebyvpn-stage-postgres','psql','-AtX','-v','ON_ERROR_STOP=1','-U','mnebyvpn_stage','-d','mnebyvpn_stage','-c','BEGIN READ ONLY; '+sql+'; ROLLBACK;'],capture_output=True,text=True,timeout=10)
+                  rows=[x for x in p.stdout.splitlines() if x not in ('BEGIN','ROLLBACK')]
+                  return rows[0] if p.returncode==0 and len(rows)==1 else 'unavailable'
+              except Exception: return 'unavailable'
+          queries={
+              'FI_NODE_ENROLLED':"SELECT EXISTS(SELECT 1 FROM vpn_node_enrollment_inventory WHERE node_id='fi-test-01' AND status='enrolled')",
+              'TELEMT_CREDENTIAL_TABLE':"SELECT to_regclass('public.dns_mtproxy_bonus_credentials') IS NOT NULL",
+              'TELEMT_CREDENTIAL_HAS_REGION':"SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='dns_mtproxy_bonus_credentials' AND column_name IN ('country','node_id','region'))",
+              'TELEMT_ACTIVE_CREDENTIALS':"SELECT count(*) FROM dns_mtproxy_bonus_credentials WHERE state='ACTIVE'",
+          }
+          for key,sql in queries.items():
+              v=query(sql)
+              print(key+'='+(v if v in ('t','f','unavailable') or (v.isascii() and v.isdigit()) else 'unavailable'))
+          PY
+          fi_node 'python3 -' <<'PY'
+          import hashlib,json,pathlib,stat,subprocess,tomllib
+          folder=pathlib.Path('/var/lib/mnebyvpn-nodekit/fi-test-01/telemt-stage')
+          def protected(path, maximum):
+              s=path.lstat()
+              return stat.S_ISREG(s.st_mode) and s.st_uid==0 and s.st_mode&0o077==0 and 0<s.st_size<=maximum
+          try:
+              mpath=folder/'manifest.json'
+              assert protected(mpath,16384)
+              m=json.loads(mpath.read_text())
+              assert m['node_id']=='fi-test-01' and m['host']=='fi.mnebyvpn.site' and m['version']=='3.5.17'
+              assert m['state']=='staged' and m['enabled'] is False and m['users_enabled'] is False
+              assert set(m['files'])=={'telemt','config.toml','service.candidate'}
+              for name,digest in m['files'].items():
+                  path=folder/name
+                  assert protected(path,40000000)
+                  assert hashlib.sha256(path.read_bytes()).hexdigest()==digest
+              cfg=tomllib.loads((folder/'config.toml').read_text())
+              assert cfg['server']['port']==9447
+              assert cfg['server']['api']['enabled'] is False
+              assert cfg['server']['api']['listen']=='127.0.0.1:9098'
+              assert cfg['server']['listeners']==[{'ip':'127.0.0.1'}]
+              assert not cfg['access']['users']
+              print('FI_TELEMT_STAGE_INTEGRITY=PASS')
+          except Exception:
+              print('FI_TELEMT_STAGE_INTEGRITY=FAIL')
+          def command(args):
+              try:
+                  p=subprocess.run(args,capture_output=True,text=True,timeout=8)
+                  return p.stdout if p.returncode==0 else None
+              except Exception: return None
+          units=command(['systemctl','list-units','--type=service','--state=running','--no-legend','--plain'])
+          print('FI_TELEMT_RUNNING='+('unknown' if units is None else str(any('telemt' in line.split()[0].lower() for line in units.splitlines() if line.split())).lower()))
+          listeners=command(['ss','-H','-lnt'])
+          for port in (9447,9098):
+              occupied=None if listeners is None else any(len(line.split())>=4 and line.split()[3].endswith(':'+str(port)) for line in listeners.splitlines())
+              print('FI_PORT_'+str(port)+'_OCCUPIED='+('unknown' if occupied is None else str(occupied).lower()))
+          print('FI_TELEMT_AUDIT_READ_ONLY=true')
+          PY
+          echo 'LIVE_READINESS_READ_ONLY=true'
