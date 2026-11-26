@@ -1,10 +1,10 @@
 name: FI personal DNS external shared-quota canary
 "on":
   pull_request:
-    paths: ["nodekit/fi_dns_customer_external_e2e*.py", ".github/workflows/fi-dns-customer-external-e2e.yml"]
+    paths: ["nodekit/fi_external_customer_e2e*.py", ".github/workflows/fi-dns-customer-external-e2e.yml"]
   push:
     branches: [main]
-    paths: ["nodekit/fi_dns_customer_external_e2e*.py", ".github/workflows/fi-dns-customer-external-e2e.yml"]
+    paths: ["nodekit/fi_external_customer_e2e*.py", ".github/workflows/fi-dns-customer-external-e2e.yml"]
   workflow_dispatch:
 permissions: {contents: read}
 concurrency:
@@ -19,8 +19,8 @@ jobs:
         with: {persist-credentials: false}
       - name: Validate canary DNS protocol and cleanup paths
         run: |
-          python3 -m py_compile nodekit/fi_dns_customer_external_e2e.py
-          python3 -B nodekit/fi_dns_customer_external_e2e_test.py
+          python3 -m py_compile nodekit/fi_external_customer_e2e.py
+          python3 -B nodekit/fi_external_customer_e2e_test.py
   live:
     needs: offline
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
@@ -61,4 +61,4 @@ jobs:
           raw=base64.b64decode(key,validate=True)
           assert len(raw)==51 and raw.startswith(b'\x00\x00\x00\x0bssh-ed25519\x00\x00\x00\x20')
           PY
-          python3 -B nodekit/fi_dns_customer_external_e2e.py "$work/fi-known"
+          python3 -B nodekit/fi_external_customer_e2e.py "$work/fi-known"
