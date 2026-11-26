@@ -2,6 +2,8 @@
 # Permanent FI customer release. Only the already verified bot image is reused.
 # The old container remains available until the database gate is committed.
 set -Eeuo pipefail
+stage=preflight
+trap 'printf "FI_RELEASE_RU_ERROR=%s:%s\\n" "$stage" "$?" >&2' ERR
 umask 077
 [[ "$(id -u)" == 0 ]] || exit 2
 ROOT=/opt/mnebyvpn
@@ -29,10 +31,11 @@ for name in "$CANARY" "$BACKUP"; do
   if docker ps -a --format '{{.Names}}' | grep -qx "$name"; then exit 2; fi
 done
 db() {
-  docker exec -i mnebyvpn-stage-postgres psql -XqAt -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage "$@"
+  docker exec mnebyvpn-stage-postgres psql -XqAt -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage "$@"
 }
 test "$(db -c 'SELECT (NOT enabled)::text FROM public.fi_dns_meter_gate WHERE singleton;')" = true
 test "$(db -c 'SELECT (NOT EXISTS(SELECT 1 FROM public.fi_dns_regional_credentials WHERE revoked_at IS NULL))::text;')" = true
+stage=prepare
 work="$(mktemp -d "$BOT/fi-release.XXXXXXXX")"
 trap 'rm -rf -- "$work"' EXIT
 cp -p "$BOT/web.env" "$work/original"
@@ -106,11 +109,13 @@ cleanup(){
   exit "$status"
 }
 trap cleanup EXIT
+stage=canary
 run_bot "$CANARY" 18796 '--rm' "$work/candidate"
 healthy 18796
 has_flag "$CANARY"
 docker stop -t 5 "$CANARY" >/dev/null
 echo 'FI_RELEASE_BOT_CANARY=PASS'
+stage=live_bot
 old_stopped=yes
 docker stop -t 10 "$NAME" >/dev/null
 docker rename "$NAME" "$BACKUP"
@@ -123,6 +128,7 @@ mv -f "$work/install" "$BOT/web.env"
 echo 'FI_RELEASE_BOT_LIVE=PASS'
 # Last state-changing step: commit only once the bot and FI runtime are ready.
 # An ambiguous client-side response is handled conservatively in cleanup.
+stage=commit_gate
 test "$(db -c 'UPDATE public.fi_dns_meter_gate SET enabled=true WHERE singleton AND NOT enabled RETURNING enabled::text;')" = true
 committed=yes
 echo 'FI_RELEASE_GATE_OPEN=true'
