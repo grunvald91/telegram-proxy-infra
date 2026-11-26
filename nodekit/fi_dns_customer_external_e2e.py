@@ -115,14 +115,14 @@ def main():
     dehost, fihost=de+".dns.mnebyvpn.site",fi+".fi.mnebyvpn.site"
     digest=hashlib.sha256(de.encode()).hexdigest()
     assert de!=fi
-    ssh(RU, "systemctl is-active --quiet mnebyvpn-fi-dns-meter.service mnebyvpn-fi-dns-publisher.service && "
+    ssh(RU, "systemctl is-active --quiet mnebyvpn-fi-dns-meter.service && systemctl is-active --quiet mnebyvpn-fi-dns-publisher.service && "
         "test \"$(docker inspect -f '{{.State.Running}}' mnebyvpn-bot-info)\" = true && "
         "if docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' mnebyvpn-bot-info | grep -Fxq MNEBYDNS_REGIONAL_DOT_ENABLED=yes; then exit 2; fi")
     require(sql("""SELECT (NOT (SELECT enabled FROM fi_dns_meter_gate WHERE singleton)
       AND NOT EXISTS(SELECT 1 FROM fi_dns_regional_credentials WHERE revoked_at IS NULL)
       AND has_function_privilege('mnebyvpn_bot','public.telegram_regional_dns_revision(bigint,text)','EXECUTE')
       AND has_function_privilege('mnebyvpn_bot','public.telegram_issue_regional_dns_credential(bigint,text,text,bigint)','EXECUTE'))::text;""")=="true","RU_GATES_NOT_CLOSED_OR_ISSUER_UNREADY")
-    ssh(FI,"systemctl is-active --quiet mnebyvpn-fi-dns-country.service mnebyvpn-fi-public-dot.socket mnebyvpn-fi-public-https.socket && "
+    ssh(FI,"systemctl is-active --quiet mnebyvpn-fi-dns-country.service && systemctl is-active --quiet mnebyvpn-fi-public-dot.socket && systemctl is-active --quiet mnebyvpn-fi-public-https.socket && "
         "systemctl show -p ExecStart --value mnebyvpn-fi-dns-country.service | grep -q /opt/mnebyvpn-fi-dns-customers-v1/ && "
         "test ! -e "+MARKER+" && test ! -L "+MARKER)
     require(denied(secrets.token_hex(6)+".fi.mnebyvpn.site","example.com"),"UNKNOWN_BEFORE")
