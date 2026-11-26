@@ -91,7 +91,7 @@ def main():
     dehost, fihost=de+".dns.mnebyvpn.site",fi+".fi.mnebyvpn.site"
     digest=hashlib.sha256(de.encode()).hexdigest()
     assert de!=fi
-    ru_pre=ssh(RU, "systemctl is-active --quiet mnebyvpn-fi-dns-meter.service mnebyvpn-fi-dns-publisher.service && "
+    ssh(RU, "systemctl is-active --quiet mnebyvpn-fi-dns-meter.service mnebyvpn-fi-dns-publisher.service && "
         "test \"$(docker inspect -f '{{.State.Running}}' mnebyvpn-bot-info)\" = true && "
         "if docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' mnebyvpn-bot-info | grep -Fxq MNEBYDNS_REGIONAL_DOT_ENABLED=yes; then exit 2; fi")
     require(sql("""SELECT (NOT (SELECT enabled FROM fi_dns_meter_gate WHERE singleton)
@@ -105,7 +105,13 @@ def main():
     print("FI_CANARY_PREFLIGHT=PASS",flush=True)
     attempted=False
     marker_attempted=False
+    timer_attempted=False
     try:
+        # Independent bounded controller rollback if the runner is interrupted.
+        timer_attempted=True
+        ssh(RU,"systemd-run --quiet --unit=mnebyvpn-fi-dns-canary-gate-close --on-active=9m "
+            "/usr/bin/docker exec mnebyvpn-stage-postgres psql -XqAt -v ON_ERROR_STOP=1 "
+            "-U mnebyvpn_stage -d mnebyvpn_stage -c 'UPDATE fi_dns_meter_gate SET enabled=false WHERE singleton;'")
         attempted=True
         # Only a new, short-lived, explicitly marked zero-value test fixture.
         # Commit the transaction so the real isolated meter and publisher see it.
@@ -156,12 +162,15 @@ def main():
         if marker_attempted:
             try:
                 ssh(FI,"rm -f "+MARKER+"; systemctl stop mnebyvpn-fi-dns-canary-close.timer")
-            except Blocked: cleanup_ok=False
+            except (Blocked,subprocess.SubprocessError): cleanup_ok=False
         if attempted:
+            try:
+                # Close the gate independently of fixture deletion.
+                require(sql("UPDATE fi_dns_meter_gate SET enabled=false WHERE singleton; SELECT (NOT (SELECT enabled FROM fi_dns_meter_gate WHERE singleton))::text;")=="true","GATE_CLOSE")
+            except (Blocked,subprocess.SubprocessError): cleanup_ok=False
             try:
                 # Delete only this fixture; no payment/capture rows ever created.
                 require(sql(f"""BEGIN;
-                  UPDATE fi_dns_meter_gate SET enabled=false WHERE singleton;
                   DELETE FROM fi_dns_meter_requests WHERE entitlement_id='{e}';
                   DELETE FROM personal_dns_query_reservations WHERE entitlement_id='{e}';
                   DELETE FROM personal_dns_query_windows WHERE entitlement_id='{e}';
@@ -174,6 +183,9 @@ def main():
                   SELECT (NOT (SELECT enabled FROM fi_dns_meter_gate WHERE singleton)
                    AND NOT EXISTS(SELECT 1 FROM accounts WHERE id='{a}'))::text;""")=="true","FIXTURE_CLEANUP")
             except Blocked: cleanup_ok=False
+        if timer_attempted and cleanup_ok:
+            try: ssh(RU,"systemctl stop mnebyvpn-fi-dns-canary-gate-close.timer")
+            except (Blocked,subprocess.SubprocessError): cleanup_ok=False
         require(cleanup_ok,"CANARY_ROLLBACK_UNCONFIRMED")
         print("FI_CANARY_GATES_CLOSED_AND_FIXTURE_REMOVED=true",flush=True)
     require(denied(secrets.token_hex(6)+".fi.mnebyvpn.site","example.com"),"UNKNOWN_AFTER")
