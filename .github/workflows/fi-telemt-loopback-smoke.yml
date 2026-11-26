@@ -157,7 +157,16 @@ jobs:
                       '--property=StandardOutput=journal','--property=StandardError=journal',
                       str(binary),str(config)],15)
                   print('FI_TELEMT_SYSTEMD_RUN_RC='+str(p.returncode))
-                  if p.returncode: raise RuntimeError('transient unit failed')
+                  if p.returncode:
+                      # systemd-run's own stderr contains only this synthetic
+                      # unit's paths and properties; no customer credentials.
+                      for line in p.stderr.splitlines()[:12]:
+                          print('FI_TELEMT_SYSTEMD_RUN_DETAIL='+''.join(ch for ch in line[:400] if ch.isprintable()))
+                      version=run(['systemd','--version'])
+                      print('FI_TELEMT_SYSTEMD_VERSION='+version.stdout.splitlines()[0][:120] if version.stdout else 'FI_TELEMT_SYSTEMD_VERSION=unknown')
+                      mount=run(['findmnt','-n','-o','OPTIONS','-T',str(binary)])
+                      print('FI_TELEMT_EXEC_MOUNT_NOEXEC='+str('noexec' in mount.stdout.strip().split(',')).lower())
+                      raise RuntimeError('transient unit failed')
                   deadline=time.monotonic()+45
                   while time.monotonic()<deadline:
                       status=run(['systemctl','show',unit,'--property=MainPID','--value'])
