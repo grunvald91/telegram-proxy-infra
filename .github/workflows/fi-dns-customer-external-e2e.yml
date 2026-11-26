@@ -1,0 +1,64 @@
+name: FI personal DNS external shared-quota canary
+"on":
+  pull_request:
+    paths: ["nodekit/fi_external_customer_e2e*.py", ".github/workflows/fi-dns-customer-external-e2e.yml"]
+  push:
+    branches: [main]
+    paths: ["nodekit/fi_external_customer_e2e*.py", ".github/workflows/fi-dns-customer-external-e2e.yml"]
+  workflow_dispatch:
+permissions: {contents: read}
+concurrency:
+  group: mnebyvpn-fleet-fi
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Validate canary DNS protocol and cleanup paths
+        run: |
+          python3 -m py_compile nodekit/fi_external_customer_e2e.py
+          python3 -B nodekit/fi_external_customer_e2e_test.py
+  live:
+    needs: offline
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    environment: node-fi
+    env:
+      RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      FI_PASSWORD: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_PASSWORD }}
+      FI_USER: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_USER }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Run bounded external DE and FI quota canary
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          [[ "$FI_USER" == root && -n "$RU_PASSWORD" && -n "$FI_PASSWORD" ]]
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends sshpass >/dev/null
+          work=$(mktemp -d "$RUNNER_TEMP/fi-customer-e2e.XXXXXXXX")
+          trap 'rm -rf -- "$work"' EXIT
+          grep -q '^188\.120\.254\.223 ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts
+          SSHPASS="$RU_PASSWORD" sshpass -e ssh -T -F /dev/null \
+            -o StrictHostKeyChecking=yes -o GlobalKnownHostsFile=/dev/null \
+            -o HostKeyAlgorithms=ssh-ed25519 -o UpdateHostKeys=no -o ForwardAgent=no \
+            -o ClearAllForwardings=yes -o ControlMaster=no -o PubkeyAuthentication=no \
+            -o PreferredAuthentications=password -o ConnectTimeout=12 -o LogLevel=ERROR \
+            -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" root@188.120.254.223 \
+            'p=/root/mnebyvpn-controller/fi-known_hosts; test -f "$p" && test ! -L "$p" && test "$(stat -c %u:%a "$p")" = 0:600 && cat "$p"' > "$work/fi-known"
+          python3 - "$work/fi-known" <<'PY'
+          import base64,pathlib,sys
+          data=pathlib.Path(sys.argv[1]).read_bytes()
+          assert len(data)<512 and data.count(b'\n')==1 and data.endswith(b'\n')
+          name,kind,key=data.decode('ascii').strip().split()
+          assert (name,kind)==('fi.mnebyvpn.site','ssh-ed25519')
+          raw=base64.b64decode(key,validate=True)
+          assert len(raw)==51 and raw.startswith(b'\x00\x00\x00\x0bssh-ed25519\x00\x00\x00\x20')
+          PY
+          python3 -B nodekit/fi_external_customer_e2e.py "$work/fi-known"
