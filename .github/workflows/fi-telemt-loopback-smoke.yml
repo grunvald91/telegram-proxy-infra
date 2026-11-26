@@ -22,6 +22,7 @@ jobs:
           set -Eeuo pipefail
           python3 - <<'PY'
           from pathlib import Path
+          import re
           lines=Path('.github/workflows/fi-telemt-loopback-smoke.yml').read_text().splitlines()
           i=lines.index('      - name: Verify pinned hosts and test isolated Telemt')
           i=next(j for j in range(i+1,len(lines)) if lines[j]=='        run: |')+1
@@ -31,6 +32,13 @@ jobs:
               rows.append(line[10:] if line.startswith('          ') else '')
           text='\n'.join(rows)+'\n'
           assert 'RuntimeMaxSec=65s' in text and 'StrictHostKeyChecking yes' in text and 'DynamicUser=yes' in text
+          snippets=re.findall(r"<<'PY'\n(.*?)\nPY(?:\n|$)",text,re.S)
+          assert len(snippets)==2, 'expected pinned host and live smoke Python blocks'
+          for n,snippet in enumerate(snippets):
+              compile(snippet,f'embedded-python-{n}', 'exec')
+          assert "base=pathlib.Path('/opt')" in text and "'noexec' not in mount.stdout" in text
+          assert "assert not cfg['access']['users']" in text
+          assert "assert cfg['server']['listeners']==[{'ip':'127.0.0.1'}]" in text
           Path('/tmp/fi-live-readiness.sh').write_text(text)
           PY
           bash -n /tmp/fi-live-readiness.sh
@@ -202,15 +210,23 @@ jobs:
                   raise
               finally:
                   if attempted:
-                      run(['systemctl','stop',unit],15)
+                      stop=run(['systemctl','stop',unit],15)
+                      status=run(['systemctl','show',unit,'--property=LoadState,ActiveState,MainPID'])
+                      fields=dict(line.split('=',1) for line in status.stdout.splitlines() if '=' in line)
+                      absent=fields.get('LoadState')=='not-found' and fields.get('MainPID') in (None,'0')
+                      stopped=stop.returncode==0 and status.returncode==0 and fields.get('ActiveState') in ('inactive','failed') and fields.get('MainPID')=='0'
+                      if not (absent or stopped):
+                          # Retain artifacts for the bounded unit and report failure;
+                          # RuntimeMaxSec still applies. Never stop other services.
+                          raise RuntimeError('cleanup unit state not confirmed')
                       run(['systemctl','reset-failed',unit])
-                  shutil.rmtree(work)
                   if any(l.split()[3].endswith((':9447',':9098')) for l in listeners()):
                       raise RuntimeError('cleanup socket check failed')
+                  shutil.rmtree(work)
                   print('FI_TELEMT_SMOKE_CLEANUP=PASS')
           try: main()
           except Exception as exc:
-              reason=str(exc) if isinstance(exc,RuntimeError) and str(exc) in ('transient unit failed','unexpected listener','startup deadline','cleanup socket check failed','socket inspection failed') else type(exc).__name__
+              reason=str(exc) if isinstance(exc,RuntimeError) and str(exc) in ('transient unit failed','unexpected listener','startup deadline','cleanup socket check failed','socket inspection failed','cleanup unit state not confirmed') else type(exc).__name__
               print('FI_TELEMT_LOOPBACK_SMOKE=FAIL:'+reason)
               raise SystemExit(2)
           PY
