@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import ssl
 import struct
+from collections.abc import Callable
 from typing import Protocol
 import uuid
 
@@ -158,6 +159,7 @@ async def charge_one_question(
     hostname: str, query: bytes, *,
     authorizer: Authorizer | None, meter: QueryMeter | None,
     resolver: Resolver | None,
+    chargeable: Callable[[bytes], bool] | None = None,
 ) -> bytes:
     """Refuse unauthorized/over-quota queries BEFORE opening any upstream.
 
@@ -177,6 +179,16 @@ async def charge_one_question(
     ) is not True:
         raise MeteredDnsError("Inactive or revoked FI entitlement")
 
+    async def still_allowed():
+        if await asyncio.wait_for(authorizer.allowed(hostname), timeout=METER_TIMEOUT_SECONDS) is not True:
+            raise MeteredDnsError("FI DNS grant revoked while resolving")
+
+    if chargeable is not None and not chargeable(query):
+        result = await asyncio.wait_for(resolver.resolve(query), timeout=UPSTREAM_TIMEOUT_SECONDS)
+        valid_answer(query, result)
+        await still_allowed()
+        return result
+
     request_id = uuid.uuid4()
     attempted = False
     settled = False
@@ -187,16 +199,23 @@ async def charge_one_question(
             meter.reserve(token_sha256, request_id),
             timeout=METER_TIMEOUT_SECONDS,
         ) is not True:
+            if chargeable is not None:
+                flags = 0x8082 | (query[2] & 1) << 8
+                return query[:2] + struct.pack("!HHHHH", flags, 1, 0, 0, 0) + query[12:question_end(query)]
             raise MeteredDnsError("FI DNS quota denied")
         result = await asyncio.wait_for(
             resolver.resolve(query), timeout=UPSTREAM_TIMEOUT_SECONDS
         )
         valid_answer(query, result)
+        if chargeable is not None:
+            await still_allowed()
         settled = (await asyncio.wait_for(
             meter.settle(request_id), timeout=METER_TIMEOUT_SECONDS
         )) is True
         if not settled:
             raise MeteredDnsError("DNS settlement not confirmed")
+        if chargeable is not None:
+            await still_allowed()
         return result
     finally:
         if attempted and not settled:
@@ -215,6 +234,7 @@ async def serve_one_tls_stream(
     reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
     hostname: str, *, authorizer: Authorizer | None,
     meter: QueryMeter | None, resolver: Resolver | None,
+    chargeable: Callable[[bytes], bool] | None = None,
 ) -> None:
     """Sequential RFC7858 two-byte framed questions on an authenticated TLS stream.
 
@@ -236,7 +256,7 @@ async def serve_one_tls_stream(
             )
             answer = await charge_one_question(
                 hostname, request, authorizer=authorizer,
-                meter=meter, resolver=resolver
+                meter=meter, resolver=resolver, chargeable=chargeable,
             )
             writer.write(struct.pack("!H", len(answer)) + answer)
             await asyncio.wait_for(writer.drain(), timeout=WRITE_TIMEOUT_SECONDS)
