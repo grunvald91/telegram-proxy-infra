@@ -136,7 +136,13 @@ jobs:
               assert cfg['server']['listeners']==[{'ip':'127.0.0.1'}]
               assert not cfg['access']['users']
               assert not any(l.split()[3].endswith((':9447',':9098')) for l in listeners())
-              work=pathlib.Path(tempfile.mkdtemp(prefix='mnebyvpn-fi-telemt-smoke-',dir='/run'))
+              # Executable artifacts belong under /opt; /run stays noexec.
+              base=pathlib.Path('/opt')
+              st=base.lstat()
+              assert stat.S_ISDIR(st.st_mode) and st.st_uid==0 and not st.st_mode&0o022
+              mount=run(['findmnt','-n','-o','OPTIONS','-T',str(base)])
+              assert mount.returncode==0 and mount.stdout.strip() and 'noexec' not in mount.stdout.strip().split(',')
+              work=pathlib.Path(tempfile.mkdtemp(prefix='mnebyvpn-fi-telemt-smoke-',dir=base))
               unit=work.name+'.service'
               attempted=False
               try:
@@ -145,6 +151,9 @@ jobs:
                   config=work/'config.toml'
                   binary.write_bytes(data['telemt']); binary.chmod(0o555)
                   config.write_bytes(data['config.toml']); config.chmod(0o444)
+                  mount=run(['findmnt','-n','-o','OPTIONS','-T',str(binary)])
+                  assert mount.returncode==0 and mount.stdout.strip() and 'noexec' not in mount.stdout.strip().split(',')
+                  print('FI_TELEMT_EXEC_LOCATION=opt')
                   attempted=True
                   p=run(['systemd-run','--quiet','--unit='+unit,'--property=Type=exec',
                       '--property=DynamicUser=yes','--property=NoNewPrivileges=yes',
