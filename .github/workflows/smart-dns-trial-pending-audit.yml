@@ -1,0 +1,37 @@
+name: Smart DNS pending trial production diagnosis
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/smart-dns-trial-pending-audit.yml']
+  workflow_dispatch:
+permissions: {contents: read}
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      SSHPASS: ${{ secrets.SERVER188_SSH_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Aggregate read-only diagnostics on RU188
+        run: |
+          set -Eeuo pipefail
+          test -n "$SSHPASS"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass
+          sshpass -e ssh -T -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$PWD/ops/mnebydns-owner-ssh-known_hosts" -o GlobalKnownHostsFile=/dev/null -o ConnectTimeout=12 -o LogLevel=ERROR root@188.120.254.223 'bash -s' <<'SH'
+          set -eu
+          printf 'WEB_SHA='; cat /opt/mnebyvpn/public/active_sha
+          docker inspect -f 'WORKER_IMAGE={{.Config.Image}} WORKER_RUNNING={{.State.Running}}' mnebyvpn-vpn-worker
+          docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' mnebyvpn-vpn-worker | awk 'BEGIN{a="no";b="no"} /^MNEBYDNS_SMART_DNS_WORKER=enabled$/{a="yes"} /^MNEBYDNS_PERSONAL_DOT_HEALTH_URL=http:\/\/127\.0\.0\.1:8859\/readyz$/{b="yes"} END{print "DNS_WORKER_ENABLED="a;print "DNS_HEALTH_CONFIGURED="b}'
+          printf 'DOT_HEALTH_HTTP='; curl --noproxy '*' -s -o /dev/null -w '%{http_code}\n' --max-time 5 http://127.0.0.1:8859/readyz || true
+          docker exec -i mnebyvpn-stage-postgres psql -XqAt -v ON_ERROR_STOP=1 -U mnebyvpn_stage -d mnebyvpn_stage <<'SQL'
+          BEGIN READ ONLY;
+          SELECT 'DNS_TRIAL_'||e.state||'='||count(*) FROM entitlements e JOIN orders o ON o.id=e.source_order_id WHERE e.product='smart_dns' AND o.state='TRIAL' GROUP BY e.state;
+          SELECT 'DNS_PENDING_NO_CLOCK='||count(*) FROM entitlements e JOIN trial_grants t ON t.order_id=e.source_order_id WHERE e.product='smart_dns' AND e.state IN ('PAID_PENDING_PROVISIONING','PROVISIONING_FAILED') AND t.activated_at IS NULL AND e.expires_at IS NULL;
+          SELECT 'DNS_OUTBOX_'||CASE WHEN b.last_error_code IN ('verification_failed','unknown_outcome','adapter_not_connected','worker_exception','fence_lost','revision_race') THEN b.last_error_code ELSE 'other' END||'='||count(*) FROM reconcile_outbox b JOIN entitlements e ON e.id=b.entitlement_id JOIN orders o ON o.id=e.source_order_id WHERE e.product='smart_dns' AND o.state='TRIAL' AND b.handled_at IS NULL GROUP BY 1;
+          SELECT 'FI_TRIAL_MIGRATION='||(to_regprocedure('public.fi_dns_entitlement_eligible(uuid,timestamptz)') IS NOT NULL);
+          ROLLBACK;
+          SQL
+          SH
