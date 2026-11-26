@@ -62,6 +62,30 @@ def dot(host, domain):
             ident,flags,qd,an,_,_=struct.unpack("!6H",a[:12])
             require(ident==0x71ac and flags&0x8000 and qd==1 and a[12:len(q)]==q[12:],"DNS_RESPONSE")
             return flags&15,an,a
+def a_addresses(answer,domain):
+    offset=len(question(domain))
+    count=struct.unpack("!H",answer[6:8])[0]
+    result=set()
+    for _ in range(count):
+        while True:
+            require(offset<len(answer),"DNS_RR_NAME")
+            size=answer[offset]
+            offset+=1
+            if size==0: break
+            if size&0xc0==0xc0:
+                require(offset<len(answer),"DNS_RR_POINTER")
+                offset+=1
+                break
+            require(0<size<=63 and offset+size<=len(answer),"DNS_RR_LABEL")
+            offset+=size
+        require(offset+10<=len(answer),"DNS_RR_HEADER")
+        kind,cls,ttl,length=struct.unpack("!HHIH",answer[offset:offset+10])
+        offset+=10
+        require(offset+length<=len(answer),"DNS_RR_DATA")
+        if kind==1 and cls==1 and length==4:
+            result.add(socket.inet_ntoa(answer[offset:offset+4]))
+        offset+=length
+    return result
 def positive(host,domain):
     rc,an,a=dot(host,domain)
     require(rc==0 and an>0,"DNS_POSITIVE")
@@ -144,7 +168,7 @@ def main():
         positive(dehost,"www.youtube.com")
         require(quota()=="1|0","DE_COUNTER")
         response=positive(fihost,"www.youtube.com")
-        require(socket.inet_aton(FI) in response[len(question("www.youtube.com")):],"FI_ROUTE")
+        require(FI in a_addresses(response,"www.youtube.com"),"FI_ROUTE")
         require(quota()=="2|0","SHARED_COUNTER")
         require(denied(fihost,"www.youtube.com"),"FI_QUOTA_NOT_ENFORCED")
         # Some DE policy implementations return an ordinary direct answer
@@ -182,7 +206,7 @@ def main():
                   COMMIT;
                   SELECT (NOT (SELECT enabled FROM fi_dns_meter_gate WHERE singleton)
                    AND NOT EXISTS(SELECT 1 FROM accounts WHERE id='{a}'))::text;""")=="true","FIXTURE_CLEANUP")
-            except Blocked: cleanup_ok=False
+            except (Blocked,subprocess.SubprocessError): cleanup_ok=False
         if timer_attempted and cleanup_ok:
             try: ssh(RU,"systemctl stop mnebyvpn-fi-dns-canary-gate-close.timer")
             except (Blocked,subprocess.SubprocessError): cleanup_ok=False
