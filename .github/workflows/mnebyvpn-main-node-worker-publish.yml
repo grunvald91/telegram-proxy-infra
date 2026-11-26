@@ -47,7 +47,7 @@ jobs:
           test -f vpn/packages/provisioning/src/xray-node.ts
           sha="$(git -C vpn rev-parse HEAD)"
           [[ "$sha" =~ ^[a-f0-9]{40}$ ]]
-          curl -fsSL --retry 2 --max-time 25 \
+          curl -fsSL --retry 2 --max-time 25 -H "Authorization: Bearer ${{ github.token }}" \
             'https://api.github.com/repos/grunvald91/Mnebyvpn/actions/workflows/offline-contracts.yml/runs?branch=main&status=success&per_page=12' \
             -o "$RUNNER_TEMP/ci.json"
           green="$(python3 - "$RUNNER_TEMP/ci.json" <<'PY'
