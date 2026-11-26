@@ -1,0 +1,186 @@
+name: FI Telemt isolated loopback startup smoke
+"on":
+  pull_request:
+    paths: [".github/workflows/fi-telemt-loopback-smoke.yml"]
+  push:
+    branches: [main]
+    paths: [".github/workflows/fi-telemt-loopback-smoke.yml"]
+  workflow_dispatch:
+permissions: {contents: read}
+concurrency:
+  group: mnebyvpn-fleet-fi
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Verify isolated live Bash syntax
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          lines=Path('.github/workflows/fi-telemt-loopback-smoke.yml').read_text().splitlines()
+          i=lines.index('      - name: Verify pinned hosts and test isolated Telemt')
+          i=next(j for j in range(i+1,len(lines)) if lines[j]=='        run: |')+1
+          rows=[]
+          for line in lines[i:]:
+              if line and not line.startswith('          '): break
+              rows.append(line[10:] if line.startswith('          ') else '')
+          text='\n'.join(rows)+'\n'
+          assert 'RuntimeMaxSec=65s' in text and 'StrictHostKeyChecking yes' in text and 'DynamicUser=yes' in text
+          Path('/tmp/fi-live-readiness.sh').write_text(text)
+          PY
+          bash -n /tmp/fi-live-readiness.sh
+  live-readiness:
+    needs: offline
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    environment: node-fi
+    env:
+      RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+      FI_PASSWORD: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_PASSWORD }}
+      FI_USER: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_USER }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Verify pinned hosts and inspect live deployment gates
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          [[ "$FI_USER" == root && -n "$RU_PASSWORD" && -n "$FI_PASSWORD" ]] || exit 2
+          grep -q '^188\.120\.254\.223 ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends sshpass >/dev/null
+          work="$RUNNER_TEMP/fi-telemt-smoke"
+          mkdir -m 0700 "$work"
+          cat > "$work/ru.cfg" <<CFG
+          Host ru-controller
+            HostName 188.120.254.223
+            User root
+            UserKnownHostsFile $GITHUB_WORKSPACE/ops/mnebydns-owner-ssh-known_hosts
+            GlobalKnownHostsFile /dev/null
+            HostKeyAlgorithms ssh-ed25519
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+            PubkeyAuthentication no
+            PreferredAuthentications password
+            ForwardAgent no
+            ClearAllForwardings yes
+            ControlMaster no
+            ConnectTimeout 12
+            LogLevel ERROR
+          CFG
+          SSHPASS="$RU_PASSWORD" sshpass -e ssh -T -F "$work/ru.cfg" ru-controller \
+            'test -f /root/mnebyvpn-controller/fi-known_hosts && test ! -L /root/mnebyvpn-controller/fi-known_hosts && test "$(stat -c "%u:%a" /root/mnebyvpn-controller/fi-known_hosts)" = 0:600 && cat /root/mnebyvpn-controller/fi-known_hosts' > "$work/fi-known"
+          python3 - "$work/fi-known" <<'PY'
+          import base64,pathlib,sys
+          data=pathlib.Path(sys.argv[1]).read_bytes()
+          assert len(data)<512 and data.count(b'\n')==1 and data.endswith(b'\n')
+          name,kind,key=data.decode('ascii').strip().split()
+          assert (name,kind)==('fi.mnebyvpn.site','ssh-ed25519')
+          raw=base64.b64decode(key,validate=True)
+          assert len(raw)==51 and raw.startswith(b'\x00\x00\x00\x0bssh-ed25519\x00\x00\x00\x20')
+          PY
+          cat > "$work/fi.cfg" <<CFG
+          Host fi-node
+            HostName 217.11.167.91
+            User root
+            HostKeyAlias fi.mnebyvpn.site
+            UserKnownHostsFile $work/fi-known
+            GlobalKnownHostsFile /dev/null
+            HostKeyAlgorithms ssh-ed25519
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+            PubkeyAuthentication no
+            PreferredAuthentications password
+            ForwardAgent no
+            ClearAllForwardings yes
+            ControlMaster no
+            ConnectTimeout 12
+            LogLevel ERROR
+          CFG
+          fi_node() { SSHPASS="$FI_PASSWORD" sshpass -e ssh -T -F "$work/fi.cfg" fi-node "$@"; }
+          fi_node 'python3 -' <<'PY'
+          import hashlib,json,pathlib,stat,subprocess,tomllib,tempfile,shutil,time,os
+          folder=pathlib.Path('/var/lib/mnebyvpn-nodekit/fi-test-01/telemt-stage')
+          def protected(path,maximum):
+              s=path.lstat()
+              return stat.S_ISREG(s.st_mode) and s.st_uid==0 and s.st_mode&0o077==0 and 0<s.st_size<=maximum
+          def run(args,timeout=8):
+              return subprocess.run(args,capture_output=True,text=True,timeout=timeout)
+          def listeners():
+              p=run(['ss','-H','-lntp'])
+              if p.returncode: raise RuntimeError('socket inspection failed')
+              return [line for line in p.stdout.splitlines() if len(line.split())>=4]
+          def main():
+              manifest=folder/'manifest.json'
+              assert protected(manifest,16384)
+              m=json.loads(manifest.read_text())
+              assert m['node_id']=='fi-test-01' and m['host']=='fi.mnebyvpn.site' and m['version']=='3.5.17'
+              assert m['state']=='staged' and m['enabled'] is False and m['users_enabled'] is False
+              assert set(m['files'])=={'telemt','config.toml','service.candidate'}
+              data={}
+              for name,digest in m['files'].items():
+                  p=folder/name
+                  assert protected(p,40000000)
+                  data[name]=p.read_bytes()
+                  assert hashlib.sha256(data[name]).hexdigest()==digest
+              cfg=tomllib.loads(data['config.toml'].decode())
+              assert cfg['server']['port']==9447
+              assert cfg['server']['api']['enabled'] is False
+              assert cfg['server']['listeners']==[{'ip':'127.0.0.1'}]
+              assert not cfg['access']['users']
+              assert not any(l.split()[3].endswith((':9447',':9098')) for l in listeners())
+              work=pathlib.Path(tempfile.mkdtemp(prefix='mnebyvpn-fi-telemt-smoke-',dir='/run'))
+              unit=work.name+'.service'
+              attempted=False
+              try:
+                  work.chmod(0o755)
+                  binary=work/'telemt'
+                  config=work/'config.toml'
+                  binary.write_bytes(data['telemt']); binary.chmod(0o555)
+                  config.write_bytes(data['config.toml']); config.chmod(0o444)
+                  attempted=True
+                  p=run(['systemd-run','--quiet','--unit='+unit,'--property=Type=exec',
+                      '--property=DynamicUser=yes','--property=NoNewPrivileges=yes',
+                      '--property=PrivateTmp=yes','--property=ProtectSystem=strict',
+                      '--property=ProtectHome=yes','--property=RuntimeMaxSec=65s',
+                      '--property=TimeoutStopSec=5s','--property=KillMode=control-group',
+                      '--property=MemoryMax=256M','--property=TasksMax=96',
+                      '--property=RuntimeDirectory='+work.name+'-state',
+                      '--property=WorkingDirectory=/run/'+work.name+'-state',
+                      '--property=StandardOutput=null','--property=StandardError=null',
+                      str(binary),str(config)],15)
+                  if p.returncode: raise RuntimeError('transient unit failed')
+                  deadline=time.monotonic()+45
+                  while time.monotonic()<deadline:
+                      status=run(['systemctl','show',unit,'--property=MainPID','--value'])
+                      pid=status.stdout.strip()
+                      rows=listeners()
+                      owned=[l for l in rows if pid.isdigit() and int(pid)>0 and 'pid='+pid+',' in l]
+                      if any(l.split()[3] not in ('127.0.0.1:9447','[::1]:9447') for l in owned):
+                          raise RuntimeError('unexpected listener')
+                      if any(l.split()[3]=='127.0.0.1:9447' for l in owned):
+                          print('FI_TELEMT_LOOPBACK_STARTUP=PASS')
+                          print('FI_TELEMT_CUSTOMER_ACCESS=OFF')
+                          break
+                      time.sleep(1)
+                  else: raise RuntimeError('startup deadline')
+              finally:
+                  if attempted:
+                      run(['systemctl','stop',unit],15)
+                      run(['systemctl','reset-failed',unit])
+                  shutil.rmtree(work)
+                  if any(l.split()[3].endswith((':9447',':9098')) for l in listeners()):
+                      raise RuntimeError('cleanup socket check failed')
+                  print('FI_TELEMT_SMOKE_CLEANUP=PASS')
+          try: main()
+          except Exception as exc:
+              print('FI_TELEMT_LOOPBACK_SMOKE=FAIL:'+type(exc).__name__)
+              raise SystemExit(2)
+          PY
