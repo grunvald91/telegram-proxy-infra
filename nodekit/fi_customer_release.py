@@ -18,6 +18,10 @@ SAFE_RU_OUTPUT = {
 }
 
 
+class RolledBack(e.Blocked):
+    """Remote process explicitly completed rollback; safe to close FI marker."""
+
+
 def promote_ru():
     env = dict(os.environ, SSHPASS=os.environ["RU_PASSWORD"])
     pin = Path("ops/mnebydns-owner-ssh-known_hosts").resolve()
@@ -31,8 +35,10 @@ def promote_ru():
     for line in p.stdout.splitlines():
         if line in SAFE_RU_OUTPUT:
             print(line, flush=True)
+    if p.returncode != 0 and p.returncode != 255 and "FI_RELEASE_RU_ROLLBACK=READY" in lines:
+        raise RolledBack("RU_PROMOTION_ROLLED_BACK_"+str(p.returncode))
     e.require(p.returncode == 0 and "FI_RELEASE_RU=COMMITTED" in lines,
-              "RU_PROMOTION_EXIT_"+str(p.returncode))
+              "RU_PROMOTION_UNCONFIRMED_"+str(p.returncode))
 
 
 def gate_closed():
@@ -51,23 +57,31 @@ def activate():
     unknown = secrets.token_hex(6)+".fi.mnebyvpn.site"
     e.require(e.denied(unknown, "example.com"), "UNKNOWN_PRE_RELEASE")
     created = False
+    promotion_started = False
     try:
         e.ssh(e.FI, "umask 077; set -eu; test ! -e "+e.MARKER+
               "; test ! -L "+e.MARKER+
               "; (set -C; printf 'fi-dns-customer-v1\\n' > "+e.MARKER+")")
         created = True
         print("FI_RELEASE_MARKER=ENABLED", flush=True)
+        e.require(e.denied(unknown, "example.com"), "UNKNOWN_MARKER_OPEN")
+        promotion_started = True
         promote_ru()
         e.require(e.sql("SELECT enabled::text FROM public.fi_dns_meter_gate WHERE singleton;") == "true",
                   "GATE_COMMIT_NOT_CONFIRMED")
         e.ssh(e.FI, "test -f "+e.MARKER+" && test ! -L "+e.MARKER+
               " && test \"$(cat "+e.MARKER+")\" = fi-dns-customer-v1")
-        e.require(e.denied(unknown, "example.com"), "UNKNOWN_POST_RELEASE")
+        if not e.denied(unknown, "example.com"):
+            # An explicit unauthorized response is a fail-closed condition.
+            # Suspend only FI; do not revoke/delete any issued credential.
+            e.require(e.sql("UPDATE public.fi_dns_meter_gate SET enabled=false WHERE singleton RETURNING (NOT enabled)::text;") == "true", "FI_EMERGENCY_GATE_CLOSE_UNCONFIRMED")
+            raise RolledBack("UNKNOWN_POST_RELEASE_GATE_CLOSED")
         print("FI_CUSTOMER_RELEASE=PASS;PUBLIC_ISSUANCE=true", flush=True)
-    except Exception:
+    except Exception as exc:
+        # Do not race a remote shell that may still commit after SSH loss.
         # Never remove the marker for an open or unknown production gate.
         # After activation actual clients may have requested credentials.
-        if created:
+        if created and (not promotion_started or isinstance(exc, RolledBack)):
             try:
                 if gate_closed():
                     e.ssh(e.FI, "test ! -L "+e.MARKER+
@@ -77,6 +91,8 @@ def activate():
                     print("FI_RELEASE_MARKER=RETAINED_GATE_NOT_CLOSED", flush=True)
             except Exception:
                 print("FI_RELEASE_MARKER=STATE_UNCONFIRMED", flush=True)
+        elif created:
+            print("FI_RELEASE_MARKER=RETAINED_REMOTE_OUTCOME_UNCONFIRMED", flush=True)
         raise
 
 
