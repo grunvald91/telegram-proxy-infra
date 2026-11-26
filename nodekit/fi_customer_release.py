@@ -3,6 +3,7 @@
 import os
 from pathlib import Path
 import secrets
+import shlex
 import subprocess
 import sys
 
@@ -27,13 +28,16 @@ def promote_ru():
     pin = Path("ops/mnebydns-owner-ssh-known_hosts").resolve()
     p = subprocess.run(
         ["sshpass", "-e", "ssh", "-T", *e.COMMON,
-         "-o", "UserKnownHostsFile="+str(pin), "root@"+e.RU, "bash -s"],
-        input=RELEASE.read_text(), text=True, capture_output=True,
+         "-o", "UserKnownHostsFile="+str(pin), "root@"+e.RU, "bash -c "+shlex.quote(RELEASE.read_text())],
+        stdin=subprocess.DEVNULL, text=True, capture_output=True,
         env=env, timeout=240,
     )
     lines = set(p.stdout.splitlines())
     for line in p.stdout.splitlines():
         if line in SAFE_RU_OUTPUT:
+            print(line, flush=True)
+    for line in p.stderr.splitlines():
+        if __import__("re").fullmatch(r"FI_RELEASE_RU_ERROR=(preflight|prepare|canary|live_bot|commit_gate):[0-9]{1,3}", line):
             print(line, flush=True)
     if p.returncode != 0 and p.returncode != 255 and "FI_RELEASE_RU_ROLLBACK=READY" in lines:
         raise RolledBack("RU_PROMOTION_ROLLED_BACK_"+str(p.returncode))
@@ -46,6 +50,8 @@ def gate_closed():
 
 
 def activate():
+    # Recover only the known, previously retained marker, and only with a
+    # closed gate and no live FI credentials (verified by verify_ru_database).
     e.verify_ru_database()
     e.ssh(e.RU, "systemctl is-active --quiet mnebyvpn-fi-dns-meter.service && "
           "systemctl is-active --quiet mnebyvpn-fi-dns-publisher.service")
@@ -53,15 +59,19 @@ def activate():
           "systemctl is-active --quiet mnebyvpn-fi-public-dot.socket && "
           "systemctl is-active --quiet mnebyvpn-fi-public-https.socket && "
           "systemctl show -p ExecStart --value mnebyvpn-fi-dns-country.service | grep -q /opt/mnebyvpn-fi-dns-customers-v1/ && "
-          "test ! -e "+e.MARKER+" && test ! -L "+e.MARKER)
+          "test ! -L "+e.MARKER+" && { test ! -e "+e.MARKER+" || { test -f "+e.MARKER+" && test \"$(cat "+e.MARKER+")\" = fi-dns-customer-v1 && test \"$(stat -c %u:%a "+e.MARKER+")\" = 0:600; }; }")
     unknown = secrets.token_hex(6)+".fi.mnebyvpn.site"
     e.require(e.denied(unknown, "example.com"), "UNKNOWN_PRE_RELEASE")
     created = False
     promotion_started = False
     try:
-        e.ssh(e.FI, "umask 077; set -eu; test ! -e "+e.MARKER+
-              "; test ! -L "+e.MARKER+
-              "; (set -C; printf 'fi-dns-customer-v1\\n' > "+e.MARKER+")")
+        marker_state = e.ssh(e.FI, "umask 077; set -eu; test ! -L "+e.MARKER+
+              "; if test -e "+e.MARKER+"; then test -f "+e.MARKER+
+              " && test \"$(cat "+e.MARKER+")\" = fi-dns-customer-v1"+
+              " && test \"$(stat -c %u:%a "+e.MARKER+")\" = 0:600 && echo retained;"+
+              " else (set -C; printf 'fi-dns-customer-v1\\n' > "+e.MARKER+"); echo created; fi")
+        e.require(marker_state in ("retained", "created"), "FI_MARKER_STATE_UNKNOWN")
+        print("FI_RELEASE_MARKER_STATE="+marker_state, flush=True)
         created = True
         print("FI_RELEASE_MARKER=ENABLED", flush=True)
         e.require(e.denied(unknown, "example.com"), "UNKNOWN_MARKER_OPEN")
