@@ -53,6 +53,41 @@ def ssh(node, command, data=None, *, phase="command"):
     return p.stdout.strip()
 def sql(statement):
     return ssh(RU, DB, "SET statement_timeout='8s'; SET lock_timeout='4s';\n"+statement,phase="SQL")
+def verify_ru_database():
+    # The legacy bot deployment copies DATABASE_URL from staging, not
+    # necessarily from the optional mnebyvpn_bot role. Check the actual
+    # authenticated login from inside the existing running bot container.
+    probe = """const {Client}=require('pg');
+const db=new Client({connectionString:process.env.DATABASE_URL,connectionTimeoutMillis:4000,statement_timeout:4000});
+(async()=>{try{await db.connect();
+const {rows}=await db.query('SELECT current_user AS role,current_database() AS db');
+const r=rows[0];
+if(r.db!=='mnebyvpn_stage'||!['mnebyvpn_stage','mnebyvpn_bot'].includes(r.role))process.exitCode=2;
+else console.log(r.role);
+}finally{await db.end();}})().catch(()=>{process.exitCode=2;});"""
+    import shlex
+    role=ssh(RU,"docker exec mnebyvpn-bot-info node -e "+shlex.quote(probe),phase="BOT_DB_IDENTITY")
+    require(role in ("mnebyvpn_stage","mnebyvpn_bot"),"RU_UNKNOWN_BOT_DB_ROLE")
+    print("FI_CANARY_RU_BOT_DB_ROLE="+role,flush=True)
+    checks={
+        "GATE_CLOSED": "COALESCE((SELECT NOT enabled FROM public.fi_dns_meter_gate WHERE singleton),false)",
+        "NO_ACTIVE_FI_GRANTS": "NOT EXISTS(SELECT 1 FROM public.fi_dns_regional_credentials WHERE revoked_at IS NULL)",
+        "REVISION_FUNCTION": "to_regprocedure('public.telegram_regional_dns_revision(bigint,text)') IS NOT NULL",
+        "ISSUE_FUNCTION": "to_regprocedure('public.telegram_issue_regional_dns_credential(bigint,text,text,bigint)') IS NOT NULL",
+        "CORE_ISSUER": "to_regprocedure('public.issue_regional_dns_credential(uuid,uuid,text,text,bigint)') IS NOT NULL",
+        "REVISION_EXECUTE": f"COALESCE(has_function_privilege(to_regrole('{role}'),to_regprocedure('public.telegram_regional_dns_revision(bigint,text)'),'EXECUTE'),false)",
+        "ISSUE_EXECUTE": f"COALESCE(has_function_privilege(to_regrole('{role}'),to_regprocedure('public.telegram_issue_regional_dns_credential(bigint,text,text,bigint)'),'EXECUTE'),false)",
+    }
+    # All booleans in a single read-only statement; no grants or writes.
+    fields=", ".join("("+v+")::text" for v in checks.values())
+    results=sql("SELECT "+fields+";").split("|")
+    require(len(results)==len(checks) and all(v in ("true","false") for v in results),"RU_DB_PREFLIGHT_FORMAT")
+    failed=[]
+    for name,value in zip(checks,results):
+        print("FI_CANARY_RU_"+name+"="+value,flush=True)
+        if value!="true": failed.append(name)
+    require(not failed,"RU_DB_CHECK_FAILED_"+",".join(failed))
+
 def exactly(stream,n):
     result=b""
     while len(result)<n:
@@ -137,10 +172,7 @@ def main():
     statuses=set(ru_status.splitlines())
     for item in sorted(statuses&safe):print("FI_CANARY_RU_"+item,flush=True)
     require(statuses==expected,"RU_SERVICES_OR_ISSUANCE_NOT_READY")
-    require(sql("""SELECT (NOT (SELECT enabled FROM fi_dns_meter_gate WHERE singleton)
-      AND NOT EXISTS(SELECT 1 FROM fi_dns_regional_credentials WHERE revoked_at IS NULL)
-      AND COALESCE(has_function_privilege(to_regrole('mnebyvpn_bot'),to_regprocedure('public.telegram_regional_dns_revision(bigint,text)'),'EXECUTE'),false)
-      AND COALESCE(has_function_privilege(to_regrole('mnebyvpn_bot'),to_regprocedure('public.telegram_issue_regional_dns_credential(bigint,text,text,bigint)'),'EXECUTE'),false))::text;""")=="true","RU_GATES_NOT_CLOSED_OR_ISSUER_UNREADY")
+    verify_ru_database()
     print("FI_CANARY_RU_SCHEMA=PASS",flush=True)
     ssh(FI,"systemctl is-active --quiet mnebyvpn-fi-dns-country.service && systemctl is-active --quiet mnebyvpn-fi-public-dot.socket && systemctl is-active --quiet mnebyvpn-fi-public-https.socket && "
         "systemctl show -p ExecStart --value mnebyvpn-fi-dns-country.service | grep -q /opt/mnebyvpn-fi-dns-customers-v1/ && "
