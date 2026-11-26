@@ -1,10 +1,10 @@
 name: FI public personal DoT listener (no grants)
 "on":
   pull_request:
-    paths: ["nodekit/fi_public_dot*.py","nodekit/systemd/fi-public-dot/*",".github/workflows/fi-public-dot-listener.yml"]
+    paths: ["nodekit/fi_public_dot*.py","nodekit/fi_public_dot_dns.sh","nodekit/systemd/fi-public-dot/*",".github/workflows/fi-public-dot-listener.yml"]
   push:
     branches: [main]
-    paths: ["nodekit/fi_public_dot*.py","nodekit/systemd/fi-public-dot/*",".github/workflows/fi-public-dot-listener.yml"]
+    paths: ["nodekit/fi_public_dot*.py","nodekit/fi_public_dot_dns.sh","nodekit/systemd/fi-public-dot/*",".github/workflows/fi-public-dot-listener.yml"]
   workflow_dispatch:
 permissions: {contents: read}
 concurrency:
@@ -43,6 +43,7 @@ jobs:
           Path('/tmp/fi-public-dot.sh').write_text('\n'.join(line[10:] for line in lines[i:])+'\n')
           PY
           bash -n /tmp/fi-public-dot.sh
+          bash -n nodekit/fi_public_dot_dns.sh
   stage:
     needs: offline
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
@@ -61,24 +62,13 @@ jobs:
         run: |
           set -Eeuo pipefail
           umask 077
-          hosts=(aaaaaaaaaaaa.fi.mnebyvpn.site bbbbbbbbbbbb.fi.mnebyvpn.site)
-          for ns in ns1.jino.ru ns2.jino.ru ns3.jino.ru ns4.jino.ru; do
-            for name in '*.fi.mnebyvpn.site' "${hosts[@]}"; do
-              for type in A AAAA; do
-                result=$(dig "@$ns" "$name" "$type" +norecurse +noall +comments +answer +time=4 +tries=1)
-                if ! grep -q 'status: NOERROR,' <<< "$result" || ! grep -qE '^;; flags: .*\baa\b' <<< "$result"; then
-                  echo "FI_PUBLIC_DOT_DNS_NOT_AUTHORITATIVE=$ns:$name:$type"
-                  exit 2
-                fi
-                answers=$(awk '/^[^;]/ && NF {print $4, $5}' <<< "$result")
-                if [[ "$type" == A && "$answers" != 'A 217.11.167.91' ]] || [[ "$type" == AAAA && -n "$answers" ]]; then
-                  echo "FI_PUBLIC_DOT_DNS_UNEXPECTED_ANSWER=$ns:$name:$type"
-                  exit 2
-                fi
-              done
-            done
-          done
-          echo 'FI_PUBLIC_DOT_AUTHORITATIVE_WILDCARD_VERIFIED=true'
+          dns_check=nodekit/fi_public_dot_dns.sh
+          dns_status=0
+          bash "$dns_check" || dns_status=$?
+          [[ "$dns_status" == 0 || "$dns_status" == 9 ]] || exit "$dns_status"
+          # Probe fresh names to avoid pre-publication NXDOMAIN cache entries.
+          FI_PUBLIC_DOT_PROBES=$(python3 -c 'import secrets; print(*(secrets.token_hex(6) + ".fi.mnebyvpn.site" for _ in range(2)))')
+          export FI_PUBLIC_DOT_PROBES
           [[ "$FI_USER" == root && -n "$RU_PASSWORD" && -n "$FI_PASSWORD" ]] || exit 2
           grep -q '^188\.120\.254\.223 ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts
           sudo apt-get update -qq
@@ -102,6 +92,10 @@ jobs:
             ConnectTimeout 12
             LogLevel ERROR
           CFG
+          if [[ "$dns_status" == 9 ]]; then
+            echo 'FI_PUBLIC_DOT_DNS_RETRY_FROM_CONTROLLER=true'
+            SSHPASS="$RU_PASSWORD" sshpass -e ssh -T -F "$work/ru.cfg" ru-controller 'bash -s' < "$dns_check"
+          fi
           SSHPASS="$RU_PASSWORD" sshpass -e ssh -T -F "$work/ru.cfg" ru-controller \
             'test -f /root/mnebyvpn-controller/fi-known_hosts && test ! -L /root/mnebyvpn-controller/fi-known_hosts && test "$(stat -c "%u:%a" /root/mnebyvpn-controller/fi-known_hosts)" = 0:600 && cat /root/mnebyvpn-controller/fi-known_hosts' > "$work/fi-known"
           python3 - "$work/fi-known" <<'PY'
@@ -152,8 +146,8 @@ jobs:
           }
           trap cleanup EXIT
           python3 - <<'PY'
-          import socket
-          for host in ("aaaaaaaaaaaa.fi.mnebyvpn.site","bbbbbbbbbbbb.fi.mnebyvpn.site"):
+          import os,socket
+          for host in os.environ["FI_PUBLIC_DOT_PROBES"].split():
               try:ips={row[4][0] for row in socket.getaddrinfo(host,853,type=socket.SOCK_STREAM)}
               except OSError:raise SystemExit("FI_PUBLIC_DOT_DNS_WILDCARD_UNRESOLVED") from None
               if ips!={"217.11.167.91"}:raise SystemExit("FI_PUBLIC_DOT_DNS_WILDCARD_WRONG_ADDRESS")
@@ -167,9 +161,9 @@ jobs:
             nodekit/systemd/fi-public-dot/* "fi-node:$stage/"
           fi_node "chmod 600 '$stage'/*; PYTHONPATH='$runtime' timeout --signal=TERM --kill-after=60s 180s python3 -B '$stage/fi_public_dot_stage.py' stage '$stage'"
           python3 - <<'PY'
-          import socket,ssl,struct
+          import os,socket,ssl,struct
           q=struct.pack("!HHHHHH",0x4a71,256,1,0,0,0)+b"\x07example\x03com\0\0\1\0\1"
-          for name in ("aaaaaaaaaaaa.fi.mnebyvpn.site","bbbbbbbbbbbb.fi.mnebyvpn.site"):
+          for name in os.environ["FI_PUBLIC_DOT_PROBES"].split():
               try:
                   with socket.create_connection((name,853),timeout=8) as raw:
                       with ssl.create_default_context().wrap_socket(raw,server_hostname=name) as tls:
