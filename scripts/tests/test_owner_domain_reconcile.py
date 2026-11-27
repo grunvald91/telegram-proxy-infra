@@ -22,26 +22,38 @@ def confirm_row(status="CONFIRMING"):
     }
 
 
-class OwnerCurrentDeIngressDoTContracts(TestCase):
-    def test_exact_host_and_stable_hosts_expect_de89_dns_ingress(self):
+class OwnerCurrentRuIngressDoTContracts(TestCase):
+    def test_exact_host_and_stable_hosts_expect_ru188_dns_ingress(self):
         stable = {"gemini.google.com","claude.ai","grok.com","x.com","www.tiktok.com"}
         def dns(host, kind=1):
             if kind != 1:
                 return 0, []
             if host in stable or host == "new.example.com":
-                return 0, [owner.EDGE]
+                return 0, [owner.RU]
             return 0, ["1.1.1.1"]
         with patch.object(owner, "dns_q", side_effect=dns):
             owner.oracle_canary_check("new.example.com", True)
 
-    def test_old_russian_ingress_reply_fails_closed(self):
+    def test_old_de89_ingress_reply_fails_closed(self):
         def dns(host, kind=1):
             if kind != 1:
                 return 0, []
-            return 0, [owner.RU]
+            return 0, [owner.EDGE]
         with patch.object(owner, "dns_q", side_effect=dns):
             with self.assertRaisesRegex(RuntimeError, "DOMAIN_DOT_REWRITE_NOT_EFFECTIVE"):
                 owner.oracle_canary_check("new.example.com", True)
+
+    def test_connect_dot_uses_ru188_public_ingress(self):
+        with patch.object(owner.socket, "create_connection", return_value="sock") as dial:
+            self.assertEqual(owner.connect_dot(), "sock")
+        dial.assert_called_once_with((owner.RU, 853), timeout=9)
+
+    def test_tls_public_route_uses_ru188_public_ingress(self):
+        with patch.object(owner, "ssh", return_value="owner_domain_ru_public_TLS_verified=true") as remote:
+            owner.tls_public_route("oracle.com")
+        self.assertEqual(remote.call_args.args[0], "ru")
+        self.assertIn("188.120.254.223", remote.call_args.args[1])
+        self.assertNotIn("89.125.90.101", remote.call_args.args[1])
 
 
 class OwnerDomainConfirmContracts(TestCase):
@@ -69,7 +81,8 @@ class OwnerDomainConfirmContracts(TestCase):
     def test_interrupted_removal_that_committed_does_not_rollback(self):
         statements = []
         row = confirm_row("REMOVING")
-        with patch.object(owner, "is_confirmed", return_value=True), \
+        with patch.object(owner, "RUNID", "428400112231"), \
+             patch.object(owner, "is_confirmed", return_value=True), \
              patch.object(owner, "rollback", side_effect=AssertionError("must not rollback")), \
              patch.object(owner, "verified_live_confirmed"), \
              patch.object(owner, "oracle_canary_check"), \
@@ -79,7 +92,8 @@ class OwnerDomainConfirmContracts(TestCase):
 
     def test_recovered_removal_fails_closed_on_unverified_live_state(self):
         statements = []
-        with patch.object(owner, "is_confirmed", return_value=True), \
+        with patch.object(owner, "RUNID", "428400112231"), \
+             patch.object(owner, "is_confirmed", return_value=True), \
              patch.object(owner, "verified_live_confirmed", side_effect=RuntimeError("drift")), \
              patch.object(owner, "sql", side_effect=lambda q: statements.append(q) or "101"):
             with self.assertRaisesRegex(RuntimeError, "drift"):
@@ -88,7 +102,8 @@ class OwnerDomainConfirmContracts(TestCase):
 
     def test_uncommitted_removal_rolls_back_before_cancelling(self):
         statements = []
-        with patch.object(owner, "is_confirmed", return_value=False), \
+        with patch.object(owner, "RUNID", "428400112231"), \
+             patch.object(owner, "is_confirmed", return_value=False), \
              patch.object(owner, "rollback") as rollback, \
              patch.object(owner, "sql", side_effect=lambda q: statements.append(q) or "101"):
             owner.remove(confirm_row("REMOVING"))

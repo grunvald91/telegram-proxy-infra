@@ -34,7 +34,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
-      INGRESS_IP: '89.125.90.101'
+      INGRESS_IP: '188.120.254.223'
+      FOREIGN_EXIT_IP: '89.125.90.101'
       RESOLVER_SNI: 'dns.mnebyvpn.site'
     steps:
       - uses: actions/checkout@v4
@@ -67,10 +68,10 @@ jobs:
               -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 \
               -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" \
               -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR \
-              "root@$INGRESS_IP" \
+              "root@$FOREIGN_EXIT_IP" \
               "curl --noproxy '*' --proto '=https' --tlsv1.2 --fail --silent --show-error --connect-timeout 4 --max-time 9 https://api.ipify.org" \
               2>/dev/null)"; then
-              if [[ "$observed" == "$INGRESS_IP" ]]; then
+              if [[ "$observed" == "$FOREIGN_EXIT_IP" ]]; then
                 state=match
               else
                 state=mismatch
@@ -96,7 +97,7 @@ jobs:
               -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 \
               -o "UserKnownHostsFile=$PWD/ops/mnebydns-owner-ssh-known_hosts" \
               -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR \
-              "root@$INGRESS_IP" "python3 -" \
+              "root@$FOREIGN_EXIT_IP" "python3 -" \
               < scripts/mnebydns_onnode_service_probe.py > onnode-health.json 2>/dev/null; then
               state=attempted
             fi

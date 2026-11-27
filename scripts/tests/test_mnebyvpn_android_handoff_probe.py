@@ -86,6 +86,40 @@ class AndroidHandoffTests(unittest.TestCase):
         self.assertIn("vpn_enabled_verified", source)
         self.assertNotIn("systemctl restart", source)
 
+    def test_personal_dot_ingress_targets_ru188(self):
+        self.assertEqual(m.IP, "188.120.254.223")
+        seen = []
+        class FakeTls:
+            def __init__(self): self._buf = b""
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+            def settimeout(self, _): pass
+            def sendall(self, data):
+                txid = int.from_bytes(data[2:4], "big")
+                q = data[14:]
+                pkt = (int.to_bytes(txid, 2, "big") + b"\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00" +
+                       q + b"\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x3c\x00\x04\x5d\xb8\xd7\x0e")
+                self._buf = len(pkt).to_bytes(2, "big") + pkt
+            def recv(self, n):
+                out, self._buf = self._buf[:n], self._buf[n:]
+                return out
+        class FakeSock:
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+            def settimeout(self, _): pass
+        class FakeCtx:
+            def wrap_socket(self, _sock, server_hostname):
+                seen.append(("sni", server_hostname))
+                return FakeTls()
+        def connect(ep, timeout=3.5):
+            seen.append(("connect", ep))
+            return FakeSock()
+        with patch.object(m.socket, "create_connection", side_effect=connect), \
+             patch.object(m.ssl, "create_default_context", return_value=FakeCtx()):
+            res = m.actual_personal_dot("abc123def456.dns.mnebyvpn.site")
+        self.assertTrue(res["ok"])
+        self.assertEqual(seen, [("connect", ("188.120.254.223", 853)), ("sni", "abc123def456.dns.mnebyvpn.site")])
+
 
 if __name__ == "__main__":
     unittest.main()

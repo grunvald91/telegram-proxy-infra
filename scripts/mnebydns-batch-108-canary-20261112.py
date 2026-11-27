@@ -202,9 +202,9 @@ def http_probe(role, host, ip):
     # Original hostname and origin IP from protected source; no uncontrolled
     # shell data. The script checks TLS certificate against the original SNI.
     owner._render.validate_domain(host)
-    if ip==owner.EDGE:
+    if ip==owner.RU:
         if role!="ru":
-            raise ValueError("Only RU-to-public-DE-edge test may use edge IP")
+            raise ValueError("Only RU-to-public-RU-ingress test may use RU ingress IP")
     else:
         owner._render.validated_public_ip(ip)
     script="python3 -c "+shlex.quote(HTTP_CODE)+" "+shlex.quote(host)+" "+shlex.quote(ip)
@@ -330,9 +330,9 @@ def run_one(host, index):
             report("CDN_ORIGIN_ROTATED_REVALIDATED",domain=host,
                    initially_checked=origin,actually_pinned=pinned,
                    foreign_http=pinned_de,russian_http=pinned_ru)
-        # Real public RU->DE SNI route, not foreign localhost; strict TLS CA.
+        # Real public RU->WG->DE SNI route, not foreign localhost; strict TLS CA.
         try:
-            through_edge=http_probe("ru",host,owner.EDGE)
+            through_edge=http_probe("ru",host,owner.RU)
         except RuntimeError as exc:
             raise CandidateRouteRejected("PUBLIC_EDGE_HTTPS_TLS_OR_TCP_REJECTED") from exc
         if not 200<=through_edge<400:

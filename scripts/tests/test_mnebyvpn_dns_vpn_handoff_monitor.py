@@ -5,6 +5,7 @@ import socket
 import ssl
 import struct
 import unittest
+from unittest.mock import patch
 
 SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "mnebyvpn_dns_vpn_handoff_monitor.py"
 spec = importlib.util.spec_from_file_location("handoff_probe", SCRIPT)
@@ -103,6 +104,30 @@ class TestReadOnlyDoT(unittest.TestCase):
         self.assertIn("client_wifi_transition_verified", SCRIPT.read_text(encoding="utf8"))
         self.assertIn("authenticated_personal_dns_verified", SCRIPT.read_text(encoding="utf8"))
         self.assertNotIn("systemctl restart", SCRIPT.read_text(encoding="utf8"))
+
+    def test_public_dot_ingress_targets_ru188(self):
+        self.assertEqual(probe.IP, "188.120.254.223")
+        seen = []
+        class FakeTls:
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+            def settimeout(self, _): pass
+        class FakeSock:
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+            def settimeout(self, _): pass
+        class FakeCtx:
+            def wrap_socket(self, _sock, server_hostname):
+                seen.append(("sni", server_hostname))
+                return FakeTls()
+        def connect(ep, timeout=4.0):
+            seen.append(("connect", ep))
+            return FakeSock()
+        with patch.object(probe.socket, "create_connection", side_effect=connect), \
+             patch.object(probe.ssl, "create_default_context", return_value=FakeCtx()):
+            res = probe.single(probe.LEGACY, False)
+        self.assertTrue(res["ok"])
+        self.assertEqual(seen, [("connect", ("188.120.254.223", 853)), ("sni", "dns.mnebyvpn.site")])
 
 
 if __name__ == "__main__":

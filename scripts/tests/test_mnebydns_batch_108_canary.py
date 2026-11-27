@@ -48,7 +48,7 @@ class Batch108Inventory(TestCase):
         self.assertEqual(batch.owner.pg_inet_host("13.227.192.109"),
                          "13.227.192.109")
         for bad in ("13.227.192.109/24","10.0.0.1/32","::1/128",
-                    "13.227.192.109/abc","89.125.90.101/32",""):
+                    "13.227.192.109/abc","89.125.90.101/32","188.120.254.223/32",""):
             with self.assertRaises(ValueError,msg=bad):
                 batch.owner.pg_inet_host(bad)
 
@@ -148,8 +148,20 @@ class Batch108Transactions(TestCase):
         self.assertEqual(http.call_args_list,[
             call("de",domain,"93.184.215.14"),
             call("ru",domain,"93.184.215.14"),
-            call("ru",domain,batch.owner.EDGE)])
+            call("ru",domain,batch.owner.RU)])
         oracle.assert_called_once_with(domain,True)
+
+    def test_http_probe_allows_ru_ingress_only_from_ru_and_rejects_de89_edge(self):
+        with self.assertRaises(ValueError):
+            batch.http_probe("de","a.example.com",batch.owner.RU)
+        with self.assertRaises(ValueError):
+            batch.http_probe("de","a.example.com",batch.owner.EDGE)
+        with self.assertRaises(ValueError):
+            batch.http_probe("ru","a.example.com",batch.owner.EDGE)
+        with patch.object(batch.owner,"ssh",return_value="HTTP_STATUS=200") as remote:
+            self.assertEqual(batch.http_probe("ru","a.example.com",batch.owner.RU),200)
+        self.assertEqual(remote.call_args.args[0],"ru")
+        self.assertIn("188.120.254.223",remote.call_args.args[1])
 
     def test_rotating_cdn_ip_is_not_rejected_when_actual_pin_revalidates(self):
         domain="a.example.com"
@@ -173,7 +185,7 @@ class Batch108Transactions(TestCase):
             self.assertTrue(batch.run_one(domain,1))
         self.assertEqual(http.call_args_list,[
             call("de",domain,rotated),call("ru",domain,rotated),
-            call("ru",domain,batch.owner.EDGE)])
+            call("ru",domain,batch.owner.RU)])
         self.assertTrue(any(x.args[0]=="CDN_ORIGIN_ROTATED_REVALIDATED"
                             for x in report.call_args_list))
         confirmed.assert_called_once()

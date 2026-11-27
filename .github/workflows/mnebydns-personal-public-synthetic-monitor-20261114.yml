@@ -24,28 +24,53 @@ jobs:
         run: |
           set -Eeuo pipefail
           python3 - <<'PY'
-          import socket,ssl,struct,secrets,time,datetime
-          addr=('89.125.90.101',853)
+          import ipaddress,socket,ssl,struct,secrets,time,datetime
+          addr=('188.120.254.223',853)
           ctx=ssl.create_default_context()
+          def dot_query(host):
+              labels=host.split('.')
+              qname=b''.join(bytes([len(s)])+s.encode('ascii') for s in labels)+b'\0'
+              q=struct.pack('!HHHHHH',secrets.randbelow(65534)+1,256,1,0,0,0)+qname+struct.pack('!HH',1,1)
+              wire=struct.pack('!H',len(q))+q
+              with socket.create_connection(addr,timeout=7) as raw:
+                  raw.settimeout(7)
+                  with ctx.wrap_socket(raw,server_hostname='dns.mnebyvpn.site') as tls:
+                      tls.sendall(wire)
+                      size=tls.recv(2)
+                      assert len(size)==2
+                      n=struct.unpack('!H',size)[0]
+                      assert 12<=n<=65535
+                      answer=b''
+                      while len(answer)<n:
+                          part=tls.recv(n-len(answer))
+                          assert part
+                          answer+=part
+                      assert answer[:2]==q[:2] and answer[2]&128 and (answer[3]&15)==0
+                      return answer,len(qname)+4
           question=struct.pack('!HHHHHH',secrets.randbelow(65534)+1,256,1,0,0,0)
           question+=b'\x07example\x03com\x00'+struct.pack('!HH',1,1)
           frame=struct.pack('!H',len(question))+question
           start=time.monotonic()
-          with socket.create_connection(addr,timeout=7) as raw:
-              raw.settimeout(7)
-              with ctx.wrap_socket(raw,server_hostname='dns.mnebyvpn.site') as tls:
-                  tls.sendall(frame)
-                  size=tls.recv(2)
-                  assert len(size)==2
-                  n=struct.unpack('!H',size)[0]
-                  assert 12<=n<=65535
-                  answer=b''
-                  while len(answer)<n:
-                      part=tls.recv(n-len(answer))
-                      assert part
-                      answer+=part
-                  assert answer[:2]==question[:2] and answer[2]&128
+          dot_query('example.com')
+          ans,qlen=dot_query('www.youtube.com')
+          an=struct.unpack_from('!H',ans,6)[0]
+          assert an>=1, 'Smart DNS answer missing'
+          off=12+qlen
+          ips=[]
+          for _ in range(an):
+              while off<len(ans):
+                  l=ans[off]
+                  if l&0xC0==0xC0: off+=2; break
+                  if l==0: off+=1; break
+                  off+=1+l
+              typ,cls,_,rdlen=struct.unpack_from('!HHIH',ans,off)
+              off+=10
+              if typ==1 and cls==1 and rdlen==4:
+                  ips.append(str(ipaddress.IPv4Address(ans[off:off+4])))
+              off+=rdlen
+          assert ips==['188.120.254.223'], f'Unexpected Smart DNS A answer: {ips}'
           print('LEGACY_DOT_DNS_QUERY=PASS')
+          print('SMARTDNS_A_RU188=PASS')
           print('LEGACY_DOT_MILLISECONDS='+str(round((time.monotonic()-start)*1000)))
           start=time.monotonic()
           with socket.create_connection(addr,timeout=7) as raw:

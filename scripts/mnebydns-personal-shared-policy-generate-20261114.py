@@ -53,8 +53,8 @@ def parse(core: str) -> tuple[set[str], set[str]]:
         answer = ANSWER.findall(block)
         if len(match) != 1 or len(answer) != 1:
             raise ValueError("Unreviewed CoreDNS template structure " + header)
-        if answer[0] != "89.125.90.101":
-            raise ValueError("CoreDNS is not fully routed through DE89")
+        if answer[0] != "188.120.254.223":
+            raise ValueError("CoreDNS is not fully routed through RU188")
         expression = match[0]
         compiled = re.compile(expression)
         if header != ".":

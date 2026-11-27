@@ -14,7 +14,8 @@ import struct
 import sys
 import time
 
-EDGE = "89.125.90.101"
+INGRESS = "188.120.254.223"
+DE89_EDGE = "89.125.90.101"
 TLS_NAME = "dns.mnebyvpn.site"
 HOSTS = ("example.org", "www.youtube.com")
 MAX_FRAME = 16384
@@ -40,25 +41,59 @@ def recv_exact(sock, length):
     return bytes(data)
 
 
-def read_answer(sock, txid, question):
+def _skip_name(wire, offset):
+    for _ in range(128):
+        if offset >= len(wire):
+            raise ValueError("dns_invalid_header")
+        n = wire[offset]
+        if n & 0xC0 == 0xC0:
+            if offset + 1 >= len(wire):
+                raise ValueError("dns_invalid_header")
+            return offset + 2
+        if n & 0xC0:
+            raise ValueError("dns_invalid_header")
+        if n == 0:
+            return offset + 1
+        offset += 1 + n
+    raise ValueError("dns_invalid_header")
+
+
+def read_reply(sock, txid, question):
     length = struct.unpack("!H", recv_exact(sock, 2))[0]
     if length < 12 + len(question) or length > MAX_FRAME:
         raise ValueError("dns_frame_length")
     wire = recv_exact(sock, length)
-    answer_id, flags, qd, _, _, _ = struct.unpack_from("!HHHHHH", wire)
+    answer_id, flags, qd, an, _, _ = struct.unpack_from("!HHHHHH", wire)
     if answer_id != txid or flags & 0x8000 == 0 or flags & 0x7800 or qd != 1:
         raise ValueError("dns_invalid_header")
     if wire[12:12 + len(question)] != question:
         raise ValueError("dns_question_mismatch")
-    return flags & 0x0F
+    offset = 12 + len(question)
+    ips = []
+    for _ in range(an):
+        offset = _skip_name(wire, offset)
+        if offset + 10 > len(wire):
+            raise ValueError("dns_invalid_header")
+        rrtype, rrclass, _, rdlen = struct.unpack_from("!HHIH", wire, offset)
+        offset += 10
+        if offset + rdlen > len(wire):
+            raise ValueError("dns_invalid_header")
+        if rrtype == 1 and rrclass == 1 and rdlen == 4:
+            ips.append(socket.inet_ntoa(wire[offset:offset + 4]))
+        offset += rdlen
+    return flags & 0x0F, ips
 
 
-def probe():
+def read_answer(sock, txid, question):
+    return read_reply(sock, txid, question)[0]
+
+
+def probe(target=INGRESS):
     start = time.monotonic()
     phase = "tcp"
     synthetic_host = None
     try:
-        with socket.create_connection((EDGE, 853), timeout=3.5) as plain:
+        with socket.create_connection((target, 853), timeout=3.5) as plain:
             plain.settimeout(3.5)
             phase = "tls"
             with ssl.create_default_context().wrap_socket(plain, server_hostname=TLS_NAME) as tls:
@@ -70,9 +105,13 @@ def probe():
                     txid = int.from_bytes(os.urandom(2), "big")
                     query, question = request_for(host, txid)
                     tls.sendall(struct.pack("!H", len(query)) + query)
-                    rcode = read_answer(tls, txid, question)
+                    rcode, ips = read_reply(tls, txid, question)
                     if rcode != 0:
                         raise ValueError("dns_rcode_" + str(rcode))
+                    if host == "www.youtube.com" and ips != [INGRESS]:
+                        raise ValueError("dns_unexpected_a")
+                    if host == "example.org" and (not ips or INGRESS in ips or DE89_EDGE in ips):
+                        raise ValueError("dns_unexpected_a")
                     rcode_by_host[host] = rcode
         return {"ok": True, "phase": "done", "query_count": len(rcode_by_host),
                 "latency_ms": round((time.monotonic() - start) * 1000, 1)}
@@ -84,7 +123,7 @@ def probe():
             result["synthetic_host"] = synthetic_host if synthetic_host in HOSTS else "unknown"
             if isinstance(ex, ValueError):
                 reason = str(ex)
-                allowed = {"dns_frame_length", "dns_invalid_header", "dns_question_mismatch"}
+                allowed = {"dns_frame_length", "dns_invalid_header", "dns_question_mismatch", "dns_unexpected_a"}
                 if reason.startswith("dns_rcode_") and reason.removeprefix("dns_rcode_").isdigit():
                     result["error_reason"] = reason
                 else:
@@ -93,6 +132,7 @@ def probe():
 
 
 def self_test():
+    assert INGRESS == "188.120.254.223" and DE89_EDGE == "89.125.90.101"
     query, q = request_for("example.org", 0x1234)
     response = struct.pack("!HHHHHH", 0x1234, 0x8180, 1, 0, 0, 0) + q
     class Stub:
@@ -102,6 +142,10 @@ def self_test():
             return chunk
     assert query[:2] == b"\x12\x34"
     assert read_answer(Stub(struct.pack("!H", len(response)) + response), 0x1234, q) == 0
+    _, yq = request_for("www.youtube.com", 0x2222)
+    yresp = (struct.pack("!HHHHHH", 0x2222, 0x8180, 1, 1, 0, 0) + yq +
+             b"\xc0\x0c" + struct.pack("!HHIH", 1, 1, 20, 4) + socket.inet_aton(INGRESS))
+    assert read_reply(Stub(struct.pack("!H", len(yresp)) + yresp), 0x2222, yq) == (0, [INGRESS])
     try:
         read_answer(Stub(struct.pack("!H", len(response)) + response), 0x5678, q)
     except ValueError as exc:
@@ -110,6 +154,42 @@ def self_test():
         raise AssertionError("wrong DNS transaction accepted")
     servfail = struct.pack("!HHHHHH", 0x1234, 0x8182, 1, 0, 0, 0) + q
     assert read_answer(Stub(struct.pack("!H", len(servfail)) + servfail), 0x1234, q) == 2
+    from unittest.mock import patch
+    def run_mock(youtube_ip):
+        seen = []
+        class FakeTls:
+            def __init__(self): self._buf = b""
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+            def settimeout(self, _): pass
+            def sendall(self, data):
+                txid = struct.unpack("!H", data[2:4])[0]
+                qwire = data[14:]
+                ip_bytes = socket.inet_aton("93.184.215.14" if b"example" in qwire else youtube_ip)
+                pkt = (struct.pack("!HHHHHH", txid, 0x8180, 1, 1, 0, 0) + qwire +
+                       b"\xc0\x0c" + struct.pack("!HHIH", 1, 1, 20, 4) + ip_bytes)
+                self._buf = struct.pack("!H", len(pkt)) + pkt
+            def recv(self, n):
+                out, self._buf = self._buf[:n], self._buf[n:]
+                return out
+        class FakeSock:
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+            def settimeout(self, _): pass
+        class FakeCtx:
+            def wrap_socket(self, _s, server_hostname):
+                seen.append(("sni", server_hostname))
+                return FakeTls()
+        def connect(ep, timeout=3.5):
+            seen.append(("connect", ep))
+            return FakeSock()
+        with patch.object(socket, "create_connection", side_effect=connect), \
+             patch.object(ssl, "create_default_context", return_value=FakeCtx()):
+            return probe(), seen
+    ok_res, seen = run_mock(INGRESS)
+    assert ok_res["ok"] is True and seen == [("connect", ("188.120.254.223", 853)), ("sni", "dns.mnebyvpn.site")]
+    bad_res, _ = run_mock(DE89_EDGE)
+    assert bad_res["ok"] is False and bad_res["error_reason"] == "dns_unexpected_a"
     print("MNEBYDNS_MINUTE_PROBE_SELF_TEST=PASS")
 
 

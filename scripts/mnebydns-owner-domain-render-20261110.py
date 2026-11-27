@@ -15,8 +15,8 @@ import socket
 import ssl
 
 EDGE = "89.125.90.101"
-# Restored public DNS entrypoint; share the same catalog and SNI proxy on DE89.
-DNS_INGRESS = EDGE
+# Public Smart DNS ingress is RU188; DE89 holds CoreDNS bind and SNI origin proxy.
+DNS_INGRESS = "188.120.254.223"
 KINDS = ("A", "AAAA", "HTTPS", "SVCB", "CNAME")
 DOMAIN = re.compile(r"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}$")
 FORBIDDEN = re.compile(r"\.(?:localhost|local|internal|test|invalid|example|onion|arpa|lan|home|corp)$")
@@ -37,7 +37,7 @@ def validated_public_ip(ip: str) -> str:
     parsed = ipaddress.ip_address(ip)
     if parsed.version != 4 or not parsed.is_global:
         raise ValueError("Only globally routable IPv4 origin allowed")
-    if str(parsed) in (EDGE, "188.120.254.223"):
+    if str(parsed) in (EDGE, DNS_INGRESS):
         raise ValueError("Self-reference to SmartDNS edge")
     return str(parsed)
 

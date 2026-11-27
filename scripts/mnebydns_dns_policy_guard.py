@@ -29,7 +29,8 @@ def is_google_template(zone: str, raw: str) -> bool:
         return bool(GOOGLE_TOKEN.search(raw))
     normalized=zone.rstrip(".").lower()
     return any(normalized==root or normalized.endswith("."+root) for root in GOOGLE_ROOTS)
-PIN = "89.125.90.101"
+RESOLVER_BIND = "89.125.90.101"
+PIN = "188.120.254.223"
 DOT_TLS_NAME = "dns.mnebyvpn.site"
 # All known to be SmartDNS-synthetic at the verified initial release.
 PROTECTED_A = ("www.youtube.com", "gemini.google.com",
@@ -89,7 +90,7 @@ def _recvn(sock,n):
     return bytes(buf)
 
 
-def dns_a(host: str,*,address: str=PIN,timeout: float=4.0):
+def dns_a(host: str,*,address: str=RESOLVER_BIND,timeout: float=4.0):
     """CA-verified DoT query to local DNS service, no third-party resolver."""
     if not re.fullmatch(r"[a-z0-9.-]{4,253}",host):
         raise ValueError("Invalid DNS probe name")
@@ -132,5 +133,5 @@ def smoke_check(names=PROTECTED_A,*,resolver=dns_a):
         values=resolver(host)
         if values != [PIN]:
             raise RuntimeError("Protected DNS synthetic A mismatch for "+host)
-    return {"protected_hosts_checked":len(names),"expected_ipv4":PIN,
-            "all_pinned":True}
+    return {"protected_hosts_checked":len(names),"resolver_bind":RESOLVER_BIND,
+            "expected_ipv4":PIN,"all_pinned":True}

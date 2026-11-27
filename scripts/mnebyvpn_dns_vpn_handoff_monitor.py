@@ -18,7 +18,7 @@ import struct
 import sys
 import time
 
-IP = "89.125.90.101"
+IP = "188.120.254.223"
 LEGACY = "dns.mnebyvpn.site"
 TIMEOUT = 4.0
 MAX_DNS_FRAME = 8192
@@ -201,6 +201,7 @@ def run(vantage: str, samples: int, delay: float) -> dict:
 
 
 def selftest() -> None:
+    assert IP == "188.120.254.223"
     msg, question = frame(0x1234)
     answer = (struct.pack("!HHHHHH", 0x1234, 0x8180, 1, 1, 0, 0)
               + question + b"\xc0\x0c" + struct.pack("!HHIH", 1, 1, 60, 4)

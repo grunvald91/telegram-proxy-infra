@@ -145,7 +145,7 @@ def connect_dot()->socket.socket:
     """
     for attempt in range(7):
         try:
-            return socket.create_connection((EDGE,853),timeout=9)
+            return socket.create_connection((RU,853),timeout=9)
         except (ConnectionRefusedError,TimeoutError) as exc:
             if attempt==6:
                 raise RuntimeError("DOMAIN_DOT_RESTART_NOT_READY") from exc
@@ -206,9 +206,9 @@ def dns_q(host:str,kind=1)->tuple[int,list[str]]:
 def oracle_canary_check(domain:str,expect_rewrite:bool)->None:
     code,ips=dns_q(domain,1)
     if code!=0:raise RuntimeError("DOMAIN_DOT_RCODE_BAD")
-    if expect_rewrite and ips!=[EDGE]:
+    if expect_rewrite and ips!=[RU]:
         raise RuntimeError("DOMAIN_DOT_REWRITE_NOT_EFFECTIVE")
-    if not expect_rewrite and (EDGE in ips or RU in ips):
+    if not expect_rewrite and (RU in ips or EDGE in ips):
         raise RuntimeError("DOMAIN_DOT_REWRITE_STILL_EFFECTIVE")
     if expect_rewrite:
         for qtype in (5,28,64,65):
@@ -218,30 +218,30 @@ def oracle_canary_check(domain:str,expect_rewrite:bool)->None:
     stable=("gemini.google.com","claude.ai","grok.com","x.com","www.tiktok.com")
     for host in stable:
         rc,ips=dns_q(host)
-        if rc!=0 or ips!=[EDGE]:
+        if rc!=0 or ips!=[RU]:
             raise RuntimeError("STABLE_SERVICE_DOT_REGRESSION_"+host)
     # Meta was originally a direct-only control. The owner may enable Meta
     # SmartDNS as a separate product policy, so never hard-code it as excluded.
     # Keep ordinary-web and Telegram as stable direct-only controls.
     for host in ("example.org","api.telegram.org","t.me"):
         rc,ips=dns_q(host)
-        if rc!=0 or EDGE in ips or RU in ips:
+        if rc!=0 or RU in ips or EDGE in ips:
             raise RuntimeError("EXCLUDED_DOMAIN_REWRITTEN_"+host)
     print("owner_domain_stable_DoT_regression=PASS",flush=True)
 
 
 def tls_public_route(host:str)->None:
-    # Must inspect the actual RU->DE public route, not foreign-origin localhost.
+    # Must inspect the actual RU->WG->DE public ingress route, not foreign-origin localhost.
     py=("import ssl,socket,sys;"
-        "domain=sys.argv[1];edge=sys.argv[2];"
-        "sock=socket.create_connection((edge,443),timeout=9);"
+        "domain=sys.argv[1];ingress=sys.argv[2];"
+        "sock=socket.create_connection((ingress,443),timeout=9);"
         "sock.settimeout(9);"
         "tls=ssl.create_default_context().wrap_socket(sock,server_hostname=domain);"
         "assert bool(tls.getpeercert());"
         "tls.close();"
         "print('owner_domain_ru_public_TLS_verified=true')")
     output=ssh("ru","python3 -c "+shlex.quote(py)+" "+
-               shlex.quote(host)+" "+shlex.quote(EDGE),30)
+               shlex.quote(host)+" "+shlex.quote(RU),30)
     if "owner_domain_ru_public_TLS_verified=true" not in output:
         raise RuntimeError("PUBLIC_TLS_VERIFICATION_FAILED")
 

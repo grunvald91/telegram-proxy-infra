@@ -185,7 +185,7 @@ def stage_and_verify(selected, raw_summary):
 
 def validate_dns_one(host):
     code, ips=owner.dns_q(host,1)
-    if code!=0 or ips!=[owner.EDGE]:
+    if code!=0 or ips!=[owner.RU]:
         return host,"A_REWRITE_MISMATCH"
     for kind in (28,5,64,65):
         rcode, other=owner.dns_q(host,kind)
@@ -200,7 +200,7 @@ def verify_live(selected):
         dns_verdicts=dict(pool.map(validate_dns_one,hosts))
     problems={h:why for h,why in dns_verdicts.items() if why!="PASS"}
     payload=base64.b64encode(json.dumps(hosts).encode()).decode()
-    remote="python3 -c "+shlex.quote(RU_HTTPS)+" "+shlex.quote(payload)+" "+owner.EDGE
+    remote="python3 -c "+shlex.quote(RU_HTTPS)+" "+shlex.quote(payload)+" "+owner.RU
     raw=owner.ssh("ru",remote,480)
     outcomes=json.loads(raw)
     if not isinstance(outcomes,list) or len(outcomes)!=len(hosts):

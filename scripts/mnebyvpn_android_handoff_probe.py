@@ -23,7 +23,7 @@ import time
 
 from mnebyvpn_dns_vpn_handoff_monitor import frame, check_dns, classify_error
 
-IP = "89.125.90.101"
+IP = "188.120.254.223"
 
 
 def command(args, timeout=3):

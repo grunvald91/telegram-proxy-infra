@@ -7,6 +7,7 @@ from pathlib import Path
 import shutil
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT=Path(__file__).resolve().parents[2]
 def load(name, file):
@@ -89,6 +90,25 @@ class BulkContracts(unittest.TestCase):
         self.assertIn('cmp -s "$base/dns.pilot" "$live_dns"',compensator)
         self.assertIn('cmp -s "$base/nginx.pilot" "$live_nginx"',compensator)
         self.assertNotIn('test -f "$base/confirmed"',compensator)
+
+    def test_validate_dns_one_and_verify_live_expect_ru188_ingress(self):
+        def fake_dns(host,kind=1):
+            if kind==1:
+                return 0,[deploy.owner.RU] if host=="example.org" else [deploy.owner.EDGE]
+            return 0,[]
+        with patch.object(deploy.owner,"dns_q",side_effect=fake_dns):
+            self.assertEqual(deploy.validate_dns_one("example.org"),("example.org","PASS"))
+            self.assertEqual(deploy.validate_dns_one("legacy.example.org"),
+                             ("legacy.example.org","A_REWRITE_MISMATCH"))
+        with patch.object(deploy.owner,"oracle_canary_check"), \
+             patch.object(deploy.owner,"dns_q",side_effect=lambda h,k=1: (0,[deploy.owner.RU] if k==1 else [])), \
+             patch.object(deploy.owner,"ssh",return_value=json.dumps([{"host":"example.org","status":200,"error":None}])) as remote, \
+             patch.object(deploy.batch,"capacity"), \
+             patch.object(deploy,"emit"):
+            outcomes=deploy.verify_live([("example.org","93.184.215.14")])
+        self.assertEqual(outcomes[0]["status"],200)
+        self.assertEqual(remote.call_args.args[0],"ru")
+        self.assertTrue(remote.call_args.args[1].endswith(" 188.120.254.223"))
 
 if __name__=="__main__":
     unittest.main()

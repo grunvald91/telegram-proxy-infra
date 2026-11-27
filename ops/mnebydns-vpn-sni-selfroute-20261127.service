@@ -1,0 +1,27 @@
+[Unit]
+Description=MNEBYDNS DE89 VPN-only TLS SNI :443 self-route to avoid DE89-RU188-DE89 hairpin
+After=network-online.target nginx.service mnebydns-googlepilot.service mnebyvpn-vpn-provisioner.service
+Wants=network-online.target nginx.service mnebydns-googlepilot.service
+
+[Service]
+Type=simple
+DynamicUser=yes
+RuntimeDirectory=mnebydns-vpn-sni-selfroute
+ExecStartPre=/usr/sbin/nginx -t -c /etc/mnebydns/vpn-sni-selfroute/nginx.conf
+ExecStart=/usr/sbin/nginx -c /etc/mnebydns/vpn-sni-selfroute/nginx.conf -g "daemon off;"
+ExecStartPost=+/opt/mnebydns-vpn-sni-selfroute-20261127/manage.sh ensure-rule
+ExecStopPost=+/opt/mnebydns-vpn-sni-selfroute-20261127/manage.sh rollback-rule
+KillSignal=SIGQUIT
+TimeoutStartSec=30
+TimeoutStopSec=20
+Restart=on-failure
+RestartSec=2s
+MemoryMax=128M
+LimitNOFILE=4096
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
