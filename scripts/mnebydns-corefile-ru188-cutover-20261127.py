@@ -36,10 +36,10 @@ PREFLIGHT_MAPPED_HOSTS = (
     "www.tiktok.com",
     "www.google.com",
     "gemini.google.com",
-    "generativelanguage.googleapis.com",
-    "play.googleapis.com",
+    "stun.l.google.com",
+    "mtalk.google.com",
 )
-PREFLIGHT_DIRECT_HOSTS = ("example.org", "api.telegram.org", "stun.l.google.com", "mtalk.google.com")
+PREFLIGHT_DIRECT_HOSTS = ("example.org", "api.telegram.org")
 LIVE_DOT_HOSTS = ("www.youtube.com", "claude.ai", "www.google.com")
 
 ANSWER_DE_RE = re.compile(
@@ -509,6 +509,9 @@ def _self_test() -> None:
         "tls://stun.l.google.com:853 {\n",
         f"    bind {DE_IP}\n",
         "    tls /run/credentials/mnebydns-dot.service/fullchain.pem /run/credentials/mnebydns-dot.service/privkey.pem\n",
+        "    template IN A {\n",
+        f'        answer "{{{{ .Name }}}} 20 IN A {DE_IP}"\n',
+        "    }\n",
         "    forward . tls://9.9.9.9 tls://149.112.112.112 {\n",
         "        tls_servername dns.quad9.net\n",
         "    }\n",
@@ -523,8 +526,8 @@ def _self_test() -> None:
         "}\n",
     ])
     sample = "".join(sample_lines)
-    rewritten, stats = rewrite_corefile(sample, min_rewrites=7)
-    assert stats["rewritten_a_count"] == 7
+    rewritten, stats = rewrite_corefile(sample, min_rewrites=8)
+    assert stats["rewritten_a_count"] == 8
     assert stats["bind_de_count"] == 3
     assert stats["server_blocks"] == 3
     preflight = make_preflight_corefile(rewritten)

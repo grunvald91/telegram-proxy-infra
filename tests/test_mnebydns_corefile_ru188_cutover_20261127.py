@@ -60,7 +60,7 @@ MOBILECONFIG_SAMPLE = """<?xml version="1.0" encoding="UTF-8"?>
 
 
 def build_synthetic_corefile(main_a_count: int = 621) -> str:
-    """Build a 3-block Corefile mirroring DE89 production structure (622 total A rules)."""
+    """Build a 3-block Corefile mirroring DE89 production structure (623 total A rules)."""
     parts = [
         "tls://.:853 {\n",
         "    bind 89.125.90.101\n",
@@ -99,6 +99,9 @@ def build_synthetic_corefile(main_a_count: int = 621) -> str:
         "tls://stun.l.google.com:853 tls://stun1.l.google.com:853 {\n",
         "    bind 89.125.90.101\n",
         "    tls /run/credentials/mnebydns-dot.service/fullchain.pem /run/credentials/mnebydns-dot.service/privkey.pem\n",
+        "    template IN A {\n",
+        '        answer "{{ .Name }} 20 IN A 89.125.90.101"\n',
+        "    }\n",
         "    forward . tls://9.9.9.9 tls://149.112.112.112 {\n",
         "        tls_servername dns.quad9.net\n",
         "    }\n",
@@ -235,13 +238,13 @@ class CorefileRU188CutoverTests(unittest.TestCase):
     def test_rewrite_multiblock_622_lines_and_bind_invariants(self) -> None:
         core = build_synthetic_corefile(621)
         rewritten, stats = cutover.rewrite_corefile(core)
-        self.assertEqual(stats["rewritten_a_count"], 622)
+        self.assertEqual(stats["rewritten_a_count"], 623)
         self.assertEqual(stats["bind_de_count"], 3)
         self.assertEqual(stats["server_blocks"], 3)
         self.assertEqual(stats["fi217_count"], 1)
         self.assertEqual(rewritten.count("    bind 89.125.90.101\n"), 3)
         self.assertEqual(rewritten.count('answer "{{ .Name }} 30 IN A 188.120.254.223"'), 1)
-        self.assertEqual(rewritten.count('answer "{{ .Name }} 20 IN A 188.120.254.223"'), 312)
+        self.assertEqual(rewritten.count('answer "{{ .Name }} 20 IN A 188.120.254.223"'), 313)
         self.assertEqual(rewritten.count('answer "{{ .Name }} 45 IN A 188.125.90.101"'), 0)
         self.assertEqual(rewritten.count('answer "{{ .Name }} 45 IN A 188.120.254.223"'), 309)
         self.assertIn("template IN A {\n", rewritten)
@@ -573,7 +576,7 @@ sys.exit(0)
 
                 self.assertEqual(stat.S_IMODE(corefile.stat().st_mode), 0o640)
                 core_text = corefile.read_text(encoding="utf-8")
-                self.assertEqual(core_text.count("IN A 188.120.254.223"), 622)
+                self.assertEqual(core_text.count("IN A 188.120.254.223"), 623)
                 self.assertEqual(core_text.count("IN A 89.125.90.101"), 0)
                 self.assertEqual(core_text.count("    bind 89.125.90.101\n"), 3)
 
@@ -586,7 +589,7 @@ sys.exit(0)
 
                 p_status = subprocess.run(["bash", str(APPLY_SH), "status"], env=env, capture_output=True, text=True, timeout=10)
                 self.assertEqual(p_status.returncode, 0, p_status.stderr)
-                self.assertIn("COREFILE_RU188_RU_A_ANSWERS=622", p_status.stdout)
+                self.assertIn("COREFILE_RU188_RU_A_ANSWERS=623", p_status.stdout)
                 self.assertIn("COREFILE_RU188_DE_A_ANSWERS=0", p_status.stdout)
                 self.assertIn("COREFILE_RU188_DE_BINDS=3", p_status.stdout)
 
@@ -606,7 +609,7 @@ sys.exit(0)
                 p_rev = subprocess.run(["bash", str(APPLY_SH), "revert"], env=env, capture_output=True, text=True, timeout=15)
                 self.assertEqual(p_rev.returncode, 0, p_rev.stderr)
                 self.assertIn("COREFILE_RU188_REVERTED=PASS", p_rev.stdout)
-                self.assertEqual(corefile.read_text(encoding="utf-8").count("IN A 89.125.90.101"), 622)
+                self.assertEqual(corefile.read_text(encoding="utf-8").count("IN A 89.125.90.101"), 623)
                 self.assertEqual(
                     plistlib.loads(mobileconfig.read_bytes())["PayloadContent"][0]["DNSSettings"]["ServerAddresses"],
                     ["89.125.90.101"],
@@ -625,7 +628,7 @@ sys.exit(0)
                 subprocess.run(["bash", str(APPLY_SH), "stage"], env=env, check=True, capture_output=True, timeout=15)
                 p_apply = subprocess.run(["bash", str(APPLY_SH), "apply"], env=env, capture_output=True, text=True, timeout=15)
                 self.assertNotEqual(p_apply.returncode, 0)
-                self.assertEqual(corefile.read_text(encoding="utf-8").count("IN A 89.125.90.101"), 622)
+                self.assertEqual(corefile.read_text(encoding="utf-8").count("IN A 89.125.90.101"), 623)
                 self.assertIn('PIN = "89.125.90.101"', guard_live.read_text(encoding="utf-8"))
                 self.assertEqual(
                     plistlib.loads(mobileconfig.read_bytes())["PayloadContent"][0]["DNSSettings"]["ServerAddresses"],
