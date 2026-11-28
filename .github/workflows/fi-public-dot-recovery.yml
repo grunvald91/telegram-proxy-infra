@@ -2,10 +2,10 @@ name: FI217 restore committed public personal DoT socket
 "on":
   pull_request:
     branches: [main]
-    paths: ['.github/workflows/fi-public-dot-recovery.yml','nodekit/fi_public_dot_recover.py','nodekit/tests/test_fi_public_dot_recover.py']
+    paths: ['.github/workflows/fi-public-dot-recovery.yml','nodekit/fi_restore_public_dot.py','nodekit/tests/test_fi_public_dot_recover.py']
   push:
     branches: [main]
-    paths: ['.github/workflows/fi-public-dot-recovery.yml','nodekit/fi_public_dot_recover.py','nodekit/tests/test_fi_public_dot_recover.py']
+    paths: ['.github/workflows/fi-public-dot-recovery.yml','nodekit/fi_restore_public_dot.py','nodekit/tests/test_fi_public_dot_recover.py']
   workflow_dispatch:
 permissions: {contents: read}
 concurrency:
@@ -20,7 +20,7 @@ jobs:
         with: {persist-credentials: false}
       - name: Test recovery and rollback without server access
         run: |
-          python3 -m py_compile nodekit/fi_public_dot_recover.py
+          python3 -m py_compile nodekit/fi_restore_public_dot.py
           PYTHONPATH=nodekit python3 -m unittest discover -s nodekit/tests -p 'test_fi_public_dot_recover.py' -v
   recover:
     needs: offline
@@ -111,7 +111,7 @@ jobs:
           fi_dir=$(fi_node 'umask 077; mktemp -d /run/fi-public-dot-recovery.XXXXXXXX')
           [[ "$fi_dir" =~ ^/run/fi-public-dot-recovery\.[A-Za-z0-9]{8}$ ]] || exit 2
           SSHPASS="$FI_PASSWORD" sshpass -e scp -F "$work/fi.cfg" \
-            nodekit/fi_public_dot_recover.py "fi-node:$fi_dir/recover.py"
+            nodekit/fi_restore_public_dot.py "fi-node:$fi_dir/recover.py"
           fi_node "chmod 0600 '$fi_dir/recover.py'; timeout 420s python3 '$fi_dir/recover.py'"
           python3 - <<'PY'
           import secrets,socket,ssl,struct
