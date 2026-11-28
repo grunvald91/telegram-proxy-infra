@@ -12,6 +12,8 @@ import os
 from pathlib import Path
 import re
 import socket
+import ssl
+import struct
 import subprocess
 import sys
 
@@ -156,6 +158,90 @@ def systemd_active(unit: str) -> bool:
     return command("systemctl", "is-active", "--quiet", unit).returncode == 0
 
 
+COUNTRY_PROBES = ("aaaaaaaaaaaa.fi.mnebyvpn.site",
+                  "bbbbbbbbbbbb.fi.mnebyvpn.site")
+COUNTRY_CERT = ROOT / "fi-country-tls-v2/fullchain.pem"
+COUNTRY_SERVICE = "mnebyvpn-fi-dns-country.service"
+PUBLIC_SOCKET = "mnebyvpn-fi-public-dot.socket"
+
+def read_exact(stream, length):
+    out=bytearray()
+    while len(out)<length:
+        part=stream.recv(length-len(out))
+        if not part:
+            raise EOFError()
+        out.extend(part)
+    return bytes(out)
+
+def fixed_question():
+    return struct.pack("!HHHHHH",0x4a71,0x0100,1,0,0,0)+bytes([7])+b"example"+bytes([3])+b"com"+bytes([0,0,1,0,1])
+
+def valid_answer(reply, question):
+    if len(reply)<=len(question):
+        return False
+    ident,flags,qd,an,_,_=struct.unpack("!HHHHHH",reply[:12])
+    return (ident==0x4a71 and bool(flags&0x8000) and not flags&0xF
+            and qd==1 and an>0 and reply[12:len(question)]==question[12:])
+
+def country_probe(name, port, leaf, *, denied=False):
+    if name not in COUNTRY_PROBES or port not in (8853,18854):
+        return "invalid_probe"
+    try:
+        with socket.create_connection(("127.0.0.1",port),timeout=5) as raw:
+            with ssl.create_default_context().wrap_socket(raw,server_hostname=name) as tls:
+                tls.settimeout(5)
+                if ("DNS","*.fi.mnebyvpn.site") not in tls.getpeercert().get("subjectAltName",()):
+                    return "wildcard_missing"
+                if tls.getpeercert(binary_form=True)!=leaf:
+                    return "certificate_drift"
+                q=fixed_question()
+                tls.sendall(struct.pack("!H",len(q))+q)
+                if denied:
+                    return "unknown_credential_denied" if tls.recv(2)==b"" else "unexpected_response"
+                length=struct.unpack("!H",read_exact(tls,2))[0]
+                if not 12<length<=16384:
+                    return "bad_dns_frame"
+                return "pass" if valid_answer(read_exact(tls,length),q) else "bad_dns_answer"
+    except ssl.SSLCertVerificationError:
+        return "tls_verify_failed"
+    except ssl.SSLError:
+        return "tls_failed"
+    except TimeoutError:
+        return "timeout"
+    except (OSError,EOFError,ValueError,struct.error):
+        return "connection_or_dns_failed"
+
+def country_live_summary():
+    report={"service_active":systemd_active(COUNTRY_SERVICE),
+            "public_socket_active":systemd_active(PUBLIC_SOCKET),
+            "origin":"not_tested","meter_unknown_credential":"not_tested"}
+    if not report["service_active"]:
+        return report
+    for port in (8853,18854):
+        result=command("ss","-H","-lnt","sport = :"+str(port))
+        lines=[line.split() for line in result.stdout.splitlines()]
+        if result.returncode or len(lines)!=1 or len(lines[0])<4 or lines[0][3]!="127.0.0.1:"+str(port):
+            report["origin"]="unexpected_listener"
+            return report
+    try:
+        if COUNTRY_CERT.is_symlink() or not COUNTRY_CERT.is_file() or COUNTRY_CERT.stat().st_uid!=0:
+            report["origin"]="country_certificate_missing"
+            return report
+        result=subprocess.run(["openssl","x509","-in",str(COUNTRY_CERT),"-outform","DER"],
+                              capture_output=True,timeout=6,check=True)
+        leaf=result.stdout
+        if not leaf:
+            report["origin"]="country_certificate_missing"
+            return report
+    except (OSError,subprocess.SubprocessError):
+        report["origin"]="country_certificate_unavailable"
+        return report
+    origins=[country_probe(name,8853,leaf) for name in COUNTRY_PROBES]
+    denials=[country_probe(name,18854,leaf,denied=True) for name in COUNTRY_PROBES]
+    report["origin"]="pass" if all(x=="pass" for x in origins) else next(x for x in origins if x!="pass")
+    report["meter_unknown_credential"]="pass" if all(x=="unknown_credential_denied" for x in denials) else next(x for x in denials if x!="unknown_credential_denied")
+    return report
+
 def gather() -> dict:
     if os.geteuid() != 0:
         raise ValueError("Root needed for read-only private inventory")
@@ -175,6 +261,7 @@ def gather() -> dict:
         "tls_candidate_present": bool(tls),
         "tls_candidate_for_country_host": tls.get("hostname") == HOST,
         "regional_tls": certificate_summary(),
+        "country_live": country_live_summary(),
         "fi_dns_snapshot_present": (ROOT / "dns-auth/snapshot.json").is_file(),
         "fi_dns_rollback_fence_present":
             (ROOT / "dns-auth/snapshot-highwater.json").is_file(),

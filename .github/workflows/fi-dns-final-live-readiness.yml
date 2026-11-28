@@ -1,10 +1,10 @@
 name: FI Smart DNS final live readiness (read-only)
 "on":
   pull_request:
-    paths: [".github/workflows/fi-dns-final-live-readiness.yml"]
+    paths: [".github/workflows/fi-dns-final-live-readiness.yml", "nodekit/fi_dns_live_inventory.py", "nodekit/tests/test_fi_dns_live_inventory.py"]
   push:
     branches: [main]
-    paths: [".github/workflows/fi-dns-final-live-readiness.yml"]
+    paths: [".github/workflows/fi-dns-final-live-readiness.yml", "nodekit/fi_dns_live_inventory.py", "nodekit/tests/test_fi_dns_live_inventory.py"]
   workflow_dispatch:
 permissions: {contents: read}
 concurrency:
@@ -34,6 +34,7 @@ jobs:
           Path('/tmp/fi-live-readiness.sh').write_text(text)
           PY
           bash -n /tmp/fi-live-readiness.sh
+          python3 -m unittest discover -s nodekit/tests -p 'test_fi_dns_live_inventory.py' -v
   live-readiness:
     needs: offline
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
