@@ -104,6 +104,16 @@ class FiReadinessTests(unittest.TestCase):
               {"UNIT":probe.FI_UNIT,"__REALTIME_TIMESTAMP":"1795752001000000","MESSAGE":"private context"}]
         self.assertEqual(probe.stop_timeline(chr(10).join(map(json.dumps,rows))),[])
 
+    def test_stop_details_reports_phase_status_only(self):
+        raw=chr(10).join(["ExecStart={ path=/private ; code=exited ; status=0 }",
+                         "ExecStop={ path=/private ; code=exited ; status=1/FAILURE }"])
+        done=mock.Mock(returncode=0,stdout="")
+        with mock.patch.object(probe,"checked",return_value=raw), mock.patch.object(probe.subprocess,"run",return_value=done):
+            result=probe.stop_details()
+        self.assertIn("FI_AWG_PHASE_AWG_EXECSTART=exited:0",result)
+        self.assertIn("FI_AWG_PHASE_AWG_EXECSTOP=exited:1",result)
+        self.assertNotIn("private",str(result))
+
     def test_readonly_source_and_workflow_contract(self):
         src=(NODEKIT/"fi_awg_live_readiness.py").read_text()
         workflow=(NODEKIT.parent/".github/workflows/fi-awg-live-readiness.yml").read_text()
