@@ -218,6 +218,67 @@ def failure_details(unit:str,prefix:str)->list[str]:
         result.append(prefix+"_JOURNAL=unavailable")
     return result
 
+FI_EGRESS="mnebyvpn-nodekit-awg-egress@fi-test-01.service"
+
+def stop_timeline(raw:str)->list[str]:
+    # Journal message IDs and exact fixed phrases only; never emit raw messages.
+    events=[]
+    units={FI_UNIT:"awg",FI_WATCHDOG:"watchdog",FI_EGRESS:"egress"}
+    for line in raw.splitlines():
+        try:
+            row=json.loads(line)
+            if not isinstance(row,dict):continue
+            unit=units.get(row.get("UNIT")) or units.get(row.get("_SYSTEMD_UNIT"))
+            stamp=row.get("__REALTIME_TIMESTAMP","")
+            msg=row.get("MESSAGE","")
+            if not unit or not isinstance(stamp,str) or not re.fullmatch(r"[0-9]{16}",stamp) or not isinstance(msg,str):
+                continue
+            low=msg.lower()
+            if "control process exited" in low:kind="control_exit"
+            elif "failed with result" in low:kind="unit_failed"
+            elif "stopping " in low:kind="stopping"
+            elif "stopped " in low or "deactivated successfully" in low:kind="stopped"
+            elif "starting " in low:kind="starting"
+            elif "started " in low or "finished " in low:kind="started"
+            elif "not a wireguard interface" in low or "not an amneziawg interface" in low:kind="interface_already_absent"
+            elif "cannot find device" in low or "no such device" in low:kind="interface_missing"
+            elif "nodekit_awg_grants_error=" in low:kind="grant_error"
+            elif "nodekit_awg_lifecycle_error=" in low:kind="lifecycle_error"
+            elif "nodekit_awg_egress_error=" in low:kind="egress_error"
+            else:continue
+            events.append((int(stamp),unit,kind))
+        except (ValueError,TypeError):continue
+    return [str(stamp//1000000)+":"+unit+":"+kind
+            for stamp,unit,kind in sorted(set(events))[-30:]]
+
+def stop_details()->list[str]:
+    out=[]
+    for unit,label in ((FI_UNIT,"AWG"),(FI_WATCHDOG,"WATCHDOG"),(FI_EGRESS,"EGRESS")):
+        try:
+            raw=checked(["/usr/bin/systemctl","show","--property=ExecStartPre",
+                         "--property=ExecStart","--property=ExecStop","--property=ExecStopPost",unit],timeout=3)
+            for line in raw.splitlines():
+                key,sep,val=line.partition("=")
+                if sep and key in ("ExecStartPre","ExecStart","ExecStop","ExecStopPost"):
+                    statuses=re.findall(r"\\bstatus=([0-9]{1,3})(?:[/ ;}]|$)",val)
+                    codes=re.findall(r"\\bcode=([a-z-]{1,16})(?:[ ;}]|$)",val)
+                    allowed={"exited","killed","dumped"}
+                    if statuses and len(statuses)==len(codes) and all(c in allowed for c in codes):
+                        out.append("FI_AWG_PHASE_"+label+"_"+key.upper()+"="+
+                                   ",".join(c+":"+v for c,v in zip(codes,statuses)))
+        except (Blocked,ValueError):out.append("FI_AWG_PHASE_"+label+"=unavailable")
+    try:
+        done=subprocess.run(["/usr/bin/journalctl","--unit",FI_UNIT,"--unit",FI_WATCHDOG,
+                             "--unit",FI_EGRESS,"--since=72 hours ago","--lines=300",
+                             "--no-pager","--output=json"],stdin=subprocess.DEVNULL,
+                            capture_output=True,text=True,errors="replace",timeout=5,check=False)
+        if done.returncode or len(done.stdout)>1048576:raise Blocked()
+        events=stop_timeline(done.stdout)
+        out.extend("FI_AWG_TIMELINE="+event for event in events)
+        if not events:out.append("FI_AWG_TIMELINE=no_known_event")
+    except (Blocked,OSError,subprocess.TimeoutExpired):out.append("FI_AWG_TIMELINE=unavailable")
+    return out
+
 def main()->int:
     parser=argparse.ArgumentParser()
     parser.add_argument("--mode",choices=["ru","fi"],required=True)
@@ -234,6 +295,8 @@ def main()->int:
                                 (FI_WATCHDOG,"FI_AWG_FAILURE_WATCHDOG")):
                 for line in failure_details(unit,prefix):
                     print(line,file=sys.stderr)
+            for line in stop_details():
+                print(line,file=sys.stderr)
         print("FI_AWG_LIVE_AUDIT_"+mode.upper()+"="+
               ";".join(f"{key}:{value}" for key,value in sorted(report.items())))
         return 0
