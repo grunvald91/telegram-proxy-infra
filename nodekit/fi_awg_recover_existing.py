@@ -59,6 +59,7 @@ def states():
     return tuple(systemd(u,"ActiveState") for u in UNITS)
 
 def host_and_sources():
+    print("FI_AWG_RECOVERY_PREFLIGHT=host",flush=True)
     if os.geteuid()!=0:raise Blocked()
     addr=call(["/usr/sbin/ip","-o","-4","addr","show"],5).stdout
     if not re.search(r"(?<![0-9.])217[.]11[.]167[.]91/[0-9]{1,2}(?=\\s|$)",addr):
@@ -67,12 +68,15 @@ def host_and_sources():
         st=directory.stat()
         if directory.is_symlink() or not stat.S_ISDIR(st.st_mode) or st.st_uid!=0 or st.st_mode&0o022:
             raise Blocked()
+    print("FI_AWG_RECOVERY_PREFLIGHT=installed_sources",flush=True)
     for name,expected in SOURCE.items():
         data=read(APP/name)
         if hashlib.sha1(b"blob "+str(len(data)).encode()+bytes([0])+data).hexdigest()!=expected:
             raise Blocked()
+    print("FI_AWG_RECOVERY_PREFLIGHT=node_identity",flush=True)
     for name,expected in PINNED.items():
         if hashlib.sha256(read(NODE/name,100)).hexdigest()!=expected:raise Blocked()
+    print("FI_AWG_RECOVERY_PREFLIGHT=unit_identity",flush=True)
     for unit,file,expected in zip(UNITS,UNIT_FILES,EXPECTED_UNITS):
         path=UNIT_DIR/file
         if read(path,private=False)!=expected.encode():raise Blocked()
@@ -89,12 +93,16 @@ def local_modules():
 def preflight():
     host_and_sources()
     life,grants,egress=local_modules()
+    print("FI_AWG_RECOVERY_PREFLIGHT=signed_configuration",flush=True)
     proof=life.validate(NODE)
     if proof.get("mode")!="production" or proof.get("production_approval")!="signed":
         raise Blocked()
     grants.pinned_controller_key(NODE)
+    print("FI_AWG_RECOVERY_PREFLIGHT=egress_configuration",flush=True)
     egress.validate(NODE)
-    ledger_peers(grants)
+    print("FI_AWG_RECOVERY_PREFLIGHT=existing_ledger",flush=True)
+    with grants.LedgerLock(NODE):
+        ledger_peers(grants)
     return grants,egress
 
 def ledger_peers(grants):
@@ -143,6 +151,7 @@ def recover():
         verify_live(grants,egress)
         return "already_active"
     if any(s not in ("inactive","failed") for s in before) or IFACE.exists():raise Blocked()
+    print("FI_AWG_RECOVERY_PREFLIGHT=inactive_network",flush=True)
     verify_egress(egress,False)
     attempted=False
     try:
@@ -193,7 +202,9 @@ def main():
             print("FI_AWG_RECOVERY="+recover(),flush=True)
         finally:os.close(fd)
         return 0
-    except (OSError,ValueError,TypeError,KeyError,subprocess.SubprocessError):
+    except (OSError,ValueError,TypeError,KeyError,subprocess.SubprocessError) as exc:
+        if isinstance(exc,subprocess.CalledProcessError):
+            print("FI_AWG_RECOVERY_EXIT_CODE="+str(exc.returncode),flush=True)
         print("FI_AWG_RECOVERY=blocked",flush=True)
         return 2
 
