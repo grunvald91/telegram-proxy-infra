@@ -48,6 +48,24 @@ class FiReadinessTests(unittest.TestCase):
             self.assertEqual(data["WEB_FI_AWG_HEADER_PROTECTION_KEY"],"present")
             self.assertNotIn("BBBB",str(data))
 
+    def test_diagnostic_fields_identify_components_independently(self):
+        self.assertEqual(probe.diagnostic_fields("fi",{
+            "AWG_SERVICE":"failed","AWG_WATCHDOG":"active","AWG_INTERFACE":"absent",
+        }),["FI_AWG_DETAIL_AWG_SERVICE=failed",
+            "FI_AWG_DETAIL_AWG_WATCHDOG=active",
+            "FI_AWG_DETAIL_AWG_INTERFACE=absent"])
+        self.assertEqual(probe.diagnostic_fields("ru",{
+            "POOL":"verified","POOL_PROOF":"not_fresh",
+        }),["FI_AWG_DETAIL_POOL=verified","FI_AWG_DETAIL_POOL_PROOF=not_fresh"])
+
+    def test_diagnostic_fields_never_echo_unknown_values(self):
+        self.assertEqual(probe.diagnostic_fields("fi",{
+            "AWG_SERVICE":"secret material","AWG_WATCHDOG":"active",
+            "PRIVATE_KEY":"secret material",
+        }),["FI_AWG_DETAIL_AWG_SERVICE=unknown",
+            "FI_AWG_DETAIL_AWG_WATCHDOG=active",
+            "FI_AWG_DETAIL_AWG_INTERFACE=unknown"])
+
     def test_readonly_source_and_workflow_contract(self):
         src=(NODEKIT/"fi_awg_live_readiness.py").read_text()
         workflow=(NODEKIT.parent/".github/workflows/fi-awg-live-readiness.yml").read_text()
