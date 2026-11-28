@@ -1,0 +1,126 @@
+name: FI217 guarded recovery of existing AWG services
+"on":
+  pull_request:
+    branches: [main]
+    paths: ['.github/workflows/fi-awg-existing-recovery.yml','nodekit/fi_awg_recover_existing.py','nodekit/tests/test_fi_awg_recover_existing.py']
+  push:
+    branches: [main]
+    paths: ['.github/workflows/fi-awg-existing-recovery.yml','nodekit/fi_awg_recover_existing.py','nodekit/tests/test_fi_awg_recover_existing.py']
+  workflow_dispatch:
+permissions: {contents: read}
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('fi217-recovery-pr-{0}', github.event.pull_request.number) || 'mnebyvpn-fleet-fi' }}
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Test recovery and rollback without server access
+        run: |
+          python3 -m py_compile nodekit/fi_awg_recover_existing.py
+          PYTHONPATH=nodekit python3 -m unittest discover -s nodekit/tests -p 'test_fi_awg_recover_existing.py' -v
+  recover:
+    needs: offline
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: node-fi
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Install pinned-host password SSH transport
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y --no-install-recommends sshpass >/dev/null
+      - name: Restore existing reviewed FI217 AWG units only
+        shell: bash
+        env:
+          RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+          FI_PASSWORD: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_PASSWORD }}
+          FI_USER: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_USER }}
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y --no-install-recommends sshpass >/dev/null
+      - name: Sign and activate FI217 production AWG with persistent watchdog and NAT
+        shell: bash
+        env:
+          RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
+          FI_PASSWORD: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_PASSWORD }}
+          FI_USER: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_USER }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          [[ -n "$RU_PASSWORD" && -n "$FI_PASSWORD" && "$FI_USER" == root ]] || exit 2
+          grep -q '^188\.120\.254\.223 ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts
+          work="$RUNNER_TEMP/fi-awg-existing-recovery"
+          mkdir -m 0700 "$work"
+          cat > "$work/ru.cfg" <<CFG
+          Host ru-controller
+            HostName 188.120.254.223
+            User root
+            UserKnownHostsFile $GITHUB_WORKSPACE/ops/mnebydns-owner-ssh-known_hosts
+            GlobalKnownHostsFile /dev/null
+            HostKeyAlgorithms ssh-ed25519
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+            BatchMode no
+            PasswordAuthentication yes
+            PubkeyAuthentication no
+            KbdInteractiveAuthentication no
+            ForwardAgent no
+            ClearAllForwardings yes
+            ControlMaster no
+            ProxyCommand none
+            ConnectTimeout 12
+            ServerAliveInterval 10
+            ServerAliveCountMax 3
+            LogLevel ERROR
+          CFG
+          ru(){ SSHPASS="$RU_PASSWORD" sshpass -e ssh -T -F "$work/ru.cfg" ru-controller "$@"; }
+          SSHPASS="$RU_PASSWORD" sshpass -e ssh -T -F "$work/ru.cfg" ru-controller \
+            'cat /root/mnebyvpn-controller/fi-known_hosts' > "$work/fi-known"
+          [[ "$(wc -l < "$work/fi-known")" == 1 ]] || exit 2
+          grep -Eq '^fi\.mnebyvpn\.site ssh-ed25519 [A-Za-z0-9+/]+={0,2}$' "$work/fi-known"
+          cat > "$work/fi.cfg" <<CFG
+          Host fi-node
+            HostName 217.11.167.91
+            User root
+            UserKnownHostsFile $work/fi-known
+            HostKeyAlias fi.mnebyvpn.site
+            GlobalKnownHostsFile /dev/null
+            HostKeyAlgorithms ssh-ed25519
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+            BatchMode no
+            PasswordAuthentication yes
+            PubkeyAuthentication no
+            KbdInteractiveAuthentication no
+            ForwardAgent no
+            ClearAllForwardings yes
+            ControlMaster no
+            ProxyCommand none
+            ConnectTimeout 12
+            ServerAliveInterval 10
+            ServerAliveCountMax 3
+            LogLevel ERROR
+          CFG
+          fi_node(){ SSHPASS="$FI_PASSWORD" sshpass -e ssh -T -F "$work/fi.cfg" fi-node "$@"; }
+          fi_dir=""
+          cleanup(){
+            set +e
+            if [[ "$fi_dir" =~ ^/run/fi-awg-existing-recovery\.[A-Za-z0-9]{8}$ ]]; then
+              fi_node "rm -rf -- '$fi_dir'" >/dev/null 2>&1
+            fi
+            rm -rf -- "$work"
+          }
+          trap cleanup EXIT
+          fi_dir=$(fi_node 'umask 077; mktemp -d /run/fi-awg-existing-recovery.XXXXXXXX')
+          [[ "$fi_dir" =~ ^/run/fi-awg-existing-recovery\.[A-Za-z0-9]{8}$ ]] || exit 2
+          SSHPASS="$FI_PASSWORD" sshpass -e scp -F "$work/fi.cfg" \
+            nodekit/fi_awg_recover_existing.py "fi-node:$fi_dir/recover.py"
+          fi_node "chmod 0600 '$fi_dir/recover.py'; timeout 420s python3 '$fi_dir/recover.py'"
+          echo "FI_AWG_RECOVERY_LOCAL_CHECK_COMPLETE=true"
