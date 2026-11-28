@@ -26,6 +26,13 @@ class RecoveryTests(unittest.TestCase):
             self.addCleanup(p.stop)
         m.IFACE.exists.return_value=False
 
+    def test_real_ip_address_output(self):
+        self.assertTrue(m.matches_host("2: eth0    inet 217.11.167.91/24 brd 217.11.167.255 scope global eth0"))
+        self.assertTrue(m.matches_host("2: eth0 inet 217.11.167.91/32"))
+        for bad in ("217.11.167.910/24", "217.11.167.91/33",
+                    "1217.11.167.91/24", "217.11.167.92/24", ""):
+            self.assertFalse(m.matches_host(bad))
+
     def test_order_and_no_reinstallation(self):
         self.assertEqual(m.recover(),"restored_local")
         self.assertEqual([c.args[0] for c in m.call.call_args_list],
