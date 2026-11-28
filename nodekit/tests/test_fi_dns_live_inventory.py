@@ -79,5 +79,33 @@ class TestFiDnsInventory(unittest.TestCase):
                             for n in audit.REGIONAL_PROBES))
 
 
+    def test_country_dns_answer_rejects_wrong_id_and_question(self):
+        import struct
+        q=audit.fixed_question()
+        reply=struct.pack("!HHHHHH",0x4a71,0x8180,1,1,0,0)+q[12:]+bytes([192,12,0,1,0,1,0,0,0,10,0,4,192,0,2,1])
+        self.assertTrue(audit.valid_answer(reply,q))
+        self.assertFalse(audit.valid_answer(bytes([0])+reply[1:],q))
+        self.assertFalse(audit.valid_answer(reply[:13]+b"x"+reply[14:],q))
+        self.assertFalse(audit.valid_answer(reply[:len(q)],q))
+
+    def test_country_probe_only_exact_test_names_and_local_ports(self):
+        with patch.object(audit.socket,"create_connection") as connect:
+            self.assertEqual(audit.country_probe("other.example",8853,b"x"),"invalid_probe")
+            self.assertEqual(audit.country_probe(audit.COUNTRY_PROBES[0],853,b"x"),"invalid_probe")
+            connect.assert_not_called()
+
+    def test_country_summary_never_probes_inactive_service(self):
+        with patch.object(audit,"systemd_active",return_value=False), patch.object(audit,"country_probe") as probe:
+            result=audit.country_live_summary()
+        self.assertEqual(result["origin"],"not_tested")
+        probe.assert_not_called()
+
+    def test_country_summary_refuses_non_loopback_listener(self):
+        with patch.object(audit,"systemd_active",return_value=True), patch.object(audit,"command",return_value=type("Result",(),{"returncode":0,"stdout":"LISTEN 0 128 0.0.0.0:8853 0.0.0.0:*"})()), patch.object(audit,"country_probe") as probe:
+            result=audit.country_live_summary()
+        self.assertEqual(result["origin"],"unexpected_listener")
+        probe.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
