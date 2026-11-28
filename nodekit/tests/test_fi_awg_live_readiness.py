@@ -66,6 +66,26 @@ class FiReadinessTests(unittest.TestCase):
             "FI_AWG_DETAIL_AWG_WATCHDOG=active",
             "FI_AWG_DETAIL_AWG_INTERFACE=unknown"])
 
+    def test_journal_classification_does_not_emit_raw_lines(self):
+        raw="private data abc123\nSystem UTC rollback during offline access\nnodekit_awg_grants_error=GrantError"
+        self.assertEqual(probe.journal_categories(raw),["clock_rollback","grant_error"])
+        self.assertEqual(probe.journal_categories("unrecognized sensitive content"),[])
+
+    def test_failure_details_are_allowlisted(self):
+        done=mock.Mock(returncode=0,stdout="private peer key\nCannot find device awg0")
+        with mock.patch.object(probe,"checked",return_value="Result=exit-code\nExecMainCode=1\nExecMainStatus=secret"), \
+             mock.patch.object(probe.subprocess,"run",return_value=done) as run:
+            result=probe.failure_details(probe.FI_UNIT,"TEST")
+        self.assertEqual(result,["TEST_RESULT=exit-code","TEST_EXECMAINCODE=1",
+                         "TEST_EXECMAINSTATUS=unknown","TEST_JOURNAL=interface_missing"])
+        self.assertEqual(run.call_args.args[0][2],probe.FI_UNIT)
+
+    def test_failure_details_handle_missing_journal(self):
+        with mock.patch.object(probe,"checked",side_effect=probe.Blocked), \
+             mock.patch.object(probe.subprocess,"run",side_effect=OSError):
+            self.assertEqual(probe.failure_details(probe.FI_WATCHDOG,"TEST"),
+                             ["TEST_SYSTEMD=unavailable","TEST_JOURNAL=unavailable"])
+
     def test_readonly_source_and_workflow_contract(self):
         src=(NODEKIT/"fi_awg_live_readiness.py").read_text()
         workflow=(NODEKIT.parent/".github/workflows/fi-awg-live-readiness.yml").read_text()

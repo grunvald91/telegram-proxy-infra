@@ -165,6 +165,59 @@ def diagnostic_fields(mode:str,report:dict[str,str])->list[str]:
             (report[key] if report.get(key) in values else "unknown")
             for key,values in allowed[mode].items()]
 
+# Only fixed categories leave the node. Logs may contain peer material.
+JOURNAL_MARKERS={
+    "clock_rollback":("system utc rollback","system utc regressed","unsafe persisted offline clock"),
+    "ledger_invalid":("invalid awg grant ledger","invalid awg entitlement ledger row","peer credential or client ip collision"),
+    "peer_mismatch":("live awg allowed-ips differ","invalid live awg peer address table"),
+    "config_drift":("staged awg config drift","amneziawg staged config changed"),
+    "signed_approval":("signed production approval missing or invalid","productionadmissionerror"),
+    "lifecycle_error":("nodekit_awg_lifecycle_error=",),
+    "grant_error":("nodekit_awg_grants_error=",),
+    "interface_missing":("cannot find device","no such device","awg interface is no longer managed"),
+    "permission_error":("operation not permitted","permission denied"),
+    "address_in_use":("address already in use","file exists"),
+    "timeout":("timed out","timeout"),
+    "dependency":("dependency failed","dependency job"),
+    "exit_failure":("failed with result","control process exited"),
+}
+
+def journal_categories(raw:str)->list[str]:
+    low=raw.lower()
+    return [name for name,markers in JOURNAL_MARKERS.items()
+            if any(marker in low for marker in markers)]
+
+def failure_details(unit:str,prefix:str)->list[str]:
+    if unit not in (FI_UNIT,FI_WATCHDOG):
+        raise Blocked()
+    result=[]
+    try:
+        raw=checked(["/usr/bin/systemctl","show","--property=Result",
+                     "--property=ExecMainCode","--property=ExecMainStatus",unit],timeout=5)
+        values=dict(line.split("=",1) for line in raw.splitlines() if "=" in line)
+        known=("success","resources","protocol","timeout","exit-code","signal",
+               "core-dump","watchdog","start-limit-hit","oom-kill","dependency","unknown")
+        state=values.get("Result","unknown")
+        result.append(prefix+"_RESULT="+(state if state in known else "unknown"))
+        for prop in ("ExecMainCode","ExecMainStatus"):
+            value=values.get(prop,"")
+            result.append(prefix+"_"+prop.upper()+"="+
+                          (value if re.fullmatch(r"[0-9]{1,3}",value) else "unknown"))
+    except (Blocked,ValueError):
+        result.append(prefix+"_SYSTEMD=unavailable")
+    try:
+        done=subprocess.run(["/usr/bin/journalctl","--unit",unit,"--since=48 hours ago",
+                             "--lines=100","--no-pager","--output=cat"],
+                            stdin=subprocess.DEVNULL,capture_output=True,text=True,
+                            errors="replace",timeout=8,check=False)
+        if done.returncode or len(done.stdout)>262144:
+            raise Blocked()
+        categories=journal_categories(done.stdout)
+        result.append(prefix+"_JOURNAL="+(",".join(categories) if categories else "no_known_marker"))
+    except (Blocked,OSError,subprocess.TimeoutExpired):
+        result.append(prefix+"_JOURNAL=unavailable")
+    return result
+
 def main()->int:
     parser=argparse.ArgumentParser()
     parser.add_argument("--mode",choices=["ru","fi"],required=True)
@@ -176,6 +229,11 @@ def main()->int:
                 raise Blocked()
         for line in diagnostic_fields(mode,report):
             print(line,file=sys.stderr)
+        if mode=="fi":
+            for unit,prefix in ((FI_UNIT,"FI_AWG_FAILURE_SERVICE"),
+                                (FI_WATCHDOG,"FI_AWG_FAILURE_WATCHDOG")):
+                for line in failure_details(unit,prefix):
+                    print(line,file=sys.stderr)
         print("FI_AWG_LIVE_AUDIT_"+mode.upper()+"="+
               ";".join(f"{key}:{value}" for key,value in sorted(report.items())))
         return 0
