@@ -193,7 +193,7 @@ def failure_details(unit:str,prefix:str)->list[str]:
     result=[]
     try:
         raw=checked(["/usr/bin/systemctl","show","--property=Result",
-                     "--property=ExecMainCode","--property=ExecMainStatus",unit],timeout=5)
+                     "--property=ExecMainCode","--property=ExecMainStatus",unit],timeout=3)
         values=dict(line.split("=",1) for line in raw.splitlines() if "=" in line)
         known=("success","resources","protocol","timeout","exit-code","signal",
                "core-dump","watchdog","start-limit-hit","oom-kill","dependency","unknown")
@@ -209,7 +209,7 @@ def failure_details(unit:str,prefix:str)->list[str]:
         done=subprocess.run(["/usr/bin/journalctl","--unit",unit,"--since=48 hours ago",
                              "--lines=100","--no-pager","--output=cat"],
                             stdin=subprocess.DEVNULL,capture_output=True,text=True,
-                            errors="replace",timeout=8,check=False)
+                            errors="replace",timeout=4,check=False)
         if done.returncode or len(done.stdout)>262144:
             raise Blocked()
         categories=journal_categories(done.stdout)
@@ -221,7 +221,7 @@ def failure_details(unit:str,prefix:str)->list[str]:
 FI_EGRESS="mnebyvpn-nodekit-awg-egress@fi-test-01.service"
 
 def stop_timeline(raw:str)->list[str]:
-    # Journal message IDs and exact fixed phrases only; never emit raw messages.
+    # Match fixed phrases only; never emit raw journal messages.
     events=[]
     units={FI_UNIT:"awg",FI_WATCHDOG:"watchdog",FI_EGRESS:"egress"}
     for line in raw.splitlines():
@@ -260,8 +260,8 @@ def stop_details()->list[str]:
             for line in raw.splitlines():
                 key,sep,val=line.partition("=")
                 if sep and key in ("ExecStartPre","ExecStart","ExecStop","ExecStopPost"):
-                    statuses=re.findall(r"\\bstatus=([0-9]{1,3})(?:[/ ;}]|$)",val)
-                    codes=re.findall(r"\\bcode=([a-z-]{1,16})(?:[ ;}]|$)",val)
+                    statuses=re.findall(r"\bstatus=([0-9]{1,3})(?:[/ ;}]|$)",val)
+                    codes=re.findall(r"\bcode=([a-z-]{1,16})(?:[ ;}]|$)",val)
                     allowed={"exited","killed","dumped"}
                     if statuses and len(statuses)==len(codes) and all(c in allowed for c in codes):
                         out.append("FI_AWG_PHASE_"+label+"_"+key.upper()+"="+
