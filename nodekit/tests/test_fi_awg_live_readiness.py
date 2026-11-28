@@ -67,13 +67,13 @@ class FiReadinessTests(unittest.TestCase):
             "FI_AWG_DETAIL_AWG_INTERFACE=unknown"])
 
     def test_journal_classification_does_not_emit_raw_lines(self):
-        raw="private data abc123\\nSystem UTC rollback during offline access\\nnodekit_awg_grants_error=GrantError"
+        raw="private data abc123\nSystem UTC rollback during offline access\nnodekit_awg_grants_error=GrantError"
         self.assertEqual(probe.journal_categories(raw),["clock_rollback","grant_error"])
         self.assertEqual(probe.journal_categories("unrecognized sensitive content"),[])
 
     def test_failure_details_are_allowlisted(self):
-        done=mock.Mock(returncode=0,stdout="private peer key\\nCannot find device awg0")
-        with mock.patch.object(probe,"checked",return_value="Result=exit-code\\nExecMainCode=1\\nExecMainStatus=secret"), \\
+        done=mock.Mock(returncode=0,stdout="private peer key\nCannot find device awg0")
+        with mock.patch.object(probe,"checked",return_value="Result=exit-code\nExecMainCode=1\nExecMainStatus=secret"), \\
              mock.patch.object(probe.subprocess,"run",return_value=done) as run:
             result=probe.failure_details(probe.FI_UNIT,"TEST")
         self.assertEqual(result,["TEST_RESULT=exit-code","TEST_EXECMAINCODE=1",
