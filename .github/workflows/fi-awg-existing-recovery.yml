@@ -43,16 +43,6 @@ jobs:
           FI_USER: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_USER }}
         run: |
           set -Eeuo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -qq -y --no-install-recommends sshpass >/dev/null
-      - name: Sign and activate FI217 production AWG with persistent watchdog and NAT
-        shell: bash
-        env:
-          RU_PASSWORD: ${{ secrets.SERVER188_SSH_PASSWORD }}
-          FI_PASSWORD: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_PASSWORD }}
-          FI_USER: ${{ secrets.MNEBYVPN_NEW_NODE_SSH_USER }}
-        run: |
-          set -Eeuo pipefail
           umask 077
           [[ -n "$RU_PASSWORD" && -n "$FI_PASSWORD" && "$FI_USER" == root ]] || exit 2
           grep -q '^188\.120\.254\.223 ssh-ed25519 ' ops/mnebydns-owner-ssh-known_hosts
