@@ -58,12 +58,18 @@ def systemd(unit, prop):
 def states():
     return tuple(systemd(u,"ActiveState") for u in UNITS)
 
+def matches_host(addr):
+    # ip -o -4 addr show uses whitespace-delimited CIDR tokens.
+    return any(re.fullmatch(r"217[.]11[.]167[.]91/(?:[0-9]|[12][0-9]|3[0-2])", token)
+               for token in addr.split())
+
 def host_and_sources():
     print("FI_AWG_RECOVERY_PREFLIGHT=host",flush=True)
     if os.geteuid()!=0:raise Blocked()
     addr=call(["/usr/sbin/ip","-o","-4","addr","show"],5).stdout
-    if not re.search(r"(?<![0-9.])217[.]11[.]167[.]91/[0-9]{1,2}(?=\\s|$)",addr):
+    if not matches_host(addr):
         raise Blocked()
+    print("FI_AWG_RECOVERY_PREFLIGHT=protected_directories",flush=True)
     for directory in (APP,NODE,NODE/"amneziawg"):
         st=directory.stat()
         if directory.is_symlink() or not stat.S_ISDIR(st.st_mode) or st.st_uid!=0 or st.st_mode&0o022:
