@@ -86,6 +86,24 @@ class FiReadinessTests(unittest.TestCase):
             self.assertEqual(probe.failure_details(probe.FI_WATCHDOG,"TEST"),
                              ["TEST_SYSTEMD=unavailable","TEST_JOURNAL=unavailable"])
 
+    def test_stop_timeline_preserves_order_without_private_messages(self):
+        import json
+        rows=[
+            {"UNIT":probe.FI_UNIT,"__REALTIME_TIMESTAMP":"1795752002000000","MESSAGE":"Control process exited, code=exited, status=1/FAILURE"},
+            {"UNIT":probe.FI_WATCHDOG,"__REALTIME_TIMESTAMP":"1795752001000000","MESSAGE":"Stopping watchdog with private context"},
+            {"UNIT":probe.FI_EGRESS,"__REALTIME_TIMESTAMP":"1795752000000000","MESSAGE":"Stopping egress"},
+            {"UNIT":"other.service","__REALTIME_TIMESTAMP":"1795752001000000","MESSAGE":"Stopping other service"},
+        ]
+        self.assertEqual(probe.stop_timeline(chr(10).join(map(json.dumps,rows))),
+            ["1795752000:egress:stopping","1795752001:watchdog:stopping","1795752002:awg:control_exit"])
+
+    def test_stop_timeline_rejects_untrusted_fields(self):
+        import json
+        rows=[{"UNIT":probe.FI_UNIT,"__REALTIME_TIMESTAMP":"private","MESSAGE":"Stopping something"},
+              {"UNIT":probe.FI_UNIT,"__REALTIME_TIMESTAMP":"1795752001000000","MESSAGE":["private"]},
+              {"UNIT":probe.FI_UNIT,"__REALTIME_TIMESTAMP":"1795752001000000","MESSAGE":"private context"}]
+        self.assertEqual(probe.stop_timeline(chr(10).join(map(json.dumps,rows))),[])
+
     def test_readonly_source_and_workflow_contract(self):
         src=(NODEKIT/"fi_awg_live_readiness.py").read_text()
         workflow=(NODEKIT.parent/".github/workflows/fi-awg-live-readiness.yml").read_text()
