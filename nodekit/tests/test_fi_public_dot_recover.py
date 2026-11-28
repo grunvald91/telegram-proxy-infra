@@ -3,7 +3,7 @@ from unittest.mock import patch
 from pathlib import Path
 import sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-import fi_public_dot_recover as m
+import fi_restore_public_dot as m
 class RecoveryTests(unittest.TestCase):
     def test_already_active_does_not_restart(self):
         with patch.object(m,"preflight"),patch.object(m,"active",return_value=True),patch.object(m,"listeners",return_value=[m.FI+":853"]),patch.object(m,"probe") as probe,patch.object(m,"run") as run:
