@@ -150,6 +150,21 @@ def fi()->dict[str,str]:
        "AWG_INTERFACE":iface,
     }
 
+def diagnostic_fields(mode:str,report:dict[str,str])->list[str]:
+    # The workflow captures stdout and collapses multiple fields into a
+    # single readiness gate. Preserve that protocol; publish only fixed,
+    # allowlisted component states on stderr, never raw command output.
+    allowed={
+        "ru":{"POOL":("staged","verified","missing"),
+              "POOL_PROOF":("fresh","not_fresh","missing")},
+        "fi":{"AWG_SERVICE":("active","inactive","failed","activating","deactivating"),
+              "AWG_WATCHDOG":("active","inactive","failed","activating","deactivating"),
+              "AWG_INTERFACE":("present","absent")},
+    }
+    return ["FI_AWG_DETAIL_"+key+"="+
+            (report[key] if report.get(key) in values else "unknown")
+            for key,values in allowed[mode].items()]
+
 def main()->int:
     parser=argparse.ArgumentParser()
     parser.add_argument("--mode",choices=["ru","fi"],required=True)
@@ -159,6 +174,8 @@ def main()->int:
         for key,value in sorted(report.items()):
             if not re.fullmatch(r"[A-Z_]{3,64}",key) or not re.fullmatch(r"[a-z_]{2,40}|true|false|yes|no",value):
                 raise Blocked()
+        for line in diagnostic_fields(mode,report):
+            print(line,file=sys.stderr)
         print("FI_AWG_LIVE_AUDIT_"+mode.upper()+"="+
               ";".join(f"{key}:{value}" for key,value in sorted(report.items())))
         return 0
