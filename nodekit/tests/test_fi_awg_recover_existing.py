@@ -1,6 +1,9 @@
 import unittest
 from unittest import mock
 import subprocess
+from pathlib import Path
+import sys
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import fi_awg_recover_existing as m
 
 class RecoveryTests(unittest.TestCase):
